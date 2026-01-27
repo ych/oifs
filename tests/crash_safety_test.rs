@@ -19,7 +19,7 @@ fn test_flush_persistence() {
         let dm = DiskManager::open(image_path, 0).expect("Open failed");
         let root = dm.resolve_path(".").unwrap();
         let file_id = dm.create_file(root, "important.txt").expect("Create failed");
-        dm.write_data(file_id, 0, b"Critical Data").expect("Write failed");
+        dm.write_data(file_id, 0, b"Critical Data", oifs::disk::CompressionMode::Auto).expect("Write failed");
         
         // 3. Explicit Flush
         dm.flush().expect("Flush failed");
@@ -54,7 +54,7 @@ fn test_drop_flush() {
         let dm = DiskManager::open(image_path, 0).expect("Open failed");
         let root = dm.resolve_path(".").unwrap();
         let file_id = dm.create_file(root, "drop.txt").expect("Create failed");
-        dm.write_data(file_id, 0, b"Drop Data").expect("Write failed");
+        dm.write_data(file_id, 0, b"Drop Data", oifs::disk::CompressionMode::Auto).expect("Write failed");
         // dm is dropped here. Drop impl should call flush.
     }
 

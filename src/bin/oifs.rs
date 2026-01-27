@@ -82,6 +82,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 host_path.file_name().unwrap().to_string_lossy().to_string()
             });
 
+            // Parse compression flags from command line args
+            let remaining_args: Vec<String> = std::env::args().collect();
+            let compress = remaining_args.iter().any(|a| a == "--compress");
+            let no_compress = remaining_args.iter().any(|a| a == "--no-compress");
+            
+            // Determine compression mode
+            let compression_mode = if compress && no_compress {
+                eprintln!("Warning: Both --compress and --no-compress specified, using --compress");
+                oifs::disk::CompressionMode::Always
+            } else if compress {
+                oifs::disk::CompressionMode::Always
+            } else if no_compress {
+                oifs::disk::CompressionMode::Never
+            } else {
+                oifs::disk::CompressionMode::Auto  // Default: >= 8KB
+            };
+
             let dm = DiskManager::open(&cli.image, 0)?;
             
             // Set up Ctrl+C handler to flush
@@ -114,8 +131,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 2. Read host content
             let content = std::fs::read(host_path)?;
             
-            // 3. Write data
-            dm.write_data(inode_id, 0, &content)?;
+            // 3. Write data with compression mode
+            dm.write_data(inode_id, 0, &content, compression_mode)?;
             println!("Imported '{}' to image.", path_str);
             Ok(())
         }

@@ -37,6 +37,25 @@ pub enum DiskManagerError {
     Locking(#[from] nix::errno::Errno),
 }
 
+/// Compression mode for write operations
+///
+/// Controls when files should be compressed using zstd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionMode {
+    /// Always compress, regardless of file size
+    Always,
+    /// Never compress
+    Never,
+    /// Auto: compress files >= 8KB
+    Auto,
+}
+
+impl Default for CompressionMode {
+    fn default() -> Self {
+        CompressionMode::Auto
+    }
+}
+
 /// Internal disk manager state
 ///
 /// Contains the file handle, memory-mapped region, and superblock.
@@ -474,27 +493,33 @@ impl DiskManager {
     /// * `inode_id` - The inode ID of the file to write to
     /// * `file_offset` - Byte offset to start writing at
     /// * `data` - Data to write
+    /// * `compression_mode` - Compression mode (Always, Never, or Auto)
     ///
     /// # Compression Strategy
-    /// Files are compressed using zstd if ALL of these conditions are met:
-    /// - File type is File (not Directory)
-    /// - `file_offset == 0` (writing from the beginning)
-    /// - `data.len() >= 8192` bytes (8KB threshold)
-    /// - Compression reduces the size (otherwise stored raw)
+    /// - `Always`: Always compress regardless of size
+    /// - `Never`: Never compress
+    /// - `Auto`: Compress files >= 8KB if beneficial
     ///
     /// # Limitations
     /// - Maximum file size: 48KB (12 blocks × 4KB)
     /// - Cannot append to already-compressed files (offset > 0)
     /// - Exceeding 48KB returns `FileTooLarge` error
-    pub fn write_data(&self, inode_id: u64, file_offset: u64, data: &[u8]) -> Result<(), DiskManagerError> {
+    pub fn write_data(&self, inode_id: u64, file_offset: u64, data: &[u8], compression_mode: CompressionMode) -> Result<(), DiskManagerError> {
         let mut guard = self.inner.lock().unwrap();
         let mut inode = Self::read_inode_internal(&guard, inode_id)?;
         
         let final_data: std::borrow::Cow<[u8]>;
         let mut is_compressed = false;
 
-        // Attempt compression for large files (>= 8KB) written from start
-        if inode.mode == crate::inode::FileType::File && file_offset == 0 && data.len() >= 8192 {
+        // Determine if we should compress based on mode
+        let should_compress = match compression_mode {
+            CompressionMode::Always => true,
+            CompressionMode::Never => false,
+            CompressionMode::Auto => data.len() >= 8192,
+        };
+
+        // Attempt compression for files written from start
+        if inode.mode == crate::inode::FileType::File && file_offset == 0 && should_compress {
             let compressed = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
                 .map_err(|e| DiskManagerError::Io(e))?;
             

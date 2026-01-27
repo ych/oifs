@@ -64,7 +64,7 @@ fn test_cli_ls() {
         match dm.create_file(root, "hello.txt") {
             Ok(id) => {
                  let data = vec![0u8; 123];
-                 dm.write_data(id, 0, &data).unwrap();
+                 dm.write_data(id, 0, &data, oifs::disk::CompressionMode::Auto).unwrap();
             },
             Err(_) => {
                 // If it exists (e.g. failed cleanup), try to lookup?

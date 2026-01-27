@@ -46,7 +46,7 @@ fn test_intra_process_threading() {
                  let mut data = vec![0u8; chunk_size];
                  for b in data.iter_mut() { *b = (iter % 255) as u8; }
                  
-                 dm_clone.write_data(inode_id, current_offset, &data).expect("Write failed");
+                 dm_clone.write_data(inode_id, current_offset, &data, oifs::disk::CompressionMode::Auto).expect("Write failed");
                  current_offset += data.len() as u64;
                  
                  last_data.extend_from_slice(&data);

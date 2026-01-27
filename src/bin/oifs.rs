@@ -38,6 +38,12 @@ enum Commands {
         host_path: PathBuf,
         /// Destination filename in OIFS (optional, defaults to host filename)
         remote_name: Option<String>,
+        /// Always compress the file regardless of size
+        #[arg(long)]
+        compress: bool,
+        /// Never compress the file
+        #[arg(long)]
+        no_compress: bool,
     },
     /// Export a file from the image
     Get {
@@ -67,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Created image {:?} with size {}MB", cli.image, size);
             Ok(())
         }
-        Commands::Put { host_path, remote_name } => {
+        Commands::Put { host_path, remote_name, compress, no_compress } => {
             if !cli.image.exists() {
                 eprintln!("Error: Image {:?} does not exist.", cli.image);
                 return Ok(());
@@ -82,18 +88,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 host_path.file_name().unwrap().to_string_lossy().to_string()
             });
 
-            // Parse compression flags from command line args
-            let remaining_args: Vec<String> = std::env::args().collect();
-            let compress = remaining_args.iter().any(|a| a == "--compress");
-            let no_compress = remaining_args.iter().any(|a| a == "--no-compress");
-            
-            // Determine compression mode
-            let compression_mode = if compress && no_compress {
+            // Determine compression mode from flags
+            let compression_mode = if *compress && *no_compress {
                 eprintln!("Warning: Both --compress and --no-compress specified, using --compress");
                 oifs::disk::CompressionMode::Always
-            } else if compress {
+            } else if *compress {
                 oifs::disk::CompressionMode::Always
-            } else if no_compress {
+            } else if *no_compress {
                 oifs::disk::CompressionMode::Never
             } else {
                 oifs::disk::CompressionMode::Auto  // Default: >= 8KB

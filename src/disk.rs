@@ -523,13 +523,27 @@ impl DiskManager {
             let compressed = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
                 .map_err(|e| DiskManagerError::Io(e))?;
             
-            // Only use compression if it actually saves space
-            if compressed.len() < data.len() {
-                final_data = std::borrow::Cow::Owned(compressed);
-                is_compressed = true;
-            } else {
-                // Compression not beneficial, store as-is
-                final_data = std::borrow::Cow::Borrowed(data);
+            // Decision logic based on compression mode
+            match compression_mode {
+                CompressionMode::Always => {
+                    // Always use compression, even if it increases size
+                    // (User may want this for privacy - to prevent hexdump visibility)
+                    final_data = std::borrow::Cow::Owned(compressed);
+                    is_compressed = true;
+                }
+                CompressionMode::Auto => {
+                    // Only use compression if it reduces size
+                    if compressed.len() < data.len() {
+                        final_data = std::borrow::Cow::Owned(compressed);
+                        is_compressed = true;
+                    } else {
+                        final_data = std::borrow::Cow::Borrowed(data);
+                    }
+                }
+                CompressionMode::Never => {
+                    // Should not reach here due to should_compress check above
+                    final_data = std::borrow::Cow::Borrowed(data);
+                }
             }
         } else {
             // Handle non-compressed writes (small files, directories, appends)

@@ -35,6 +35,15 @@ pub enum DiskManagerError {
     /// File locking error
     #[error("Locking error: {0}")]
     Locking(#[from] nix::errno::Errno),
+    /// Encryption error
+    #[error("Encryption error: {0}")]
+    Encryption(#[from] crate::encryption::EncryptionError),
+    /// Password required for encrypted filesystem
+    #[error("Password required to access encrypted filesystem")]
+    PasswordRequired,
+    /// Decryption failed - wrong password or corrupted data
+    #[error("Decryption failed - check password")]
+    DecryptionFailed,
 }
 
 /// Compression mode for write operations
@@ -116,6 +125,8 @@ struct DiskManagerInner {
     mmap: MmapMut,
     /// Cached copy of the superblock
     pub superblock: SuperBlock,
+    /// Encryption key (if filesystem is encrypted)
+    pub encryption_key: Option<crate::encryption::EncryptionKey>,
 }
 
 impl Drop for DiskManagerInner {
@@ -197,6 +208,7 @@ impl DiskManager {
             file,
             mmap,
             superblock,
+            encryption_key: None,  // TODO: derive from password if encrypted
         };
         
         // Use a new scope to initialize root if needed using the public API?
@@ -526,13 +538,28 @@ impl DiskManager {
             }
         }
         
+        // === DECRYPTION STEP ===
+        // Decrypt before decompression (if file is encrypted)
+        let mut decrypted_data = raw_data;
+        if inode.encrypted {
+            let encryption_key = guard.encryption_key.as_ref()
+                .ok_or(DiskManagerError::PasswordRequired)?;
+            
+            // Decrypt using stored nonce
+            decrypted_data = crate::encryption::decrypt_data(
+                &decrypted_data,
+                encryption_key,
+                &inode.encryption_nonce
+            ).map_err(|_| DiskManagerError::DecryptionFailed)?;
+        }
+        
         // Decompress if this is a compressed file
         if inode.mode == crate::inode::FileType::File && inode.compressed_size > 0 {
-             let decoded = zstd::stream::decode_all(std::io::Cursor::new(&raw_data))
+             let decoded = zstd::stream::decode_all(std::io::Cursor::new(&decrypted_data))
                  .map_err(|e| DiskManagerError::Io(e))?;
              Ok(decoded)
         } else {
-             Ok(raw_data)
+             Ok(decrypted_data)
         }
     }
 
@@ -608,7 +635,29 @@ impl DiskManager {
             }
         }
 
-        let write_buffer = final_data.as_ref();
+        // === ENCRYPTION STEP ===
+        // Encrypt after compression (if encryption key available)
+        let final_encrypted: Vec<u8>;
+        let write_buffer: &[u8] = if let Some(encryption_key) = &guard.encryption_key {
+            // Generate unique nonce
+            let nonce = crate::encryption::generate_nonce();
+            
+            // Encrypt (possibly compressed) data
+            final_encrypted = crate::encryption::encrypt_data(
+                final_data.as_ref(),
+                encryption_key,
+                &nonce
+            )?;
+            
+            // Mark inode as encrypted
+            inode.encrypted = true;
+            inode.encryption_nonce = nonce;
+            is_compressed = is_compressed; // Keep compression flag
+            
+            &final_encrypted
+        } else {
+            final_data.as_ref()
+        };
         let mut written = 0;
         let mut current_offset = file_offset;
         

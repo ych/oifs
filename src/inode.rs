@@ -44,6 +44,12 @@ pub struct Inode {
     /// Direct block pointers (12 blocks × 4KB = 48KB max file size)
     /// Block ID 0 indicates unallocated/empty block
     pub blocks: [u64; 12],
+    
+    // Encryption fields
+    /// Is this file encrypted?
+    pub encrypted: bool,
+    /// Nonce for XChaCha20-Poly1305 (24 bytes, unique per file)
+    pub encryption_nonce: [u8; 24],
 }
 
 impl Inode {
@@ -65,6 +71,9 @@ impl Inode {
             created_at: 0,
             modified_at: 0,
             blocks: [0; 12],
+            // Encryption fields (default: not encrypted)
+            encrypted: false,
+            encryption_nonce: [0u8; 24],
         }
     }
 }

@@ -38,6 +38,14 @@ pub struct SuperBlock {
     pub data_block_start: u64,
     /// Inode ID of the root directory (typically 0)
     pub root_inode: u64,
+    
+    // Encryption fields
+    /// Is this filesystem encrypted?
+    pub encrypted: bool,
+    /// Salt for Argon2 key derivation (16 bytes)
+    pub encryption_salt: [u8; 16],
+    /// Encryption version/algorithm identifier
+    pub encryption_version: u8,
 }
 
 impl SuperBlock {
@@ -82,6 +90,10 @@ impl SuperBlock {
             inode_count,
             data_block_start,
             root_inode: 0,
+            // Encryption fields (default: not encrypted)
+            encrypted: false,
+            encryption_salt: [0u8; 16],
+            encryption_version: 0,
         }
     }
 }

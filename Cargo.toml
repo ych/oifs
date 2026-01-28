@@ -17,3 +17,9 @@ nix = { version = "0.31.1", features = ["fs"] }
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 zstd = "0.13"
+
+# Encryption dependencies
+chacha20poly1305 = "0.10"  # XChaCha20-Poly1305 AEAD cipher
+argon2 = "0.5"             # Key derivation function
+rand = "0.8"               # CSPRNG for nonce generation
+zeroize = { version = "1.7", features = ["derive"] }  # Secure memory wiping

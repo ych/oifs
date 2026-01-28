@@ -57,6 +57,8 @@ enum Commands {
         /// Directory name
         dir_name: String,
     },
+    /// Analyze disk fragmentation
+    Analyze,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -265,6 +267,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let base_path = path.as_deref().unwrap_or("");
             dbg_ls(&dm, target_inode_id, base_path, *recursive)?;
 
+            Ok(())
+        }
+        Commands::Analyze => {
+            if !cli.image.exists() {
+                eprintln!("Error: Image {:?} does not exist.", cli.image);
+                return Ok(());
+            }
+            
+            let dm = DiskManager::open(&cli.image, 0)?;
+            let stats = dm.analyze_fragmentation()?;
+            
+            println!("\n=== Disk Fragmentation Analysis ===");
+            println!("Total blocks:        {} blocks ({} KB)", stats.total_blocks, stats.total_blocks * 4);
+            println!("Used blocks:         {} blocks ({} KB)", stats.used_blocks, stats.used_blocks * 4);
+            println!("Free blocks:         {} blocks ({} KB)", stats.free_blocks, stats.free_blocks * 4);
+            println!();
+            println!("Free runs (gaps):    {}", stats.free_runs);
+            println!("Largest free run:    {} blocks ({} KB)", stats.largest_free_run, stats.largest_free_run * 4);
+            println!("Avg gap size:        {:.2} blocks", stats.avg_gap_size);
+            println!();
+            println!("Fragmentation ratio: {:.2}%", stats.fragmentation_ratio * 100.0);
+            println!("  (0% = no fragmentation, 100% = maximum fragmentation)");
+            
             Ok(())
         }
     }

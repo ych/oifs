@@ -56,6 +56,25 @@ impl Default for CompressionMode {
     }
 }
 
+/// Statistics about disk fragmentation
+#[derive(Debug, Clone)]
+pub struct FragmentationStats {
+    /// Total number of data blocks
+    pub total_blocks: usize,
+    /// Number of used (allocated) blocks
+    pub used_blocks: usize,
+    /// Number of free blocks
+    pub free_blocks: usize,
+    /// Number of contiguous free runs (gaps)
+    pub free_runs: usize,
+    /// Size of largest contiguous free space
+    pub largest_free_run: usize,
+    /// Average size of free gaps
+    pub avg_gap_size: f64,
+    /// Fragmentation ratio (0.0 = no fragmentation, 1.0 = maximum)
+    pub fragmentation_ratio: f64,
+}
+
 /// Internal disk manager state
 ///
 /// Contains the file handle, memory-mapped region, and superblock.
@@ -774,5 +793,90 @@ impl DiskManager {
         guard.mmap.flush()?;
 
         Ok(())
+    }
+
+    /// Analyzes disk fragmentation and returns statistics
+    ///
+    /// Scans the data block bitmap to calculate fragmentation metrics.
+    ///
+    /// # Returns
+    /// `FragmentationStats` containing detailed fragmentation information
+    pub fn analyze_fragmentation(&self) -> Result<FragmentationStats, DiskManagerError> {
+        let guard = self.inner.lock().unwrap();
+        let sb = &guard.superblock;
+        
+        // Get data bitmap block
+        let bitmap_block = sb.data_bitmap_block;
+        let bitmap_slice = Self::get_block_from_map(&guard.mmap, bitmap_block)
+            .ok_or_else(|| DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Bitmap not found")))?;
+        
+        // Create mutable copy for Bitmap analysis (it requires &mut but we only read)
+        let mut bitmap_data = bitmap_slice.to_vec();
+        let bitmap = crate::bitmap::Bitmap::new(&mut bitmap_data);
+        let total_blocks = (sb.block_count - sb.data_block_start) as usize;
+        
+        let mut used_blocks = 0;
+        let mut free_runs = 0;
+        let mut current_run_len = 0;
+        let mut largest_free_run = 0;
+        let mut total_gap_size = 0;
+        
+        // Scan bitmap to collect statistics
+        let mut in_free_run = false;
+        for i in 0..total_blocks {
+            let is_free = !bitmap.get(i); // get() returns bool, true = used, false = free
+            
+            if is_free {
+                if !in_free_run {
+                    // Start of new free run
+                    free_runs += 1;
+                    in_free_run = true;
+                    current_run_len = 1;
+                } else {
+                    current_run_len += 1;
+                }
+            } else {
+                used_blocks += 1;
+                if in_free_run {
+                    // End of free run
+                    total_gap_size += current_run_len;
+                    largest_free_run = largest_free_run.max(current_run_len);
+                    in_free_run = false;
+                    current_run_len = 0;
+                }
+            }
+        }
+        
+        // Handle final free run if exists
+        if in_free_run {
+            total_gap_size += current_run_len;
+            largest_free_run = largest_free_run.max(current_run_len);
+        }
+        
+        let free_blocks = total_blocks - used_blocks;
+        let avg_gap_size = if free_runs > 0 {
+            total_gap_size as f64 / free_runs as f64
+        } else {
+            0.0
+        };
+        
+        // Calculate fragmentation ratio
+        // Ideal: all free space in one contiguous run (free_runs = 1 or 0)
+        // Worst: each free block is separate (free_runs = free_blocks)
+        let fragmentation_ratio = if free_blocks > 0 && free_runs > 1 {
+            (free_runs - 1) as f64 / (free_blocks - 1).max(1) as f64
+        } else {
+            0.0
+        };
+        
+        Ok(FragmentationStats {
+            total_blocks,
+            used_blocks,
+            free_blocks,
+            free_runs,
+            largest_free_run,
+            avg_gap_size,
+            fragmentation_ratio,
+        })
     }
 }

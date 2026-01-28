@@ -1,6 +1,7 @@
 use crate::disk::DiskManager;
-use crate::directory::DirectoryIterator;
-use crate::inode::FileType;
+use crate::directory::{DirectoryIterator, DirectoryEntry};
+use crate::inode::{FileType, Inode};
+use crate::allocator::BlockAllocator;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;

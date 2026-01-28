@@ -938,57 +938,108 @@ impl DiskManager {
             format!("{}.defrag.tmp", source_path)
         };
         
-        // Get file size from current image
-        let guard = self.inner.lock().unwrap();
-        let file_size = guard.file.metadata()?.len();
-        drop(guard);
+        // Step 1: Copy the entire image file first (safer than creating new)
+        std::fs::copy(source_path, &temp_path)?;
         
-        // Create new defragmented image
-        let new_dm = DiskManager::open(&temp_path, file_size)?;
+        // Step 2: Open the copy and perform actual defragmentation
+        let temp_dm = DiskManager::open(&temp_path, 0)?;
         
-        // Copy all files in contiguous order
-        let sb = self.superblock();
-        let mut files_processed = 0;
-        let mut bytes_moved = 0u64;
+        // Collect all active inodes and their data
+        let sb = temp_dm.superblock();
+        let mut file_data_list = Vec::new();
         
         for inode_id in 0..sb.inode_count {
-            if let Ok(inode) = self.read_inode(inode_id) {
+            if let Ok(inode) = temp_dm.read_inode(inode_id) {
                 if inode.size > 0 {
-                    // Read data from old image
-                    let data = self.read_data(inode_id)?;
-                    
-                    // Create file in new image
-                    if inode.mode == crate::inode::FileType::File {
-                        // For root inode or files, we need to handle differently
-                        // For simplicity, write data contiguously
-                        new_dm.write_inode(inode_id, &inode)?;
-                        new_dm.write_data(inode_id, 0, &data, CompressionMode::Auto)?;
-                        
-                        files_processed += 1;
-                        bytes_moved += data.len() as u64;
-                    }
+                    // Read and store data
+                    let data = temp_dm.read_data(inode_id)?;
+                    file_data_list.push((inode_id, inode, data));
                 }
             }
         }
         
-        // Flush new image
-        new_dm.flush()?;
-        drop(new_dm);
+        // Step 3: Clear the data bitmap to start fresh allocation
+        {
+            let mut guard = temp_dm.inner.lock().unwrap();
+            let data_bitmap_block = guard.superblock.data_bitmap_block;
+            if let Some(bitmap_slice) = Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap_block) {
+                // Clear all bits (set to 0 = free)
+                for byte in bitmap_slice.iter_mut() {
+                    *byte = 0;
+                }
+            }
+        }
         
-        // Replace original with new image
-        std::fs::rename(&temp_path, source_path)?;
+        // Step 4: Reallocate blocks contiguously and write data
+        let mut files_processed = 0;
+        let mut bytes_moved = 0u64;
         
-        // Reopen to get new stats
-        let final_dm = DiskManager::open(source_path, 0)?;
-        let stats_after = final_dm.analyze_fragmentation()?;
+        for (inode_id, mut inode, data) in file_data_list {
+            // Clear old block assignments
+            for i in 0..12 {
+                inode.blocks[i] = 0;
+            }
+            
+            // Write data - this will allocate new contiguous blocks
+            // Use Never compression to preserve exact data structure
+            let comp_mode = if inode.compressed_size > 0 {
+                CompressionMode::Always  // Preserve compression
+            } else {
+                CompressionMode::Never
+            };
+            
+            temp_dm.write_data(inode_id, 0, &data, comp_mode)?;
+            
+            // Count statistics
+            if inode.mode == crate::inode::FileType::File {
+                files_processed += 1;
+                bytes_moved += data.len() as u64;
+            }
+        }
         
-        Ok(DefragStats {
-            files_processed,
-            bytes_moved,
-            blocks_freed: stats_before.free_runs.saturating_sub(stats_after.free_runs),
-            frag_before: stats_before.fragmentation_ratio,
-            frag_after: stats_after.fragmentation_ratio,
-        })
+        // Step 5: Flush all changes
+        temp_dm.flush()?;
+        drop(temp_dm);
+        
+        // Step 6: Safe replacement using 3-step rename
+        let backup_path = format!("{}.old", source_path);
+        
+        // 6a: Rename original to backup
+        std::fs::rename(source_path, &backup_path)?;
+        
+        // 6b: Rename new defragged to original
+        match std::fs::rename(&temp_path, source_path) {
+            Ok(_) => {
+                // Success! Now we can delete the backup
+                // But let's verify first
+                match DiskManager::open(source_path, 0) {
+                    Ok(final_dm) => {
+                        let stats_after = final_dm.analyze_fragmentation()?;
+                        
+                        // Everything OK, delete backup
+                        let _ = std::fs::remove_file(&backup_path);
+                        
+                        Ok(DefragStats {
+                            files_processed,
+                            bytes_moved,
+                            blocks_freed: stats_before.free_runs.saturating_sub(stats_after.free_runs),
+                            frag_before: stats_before.fragmentation_ratio,
+                            frag_after: stats_after.fragmentation_ratio,
+                        })
+                    }
+                    Err(e) => {
+                        // Failed to open new file! Restore from backup
+                        let _ = std::fs::rename(&backup_path, source_path);
+                        Err(e)
+                    }
+                }
+            }
+            Err(e) => {
+                // Failed to rename new file! Restore original
+                let _ = std::fs::rename(&backup_path, source_path);
+                Err(DiskManagerError::Io(e))
+            }
+        }
     }
 
     /// In-place defragmentation: directly modifies original image

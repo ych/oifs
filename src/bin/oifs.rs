@@ -59,6 +59,12 @@ enum Commands {
     },
     /// Analyze disk fragmentation
     Analyze,
+    /// Defragment the filesystem
+    Defrag {
+        /// Defragmentation mode (safe or inplace)
+        #[arg(long, default_value = "safe")]
+        mode: String,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -289,6 +295,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!();
             println!("Fragmentation ratio: {:.2}%", stats.fragmentation_ratio * 100.0);
             println!("  (0% = no fragmentation, 100% = maximum fragmentation)");
+            
+            Ok(())
+        }
+        Commands::Defrag { mode } => {
+            if !cli.image.exists() {
+                eprintln!("Error: Image {:?} does not exist.", cli.image);
+                return Ok(());
+            }
+            
+            // Parse mode
+            let defrag_mode = match mode.to_lowercase().as_str() {
+                "safe" => oifs::disk::DefragMode::Safe,
+                "inplace" => oifs::disk::DefragMode::InPlace,
+                _ => {
+                    eprintln!("Error: Invalid mode '{}'. Use 'safe' or 'inplace'.", mode);
+                    return Ok(());
+                }
+            };
+            
+            // Get image path as string
+            let image_path = cli.image.to_str().ok_or("Invalid image path")?;
+            
+            println!("Starting defragmentation in {:?} mode...", defrag_mode);
+            if defrag_mode == oifs::disk::DefragMode::InPlace {
+                println!("⚠️  WARNING: In-place mode directly modifies the image!");
+                println!("⚠️  Data loss may occur if interrupted. Press Ctrl+C to cancel.");
+                std::thread::sleep(std::time::Duration::from_secs(3));
+            }
+            
+            let dm = DiskManager::open(&cli.image, 0)?;
+            match dm.defragment(image_path, defrag_mode, None) {
+                Ok(stats) => {
+                    println!("\n✅ Defragmentation complete!");
+                    println!("Files processed:     {}", stats.files_processed);
+                    println!("Bytes moved:         {} bytes ({:.2} KB)", stats.bytes_moved, stats.bytes_moved as f64 / 1024.0);
+                    println!("Fragmentation:");
+                    println!("  Before:            {:.2}%", stats.frag_before * 100.0);
+                    println!("  After:             {:.2}%", stats.frag_after * 100.0);
+                    println!("  Improvement:       {:.2}%", (stats.frag_before - stats.frag_after) * 100.0);
+                }
+                Err(e) => {
+                    eprintln!("❌ Defragmentation failed: {}", e);
+                    return Err(Box::new(e));
+                }
+            }
             
             Ok(())
         }

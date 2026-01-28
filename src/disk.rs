@@ -75,6 +75,36 @@ pub struct FragmentationStats {
     pub fragmentation_ratio: f64,
 }
 
+/// Defragmentation mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefragMode {
+    /// Safe mode: create new image and replace original after success
+    Safe,
+    /// In-place mode: directly modify original image (faster but risky)
+    InPlace,
+}
+
+impl Default for DefragMode {
+    fn default() -> Self {
+        DefragMode::Safe
+    }
+}
+
+/// Statistics from defragmentation operation
+#[derive(Debug, Clone)]
+pub struct DefragStats {
+    /// Number of files defragmented
+    pub files_processed: usize,
+    /// Total bytes moved
+    pub bytes_moved: u64,
+    /// Number of blocks freed
+    pub blocks_freed: usize,
+    /// Fragmentation ratio before defrag
+    pub frag_before: f64,
+    /// Fragmentation ratio after defrag
+    pub frag_after: f64,
+}
+
 /// Internal disk manager state
 ///
 /// Contains the file handle, memory-mapped region, and superblock.
@@ -878,5 +908,95 @@ impl DiskManager {
             avg_gap_size,
             fragmentation_ratio,
         })
+    }
+
+    /// Defragments the filesystem by reorganizing files contiguously
+    ///
+    /// # Arguments
+    /// * `source_path` - Path to the source image file
+    /// * `mode` - Defragmentation mode (Safe or InPlace)
+    /// * `output_path` - Optional output path for safe mode (defaults to source_path.defrag.tmp)
+    ///
+    /// # Returns
+    /// Statistics about the defragmentation operation
+    pub fn defragment(&self, source_path: &str, mode: DefragMode, output_path: Option<&str>) -> Result<DefragStats, DiskManagerError> {
+        match mode {
+            DefragMode::Safe => self.defragment_safe(source_path, output_path),
+            DefragMode::InPlace => self.defragment_inplace(),
+        }
+    }
+
+    /// Safe defragmentation: creates new image with defragmented layout
+    fn defragment_safe(&self, source_path: &str, output_path: Option<&str>) -> Result<DefragStats, DiskManagerError> {
+        // Get fragmentation before
+        let stats_before = self.analyze_fragmentation()?;
+        
+        // Determine temp path
+        let temp_path = if let Some(out) = output_path {
+            out.to_string()
+        } else {
+            format!("{}.defrag.tmp", source_path)
+        };
+        
+        // Get file size from current image
+        let guard = self.inner.lock().unwrap();
+        let file_size = guard.file.metadata()?.len();
+        drop(guard);
+        
+        // Create new defragmented image
+        let new_dm = DiskManager::open(&temp_path, file_size)?;
+        
+        // Copy all files in contiguous order
+        let sb = self.superblock();
+        let mut files_processed = 0;
+        let mut bytes_moved = 0u64;
+        
+        for inode_id in 0..sb.inode_count {
+            if let Ok(inode) = self.read_inode(inode_id) {
+                if inode.size > 0 {
+                    // Read data from old image
+                    let data = self.read_data(inode_id)?;
+                    
+                    // Create file in new image
+                    if inode.mode == crate::inode::FileType::File {
+                        // For root inode or files, we need to handle differently
+                        // For simplicity, write data contiguously
+                        new_dm.write_inode(inode_id, &inode)?;
+                        new_dm.write_data(inode_id, 0, &data, CompressionMode::Auto)?;
+                        
+                        files_processed += 1;
+                        bytes_moved += data.len() as u64;
+                    }
+                }
+            }
+        }
+        
+        // Flush new image
+        new_dm.flush()?;
+        drop(new_dm);
+        
+        // Replace original with new image
+        std::fs::rename(&temp_path, source_path)?;
+        
+        // Reopen to get new stats
+        let final_dm = DiskManager::open(source_path, 0)?;
+        let stats_after = final_dm.analyze_fragmentation()?;
+        
+        Ok(DefragStats {
+            files_processed,
+            bytes_moved,
+            blocks_freed: stats_before.free_runs.saturating_sub(stats_after.free_runs),
+            frag_before: stats_before.fragmentation_ratio,
+            frag_after: stats_after.fragmentation_ratio,
+        })
+    }
+
+    /// In-place defragmentation: directly modifies original image
+    fn defragment_inplace(&self) -> Result<DefragStats, DiskManagerError> {
+        // TODO: Implement in-place defrag
+        Err(DiskManagerError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "In-place defragmentation not yet implemented"
+        )))
     }
 }

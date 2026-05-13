@@ -5,6 +5,7 @@
 //! and handling file compression.
 
 use std::fs::{File, OpenOptions};
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use memmap2::{MmapMut, MmapOptions};
 use thiserror::Error;
@@ -204,11 +205,19 @@ impl DiskManager {
             mmap[0..serialized.len()].copy_from_slice(&serialized);
         }
 
+        // Check if filesystem is encrypted
+        let encryption_key = if superblock.encrypted {
+            // Encrypted filesystem cannot be opened without password
+            return Err(DiskManagerError::PasswordRequired);
+        } else {
+            None
+        };
+        
         let inner = DiskManagerInner {
             file,
             mmap,
             superblock,
-            encryption_key: None,  // TODO: derive from password if encrypted
+            encryption_key,
         };
         
         // Use a new scope to initialize root if needed using the public API?
@@ -260,6 +269,212 @@ impl DiskManager {
             }
         }
 
+        Ok(dm)
+    }
+    
+    /// Open an encrypted OIFS image with a password
+    ///
+    /// # Arguments
+    /// * `path` - Path to the filesystem image
+    /// * `total_size` - Size in bytes (only used when creating new file)
+    /// * `password` - Password for encrypted filesystem (None for unencrypted)
+    ///
+    /// # Returns
+    /// DiskManager with encryption key derived from password
+    pub fn open_with_password<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>
+    ) -> Result<Self, DiskManagerError> {
+        let path = path.as_ref();
+        let exists = path.exists();
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path)?;
+
+        // Acquire Lock
+        let mut lock = unsafe { std::mem::zeroed::<libc::flock>() };
+        lock.l_type = libc::F_WRLCK as _;
+        lock.l_whence = libc::SEEK_SET as _;
+        lock.l_start = 0;
+        lock.l_len = 0;
+
+        use nix::fcntl::{fcntl, FcntlArg};
+        match fcntl(&file, FcntlArg::F_SETLK(&lock)) {
+             Ok(_) => {},
+             Err(e) => return Err(DiskManagerError::Locking(e)),
+        }
+
+        if !exists {
+            file.set_len(total_size)?;
+        }
+
+        let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+        let superblock: SuperBlock;
+        let encryption_key: Option<crate::encryption::EncryptionKey>;
+
+        if exists {
+            if mmap.len() < BLOCK_SIZE {
+                return Err(DiskManagerError::FileTooSmall);
+            }
+            superblock = bincode::deserialize(&mmap[0..BLOCK_SIZE])?;
+            if superblock.magic != SuperBlock::MAGIC {
+                return Err(DiskManagerError::InvalidMagic);
+            }
+            
+            // Check if encrypted and derive key if needed
+            if superblock.encrypted {
+                let password = password.ok_or(DiskManagerError::PasswordRequired)?;
+                encryption_key = Some(crate::encryption::derive_key(
+                    password,
+                    &superblock.encryption_salt
+                )?);
+            } else {
+                encryption_key = None;
+            }
+        } else {
+            let block_count = total_size / BLOCK_SIZE as u64;
+            superblock = SuperBlock::new(block_count);
+            let serialized = bincode::serialize(&superblock)?;
+            mmap[0..serialized.len()].copy_from_slice(&serialized);
+            encryption_key = None;
+        }
+
+        let inner = DiskManagerInner {
+            file,
+            mmap,
+            superblock,
+            encryption_key,
+        };
+
+        let dm = Self {
+            inner: Arc::new(Mutex::new(inner)),
+        };
+
+        if !exists {
+            // Initialize root inode (same logic as open())
+            {
+               let mut guard = dm.inner.lock().unwrap();
+               let inode_bitmap_block = guard.superblock.inode_bitmap_block;
+               let bitmap_slice = Self::get_block_mut_from_map(&mut guard.mmap, inode_bitmap_block).expect("Bitmap");
+               let mut ia = SimpleBlockAllocator::new(bitmap_slice, 0);
+               let root_id = ia.allocate()?;
+               if root_id != 0 { return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Failed init root"))); }
+               
+               let data_bitmap_block = guard.superblock.data_bitmap_block;
+               let data_start = guard.superblock.data_block_start;
+               let data_slice = Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap_block).expect("Bitmap");
+               let mut da = SimpleBlockAllocator::new(data_slice, data_start);
+               let root_data = da.allocate()?;
+               
+               let mut root_inode = Inode::new(crate::inode::FileType::Directory);
+               root_inode.blocks[0] = root_data;
+               
+               let inode_idx = 0;
+               let table_blk = guard.superblock.inode_table_block;
+               let offset = table_blk * BLOCK_SIZE as u64 + inode_idx * 256;
+               let slice = &mut guard.mmap[offset as usize .. (offset+256) as usize];
+               let bytes = bincode::serialize(&root_inode)?;
+               slice[..bytes.len()].copy_from_slice(&bytes);
+            }
+        }
+
+        Ok(dm)
+    }
+    
+    /// Create a new encrypted filesystem
+    ///
+    /// # Arguments
+    /// * `path` - Path for the new filesystem image
+    /// * `total_size` - Total size in bytes
+    /// * `password` - Password for encryption
+    pub fn create_encrypted<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: &str
+    ) -> Result<Self, DiskManagerError> {
+        let path_ref = path.as_ref();
+        
+        // Create file
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path_ref)?;
+        
+        file.set_len(total_size)?;
+        
+        // Acquire lock
+        use nix::fcntl::{flock, FlockArg};
+        flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock)?;
+        
+        let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+        
+        // Create superblock with encryption enabled
+        let block_count = total_size / BLOCK_SIZE as u64;
+        let mut superblock = SuperBlock::new(block_count);
+        
+        // Enable encryption
+        superblock.encrypted = true;
+        superblock.encryption_salt = crate::encryption::generate_salt();
+        superblock.encryption_version = 1;  // XChaCha20-Poly1305
+        
+        // Derive encryption key
+        let encryption_key = crate::encryption::derive_key(
+            password,
+            &superblock.encryption_salt
+        )?;
+        
+        // Write superblock
+        let serialized = bincode::serialize(&superblock)?;
+        mmap[0..serialized.len()].copy_from_slice(&serialized);
+        
+        let inner = DiskManagerInner {
+            file,
+            mmap,
+            superblock,
+            encryption_key: Some(encryption_key),
+        };
+        
+        let dm = Self {
+            inner: Arc::new(Mutex::new(inner)),
+        };
+        
+        // Initialize root directory (same as open())
+        {
+            let mut guard = dm.inner.lock().unwrap();
+            let ib_blk = guard.superblock.inode_bitmap_block;
+            let it_blk = guard.superblock.inode_table_block;
+            let db_blk = guard.superblock.data_bitmap_block;
+            let db_start = guard.superblock.data_block_start;
+            
+            // Allocate inode 0 for root
+            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, ib_blk) {
+                slice[0] |= 1;
+            }
+            
+            // Allocate data block for root directory
+            let root_data_block = if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, db_blk) {
+                let mut da = SimpleBlockAllocator::new(slice, db_start);
+                da.allocate().expect("Failed to allocate root data block")
+            } else {
+                panic!("Failed to get data bitmap block");
+            };
+            
+            // Write root inode with allocated data block
+            let mut root_inode = crate::inode::Inode::new(crate::inode::FileType::Directory);
+            root_inode.blocks[0] = root_data_block;
+            let inode_offset = 0 * 256;
+            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, it_blk) {
+                let ser = bincode::serialize(&root_inode).unwrap();
+                slice[inode_offset..inode_offset + ser.len()].copy_from_slice(&ser);
+            }
+        }
+        
         Ok(dm)
     }
 

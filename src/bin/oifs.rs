@@ -11,6 +11,10 @@ use chrono::{DateTime, Local, TimeZone};
 struct Cli {
     #[arg(short, long)]
     image: PathBuf,
+    
+    /// Password for encrypted filesystem (optional, will prompt if needed)
+    #[arg(short, long)]
+    password: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -31,6 +35,9 @@ enum Commands {
         /// Size in MB
         #[arg(long, default_value_t = 10)]
         size: u64,
+        /// Enable encryption (will prompt for password)
+        #[arg(long)]
+        encrypt: bool,
     },
     /// Import a file into the image
     Put {
@@ -67,18 +74,84 @@ enum Commands {
     },
 }
 
+/// Helper function to read password securely from stdin
+fn read_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::{self, Write};
+    print!("{}", prompt);
+    io::stdout().flush()?;
+    
+    let mut password = String::new();
+    io::stdin().read_line(&mut password)?;
+    Ok(password.trim().to_string())
+}
+
+/// Helper function to open DiskManager with auto-detection of encrypted filesystems
+fn open_disk_manager(
+    image_path: &PathBuf,
+    password_arg: &Option<String>
+) -> Result<DiskManager, Box<dyn std::error::Error>> {
+    // First try to open without password to check if encrypted
+    match DiskManager::open(image_path, 0) {
+        Ok(dm) => Ok(dm),
+        Err(oifs::disk::DiskManagerError::PasswordRequired) => {
+            // Filesystem is encrypted, need password
+            let password = if let Some(pwd) = password_arg {
+                pwd.clone()
+            } else {
+                read_password("🔒 Encrypted filesystem detected. Enter password: ")?
+            };
+            
+            if password.is_empty() {
+                return Err("Password cannot be empty".into());
+            }
+            
+            // Open with password
+            DiskManager::open_with_password(image_path, 0, Some(&password))
+                .map_err(|e| e.into())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Create { size } => {
+        Commands::Create { size, encrypt } => {
             if cli.image.exists() {
                 eprintln!("Error: Image {:?} already exists.", cli.image);
                 return Ok(());
             }
             let size_bytes = size * 1024 * 1024;
-            let _dm = DiskManager::open(&cli.image, size_bytes)?;
-            println!("Created image {:?} with size {}MB", cli.image, size);
+            
+            if *encrypt {
+                // Prompt for password with confirmation
+                let password = read_password("Enter password: ")?;
+                
+                if password.is_empty() {
+                    eprintln!("Error: Password cannot be empty");
+                    return Ok(());
+                }
+                
+                // Confirm password
+                let password_confirm = read_password("Confirm password: ")?;
+                
+                if password != password_confirm {
+                    eprintln!("Error: Passwords do not match");
+                    return Ok(());
+                }
+                
+                // Basic password strength check
+                if password.len() < 8 {
+                    eprintln!("⚠️  Warning: Password is shorter than 8 characters");
+                }
+                
+                let _dm = DiskManager::create_encrypted(&cli.image, size_bytes, &password)?;
+                println!("✅ Encrypted filesystem created: {:?}", cli.image);
+            } else {
+                let _dm = DiskManager::open(&cli.image, size_bytes)?;
+                println!("Created image {:?} with size {}MB", cli.image, size);
+            }
             Ok(())
         }
         Commands::Put { host_path, remote_name, compress, no_compress } => {
@@ -108,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 oifs::disk::CompressionMode::Auto  // Default: >= 8KB
             };
 
-            let dm = DiskManager::open(&cli.image, 0)?;
+            let dm = open_disk_manager(&cli.image, &cli.password)?;
             
             // Set up Ctrl+C handler to flush
             let dm_clone = dm.clone();
@@ -151,7 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             
-            let dm = DiskManager::open(&cli.image, 0)?;
+            let dm = open_disk_manager(&cli.image, &cli.password)?;
             // resolve path
             match dm.resolve_path(remote_name) {
                 Ok(inode_id) => {
@@ -177,7 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             
-            let dm = DiskManager::open(&cli.image, 0)?;
+            let dm = open_disk_manager(&cli.image, &cli.password)?;
             
             let (parent_id, filename) = match dm.resolve_parent(dir_name) {
                 Ok(res) => res,
@@ -201,7 +274,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("Error: Image {:?} does not exist.", cli.image);
                 return Ok(());
             }
-            let dm = DiskManager::open(&cli.image, 0)?;
+            let dm = open_disk_manager(&cli.image, &cli.password)?;
             
             let target_inode_id = if let Some(p) = path.as_ref() {
                 match dm.resolve_path(p) {
@@ -281,7 +354,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             
-            let dm = DiskManager::open(&cli.image, 0)?;
+            let dm = open_disk_manager(&cli.image, &cli.password)?;
             let stats = dm.analyze_fragmentation()?;
             
             println!("\n=== Disk Fragmentation Analysis ===");
@@ -324,7 +397,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::thread::sleep(std::time::Duration::from_secs(3));
             }
             
-            let dm = DiskManager::open(&cli.image, 0)?;
+            let dm = open_disk_manager(&cli.image, &cli.password)?;
             match dm.defragment(image_path, defrag_mode, None) {
                 Ok(stats) => {
                     println!("\n✅ Defragmentation complete!");

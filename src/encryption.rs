@@ -3,7 +3,7 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
 };
 use argon2::{Argon2, PasswordHasher};
-use argon2::password_hash::{PasswordHash, SaltString};
+use argon2::password_hash::SaltString;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use std::fmt;
 

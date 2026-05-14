@@ -5,7 +5,6 @@
 //! and handling file compression.
 
 use std::fs::{File, OpenOptions};
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use memmap2::{MmapMut, MmapOptions};
 use thiserror::Error;
@@ -408,9 +407,18 @@ impl DiskManager {
         
         file.set_len(total_size)?;
         
-        // Acquire lock
-        use nix::fcntl::{flock, FlockArg};
-        flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock)?;
+        // Acquire Lock using F_SETLK
+        let mut lock = unsafe { std::mem::zeroed::<libc::flock>() };
+        lock.l_type = libc::F_WRLCK as _;
+        lock.l_whence = libc::SEEK_SET as _;
+        lock.l_start = 0;
+        lock.l_len = 0; // Whole file
+
+        use nix::fcntl::{fcntl, FcntlArg};
+        match fcntl(&file, FcntlArg::F_SETLK(&lock)) {
+            Ok(_) => {},
+            Err(e) => return Err(DiskManagerError::Locking(e)),
+        }
         
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
         

@@ -32,9 +32,14 @@ struct OifsMcpServer {
 }
 
 impl OifsMcpServer {
-    fn new(image_path: PathBuf) -> Result<Self> {
-        let size_bytes = DEFAULT_SIZE_MB * 1024 * 1024;
-        let dm = DiskManager::open(&image_path, size_bytes)?;
+    fn new(image_path: PathBuf, size_bytes: u64, password: Option<&str>) -> Result<Self> {
+        // If image doesn't yet exist AND a password was supplied,
+        // bootstrap an encrypted image; otherwise open (auto-create plain).
+        let dm = if !image_path.exists() && password.is_some() {
+            DiskManager::create_encrypted(&image_path, size_bytes, password.unwrap())?
+        } else {
+            DiskManager::open_with_password(&image_path, size_bytes, password)?
+        };
         Ok(Self {
             dm: Arc::new(TokioMutex::new(dm)),
             image_path,
@@ -269,16 +274,60 @@ impl ServerHandler for OifsMcpServer {
 
 // ── Entry point ───────────────────────────────────────────────────────
 
+fn print_usage() {
+    eprintln!("Usage: oifs_mcp [OPTIONS] [IMAGE_PATH]");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  --size <MB>     Initial size when creating a new image (default: {} MB)", DEFAULT_SIZE_MB);
+    eprintln!("  -h, --help      Show this help");
+    eprintln!();
+    eprintln!("Environment:");
+    eprintln!("  OIFS_PASSWORD   If set, opens (or creates) the image as encrypted.");
+    eprintln!("                  Required to open an existing encrypted image.");
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let image_path = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_IMAGE));
+    let mut image_path: Option<PathBuf> = None;
+    let mut size_mb: u64 = DEFAULT_SIZE_MB;
 
-    eprintln!("[oifs-mcp] Starting MCP server with image: {}", image_path.display());
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--size" => {
+                let v = args.next()
+                    .ok_or_else(|| anyhow::anyhow!("--size requires a value (MB)"))?;
+                size_mb = v.parse()
+                    .map_err(|e| anyhow::anyhow!("--size value '{}' invalid: {}", v, e))?;
+            }
+            "-h" | "--help" => {
+                print_usage();
+                return Ok(());
+            }
+            other if other.starts_with("--") => {
+                anyhow::bail!("Unknown option: {}", other);
+            }
+            other if image_path.is_none() => {
+                image_path = Some(PathBuf::from(other));
+            }
+            other => {
+                anyhow::bail!("Unexpected positional argument: {}", other);
+            }
+        }
+    }
 
-    let server = OifsMcpServer::new(image_path)?;
+    let image_path = image_path.unwrap_or_else(|| PathBuf::from(DEFAULT_IMAGE));
+    let size_bytes = size_mb * 1024 * 1024;
+    let password = std::env::var("OIFS_PASSWORD").ok();
+
+    eprintln!(
+        "[oifs-mcp] image={} size={}MB encrypted={}",
+        image_path.display(),
+        size_mb,
+        password.is_some()
+    );
+
+    let server = OifsMcpServer::new(image_path, size_bytes, password.as_deref())?;
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
 

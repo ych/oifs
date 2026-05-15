@@ -15,6 +15,7 @@ libc = "0.2.180"
 memmap2 = "0.9.9"
 nix = { version = "0.31.1", features = ["fs"] }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1"
 thiserror = "2.0.18"
 zstd = "0.13"
 
@@ -24,12 +25,25 @@ argon2 = "0.5"             # Key derivation function
 rand = "0.8"               # CSPRNG for nonce generation
 zeroize = { version = "1.7", features = ["derive"] }  # Secure memory wiping
 
-# MCP server dependencies
-rmcp = { version = "0.16", features = ["server", "macros", "transport-async-rw", "transport-io"] }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
-schemars = "1"
+# Optional: MCP server stack. Only pulled in when the `mcp` feature is on,
+# which keeps the CLI binary buildable on older rustc toolchains.
+rmcp = { version = "0.16", features = ["server", "macros", "transport-async-rw", "transport-io"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+anyhow = { version = "1", optional = true }
+schemars = { version = "1", optional = true }
+
+[features]
+default = []
+mcp = ["dep:rmcp", "dep:tokio", "dep:anyhow", "dep:schemars"]
+
+[[bin]]
+name = "oifs"
+path = "src/bin/oifs.rs"
+
+[[bin]]
+name = "oifs_mcp"
+path = "src/bin/oifs_mcp.rs"
+required-features = ["mcp"]
 
 [dev-dependencies]
 tempfile = "3.8"

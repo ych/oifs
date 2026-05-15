@@ -89,21 +89,27 @@ enum Commands {
     },
 }
 
-/// Helper function to read password securely from stdin
+/// Helper function to read password securely from stdin.
+///
+/// Prompt goes to stderr so stdout remains usable for JSON pipelines.
 fn read_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
     use std::io::{self, Write};
-    print!("{}", prompt);
-    io::stdout().flush()?;
-    
+    eprint!("{}", prompt);
+    io::stderr().flush()?;
+
     let mut password = String::new();
     io::stdin().read_line(&mut password)?;
     Ok(password.trim().to_string())
 }
 
-/// Helper function to open DiskManager with auto-detection of encrypted filesystems
+/// Helper function to open DiskManager with auto-detection of encrypted filesystems.
+///
+/// Password precedence: `--password` flag > `OIFS_PASSWORD` env > interactive prompt
+/// (interactive prompt is suppressed in `--json` mode to keep stdout pure).
 fn open_disk_manager(
     image_path: &PathBuf,
-    password_arg: &Option<String>
+    password_arg: &Option<String>,
+    json_mode: bool,
 ) -> Result<DiskManager, Box<dyn std::error::Error>> {
     match DiskManager::open(image_path, 0) {
         Ok(dm) => Ok(dm),
@@ -112,14 +118,18 @@ fn open_disk_manager(
                 pwd.clone()
             } else if let Ok(env_pwd) = std::env::var("OIFS_PASSWORD") {
                 env_pwd
+            } else if json_mode {
+                return Err(
+                    "Encrypted filesystem requires --password or OIFS_PASSWORD env in --json mode".into(),
+                );
             } else {
                 read_password("🔒 Encrypted filesystem detected. Enter password: ")?
             };
-            
+
             if password.is_empty() {
                 return Err("Password cannot be empty".into());
             }
-            
+
             DiskManager::open_with_password(image_path, 0, Some(&password))
                 .map_err(|e| e.into())
         }
@@ -158,8 +168,16 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let size_bytes = size * 1024 * 1024;
             
             if *encrypt {
-                let password = if let Ok(env_pwd) = std::env::var("OIFS_PASSWORD") {
+                // Precedence: --password flag > OIFS_PASSWORD env > interactive prompt.
+                // In --json mode we refuse to prompt so stdout stays pure JSON.
+                let password = if let Some(pwd) = cli.password.clone() {
+                    if pwd.is_empty() { return Err("Password cannot be empty".into()); }
+                    pwd
+                } else if let Ok(env_pwd) = std::env::var("OIFS_PASSWORD") {
+                    if env_pwd.is_empty() { return Err("Password cannot be empty".into()); }
                     env_pwd
+                } else if cli.json {
+                    return Err("Encrypted create requires --password or OIFS_PASSWORD env in --json mode".into());
                 } else {
                     let pwd = read_password("Enter password: ")?;
                     if pwd.is_empty() { return Err("Password cannot be empty".into()); }
@@ -167,7 +185,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     if pwd != pwd_confirm { return Err("Passwords do not match".into()); }
                     pwd
                 };
-                
+
                 if password.len() < 8 && !cli.json {
                     eprintln!("⚠️  Warning: Password is shorter than 8 characters");
                 }
@@ -210,7 +228,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 CompressionMode::Auto
             };
 
-            let dm = open_disk_manager(&cli.image, &cli.password)?;
+            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
             
             let dm_clone = dm.clone();
             ctrlc::set_handler(move || {
@@ -239,7 +257,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password)?;
+            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
             
             let dm_clone = dm.clone();
             ctrlc::set_handler(move || {
@@ -273,7 +291,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
              if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password)?;
+            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
             let inode_id = dm.resolve_path(remote_name)?;
             let data = dm.read_data(inode_id)?;
             let dest = host_path.clone().unwrap_or_else(|| PathBuf::from(PathBuf::from(remote_name).file_name().unwrap()));
@@ -294,7 +312,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password)?;
+            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
             let (parent_id, filename) = dm.resolve_parent(dir_name)?;
             
             if dm.lookup(parent_id, &filename).is_ok() {
@@ -313,7 +331,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
              if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password)?;
+            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
             
             let target_inode_id = if let Some(p) = path.as_ref() {
                 dm.resolve_path(p)?
@@ -400,7 +418,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password)?;
+            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
             let stats = dm.analyze_fragmentation()?;
             
             if cli.json {
@@ -450,7 +468,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             
-            let dm = open_disk_manager(&cli.image, &cli.password)?;
+            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
             match dm.defragment(image_path, defrag_mode, None) {
                 Ok(stats) => {
                     if cli.json {

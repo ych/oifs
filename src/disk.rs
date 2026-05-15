@@ -639,6 +639,17 @@ impl DiskManager {
     /// - Parent is not a directory
     /// - Directory with same name already exists
     /// - No free inodes or data blocks available
+    // KNOWN LIMITATION (issue: directory-entry encryption):
+    //   Directory blocks are written/read via raw mmap (see `lookup` and the inline
+    //   `serialize_into` calls below). They DO NOT pass through the encryption layer
+    //   used by `read_data`/`write_data`. As a result, file names + inode ids + child
+    //   directory layout remain visible in cleartext on the underlying image even
+    //   when the filesystem is created with `--encrypt`. File CONTENTS are still
+    //   protected, but metadata leakage must be considered.
+    //
+    //   Fixing this requires a per-block nonce store (e.g. in the inode of the
+    //   directory or a side table) plus encrypt/decrypt at directory-block IO time;
+    //   that is an on-disk format change and is tracked separately.
     pub fn create_directory(&self, parent_inode_id: u64, name: &str) -> Result<u64, DiskManagerError> {
          let mut guard = self.inner.lock().unwrap();
          

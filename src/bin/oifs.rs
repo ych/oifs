@@ -87,9 +87,11 @@ enum Commands {
         #[arg(long, default_value = "safe")]
         mode: String,
     },
+    /// Check filesystem structural consistency (fsck)
+    Fsck,
 }
 
-/// Helper function to read password securely from stdin.
+/// Helper function to read password securely from stdin (with terminal echo masked).
 ///
 /// Prompt goes to stderr so stdout remains usable for JSON pipelines.
 fn read_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -97,8 +99,31 @@ fn read_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
     eprint!("{}", prompt);
     io::stderr().flush()?;
 
+    let isatty = unsafe { libc::isatty(libc::STDIN_FILENO) } != 0;
+    let mut termios = unsafe { std::mem::zeroed::<libc::termios>() };
+    let mut original_termios = termios;
+
+    if isatty {
+        unsafe {
+            if libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == 0 {
+                original_termios = termios;
+                termios.c_lflag &= !libc::ECHO;
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios);
+            }
+        }
+    }
+
     let mut password = String::new();
-    io::stdin().read_line(&mut password)?;
+    let read_result = io::stdin().read_line(&mut password);
+
+    if isatty {
+        unsafe {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original_termios);
+            eprintln!(); // Print the newline that was suppressed by disabling ECHO
+        }
+    }
+
+    read_result?;
     Ok(password.trim().to_string())
 }
 
@@ -487,6 +512,46 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         println!("  Before:            {:.2}%", stats.frag_before * 100.0);
                         println!("  After:             {:.2}%", stats.frag_after * 100.0);
                         println!("  Improvement:       {:.2}%", (stats.frag_before - stats.frag_after) * 100.0);
+                    }
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
+            Ok(())
+        }
+        Commands::Fsck => {
+            if !cli.image.exists() {
+                return Err(format!("Image {:?} does not exist.", cli.image).into());
+            }
+            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
+            match dm.verify_integrity() {
+                Ok(report) => {
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                    } else {
+                        println!("\n=== Filesystem Consistency Check (fsck) ===");
+                        println!("Status:              {}", if report.is_clean { "✅ CLEAN" } else { "❌ CORRUPTED" });
+                        println!("Orphan Inodes:       {}", report.orphan_inodes.len());
+                        if !report.orphan_inodes.is_empty() {
+                            println!("  IDs: {:?}", report.orphan_inodes);
+                        }
+                        println!("Leaked Blocks:       {}", report.leaked_blocks.len());
+                        if !report.leaked_blocks.is_empty() {
+                            println!("  IDs: {:?}", report.leaked_blocks);
+                        }
+                        println!("Missing Blocks:      {}", report.missing_blocks.len());
+                        if !report.missing_blocks.is_empty() {
+                            println!("  IDs: {:?}", report.missing_blocks);
+                        }
+                        println!("Cross-Linked Blocks: {}", report.cross_linked_blocks.len());
+                        if !report.cross_linked_blocks.is_empty() {
+                            println!("  IDs: {:?}", report.cross_linked_blocks);
+                        }
+                        println!("===========================================");
+                        if !report.is_clean {
+                            return Err("Filesystem consistency check failed".into());
+                        }
                     }
                 }
                 Err(e) => {

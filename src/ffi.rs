@@ -7,7 +7,8 @@ use std::ptr;
 
 // Opaque handle for C
 pub struct OIFSHandle {
-    dm: DiskManager,
+    pub dm: DiskManager,
+    pub last_error: Option<String>,
 }
 
 #[unsafe(no_mangle)]
@@ -23,7 +24,40 @@ pub extern "C" fn oifs_open(path: *const c_char, size: u64) -> *mut OIFSHandle {
 
     match DiskManager::open(path_str, size) {
         Ok(dm) => {
-            let handle = Box::new(OIFSHandle { dm });
+            let handle = Box::new(OIFSHandle { dm, last_error: None });
+            Box::into_raw(handle)
+        }
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_open_with_password(
+    path: *const c_char,
+    size: u64,
+    password: *const c_char,
+) -> *mut OIFSHandle {
+    if path.is_null() {
+        return ptr::null_mut();
+    }
+    let c_str = unsafe { CStr::from_ptr(path) };
+    let path_str = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let pwd_str = if password.is_null() {
+        None
+    } else {
+        match unsafe { CStr::from_ptr(password) }.to_str() {
+            Ok(s) => Some(s),
+            Err(_) => return ptr::null_mut(),
+        }
+    };
+
+    match DiskManager::open_with_password(path_str, size, pwd_str) {
+        Ok(dm) => {
+            let handle = Box::new(OIFSHandle { dm, last_error: None });
             Box::into_raw(handle)
         }
         Err(_) => ptr::null_mut(),
@@ -54,18 +88,14 @@ pub extern "C" fn oifs_ls(handle: *mut OIFSHandle, cb: ListCallback, user_data: 
     let dm = &mut handle_ref.dm;
     let root_inode_id = dm.superblock().root_inode;
 
-    // Use a catch logic to convert internal errors to -1
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let root_inode = dm.read_inode(root_inode_id)?;
-        // println!("DEBUG: Root Inode Mode: {:?} Block[0]: {}", root_inode.mode, root_inode.blocks[0]);
         if root_inode.mode != FileType::Directory {
-             // println!("DEBUG: Not directory");
              return Ok(());
         }
 
         let block_id = root_inode.blocks[0];
         if block_id == 0 {
-             // println!("DEBUG: Block 0");
              return Ok(());
         }
 
@@ -74,26 +104,27 @@ pub extern "C" fn oifs_ls(handle: *mut OIFSHandle, cb: ListCallback, user_data: 
              for entry_res in iter {
                  match entry_res {
                      Ok(entry) => {
-                         // println!("DEBUG: Found entry: {}", entry.name);
                          if let Ok(inode) = dm.read_inode(entry.inode) {
                              let c_name = CString::new(entry.name).unwrap_or_default();
                              cb(c_name.as_ptr(), inode.size, inode.modified_at, user_data);
-                         } else {
-                             // println!("DEBUG: Failed to read inode {}", entry.inode);
                          }
                      }
-                     Err(_e) => {
-                         // println!("DEBUG: Entry error: {}", e);
-                     }
+                     Err(_) => {}
                  }
              }
-        }
-        Ok(())
-    })();
+         }
+         Ok(())
+     })();
 
     match result {
-        Ok(_) => 0,
-        Err(_) => -1,
+        Ok(_) => {
+            handle_ref.last_error = None;
+            0
+        }
+        Err(e) => {
+            handle_ref.last_error = Some(e.to_string());
+            -1
+        }
     }
 }
 
@@ -107,15 +138,24 @@ pub extern "C" fn oifs_create_file(handle: *mut OIFSHandle, path: *const c_char)
     let c_str = unsafe { CStr::from_ptr(path) };
     let filename = match c_str.to_str() {
         Ok(s) => s,
-        Err(_) => return -1,
+        Err(_) => {
+            handle_ref.last_error = Some("Invalid UTF-8 filename".to_string());
+            return -1;
+        }
     };
 
     let dm = &handle_ref.dm;
     let root_inode_id = dm.superblock().root_inode;
 
     match dm.create_file(root_inode_id, filename) {
-        Ok(_) => 0,
-        Err(_) => -1,
+        Ok(_) => {
+            handle_ref.last_error = None;
+            0
+        }
+        Err(e) => {
+            handle_ref.last_error = Some(e.to_string());
+            -1
+        }
     }
 }
 
@@ -129,14 +169,195 @@ pub extern "C" fn oifs_delete_file(handle: *mut OIFSHandle, path: *const c_char)
     let c_str = unsafe { CStr::from_ptr(path) };
     let filename = match c_str.to_str() {
         Ok(s) => s,
-        Err(_) => return -1,
+        Err(_) => {
+            handle_ref.last_error = Some("Invalid UTF-8 filename".to_string());
+            return -1;
+        }
     };
 
     let dm = &handle_ref.dm;
     let root_inode_id = dm.superblock().root_inode;
 
     match dm.delete_file(root_inode_id, filename) {
-        Ok(_) => 0,
-        Err(_) => -1,
+        Ok(_) => {
+            handle_ref.last_error = None;
+            0
+        }
+        Err(e) => {
+            handle_ref.last_error = Some(e.to_string());
+            -1
+        }
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_read_file(
+    handle: *mut OIFSHandle,
+    filename: *const c_char,
+    buf: *mut u8,
+    buf_size: u64,
+) -> i64 {
+    let handle_ref = unsafe {
+        if handle.is_null() { return -1; }
+        &mut (*handle)
+    };
+
+    if filename.is_null() || buf.is_null() {
+        handle_ref.last_error = Some("Null argument provided".to_string());
+        return -1;
+    }
+
+    let c_str = unsafe { CStr::from_ptr(filename) };
+    let filename_str = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            handle_ref.last_error = Some("Invalid UTF-8 filename".to_string());
+            return -1;
+        }
+    };
+
+    let dm = &handle_ref.dm;
+    match (|| -> Result<i64, Box<dyn std::error::Error>> {
+        let inode_id = dm.resolve_path(filename_str)?;
+        let data = dm.read_data(inode_id)?;
+        let to_copy = std::cmp::min(data.len() as u64, buf_size) as usize;
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), buf, to_copy);
+        }
+        Ok(to_copy as i64)
+    })() {
+        Ok(bytes) => {
+            handle_ref.last_error = None;
+            bytes
+        }
+        Err(e) => {
+            handle_ref.last_error = Some(e.to_string());
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_write_file(
+    handle: *mut OIFSHandle,
+    filename: *const c_char,
+    buf: *const u8,
+    buf_size: u64,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() { return -1; }
+        &mut (*handle)
+    };
+
+    if filename.is_null() || buf.is_null() {
+        handle_ref.last_error = Some("Null argument provided".to_string());
+        return -1;
+    }
+
+    let c_str = unsafe { CStr::from_ptr(filename) };
+    let filename_str = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            handle_ref.last_error = Some("Invalid UTF-8 filename".to_string());
+            return -1;
+        }
+    };
+
+    let dm = &handle_ref.dm;
+    match (|| -> Result<(), Box<dyn std::error::Error>> {
+        let (parent_id, name) = dm.resolve_parent(filename_str)?;
+        let inode_id = match dm.lookup(parent_id, &name) {
+            Ok(existing_id) => existing_id,
+            Err(_) => dm.create_file(parent_id, &name)?,
+        };
+        let data = unsafe { std::slice::from_raw_parts(buf, buf_size as usize) };
+        dm.write_data(inode_id, 0, data, crate::disk::CompressionMode::Auto)?;
+        Ok(())
+    })() {
+        Ok(_) => {
+            handle_ref.last_error = None;
+            0
+        }
+        Err(e) => {
+            handle_ref.last_error = Some(e.to_string());
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_mkdir(
+    handle: *mut OIFSHandle,
+    path: *const c_char,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() { return -1; }
+        &mut (*handle)
+    };
+
+    if path.is_null() {
+        handle_ref.last_error = Some("Null path provided".to_string());
+        return -1;
+    }
+
+    let c_str = unsafe { CStr::from_ptr(path) };
+    let path_str = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            handle_ref.last_error = Some("Invalid UTF-8 path".to_string());
+            return -1;
+        }
+    };
+
+    let dm = &handle_ref.dm;
+    match (|| -> Result<(), Box<dyn std::error::Error>> {
+        let (parent_id, name) = dm.resolve_parent(path_str)?;
+        dm.create_directory(parent_id, &name)?;
+        Ok(())
+    })() {
+        Ok(_) => {
+            handle_ref.last_error = None;
+            0
+        }
+        Err(e) => {
+            handle_ref.last_error = Some(e.to_string());
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_last_error(
+    handle: *mut OIFSHandle,
+    buf: *mut c_char,
+    buf_size: u32,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() { return -1; }
+        &mut (*handle)
+    };
+    
+    if buf.is_null() || buf_size == 0 {
+        return -1;
+    }
+
+    let err_str = match &handle_ref.last_error {
+        Some(s) => s.as_str(),
+        None => "No error",
+    };
+
+    let c_err = match CString::new(err_str) {
+        Ok(c) => c,
+        Err(_) => return -1,
+    };
+
+    let bytes = c_err.as_bytes_with_nul();
+    let to_copy = std::cmp::min(bytes.len(), buf_size as usize);
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buf, to_copy);
+        if to_copy > 0 {
+            std::ptr::write(buf.add(to_copy - 1), 0);
+        }
+    }
+    0
 }

@@ -114,6 +114,21 @@ pub struct DefragStats {
     pub frag_after: f64,
 }
 
+/// Detailed diagnostic report from a consistency check (fsck)
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FsckReport {
+    /// True if filesystem is structurally consistent
+    pub is_clean: bool,
+    /// List of allocated inodes not referenced by any directory entries
+    pub orphan_inodes: Vec<u64>,
+    /// List of data blocks marked allocated in the bitmap but not mapped by any inode
+    pub leaked_blocks: Vec<u64>,
+    /// List of data blocks mapped by inodes but marked free in the bitmap
+    pub missing_blocks: Vec<u64>,
+    /// List of data blocks referenced by multiple inodes
+    pub cross_linked_blocks: Vec<u64>,
+}
+
 /// Internal disk manager state
 ///
 /// Contains the file handle, memory-mapped region, and superblock.
@@ -752,7 +767,7 @@ impl DiskManager {
     /// - If `compressed_size > 0`: Read compressed data and decompress using zstd
     /// - If `compressed_size == 0`: Read and return raw data
     pub fn read_data(&self, inode_id: u64) -> Result<Vec<u8>, DiskManagerError> {
-        let guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock().unwrap();
         let inode = Self::read_inode_internal(&guard, inode_id)?;
         
         // Determine physical size on disk
@@ -761,15 +776,20 @@ impl DiskManager {
         let mut raw_data = Vec::with_capacity(physical_size as usize);
         let mut read = 0;
         
-        for &blk in inode.blocks.iter() {
-            if read >= physical_size { break; }
+        let mut inode_clone = inode.clone();
+        let mut blk_idx = 0;
+        while read < physical_size {
+            let blk = Self::get_or_alloc_block(&mut guard, &mut inode_clone, blk_idx, false)?;
             if blk == 0 { break; }
             if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
                 let rem = physical_size as usize - read as usize;
                 let to_read = std::cmp::min(rem, BLOCK_SIZE);
                 raw_data.extend_from_slice(&slice[..to_read]);
                 read += to_read as u64;
+            } else {
+                break;
             }
+            blk_idx += 1;
         }
         
         // === DECRYPTION STEP ===
@@ -886,7 +906,6 @@ impl DiskManager {
             // Mark inode as encrypted
             inode.encrypted = true;
             inode.encryption_nonce = nonce;
-            is_compressed = is_compressed; // Keep compression flag
             
             &final_encrypted
         } else {
@@ -897,19 +916,7 @@ impl DiskManager {
         
         while written < write_buffer.len() {
             let blk_idx = (current_offset / BLOCK_SIZE as u64) as usize;
-            if blk_idx >= 12 { 
-                return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::FileTooLarge, "File too large (max 48KB)"))); 
-            } // Max size limit for simple implementation
-            
-            let mut blk_id = inode.blocks[blk_idx];
-            if blk_id == 0 {
-                let db_blk = guard.superblock.data_bitmap_block;
-                let db_start = guard.superblock.data_block_start;
-                let slice = Self::get_block_mut_from_map(&mut guard.mmap, db_blk).unwrap();
-                let mut da = SimpleBlockAllocator::new(slice, db_start);
-                blk_id = da.allocate()?;
-                inode.blocks[blk_idx] = blk_id;
-            }
+            let blk_id = Self::get_or_alloc_block(&mut guard, &mut inode, blk_idx, true)?;
             
             let in_blk_off = (current_offset % BLOCK_SIZE as u64) as usize;
             let to_write = std::cmp::min(write_buffer.len() - written, BLOCK_SIZE - in_blk_off);
@@ -955,6 +962,131 @@ impl DiskManager {
         if bytes.len() > inode_size { return Err(DiskManagerError::Serialization(Box::new(bincode::ErrorKind::SizeLimit))); }
         slice[..bytes.len()].copy_from_slice(&bytes);
         Ok(())
+    }
+
+    fn allocate_block(guard: &mut DiskManagerInner) -> Result<u64, DiskManagerError> {
+        let db_blk = guard.superblock.data_bitmap_block;
+        let db_start = guard.superblock.data_block_start;
+        let slice = Self::get_block_mut_from_map(&mut guard.mmap, db_blk).unwrap();
+        let mut da = SimpleBlockAllocator::new(slice, db_start);
+        da.allocate().map_err(DiskManagerError::Allocator)
+    }
+
+    fn get_or_alloc_block(
+        guard: &mut DiskManagerInner,
+        inode: &mut Inode,
+        logical_block_idx: usize,
+        allocate: bool,
+    ) -> Result<u64, DiskManagerError> {
+        // Direct block case
+        if logical_block_idx < 10 {
+            let mut blk_id = inode.blocks[logical_block_idx];
+            if blk_id == 0 && allocate {
+                blk_id = Self::allocate_block(guard)?;
+                inode.blocks[logical_block_idx] = blk_id;
+            }
+            return Ok(blk_id);
+        }
+
+        // Single Indirect block case (indices 10..522)
+        if logical_block_idx < 10 + 512 {
+            let idx = logical_block_idx - 10;
+            let mut sib_id = inode.blocks[10];
+            if sib_id == 0 {
+                if !allocate { return Ok(0); }
+                sib_id = Self::allocate_block(guard)?;
+                inode.blocks[10] = sib_id;
+                
+                // Zero out the newly allocated single indirect block
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
+                    slice.fill(0);
+                }
+            }
+
+            let start = idx * 8;
+            let mut blk_id = 0;
+            
+            // Read existing pointer using immutable borrow
+            if let Some(slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
+                let mut blk_bytes = [0u8; 8];
+                blk_bytes.copy_from_slice(&slice[start..start+8]);
+                blk_id = u64::from_le_bytes(blk_bytes);
+            }
+
+            // Allocate and write back if needed
+            if blk_id == 0 && allocate {
+                blk_id = Self::allocate_block(guard)?;
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
+                    slice[start..start+8].copy_from_slice(&blk_id.to_le_bytes());
+                }
+            }
+            return Ok(blk_id);
+        }
+
+        // Double Indirect block case (indices 522..262666)
+        if logical_block_idx < 10 + 512 + 512 * 512 {
+            let idx = logical_block_idx - (10 + 512);
+            let s_idx = idx / 512;
+            let d_idx = idx % 512;
+
+            let mut dib_id = inode.blocks[11];
+            if dib_id == 0 {
+                if !allocate { return Ok(0); }
+                dib_id = Self::allocate_block(guard)?;
+                inode.blocks[11] = dib_id;
+                
+                // Zero out the newly allocated double indirect block
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, dib_id) {
+                    slice.fill(0);
+                }
+            }
+
+            // Get or allocate single indirect block within double indirect block
+            let mut sib_id = 0;
+            let s_start = s_idx * 8;
+            
+            // Read sib_id immutably
+            if let Some(slice) = Self::get_block_from_map(&guard.mmap, dib_id) {
+                let mut sib_bytes = [0u8; 8];
+                sib_bytes.copy_from_slice(&slice[s_start..s_start+8]);
+                sib_id = u64::from_le_bytes(sib_bytes);
+            }
+
+            if sib_id == 0 {
+                if !allocate { return Ok(0); }
+                sib_id = Self::allocate_block(guard)?;
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, dib_id) {
+                    slice[s_start..s_start+8].copy_from_slice(&sib_id.to_le_bytes());
+                }
+                
+                // Zero out the newly allocated single indirect block
+                if let Some(s_slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
+                    s_slice.fill(0);
+                }
+            }
+
+            // Get or allocate data block within single indirect block
+            let d_start = d_idx * 8;
+            let mut blk_id = 0;
+            
+            // Read blk_id immutably
+            if let Some(slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
+                let mut blk_bytes = [0u8; 8];
+                blk_bytes.copy_from_slice(&slice[d_start..d_start+8]);
+                blk_id = u64::from_le_bytes(blk_bytes);
+            }
+
+            if blk_id == 0 && allocate {
+                blk_id = Self::allocate_block(guard)?;
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
+                    slice[d_start..d_start+8].copy_from_slice(&blk_id.to_le_bytes());
+                }
+            }
+            return Ok(blk_id);
+        }
+
+        // Limit exceeded
+        Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::FileTooLarge, "File too large (max 1GB)")))
     }
     
     fn get_block_from_map(mmap: &MmapMut, block_id: u64) -> Option<&[u8]> {
@@ -1075,6 +1207,61 @@ impl DiskManager {
         // 3. Free Inode & Blocks
         let file_inode = Self::read_inode_internal(&guard, target_inode_id)?;
         
+        let mut blocks_to_free = Vec::new();
+        
+        // 1. Direct blocks (0..10)
+        for i in 0..10 {
+            let blk = file_inode.blocks[i];
+            if blk != 0 {
+                blocks_to_free.push(blk);
+            }
+        }
+        
+        // 2. Single Indirect Block (10)
+        let sib_id = file_inode.blocks[10];
+        if sib_id != 0 {
+            blocks_to_free.push(sib_id);
+            if let Some(slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
+                for idx in 0..512 {
+                    let start = idx * 8;
+                    let mut blk_bytes = [0u8; 8];
+                    blk_bytes.copy_from_slice(&slice[start..start+8]);
+                    let blk = u64::from_le_bytes(blk_bytes);
+                    if blk != 0 {
+                        blocks_to_free.push(blk);
+                    }
+                }
+            }
+        }
+        
+        // 3. Double Indirect Block (11)
+        let dib_id = file_inode.blocks[11];
+        if dib_id != 0 {
+            blocks_to_free.push(dib_id);
+            if let Some(slice) = Self::get_block_from_map(&guard.mmap, dib_id) {
+                for s_idx in 0..512 {
+                    let s_start = s_idx * 8;
+                    let mut sib_bytes = [0u8; 8];
+                    sib_bytes.copy_from_slice(&slice[s_start..s_start+8]);
+                    let sib = u64::from_le_bytes(sib_bytes);
+                    if sib != 0 {
+                        blocks_to_free.push(sib);
+                        if let Some(s_slice) = Self::get_block_from_map(&guard.mmap, sib) {
+                            for d_idx in 0..512 {
+                                let d_start = d_idx * 8;
+                                let mut blk_bytes = [0u8; 8];
+                                blk_bytes.copy_from_slice(&s_slice[d_start..d_start+8]);
+                                let blk = u64::from_le_bytes(blk_bytes);
+                                if blk != 0 {
+                                    blocks_to_free.push(blk);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         // Free Data Blocks
         {
             let db_blk = guard.superblock.data_bitmap_block;
@@ -1082,10 +1269,8 @@ impl DiskManager {
             let slice = Self::get_block_mut_from_map(&mut guard.mmap, db_blk).unwrap();
             let mut da = SimpleBlockAllocator::new(slice, db_start);
             
-            for &blk in file_inode.blocks.iter() {
-                if blk != 0 {
-                    da.free(blk)?;
-                }
+            for blk in blocks_to_free {
+                da.free(blk)?;
             }
         }
         
@@ -1332,5 +1517,187 @@ impl DiskManager {
             std::io::ErrorKind::Other,
             "In-place defragmentation not yet implemented"
         )))
+    }
+
+    /// Structural consistency check (fsck) for OIFS filesystem
+    pub fn verify_integrity(&self) -> Result<FsckReport, DiskManagerError> {
+        let guard = self.inner.lock().unwrap();
+        let sb = guard.superblock;
+
+        // 1. Collect all allocated Inode IDs from Inode Bitmap
+        let mut allocated_inodes = std::collections::HashSet::new();
+        let ib_blk = sb.inode_bitmap_block;
+        if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, ib_blk) {
+            let mut bitmap_copy = bitmap_slice.to_vec();
+            let bitmap = crate::bitmap::Bitmap::new(&mut bitmap_copy);
+            for i in 0..sb.inode_count as usize {
+                if bitmap.get(i) {
+                    allocated_inodes.insert(i as u64);
+                }
+            }
+        }
+
+        // 2. Collect all allocated Data Blocks from Data Bitmap
+        let mut allocated_data_blocks = std::collections::HashSet::new();
+        let db_blk = sb.data_bitmap_block;
+        let db_start = sb.data_block_start;
+        if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, db_blk) {
+            let mut bitmap_copy = bitmap_slice.to_vec();
+            let bitmap = crate::bitmap::Bitmap::new(&mut bitmap_copy);
+            let max_data_blocks = sb.block_count.saturating_sub(db_start);
+            for i in 0..max_data_blocks as usize {
+                if bitmap.get(i) {
+                    allocated_data_blocks.insert(db_start + i as u64);
+                }
+            }
+        }
+
+        // 3. Traversal tracking sets
+        let mut referenced_inodes = std::collections::HashSet::new();
+        let mut referenced_data_blocks = std::collections::HashMap::new(); // Block ID -> Vec<Inode ID>
+        let mut cross_linked_blocks = std::collections::HashSet::new();
+
+        // Always reference root inode
+        referenced_inodes.insert(sb.root_inode);
+
+        // Helper to collect all blocks mapped by an Inode
+        let get_inode_blocks = |inode: &Inode| -> Result<Vec<u64>, DiskManagerError> {
+            let mut blks = Vec::new();
+            
+            // Direct blocks
+            for i in 0..10 {
+                let blk = inode.blocks[i];
+                if blk != 0 { blks.push(blk); }
+            }
+
+            // Single indirect block
+            let sib_id = inode.blocks[10];
+            if sib_id != 0 {
+                blks.push(sib_id);
+                if let Some(slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
+                    for idx in 0..512 {
+                        let start = idx * 8;
+                        let mut blk_bytes = [0u8; 8];
+                        blk_bytes.copy_from_slice(&slice[start..start+8]);
+                        let blk = u64::from_le_bytes(blk_bytes);
+                        if blk != 0 { blks.push(blk); }
+                    }
+                }
+            }
+
+            // Double indirect block
+            let dib_id = inode.blocks[11];
+            if dib_id != 0 {
+                blks.push(dib_id);
+                if let Some(slice) = Self::get_block_from_map(&guard.mmap, dib_id) {
+                    for s_idx in 0..512 {
+                        let s_start = s_idx * 8;
+                        let mut sib_bytes = [0u8; 8];
+                        sib_bytes.copy_from_slice(&slice[s_start..s_start+8]);
+                        let sib = u64::from_le_bytes(sib_bytes);
+                        if sib != 0 {
+                            blks.push(sib);
+                            if let Some(s_slice) = Self::get_block_from_map(&guard.mmap, sib) {
+                                for d_idx in 0..512 {
+                                    let d_start = d_idx * 8;
+                                    let mut blk_bytes = [0u8; 8];
+                                    blk_bytes.copy_from_slice(&s_slice[d_start..d_start+8]);
+                                    let blk = u64::from_le_bytes(blk_bytes);
+                                    if blk != 0 { blks.push(blk); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(blks)
+        };
+
+        // Recursive directory scanner
+        let mut queue = vec![sb.root_inode];
+        let mut visited = std::collections::HashSet::new();
+
+        while let Some(dir_id) = queue.pop() {
+            if !visited.insert(dir_id) { continue; }
+
+            let dir_inode = Self::read_inode_internal(&guard, dir_id)?;
+            if dir_inode.mode != crate::inode::FileType::Directory { continue; }
+
+            let block_id = dir_inode.blocks[0];
+            if block_id == 0 { continue; }
+
+            if let Some(block_data) = Self::get_block_from_map(&guard.mmap, block_id) {
+                use crate::directory::DirectoryIterator;
+                for entry_res in DirectoryIterator::new(block_data) {
+                    if let Ok(entry) = entry_res {
+                        referenced_inodes.insert(entry.inode);
+                        
+                        if let Ok(child_inode) = Self::read_inode_internal(&guard, entry.inode) {
+                            if child_inode.mode == crate::inode::FileType::Directory {
+                                queue.push(entry.inode);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Scan all referenced inodes and collect block references
+        for &inode_id in &referenced_inodes {
+            if let Ok(inode) = Self::read_inode_internal(&guard, inode_id) {
+                let blks = get_inode_blocks(&inode)?;
+                for blk in blks {
+                    let entries = referenced_data_blocks.entry(blk).or_insert_with(Vec::new);
+                    entries.push(inode_id);
+                    if entries.len() > 1 {
+                        cross_linked_blocks.insert(blk);
+                    }
+                }
+            }
+        }
+
+        // Calculate differences
+        // A. Orphan Inodes: allocated but not referenced
+        let mut orphan_inodes = Vec::new();
+        for &inode_id in &allocated_inodes {
+            if !referenced_inodes.contains(&inode_id) {
+                orphan_inodes.push(inode_id);
+            }
+        }
+
+        // B. Leaked Blocks: allocated in bitmap but not referenced by any inode
+        let mut leaked_blocks = Vec::new();
+        for &blk in &allocated_data_blocks {
+            if !referenced_data_blocks.contains_key(&blk) {
+                leaked_blocks.push(blk);
+            }
+        }
+
+        // C. Missing Blocks: referenced by inodes but free in data bitmap
+        let mut missing_blocks = Vec::new();
+        for &blk in referenced_data_blocks.keys() {
+            if !allocated_data_blocks.contains(&blk) {
+                missing_blocks.push(blk);
+            }
+        }
+
+        let cross_linked_blocks: Vec<u64> = cross_linked_blocks.into_iter().collect();
+        orphan_inodes.sort();
+        leaked_blocks.sort();
+        missing_blocks.sort();
+
+        let is_clean = orphan_inodes.is_empty()
+            && leaked_blocks.is_empty()
+            && missing_blocks.is_empty()
+            && cross_linked_blocks.is_empty();
+
+        Ok(FsckReport {
+            is_clean,
+            orphan_inodes,
+            leaked_blocks,
+            missing_blocks,
+            cross_linked_blocks,
+        })
     }
 }

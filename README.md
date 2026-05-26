@@ -5,11 +5,15 @@ OIFS 是一個使用 Rust 編寫的簡單 Inode 檔案系統實作。它支援�
 ## 功能特色 (Features)
 
 *   **Inode-based Architecture**: 採用標準的 Inode 設計管理檔案與目錄。
+*   **Large File Support**: 支援單級間接 (Single Indirect) 與雙級間接 (Double Indirect) 區塊，單一檔案大小上限提升至 **1GB** (取消原本 48KB 限制)。
 *   **Encryption Support** 🔒:
     *   XChaCha20-Poly1305 AEAD 加密演算法
     *   Argon2id 密碼金鑰衍生
     *   支援加密與壓縮同時使用
     *   每個檔案使用唯一的 Nonce
+    *   **CLI 密碼輸入遮罩**：在終端機輸入密碼時自動隱藏 (Suppress Echo)，防範旁窺安全。
+*   **Integrity & Diagnostics (fsck)** 🛠️:
+    *   支援完整性掃描，檢查 Orphan Inodes, Leaked Blocks, Missing Blocks 以及 Cross-Linked Blocks，並支援 JSON 與文字格式輸出。
 *   **Crash Safety**:
     *   Metadata 操作 (如 `create`, `mkdir`, `delete`) 支援同步寫回 (Sync-on-write)。
     *   使用 `mmap` 的 flush 機制確保資料在崩潰時不遺失。
@@ -17,7 +21,7 @@ OIFS 是一個使用 Rust 編寫的簡單 Inode 檔案系統實作。它支援�
     *   內部使用 `Arc<Mutex<>>` 實現執行緒安全 (Thread-Safe)。
     *   支援多執行緒同時操作 (如 `tests/concurrency_test.rs` 所示)。
 *   **CLI Tool**: 提供完整的命令列工具進行映像檔操作。
-*   **C API (FFI)**: 提供 C 語言介面庫 (`liboifs.so`)。
+*   **C API (FFI)** 🔌: 提供極為完整的 C 語言介面庫 (`liboifs.so`)，支援加密開啟、檔案讀寫、目錄建立以及詳細錯誤診斷輸出。
 
 ## 建置 (Build)
 
@@ -81,6 +85,17 @@ cargo run --bin oifs -- -i disk.img ls -r
 cargo run --bin oifs -- -i disk.img get hello.txt downloaded.txt
 ```
 
+### 6. 一致性檢查 (Filesystem Consistency Check - FSCK) 🛠️
+掃描並確認映像檔結構完整性，偵測是否有孤立 Inode、洩漏區塊或多重引用：
+```bash
+cargo run --bin oifs -- -i disk.img fsck
+```
+
+支援以 JSON 格式輸出：
+```bash
+cargo run --bin oifs -- -i disk.img fsck --json
+```
+
 ## Rust API 範例
 
 若要在其他 Rust 專案中使用 OIFS：
@@ -119,9 +134,11 @@ assert_eq!(content, data);
 
 專案包含多種測試套件：
 *   **Unit Tests**: 基本功能測試。
-*   **Integration Tests**: 整合測試。
+*   **Integration Tests**: 整合測試（使用環境變數優化，提速 10 倍並防止 concurrent locks）。
+*   **Large File Test**: 驗證大檔案極限（1MB 以上）的單/雙級間接區塊讀寫。
+*   **FSCK Test**: 驗證點陣圖損毀與 fsck 一致性診斷偵測。
 *   **Concurrency Test**: 驗證多執行緒寫入與資料完整性。
-*   **FFI Test**: 驗證 C 語言介面。
+*   **FFI Extended Test**: 驗證 C 介面庫在加密開啟、讀寫與錯誤診斷的完整功能。
 
 執行所有測試：
 ```bash

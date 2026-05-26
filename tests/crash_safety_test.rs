@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::fs;
 use std::process::Command;
-use std::sync::Arc;
 use oifs::disk::DiskManager;
 
 #[test]
@@ -10,8 +9,8 @@ fn test_flush_persistence() {
     if Path::new(image_path).exists() { fs::remove_file(image_path).unwrap(); }
 
     // 1. Create Image
-    Command::new("cargo")
-        .args(&["run", "--bin", "oifs", "--", "--image", image_path, "create", "--size", "10"])
+    Command::new(env!("CARGO_BIN_EXE_oifs"))
+        .args(&["--image", image_path, "create", "--size", "10"])
         .status().expect("Cmd failed");
 
     // 2. Open and Write Data
@@ -45,8 +44,8 @@ fn test_drop_flush() {
     if Path::new(image_path).exists() { fs::remove_file(image_path).unwrap(); }
 
     // 1. Create Image
-    Command::new("cargo")
-        .args(&["run", "--bin", "oifs", "--", "--image", image_path, "create", "--size", "10"])
+    Command::new(env!("CARGO_BIN_EXE_oifs"))
+        .args(&["--image", image_path, "create", "--size", "10"])
         .status().expect("Cmd failed");
 
     // 2. Write Data and Drop WITHOUT explicit flush

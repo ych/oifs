@@ -1,6 +1,6 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
-use oifs::ffi::{oifs_open, oifs_close, oifs_ls, oifs_create_file, oifs_delete_file, OIFSHandle};
+use oifs::ffi::{oifs_open, oifs_close, oifs_ls, oifs_create_file, oifs_delete_file};
 
 extern "C" fn test_cb(_name: *const c_char, _size: u64, _mtime: u64, user_data: *mut c_void) {
     let count = unsafe { &mut *(user_data as *mut i32) };

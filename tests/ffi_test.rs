@@ -1,7 +1,6 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
-use oifs::ffi::{oifs_open, oifs_close, oifs_ls, oifs_create_file, OIFSHandle};
-use std::ptr;
+use oifs::ffi::{oifs_open, oifs_close, oifs_ls, oifs_create_file};
 
 // Mock callback
 extern "C" fn test_cb(name: *const c_char, size: u64, mtime: u64, user_data: *mut c_void) {

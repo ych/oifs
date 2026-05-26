@@ -1,6 +1,5 @@
 use oifs::disk::DiskManager;
 use oifs::superblock::SuperBlock;
-use oifs::allocator::BlockAllocator;
 use std::fs;
 use std::path::Path;
 

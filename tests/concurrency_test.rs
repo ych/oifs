@@ -1,5 +1,5 @@
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::sync::Arc;
 use std::process::Command;
 use std::fs;
@@ -12,16 +12,14 @@ fn test_intra_process_threading() {
     let image_path = "threading_test.img";
     if Path::new(image_path).exists() { fs::remove_file(image_path).unwrap(); }
 
-    Command::new("cargo")
-        .args(&["run", "--bin", "oifs", "--", "--image", image_path, "create", "--size", "10"])
+    Command::new(env!("CARGO_BIN_EXE_oifs"))
+        .args(&["--image", image_path, "create", "--size", "10"])
         .status().expect("Cmd failed");
 
     let dm = DiskManager::open(image_path, 0).expect("Open failed");
     let dm = Arc::new(dm); // Now DiskManager is Clone/ThreadSafe
 
     let mut handles = vec![];
-    let start_time = Instant::now();
-    let duration = Duration::from_secs(3);
 
     // 4 Threads, each writing to a DIFFERENT file
     for i in 0..4 {
@@ -69,8 +67,8 @@ fn test_intra_process_threading() {
 
     // List files to stdout as requested
     println!("--- Files after concurrency test ---");
-    let output = Command::new("cargo")
-        .args(&["run", "--bin", "oifs", "--", "--image", image_path, "ls", "-r"])
+    let output = Command::new(env!("CARGO_BIN_EXE_oifs"))
+        .args(&["--image", image_path, "ls", "-r"])
         .output().expect("LS Failed");
     println!("{}", String::from_utf8_lossy(&output.stdout));
     println!("------------------------------------");
@@ -103,8 +101,8 @@ fn test_inter_process_locking() {
     let image_path = "test_process.img";
     if Path::new(image_path).exists() { fs::remove_file(image_path).unwrap(); }
 
-    Command::new("cargo")
-        .args(&["run", "--bin", "oifs", "--", "--image", image_path, "create", "--size", "10"])
+    Command::new(env!("CARGO_BIN_EXE_oifs"))
+        .args(&["--image", image_path, "create", "--size", "10"])
         .status().expect("Cmd failed");
 
     let py_script = r#"

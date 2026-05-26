@@ -1,7 +1,4 @@
 use oifs::disk::DiskManager;
-use oifs::allocator::BlockAllocator;
-use oifs::directory::DirectoryEntry;
-use oifs::inode::{FileType, Inode};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -74,8 +71,8 @@ fn test_cli_ls() {
     }
 
     // 2. Run CLI
-    let output = Command::new("cargo")
-        .args(&["run", "--bin", "oifs", "--", "--image", path_str, "ls"])
+    let output = Command::new(env!("CARGO_BIN_EXE_oifs"))
+        .args(&["--image", path_str, "ls"])
         .output()
         .expect("Failed to execute command");
 

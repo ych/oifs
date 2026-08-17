@@ -14,6 +14,8 @@ use crate::allocator::{SimpleBlockAllocator, BlockAllocator, AllocatorError};
 use crate::inode::Inode;
 use std::sync::{Arc, Mutex};
 
+use serde::{Deserialize, Serialize};
+
 /// Errors that can occur during disk manager operations
 #[derive(Error, Debug)]
 pub enum DiskManagerError {
@@ -49,7 +51,7 @@ pub enum DiskManagerError {
 /// Compression mode for write operations
 ///
 /// Controls when files should be compressed using zstd.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompressionMode {
     /// Always compress, regardless of file size
     Always,
@@ -66,7 +68,7 @@ impl Default for CompressionMode {
 }
 
 /// Statistics about disk fragmentation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FragmentationStats {
     /// Total number of data blocks
     pub total_blocks: usize,
@@ -85,7 +87,7 @@ pub struct FragmentationStats {
 }
 
 /// Defragmentation mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DefragMode {
     /// Safe mode: create new image and replace original after success
     Safe,
@@ -100,7 +102,7 @@ impl Default for DefragMode {
 }
 
 /// Statistics from defragmentation operation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefragStats {
     /// Number of files defragmented
     pub files_processed: usize,
@@ -115,7 +117,7 @@ pub struct DefragStats {
 }
 
 /// Detailed diagnostic report from a consistency check (fsck)
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FsckReport {
     /// True if filesystem is structurally consistent
     pub is_clean: bool,
@@ -1139,6 +1141,29 @@ impl DiskManager {
     pub fn get_block_copy(&self, block_id: u64) -> Option<Vec<u8>> {
         let guard = self.inner.lock().unwrap();
         Self::get_block_from_map(&guard.mmap, block_id).map(|s| s.to_vec())
+    }
+
+    /// Lists all entries in a directory
+    pub fn list_dir(&self, dir_inode_id: u64) -> Result<Vec<crate::directory::DirectoryEntry>, DiskManagerError> {
+        let guard = self.inner.lock().unwrap();
+        let inode = Self::read_inode_internal(&guard, dir_inode_id)?;
+        if inode.mode != crate::inode::FileType::Directory {
+            return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Not a directory")));
+        }
+        let block_id = inode.blocks[0];
+        if block_id == 0 {
+            return Ok(Vec::new());
+        }
+        if let Some(slice) = Self::get_block_from_map(&guard.mmap, block_id) {
+            let iter = crate::directory::DirectoryIterator::new(slice);
+            let mut entries = Vec::new();
+            for entry in iter {
+                entries.push(entry.map_err(|e| DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?);
+            }
+            Ok(entries)
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     pub fn resolve_parent(&self, path: &str) -> Result<(u64, String), DiskManagerError> {

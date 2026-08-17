@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
-use oifs::disk::{DiskManager, CompressionMode, DefragMode};
-use oifs::directory::DirectoryIterator;
+use oifs::disk::{CompressionMode, DefragMode};
 use oifs::inode::FileType;
+use oifs::session::OifsSession;
 use std::path::PathBuf;
 use chrono::{DateTime, Local, TimeZone};
 use serde::Serialize;
@@ -16,6 +16,14 @@ struct Cli {
     /// Password for encrypted filesystem (optional, will prompt if needed)
     #[arg(short, long)]
     password: Option<String>,
+
+    /// Enable cross-machine / network mode (for NFS, Lustre, or multi-node clusters)
+    #[arg(short = 'n', long = "network", global = true)]
+    network: bool,
+
+    /// Custom bind address for network mode (e.g. 0.0.0.0:9050 or 127.0.0.1:0)
+    #[arg(long = "bind", global = true)]
+    bind: Option<String>,
 
     /// Output results as minified JSON
     #[arg(long, global = true)]
@@ -127,18 +135,19 @@ fn read_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(password.trim().to_string())
 }
 
-/// Helper function to open DiskManager with auto-detection of encrypted filesystems.
+/// Helper function to open OifsSession with auto-detection of encrypted filesystems and SessionMode.
 ///
 /// Password precedence: `--password` flag > `OIFS_PASSWORD` env > interactive prompt
 /// (interactive prompt is suppressed in `--json` mode to keep stdout pure).
-fn open_disk_manager(
+fn open_session(
     image_path: &PathBuf,
     password_arg: &Option<String>,
+    mode: &oifs::ipc::SessionMode,
     json_mode: bool,
-) -> Result<DiskManager, Box<dyn std::error::Error>> {
-    match DiskManager::open(image_path, 0) {
-        Ok(dm) => Ok(dm),
-        Err(oifs::disk::DiskManagerError::PasswordRequired) => {
+) -> Result<OifsSession, Box<dyn std::error::Error>> {
+    match OifsSession::open_with_mode(image_path, 0, mode.clone(), None, false) {
+        Ok(s) => Ok(s),
+        Err(oifs::session::SessionError::DiskManager(oifs::disk::DiskManagerError::PasswordRequired)) => {
             let password = if let Some(pwd) = password_arg {
                 pwd.clone()
             } else if let Ok(env_pwd) = std::env::var("OIFS_PASSWORD") {
@@ -155,7 +164,7 @@ fn open_disk_manager(
                 return Err("Password cannot be empty".into());
             }
 
-            DiskManager::open_with_password(image_path, 0, Some(&password))
+            OifsSession::open_with_mode(image_path, 0, mode.clone(), Some(&password), false)
                 .map_err(|e| e.into())
         }
         Err(e) => Err(e.into()),
@@ -185,6 +194,14 @@ struct LsEntry {
 }
 
 fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let session_mode = if cli.network || cli.bind.is_some() {
+        oifs::ipc::SessionMode::Network {
+            bind_addr: cli.bind.clone(),
+        }
+    } else {
+        oifs::ipc::SessionMode::Local
+    };
+
     match &cli.command {
         Commands::Create { size, encrypt } => {
             if cli.image.exists() {
@@ -193,8 +210,6 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let size_bytes = size * 1024 * 1024;
             
             if *encrypt {
-                // Precedence: --password flag > OIFS_PASSWORD env > interactive prompt.
-                // In --json mode we refuse to prompt so stdout stays pure JSON.
                 let password = if let Some(pwd) = cli.password.clone() {
                     if pwd.is_empty() { return Err("Password cannot be empty".into()); }
                     pwd
@@ -215,14 +230,14 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("⚠️  Warning: Password is shorter than 8 characters");
                 }
                 
-                let _dm = DiskManager::create_encrypted(&cli.image, size_bytes, &password)?;
+                let _session = OifsSession::open_with_mode(&cli.image, size_bytes, session_mode, Some(&password), true)?;
                 if cli.json {
                     println!("{}", json!({"ok": true, "message": "Encrypted filesystem created"}));
                 } else {
                     println!("✅ Encrypted filesystem created: {:?}", cli.image);
                 }
             } else {
-                let _dm = DiskManager::open(&cli.image, size_bytes)?;
+                let _session = OifsSession::open_with_mode(&cli.image, size_bytes, session_mode, None, false)?;
                 if cli.json {
                     println!("{}", json!({"ok": true, "message": "Filesystem created"}));
                 } else {
@@ -253,7 +268,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 CompressionMode::Auto
             };
 
-            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
+            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
             
             let dm_clone = dm.clone();
             ctrlc::set_handler(move || {
@@ -282,7 +297,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
+            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
             
             let dm_clone = dm.clone();
             ctrlc::set_handler(move || {
@@ -316,7 +331,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
              if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
+            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
             let inode_id = dm.resolve_path(remote_name)?;
             let data = dm.read_data(inode_id)?;
             let dest = host_path.clone().unwrap_or_else(|| PathBuf::from(PathBuf::from(remote_name).file_name().unwrap()));
@@ -337,7 +352,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
+            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
             let (parent_id, filename) = dm.resolve_parent(dir_name)?;
             
             if dm.lookup(parent_id, &filename).is_ok() {
@@ -356,12 +371,12 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
              if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
+            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
             
             let target_inode_id = if let Some(p) = path.as_ref() {
                 dm.resolve_path(p)?
             } else {
-                dm.superblock().root_inode
+                dm.superblock()?.root_inode
             };
 
             let target_inode = dm.read_inode(target_inode_id)?;
@@ -379,40 +394,33 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     modified: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
                 });
             } else {
-                fn collect_ls(dm: &DiskManager, inode_id: u64, current_path: &str, recursive: bool, results: &mut Vec<LsEntry>) -> Result<(), Box<dyn std::error::Error>> {
+                fn collect_ls(dm: &OifsSession, inode_id: u64, current_path: &str, recursive: bool, results: &mut Vec<LsEntry>) -> Result<(), Box<dyn std::error::Error>> {
                      let inode = dm.read_inode(inode_id)?;
                      if inode.mode != FileType::Directory { return Ok(()); }
                      
-                     let dir_block_id = inode.blocks[0];
-                     if dir_block_id == 0 { return Ok(()); }
-                     
-                     if let Some(block_data) = dm.get_block_copy(dir_block_id) {
-                         let iter = DirectoryIterator::new(&block_data);
-                         for entry in iter {
-                             if let Ok(dir_entry) = entry {
-                                 let entry_inode = dm.read_inode(dir_entry.inode)?;
-                                 let full_path = if current_path.is_empty() || current_path == "." {
-                                     dir_entry.name.clone()
-                                 } else {
-                                     format!("{}/{}", current_path, dir_entry.name)
-                                 };
-                                 
-                                 let dt: DateTime<Local> = Local.timestamp_opt(entry_inode.modified_at as i64, 0).unwrap();
-                                 let kind = if entry_inode.mode == FileType::Directory { "d" } else { "f" };
-                                 let comp_size = if entry_inode.compressed_size > 0 { Some(entry_inode.compressed_size) } else { None };
-                                 
-                                 results.push(LsEntry {
-                                     name: full_path.clone(),
-                                     kind: kind.to_string(),
-                                     size: entry_inode.size,
-                                     comp_size,
-                                     modified: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-                                 });
+                     let entries = dm.list_dir(inode_id)?;
+                     for dir_entry in entries {
+                         let entry_inode = dm.read_inode(dir_entry.inode)?;
+                         let full_path = if current_path.is_empty() || current_path == "." {
+                             dir_entry.name.clone()
+                         } else {
+                             format!("{}/{}", current_path, dir_entry.name)
+                         };
+                         
+                         let dt: DateTime<Local> = Local.timestamp_opt(entry_inode.modified_at as i64, 0).unwrap();
+                         let kind = if entry_inode.mode == FileType::Directory { "d" } else { "f" };
+                         let comp_size = if entry_inode.compressed_size > 0 { Some(entry_inode.compressed_size) } else { None };
+                         
+                         results.push(LsEntry {
+                             name: full_path.clone(),
+                             kind: kind.to_string(),
+                             size: entry_inode.size,
+                             comp_size,
+                             modified: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+                         });
 
-                                 if recursive && entry_inode.mode == FileType::Directory {
-                                     collect_ls(dm, dir_entry.inode, &full_path, true, results)?;
-                                 }
-                             }
+                         if recursive && entry_inode.mode == FileType::Directory {
+                             collect_ls(dm, dir_entry.inode, &full_path, true, results)?;
                          }
                      }
                      Ok(())
@@ -443,7 +451,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
+            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
             let stats = dm.analyze_fragmentation()?;
             
             if cli.json {
@@ -493,7 +501,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             
-            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
+            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
             match dm.defragment(image_path, defrag_mode, None) {
                 Ok(stats) => {
                     if cli.json {
@@ -524,7 +532,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !cli.image.exists() {
                 return Err(format!("Image {:?} does not exist.", cli.image).into());
             }
-            let dm = open_disk_manager(&cli.image, &cli.password, cli.json)?;
+            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
             match dm.verify_integrity() {
                 Ok(report) => {
                     if cli.json {

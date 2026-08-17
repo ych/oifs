@@ -1,9 +1,8 @@
-// use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::io::{Cursor, Read, Write};
-// use crate::inode::Inode;
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DirectoryEntry {
     pub inode: u64,
     pub hash: u64,

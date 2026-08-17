@@ -65,33 +65,26 @@ fn test_intra_process_threading() {
         results.push(h.join().unwrap());
     }
 
-    // List files to stdout as requested
+    // Verify Integrity
+    let root = dm.resolve_path(".").unwrap();
+    for (filename, expected_data) in &results {
+        let inode_id = dm.lookup(root, filename).expect("File missing");
+        let actual_data = dm.read_data(inode_id).expect("Read failed");
+        
+        let len = expected_data.len();
+        assert!(actual_data.len() >= len, "File truncated? {:?} vs {:?}", actual_data.len(), len);
+        assert_eq!(&actual_data[..len], &expected_data[..], "Content mismatch for {}", filename);
+    }
+    dm.flush().unwrap();
+    drop(dm);
+
+    // List files via CLI to stdout
     println!("--- Files after concurrency test ---");
     let output = Command::new(env!("CARGO_BIN_EXE_oifs"))
         .args(&["--image", image_path, "ls", "-r"])
         .output().expect("LS Failed");
     println!("{}", String::from_utf8_lossy(&output.stdout));
     println!("------------------------------------");
-    
-    // Verify Integrity
-    let root = dm.resolve_path(".").unwrap();
-    for (filename, expected_data) in results {
-        let inode_id = dm.lookup(root, &filename).expect("File missing");
-        let actual_data = dm.read_data(inode_id).expect("Read failed");
-        
-        // Truncate actual data to expected length in case file grew? 
-        // Our write_data implementation overwrites from 0. If new data is shorter, old tail remains.
-        // But our test data grows or is similar length? 
-        // "Thread X Iteration Y ..." -> Length increases with Y digits.
-        // So we strictly compare `actual_data[..expected.len()] == expected`.
-        // Wait, if we write "Short", old "Longer" remains. "Shorter"
-        // In our loop, iteration increases, so string likely grows or stays same length.
-        // Let's ensure strict equality by checking bounds.
-        
-        let len = expected_data.len();
-        assert!(actual_data.len() >= len, "File truncated? {:?} vs {:?}", actual_data.len(), len);
-        assert_eq!(&actual_data[..len], &expected_data[..], "Content mismatch for {}", filename);
-    }
     
     fs::remove_file(image_path).unwrap();
 }

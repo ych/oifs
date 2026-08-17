@@ -1437,13 +1437,28 @@ impl DiskManager {
         // Step 2: Open the copy and perform actual defragmentation
         let temp_dm = DiskManager::open(&temp_path, 0)?;
         
-        // Collect all active inodes and their data
+        // Collect all active, allocated inodes and their data
         let sb = temp_dm.superblock();
         let mut file_data_list = Vec::new();
         
-        for inode_id in 0..sb.inode_count {
+        let mut allocated_inodes = Vec::new();
+        {
+            let guard = temp_dm.inner.lock().unwrap();
+            let ib_blk = guard.superblock.inode_bitmap_block;
+            if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, ib_blk) {
+                let mut bitmap_copy = bitmap_slice.to_vec();
+                let bitmap = crate::bitmap::Bitmap::new(&mut bitmap_copy);
+                for i in 0..sb.inode_count as usize {
+                    if bitmap.get(i) {
+                        allocated_inodes.push(i as u64);
+                    }
+                }
+            }
+        }
+        
+        for inode_id in allocated_inodes {
             if let Ok(inode) = temp_dm.read_inode(inode_id) {
-                if inode.size > 0 {
+                if inode.mode == crate::inode::FileType::File && inode.size > 0 {
                     // Read and store data
                     let data = temp_dm.read_data(inode_id)?;
                     file_data_list.push((inode_id, inode, data));

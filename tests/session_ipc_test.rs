@@ -304,7 +304,7 @@ fn test_cli_network_flag() {
 
     // Create via CLI --network
     let res = Command::new(bin)
-        .args(&["--network", "--image", img_path, "create", "--size", "10"])
+        .args(["--network", "--image", img_path, "create", "--size", "10"])
         .status()
         .expect("Failed to run create");
     assert!(res.success());
@@ -315,14 +315,14 @@ fn test_cli_network_flag() {
 
     // Put via CLI --network
     let res = Command::new(bin)
-        .args(&["--network", "--image", img_path, "put", host_file, "remote_net.txt"])
+        .args(["--network", "--image", img_path, "put", host_file, "remote_net.txt"])
         .status()
         .expect("Failed to run put");
     assert!(res.success());
 
     // Ls via CLI --network
     let output = Command::new(bin)
-        .args(&["--network", "--image", img_path, "ls"])
+        .args(["--network", "--image", img_path, "ls"])
         .output()
         .expect("Failed to run ls");
     assert!(output.status.success());

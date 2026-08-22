@@ -97,3 +97,59 @@ impl<'a> BlockAllocator for SimpleBlockAllocator<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_block_allocator_basic() {
+        let mut bitmap_buf = vec![0u8; 8]; // 64 bits
+        let start_offset = 1000u64;
+        let mut allocator = SimpleBlockAllocator::new(&mut bitmap_buf, start_offset);
+
+        // Allocate first 3 blocks
+        let b0 = allocator.allocate().expect("alloc 0");
+        let b1 = allocator.allocate().expect("alloc 1");
+        let b2 = allocator.allocate().expect("alloc 2");
+
+        assert_eq!(b0, 1000);
+        assert_eq!(b1, 1001);
+        assert_eq!(b2, 1002);
+
+        // Free middle block
+        allocator.free(b1).expect("free 1");
+
+        // Next allocation should reuse b1
+        let b_reused = allocator.allocate().expect("alloc reused");
+        assert_eq!(b_reused, 1001);
+
+        // Next allocation should be b3 (1003)
+        let b3 = allocator.allocate().expect("alloc 3");
+        assert_eq!(b3, 1003);
+    }
+
+    #[test]
+    fn test_simple_block_allocator_full() {
+        let mut bitmap_buf = vec![0u8; 1]; // 8 bits
+        let mut allocator = SimpleBlockAllocator::new(&mut bitmap_buf, 0);
+
+        for i in 0..8 {
+            let blk = allocator.allocate().expect("alloc within bounds");
+            assert_eq!(blk, i as u64);
+        }
+
+        // 9th allocation should fail with NoSpace
+        let err = allocator.allocate().unwrap_err();
+        assert!(matches!(err, AllocatorError::NoSpace));
+    }
+
+    #[test]
+    fn test_simple_block_allocator_out_of_bounds_free() {
+        let mut bitmap_buf = vec![0u8; 4];
+        let mut allocator = SimpleBlockAllocator::new(&mut bitmap_buf, 50);
+
+        // Freeing a block ID smaller than start_block_offset should be ignored safely
+        assert!(allocator.free(10).is_ok());
+    }
+}

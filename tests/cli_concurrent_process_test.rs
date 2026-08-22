@@ -14,7 +14,7 @@ fn test_cli_concurrent_processes() {
 
     // 1. Create image
     let status = Command::new(bin_path)
-        .args(&["--image", img_path, "create", "--size", "10"])
+        .args(["--image", img_path, "create", "--size", "10"])
         .status()
         .expect("Create failed");
     assert!(status.success());
@@ -34,7 +34,7 @@ fn test_cli_concurrent_processes() {
             let payload = format!("payload_{}.txt", i);
             let remote = format!("remote_{}.txt", i);
             let output = Command::new(bin)
-                .args(&["--image", &img, "put", &payload, &remote])
+                .args(["--image", &img, "put", &payload, &remote])
                 .output()
                 .expect("CLI put failed");
             assert!(
@@ -53,7 +53,7 @@ fn test_cli_concurrent_processes() {
 
     // 3. Run ls and verify all 4 files are present
     let ls_output = Command::new(bin_path)
-        .args(&["--image", img_path, "ls"])
+        .args(["--image", img_path, "ls"])
         .output()
         .expect("CLI ls failed");
     assert!(ls_output.status.success());
@@ -77,7 +77,7 @@ fn test_cli_concurrent_processes() {
             let remote = format!("remote_{}.txt", i);
             let downloaded = format!("downloaded_{}.txt", i);
             let output = Command::new(bin)
-                .args(&["--image", &img, "get", &remote, &downloaded])
+                .args(["--image", &img, "get", &remote, &downloaded])
                 .output()
                 .expect("CLI get failed");
             assert!(

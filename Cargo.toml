@@ -45,5 +45,10 @@ name = "oifs_mcp"
 path = "src/bin/oifs_mcp.rs"
 required-features = ["mcp"]
 
+[[test]]
+name = "mcp_server_test"
+required-features = ["mcp"]
+
 [dev-dependencies]
 tempfile = "3.8"
+

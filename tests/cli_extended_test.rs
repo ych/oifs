@@ -15,7 +15,7 @@ fn test_cli_extended_flow() {
 
     // 1. Create Image
     let status = Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "create", "--size", "10"])
+        .args(["--image", image_path, "create", "--size", "10"])
         .status().expect("Cmd failed");
     assert!(status.success());
     assert!(Path::new(image_path).exists());
@@ -26,20 +26,20 @@ fn test_cli_extended_flow() {
 
     // 3. Put file
     let status = Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "put", host_file])
+        .args(["--image", image_path, "put", host_file])
         .status().expect("Cmd failed");
     assert!(status.success());
 
     // Verify LS
     let output = Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "ls"])
+        .args(["--image", image_path, "ls"])
         .output().expect("Cmd failed");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("test_put.txt"));
 
     // 4. Get file
     let status = Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "get", "test_put.txt", extracted_file])
+        .args(["--image", image_path, "get", "test_put.txt", extracted_file])
         .status().expect("Cmd failed");
     assert!(status.success());
     

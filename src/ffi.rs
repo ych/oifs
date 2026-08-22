@@ -1,3 +1,5 @@
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use crate::disk::DiskManager;
 use crate::directory::DirectoryIterator;
 use crate::inode::FileType;
@@ -100,19 +102,15 @@ pub extern "C" fn oifs_ls(handle: *mut OIFSHandle, cb: ListCallback, user_data: 
         }
 
         if let Some(block_data) = dm.get_block_copy(block_id) {
-             let iter = DirectoryIterator::new(&block_data);
-             for entry_res in iter {
-                 match entry_res {
-                     Ok(entry) => {
-                         if let Ok(inode) = dm.read_inode(entry.inode) {
-                             let c_name = CString::new(entry.name).unwrap_or_default();
-                             cb(c_name.as_ptr(), inode.size, inode.modified_at, user_data);
-                         }
-                     }
-                     Err(_) => {}
-                 }
-             }
-         }
+            let iter = DirectoryIterator::new(&block_data);
+            for entry_res in iter {
+                if let Ok(entry) = entry_res
+                    && let Ok(inode) = dm.read_inode(entry.inode) {
+                        let c_name = CString::new(entry.name).unwrap_or_default();
+                        cb(c_name.as_ptr(), inode.size, inode.modified_at, user_data);
+                    }
+            }
+        }
          Ok(())
      })();
 

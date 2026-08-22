@@ -12,26 +12,26 @@ fn test_cli_recursive_and_limits() {
 
     // 1. Create Image
     let status = Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "create", "--size", "10"])
+        .args(["--image", image_path, "create", "--size", "10"])
         .status().expect("Cmd failed");
     assert!(status.success());
 
     // 2. Create hierarchy
     Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "mkdir", "a"])
+        .args(["--image", image_path, "mkdir", "a"])
         .status().unwrap();
     Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "mkdir", "a/b"])
+        .args(["--image", image_path, "mkdir", "a/b"])
         .status().unwrap();
     
     fs::write(host_file, "content").unwrap();
     Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "put", host_file, "a/b/file.txt"])
+        .args(["--image", image_path, "put", host_file, "a/b/file.txt"])
         .status().unwrap();
 
     // 3. Test Recursive LS
     let output = Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "ls", "-r"])
+        .args(["--image", image_path, "ls", "-r"])
         .output().expect("Cmd failed");
     let stdout = String::from_utf8(output.stdout).unwrap();
     println!("Recursive LS Output:\n{}", stdout);
@@ -42,7 +42,7 @@ fn test_cli_recursive_and_limits() {
     // 4. Test Filename Limit
     let long_name = "a".repeat(256);
     let output_err = Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "put", host_file, &long_name])
+        .args(["--image", image_path, "put", host_file, &long_name])
         .output().expect("Cmd failed");
     
     let stdout_err = String::from_utf8(output_err.stdout).unwrap();

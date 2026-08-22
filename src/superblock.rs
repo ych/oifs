@@ -97,3 +97,40 @@ impl SuperBlock {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_superblock_new_layout() {
+        let total_blocks = 2560; // 10MB / 4KB
+        let sb = SuperBlock::new(total_blocks);
+
+        assert_eq!(sb.magic, SuperBlock::MAGIC);
+        assert_eq!(sb.block_size, 4096);
+        assert_eq!(sb.block_count, 2560);
+        assert_eq!(sb.inode_bitmap_block, 1);
+        assert_eq!(sb.data_bitmap_block, 2);
+        assert_eq!(sb.inode_table_block, 3);
+        assert_eq!(sb.inode_count, 32768);
+        assert_eq!(sb.data_block_start, 3 + 1024); // 1027
+        assert_eq!(sb.root_inode, 0);
+        assert!(!sb.encrypted);
+    }
+
+    #[test]
+    fn test_superblock_serialization_roundtrip() {
+        let mut sb = SuperBlock::new(5000);
+        sb.encrypted = true;
+        sb.encryption_salt = [7u8; 16];
+        sb.encryption_version = 1;
+
+        let serialized = bincode::serialize(&sb).expect("serialize sb");
+        assert!(serialized.len() <= 4096);
+
+        let deserialized: SuperBlock = bincode::deserialize(&serialized).expect("deserialize sb");
+        assert_eq!(deserialized, sb);
+    }
+}
+

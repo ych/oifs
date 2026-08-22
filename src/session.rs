@@ -162,7 +162,16 @@ impl OifsSession {
         create_encrypted: bool,
         retry_count: usize,
     ) -> Result<Self, SessionError> {
-        match bind_or_connect(path_ref, &mode)? {
+        let master_or_client = match bind_or_connect(path_ref, &mode) {
+            Ok(res) => res,
+            Err(_e) if retry_count < 5 => {
+                std::thread::sleep(std::time::Duration::from_millis(20 * (retry_count + 1) as u64));
+                return Self::open_with_mode_retry(path_ref, total_size, mode, password, create_encrypted, retry_count + 1);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        match master_or_client {
             MasterOrClient::Master(listener) => {
                 let dm_res = if create_encrypted {
                     DiskManager::create_encrypted(
@@ -180,7 +189,7 @@ impl OifsSession {
                     Ok(d) => d,
                     Err(DiskManagerError::Locking(errno)) => {
                         drop(listener);
-                        if retry_count < 3 {
+                        if retry_count < 5 {
                             std::thread::sleep(std::time::Duration::from_millis(25 * (retry_count + 1) as u64));
                             return Self::open_with_mode_retry(path_ref, total_size, mode, password, create_encrypted, retry_count + 1);
                         } else {

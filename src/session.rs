@@ -9,9 +9,11 @@
 //! - `SessionMode::Network`: Opt-in, uses Rendezvous `.image.master` file in the image directory
 //!   + TCP transport + Clock-Free Active Ping Probe for NFS/Lustre/multi-node clusters.
 
+use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use thiserror::Error;
 
 use crate::directory::DirectoryEntry;
@@ -72,7 +74,159 @@ pub enum OifsSession {
     },
 }
 
+static SESSION_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, OifsSession>>> = OnceLock::new();
+
+fn session_registry() -> &'static Mutex<HashMap<PathBuf, OifsSession>> {
+    SESSION_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Resolves a path to its canonical, absolute representation, following any symbolic links
+/// (even if the final target file has not yet been created on disk).
+pub(crate) fn canonicalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    let path_ref = path.as_ref();
+    if let Ok(canon) = fs::canonicalize(path_ref) {
+        return canon;
+    }
+
+    let mut current = if path_ref.is_absolute() {
+        path_ref.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path_ref)
+    };
+
+    let mut hops = 0;
+    while hops < 32 {
+        if let Ok(target) = fs::read_link(&current) {
+            if target.is_absolute() {
+                current = target;
+            } else {
+                let parent = current.parent().unwrap_or(Path::new("."));
+                current = parent.join(target);
+            }
+            hops += 1;
+        } else {
+            break;
+        }
+    }
+
+    if let Ok(canon) = fs::canonicalize(&current) {
+        canon
+    } else {
+        let parent = current.parent().unwrap_or(Path::new(""));
+        let parent_canon = if parent.as_os_str().is_empty() {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        } else {
+            fs::canonicalize(parent)
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        };
+
+        if let Some(name) = current.file_name() {
+            parent_canon.join(name)
+        } else {
+            parent_canon
+        }
+    }
+}
+
 impl OifsSession {
+    /// Gets an existing session for the given path from the process-wide registry, or opens a new one (Local UDS mode).
+    ///
+    /// Automatically resolves symbolic links and relative paths to their canonical form,
+    /// ensuring all threads in the same process share the same Master session with zero IPC overhead.
+    pub fn get_or_open<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, SessionError> {
+        Self::get_or_open_with_mode(path, total_size, SessionMode::Local, None, false)
+    }
+
+    /// Gets an existing encrypted session or opens a new one with a password using default Local mode (UDS).
+    pub fn get_or_open_with_password<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>,
+    ) -> Result<Self, SessionError> {
+        Self::get_or_open_with_mode(path, total_size, SessionMode::Local, password, false)
+    }
+
+    /// Gets an existing encrypted session or creates a new one using default Local mode (UDS).
+    pub fn get_or_create_encrypted<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: &str,
+    ) -> Result<Self, SessionError> {
+        Self::get_or_open_with_mode(path, total_size, SessionMode::Local, Some(password), true)
+    }
+
+    /// Gets an existing session in Network mode or opens a new one.
+    pub fn get_or_open_network<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        bind_addr: Option<String>,
+    ) -> Result<Self, SessionError> {
+        Self::get_or_open_with_mode(
+            path,
+            total_size,
+            SessionMode::Network { bind_addr },
+            None,
+            false,
+        )
+    }
+
+    /// Gets an existing encrypted session in Network mode or opens a new one with a password.
+    pub fn get_or_open_network_with_password<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        bind_addr: Option<String>,
+        password: Option<&str>,
+    ) -> Result<Self, SessionError> {
+        Self::get_or_open_with_mode(
+            path,
+            total_size,
+            SessionMode::Network { bind_addr },
+            password,
+            false,
+        )
+    }
+
+    /// Gets an existing session or opens a new one with full configuration mode.
+    ///
+    /// Thread-safe: Concurrent calls from multiple threads for the same file (or symlinks pointing
+    /// to the same file) will safely synchronize and return clones of the single Master session.
+    pub fn get_or_open_with_mode<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        mode: SessionMode,
+        password: Option<&str>,
+        create_encrypted: bool,
+    ) -> Result<Self, SessionError> {
+        let canon_key = canonicalize_path(path.as_ref());
+        let registry = session_registry();
+        let mut guard = registry.lock().unwrap();
+
+        if let Some(session) = guard.get(&canon_key) {
+            return Ok(session.clone());
+        }
+
+        let session = Self::open_with_mode(&canon_key, total_size, mode, password, create_encrypted)?;
+        guard.insert(canon_key, session.clone());
+        Ok(session)
+    }
+
+    /// Removes a path from the process-wide session registry if present.
+    pub fn unregister_from_registry<P: AsRef<Path>>(path: P) -> Option<OifsSession> {
+        let canon_key = canonicalize_path(path.as_ref());
+        let registry = session_registry();
+        let mut guard = registry.lock().unwrap();
+        guard.remove(&canon_key)
+    }
+
+    /// Clears all cached sessions from the process-wide registry.
+    pub fn clear_registry() {
+        let registry = session_registry();
+        let mut guard = registry.lock().unwrap();
+        guard.clear();
+    }
+
     /// Opens an existing filesystem or creates a new one using default Local mode (UDS)
     pub fn open<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, SessionError> {
         Self::open_with_mode(path, total_size, SessionMode::Local, None, false)

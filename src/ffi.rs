@@ -67,6 +67,65 @@ pub extern "C" fn oifs_open_with_password(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn oifs_get_or_open(path: *const c_char, size: u64) -> *mut OIFSHandle {
+    if path.is_null() {
+        return ptr::null_mut();
+    }
+    let c_str = unsafe { CStr::from_ptr(path) };
+    let path_str = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    match crate::session::OifsSession::get_or_open(path_str, size) {
+        Ok(crate::session::OifsSession::Direct { dm, .. }) => {
+            let handle = Box::new(OIFSHandle {
+                dm: (*dm).clone(),
+                last_error: None,
+            });
+            Box::into_raw(handle)
+        }
+        _ => ptr::null_mut(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_get_or_open_with_password(
+    path: *const c_char,
+    size: u64,
+    password: *const c_char,
+) -> *mut OIFSHandle {
+    if path.is_null() {
+        return ptr::null_mut();
+    }
+    let c_str = unsafe { CStr::from_ptr(path) };
+    let path_str = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let pwd_str = if password.is_null() {
+        None
+    } else {
+        match unsafe { CStr::from_ptr(password) }.to_str() {
+            Ok(s) => Some(s),
+            Err(_) => return ptr::null_mut(),
+        }
+    };
+
+    match crate::session::OifsSession::get_or_open_with_password(path_str, size, pwd_str) {
+        Ok(crate::session::OifsSession::Direct { dm, .. }) => {
+            let handle = Box::new(OIFSHandle {
+                dm: (*dm).clone(),
+                last_error: None,
+            });
+            Box::into_raw(handle)
+        }
+        _ => ptr::null_mut(),
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn oifs_close(handle: *mut OIFSHandle) {
     if !handle.is_null() {
         unsafe {

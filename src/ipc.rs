@@ -114,24 +114,7 @@ pub fn get_socket_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let path_ref = image_path.as_ref();
-    let abs_path = if let Ok(canon) = fs::canonicalize(path_ref) {
-        canon
-    } else {
-        let parent = path_ref.parent().unwrap_or(Path::new(""));
-        let parent_canon = if parent.as_os_str().is_empty() {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        } else {
-            fs::canonicalize(parent)
-                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        };
-
-        if let Some(name) = path_ref.file_name() {
-            parent_canon.join(name)
-        } else {
-            parent_canon
-        }
-    };
+    let abs_path = crate::session::canonicalize_path(image_path);
 
     let mut hasher = DefaultHasher::new();
     abs_path.to_string_lossy().hash(&mut hasher);
@@ -152,23 +135,7 @@ pub fn get_socket_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
 
 /// Computes the path for the `.image.master` rendezvous file in the image directory
 pub fn get_master_info_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
-    let p = image_path.as_ref();
-    let abs_p = if let Ok(canon) = fs::canonicalize(p) {
-        canon
-    } else {
-        let parent = p.parent().unwrap_or(Path::new(""));
-        let parent_canon = if parent.as_os_str().is_empty() {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        } else {
-            fs::canonicalize(parent)
-                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        };
-        if let Some(name) = p.file_name() {
-            parent_canon.join(name)
-        } else {
-            parent_canon
-        }
-    };
+    let abs_p = crate::session::canonicalize_path(image_path);
 
     let file_name = abs_p
         .file_name()

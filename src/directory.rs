@@ -106,3 +106,46 @@ impl<'a> Iterator for DirectoryIterator<'a> {
         }
     }
 }
+
+/// Zero-allocation fast lookup for a directory entry in a raw directory block slice.
+/// Returns Some(inode_id) if found, None otherwise.
+#[inline]
+pub fn find_entry_in_block(slice: &[u8], target_name: &str) -> Option<u64> {
+    let target_bytes = target_name.as_bytes();
+    let mut offset = 0;
+    while offset + 18 <= slice.len() {
+        let len = u16::from_le_bytes([slice[offset + 16], slice[offset + 17]]) as usize;
+        if len == 0 {
+            break;
+        }
+        let name_start = offset + 18;
+        let name_end = name_start + len;
+        if name_end > slice.len() {
+            break;
+        }
+        if len == target_bytes.len() && &slice[name_start..name_end] == target_bytes {
+            let inode = u64::from_le_bytes(slice[offset..offset + 8].try_into().unwrap());
+            return Some(inode);
+        }
+        offset = name_end;
+    }
+    None
+}
+
+/// Zero-allocation fast scan for finding the append offset in a directory block.
+#[inline]
+pub fn find_insert_offset_in_block(slice: &[u8]) -> usize {
+    let mut offset = 0;
+    while offset + 18 <= slice.len() {
+        let len = u16::from_le_bytes([slice[offset + 16], slice[offset + 17]]) as usize;
+        if len == 0 {
+            break;
+        }
+        let name_end = offset + 18 + len;
+        if name_end > slice.len() {
+            break;
+        }
+        offset = name_end;
+    }
+    offset
+}

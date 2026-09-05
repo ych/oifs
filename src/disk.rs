@@ -606,19 +606,11 @@ impl DiskManager {
          if dir_block_id == 0 { return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "No block"))); }
          
          // Scan
-         let mut insert_offset = 0;
-         if let Some(block_slice) = Self::get_block_mut_from_map(&mut guard.mmap, dir_block_id) {
-             use crate::directory::DirectoryEntry; // Can't import inside if?
-             let mut cursor = std::io::Cursor::new(&block_slice[..]); // Read-only cursor
-             loop {
-                 let start = cursor.position();
-                 match DirectoryEntry::deserialize_from(&mut cursor) {
-                      Ok(Some(_)) => continue,
-                      Ok(None) => { insert_offset = start; break; },
-                      Err(_) => return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Corrupt"))),
-                 }
-             }
-         }
+         let insert_offset = if let Some(block_slice) = Self::get_block_from_map(&guard.mmap, dir_block_id) {
+             crate::directory::find_insert_offset_in_block(block_slice) as u64
+         } else {
+             0u64
+         };
          
          if insert_offset as usize >= BLOCK_SIZE { return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Full"))); }
          
@@ -697,22 +689,12 @@ impl DiskManager {
          
          // Add to Parent
           let dir_block_id = parent_inode.blocks[0];
-          // ... (Same logic as create_file for adding entry)
-          // Refactor add_entry?
-          // Inline for now.
-         let mut insert_offset = 0;
-         if let Some(block_slice) = Self::get_block_mut_from_map(&mut guard.mmap, dir_block_id) {
-             use crate::directory::DirectoryEntry; 
-             let mut cursor = std::io::Cursor::new(&block_slice[..]); 
-             loop {
-                 let start = cursor.position();
-                 match DirectoryEntry::deserialize_from(&mut cursor) {
-                      Ok(Some(_)) => continue,
-                      Ok(None) => { insert_offset = start; break; },
-                      Err(_) => return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Corrupt"))),
-                 }
-             }
-         }
+          
+          let insert_offset = if let Some(block_slice) = Self::get_block_from_map(&guard.mmap, dir_block_id) {
+              crate::directory::find_insert_offset_in_block(block_slice) as u64
+          } else {
+              0u64
+          };
          
          if let Some(block_slice) = Self::get_block_mut_from_map(&mut guard.mmap, dir_block_id) {
              use crate::directory::DirectoryEntry;
@@ -741,17 +723,9 @@ impl DiskManager {
         if dir_block_id == 0 { return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found"))); }
         
         if let Some(slice) = Self::get_block_from_map(&guard.mmap, dir_block_id) {
-             use crate::directory::DirectoryEntry;
-             let mut cursor = std::io::Cursor::new(slice);
-             loop {
-                 match DirectoryEntry::deserialize_from(&mut cursor) {
-                     Ok(Some(entry)) => {
-                         if entry.name == name { return Ok(entry.inode); }
-                     }
-                     Ok(None) => break,
-                     Err(_) => return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Corrupt"))),
-                 }
-             }
+            if let Some(inode_id) = crate::directory::find_entry_in_block(slice, name) {
+                return Ok(inode_id);
+            }
         }
         Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found")))
     }
@@ -824,6 +798,9 @@ impl DiskManager {
             shuffle: inode.filter_shuffle,
             bitshuffle: inode.filter_bitshuffle,
         };
+        if !filter_config.is_active() {
+            return Ok(decrypted_data);
+        }
         let result = crate::filters::unapply_filters(&decrypted_data, &filter_config);
         Ok(result)
     }
@@ -864,7 +841,7 @@ impl DiskManager {
         
         // === PRE-COMPRESSION FILTER STEP ===
         // Apply filters (Delta -> Shuffle) before compression for better entropy reduction
-        let filtered_data = crate::filters::apply_filters(data, &filter_config);
+        let filtered_data = crate::filters::apply_filters_cow(data, &filter_config);
         let working_data: &[u8] = &filtered_data;
 
         let final_data: std::borrow::Cow<[u8]>;
@@ -896,12 +873,11 @@ impl DiskManager {
                         final_data = std::borrow::Cow::Owned(compressed);
                         is_compressed = true;
                     } else {
-                        final_data = std::borrow::Cow::Owned(filtered_data);
+                        final_data = filtered_data;
                     }
                 }
                 CompressionMode::Never => {
-                    // Should not reach here due to should_compress check above
-                    final_data = std::borrow::Cow::Owned(filtered_data);
+                    final_data = filtered_data;
                 }
             }
         } else {
@@ -909,13 +885,9 @@ impl DiskManager {
             if inode.mode == crate::inode::FileType::File && inode.compressed_size > 0 {
                 // Prevent appending to already-compressed files
                 // (would require decompress-modify-recompress sequence)
-                if inode.compressed_size > 0 {
-                     return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Cannot append to compressed file")));
-                }
-                final_data = std::borrow::Cow::Owned(filtered_data);
-            } else {
-                final_data = std::borrow::Cow::Owned(filtered_data);
+                return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Cannot append to compressed file")));
             }
+            final_data = filtered_data;
         }
 
         // === ENCRYPTION STEP ===
@@ -1130,38 +1102,34 @@ impl DiskManager {
         if end > mmap.len() { None } else { Some(&mmap[start..end]) }
     }
     
+    fn resolve_path_internal(guard: &DiskManagerInner, parts: &[&str]) -> Result<u64, DiskManagerError> {
+        let mut curr = guard.superblock.root_inode;
+        for &part in parts {
+            let parent = Self::read_inode_internal(guard, curr)?;
+            if parent.mode != crate::inode::FileType::Directory {
+                return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Not dir")));
+            }
+            let blk = parent.blocks[0];
+            if blk == 0 {
+                return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found")));
+            }
+
+            if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
+                if let Some(inode_id) = crate::directory::find_entry_in_block(slice, part) {
+                    curr = inode_id;
+                    continue;
+                }
+            }
+            return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found")));
+        }
+        Ok(curr)
+    }
+
     // Path resolution API (public) - wraps lookup
     pub fn resolve_path(&self, path: &str) -> Result<u64, DiskManagerError> {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
-        // Since lookup takes &self and locks internally, we can just loop.
-        // Optimization: Lock once and do manual lookup loop? 
-        // Yes, to ensure consistency of path resolution.
-        
         let guard = self.inner.lock().unwrap();
-        let mut curr = guard.superblock.root_inode;
-        
-        for part in parts {
-             // Inline lookup
-             let parent = Self::read_inode_internal(&guard, curr)?;
-             if parent.mode != crate::inode::FileType::Directory { return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Not dir"))); }
-             let blk = parent.blocks[0]; // Assuming single block
-             if blk == 0 { return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found"))); }
-             
-             let mut found = false;
-             if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                 use crate::directory::DirectoryEntry;
-                 let mut cur = std::io::Cursor::new(slice);
-                 loop {
-                     match DirectoryEntry::deserialize_from(&mut cur) {
-                         Ok(Some(e)) => if e.name == part { curr = e.inode; found = true; break; },
-                         Ok(None) => break,
-                         Err(_) => break,
-                     }
-                 }
-             }
-             if !found { return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found"))); }
-        }
-        Ok(curr)
+        Self::resolve_path_internal(&guard, &parts)
     }
 
     // Need public method to get block for LS (which iterates manually)
@@ -1200,18 +1168,20 @@ impl DiskManager {
     }
 
     pub fn resolve_parent(&self, path: &str) -> Result<(u64, String), DiskManagerError> {
-         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
-         if parts.is_empty() { return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Empty"))); }
-         let name = parts.last().unwrap().to_string();
-         let parent_path = parts[..parts.len()-1].join("/");
-         
-         // If parent path empty, root.
-         let parent_id = if parent_path.is_empty() {
-             self.superblock().root_inode 
-         } else {
-             self.resolve_path(&parent_path)?
-         };
-         Ok((parent_id, name))
+        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+        if parts.is_empty() {
+            return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Empty")));
+        }
+        let name = parts.last().unwrap().to_string();
+        let parent_parts = &parts[..parts.len() - 1];
+
+        let guard = self.inner.lock().unwrap();
+        let parent_id = if parent_parts.is_empty() {
+            guard.superblock.root_inode
+        } else {
+            Self::resolve_path_internal(&guard, parent_parts)?
+        };
+        Ok((parent_id, name))
     }
 
     pub fn flush(&self) -> Result<(), DiskManagerError> {
@@ -1254,12 +1224,11 @@ impl DiskManager {
         
         // 2. Rewrite Directory Block
         if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, dir_block_id) {
-             let mut new_data = vec![0u8; BLOCK_SIZE];
-             let mut cursor = std::io::Cursor::new(&mut new_data);
-             for entry in entries {
-                 entry.serialize_into(&mut cursor).map_err(|e| DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
-             }
-             slice.copy_from_slice(&new_data);
+            slice.fill(0);
+            let mut cursor = std::io::Cursor::new(slice);
+            for entry in entries {
+                entry.serialize_into(&mut cursor).map_err(|e| DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            }
         }
         
         // 3. Free Inode & Blocks

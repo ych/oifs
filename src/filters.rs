@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// Supported individual filter types in a pipeline
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -435,20 +436,30 @@ pub fn trunc_precision_encode(data: &[u8], typesize: usize, prec_bits: i8) -> Ve
     out
 }
 
+/// Apply the forward filter pipeline according to FilterConfig with zero allocation when inactive
+pub fn apply_filters_cow<'a>(data: &'a [u8], config: &FilterConfig) -> Cow<'a, [u8]> {
+    if data.is_empty() || !config.is_active() || !matches!(config.typesize, 1 | 2 | 4 | 8) {
+        return Cow::Borrowed(data);
+    }
+    Cow::Owned(config.to_pipeline().apply(data))
+}
+
 /// Apply the forward filter pipeline according to FilterConfig
 pub fn apply_filters(data: &[u8], config: &FilterConfig) -> Vec<u8> {
-    if data.is_empty() || config.typesize == 0 || !matches!(config.typesize, 1 | 2 | 4 | 8) {
-        return data.to_vec();
+    apply_filters_cow(data, config).into_owned()
+}
+
+/// Apply the reverse filter pipeline according to FilterConfig with zero allocation when inactive
+pub fn unapply_filters_cow<'a>(data: &'a [u8], config: &FilterConfig) -> Cow<'a, [u8]> {
+    if data.is_empty() || !config.is_active() || !matches!(config.typesize, 1 | 2 | 4 | 8) {
+        return Cow::Borrowed(data);
     }
-    config.to_pipeline().apply(data)
+    Cow::Owned(config.to_pipeline().unapply(data))
 }
 
 /// Apply the reverse filter pipeline according to FilterConfig
 pub fn unapply_filters(data: &[u8], config: &FilterConfig) -> Vec<u8> {
-    if data.is_empty() || config.typesize == 0 || !matches!(config.typesize, 1 | 2 | 4 | 8) {
-        return data.to_vec();
-    }
-    config.to_pipeline().unapply(data)
+    unapply_filters_cow(data, config).into_owned()
 }
 
 /// Compute Shannon entropy in bits per byte (0.0 to 8.0)

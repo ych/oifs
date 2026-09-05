@@ -39,14 +39,23 @@ impl<'a> Bitmap<'a> {
 
     /// Find first bit that is 0 (free)
     pub fn find_first_free(&self) -> Option<usize> {
-        for (i, &byte) in self.data.iter().enumerate() {
+        let chunks = self.data.chunks_exact(8);
+        let remainder = chunks.remainder();
+        let chunk_count = chunks.len();
+
+        for (chunk_idx, chunk) in chunks.enumerate() {
+            let word = u64::from_le_bytes(chunk.try_into().unwrap());
+            if word != u64::MAX {
+                let bit = (!word).trailing_zeros() as usize;
+                return Some(chunk_idx * 64 + bit);
+            }
+        }
+
+        let base = chunk_count * 64;
+        for (i, &byte) in remainder.iter().enumerate() {
             if byte != 0xFF {
-                // Found a byte with at least one free bit
-                for bit in 0..8 {
-                    if (byte & (1 << bit)) == 0 {
-                        return Some(i * 8 + bit);
-                    }
-                }
+                let bit = (!byte).trailing_zeros() as usize;
+                return Some(base + i * 8 + bit);
             }
         }
         None

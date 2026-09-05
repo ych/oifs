@@ -97,3 +97,80 @@ impl<'a> BlockAllocator for SimpleBlockAllocator<'a> {
         Ok(())
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove that allocate() returns a block ID >= start_block_offset.
+    #[kani::proof]
+    fn proof_allocate_returns_valid_id() {
+        let mut data = [0u8; 2]; // 16 allocatable blocks
+        let offset: u64 = kani::any();
+        kani::assume(offset < 1024); // reasonable bound
+
+        let mut alloc = SimpleBlockAllocator::new(&mut data, offset);
+        if let Ok(block_id) = alloc.allocate() {
+            assert!(block_id >= offset, "Block ID must be >= start_block_offset");
+            assert!(block_id < offset + 16, "Block ID must be within bitmap range");
+        }
+    }
+
+    /// Prove that allocate followed by free makes the block allocatable again.
+    #[kani::proof]
+    fn proof_allocate_free_roundtrip() {
+        let mut data = [0u8; 1]; // 8 blocks
+        let mut alloc = SimpleBlockAllocator::new(&mut data, 100);
+
+        // Allocate a block
+        let block_id = alloc.allocate().unwrap();
+        assert_eq!(block_id, 100, "First allocation should be block 100");
+
+        // Free it
+        alloc.free(block_id).unwrap();
+
+        // Should be allocatable again (same block)
+        let block_id2 = alloc.allocate().unwrap();
+        assert_eq!(block_id2, block_id, "Freed block must be re-allocatable");
+    }
+
+    /// Prove that two consecutive allocations never return the same block.
+    #[kani::proof]
+    fn proof_double_allocate_unique() {
+        let mut data = [0u8; 1]; // 8 blocks
+        let mut alloc = SimpleBlockAllocator::new(&mut data, 0);
+
+        let a = alloc.allocate().unwrap();
+        let b = alloc.allocate().unwrap();
+        assert!(a != b, "Two allocations must return different block IDs");
+    }
+
+    /// Prove that allocating all blocks exhausts the space.
+    #[kani::proof]
+    fn proof_exhaustion() {
+        let mut data = [0u8; 1]; // 8 blocks
+        let mut alloc = SimpleBlockAllocator::new(&mut data, 0);
+
+        // Allocate all 8 blocks
+        for _ in 0..8 {
+            alloc.allocate().unwrap();
+        }
+
+        // Next allocation must fail
+        let result = alloc.allocate();
+        assert!(result.is_err(), "Must return NoSpace when exhausted");
+    }
+
+    /// Prove that free() with an out-of-range block ID (below offset) is safe.
+    #[kani::proof]
+    fn proof_free_below_offset_safe() {
+        let mut data = [0u8; 1];
+        let offset: u64 = kani::any();
+        kani::assume(offset > 0 && offset < 1024);
+
+        let mut alloc = SimpleBlockAllocator::new(&mut data, offset);
+        // Freeing a block below the offset should succeed without side effects
+        let result = alloc.free(0);
+        assert!(result.is_ok());
+    }
+}

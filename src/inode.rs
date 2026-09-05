@@ -50,6 +50,16 @@ pub struct Inode {
     pub encrypted: bool,
     /// Nonce for XChaCha20-Poly1305 (24 bytes, unique per file)
     pub encryption_nonce: [u8; 24],
+
+    // Pre-compression filter fields (blosc2-style pipeline)
+    /// Element size for shuffle/delta filters (1, 2, 4, or 8 bytes). 0 = no filters.
+    pub filter_typesize: u8,
+    /// Whether delta encoding was applied before compression
+    pub filter_delta: bool,
+    /// Whether byte shuffle was applied before compression
+    pub filter_shuffle: bool,
+    /// Whether bit shuffle was applied before compression
+    pub filter_bitshuffle: bool,
 }
 
 impl Inode {
@@ -63,6 +73,7 @@ impl Inode {
     /// - Zero size
     /// - No allocated blocks
     /// - Zero timestamps (to be set by DiskManager)
+    /// - No filters applied
     pub fn new(mode: FileType) -> Self {
         Self {
             mode,
@@ -74,6 +85,56 @@ impl Inode {
             // Encryption fields (default: not encrypted)
             encrypted: false,
             encryption_nonce: [0u8; 24],
+            // Filter fields (default: no filters)
+            filter_typesize: 0,
+            filter_delta: false,
+            filter_shuffle: false,
+            filter_bitshuffle: false,
+        }
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove that Inode::new produces a zero-initialized inode with correct mode.
+    #[kani::proof]
+    fn proof_inode_new_file() {
+        let inode = Inode::new(FileType::File);
+        assert!(matches!(inode.mode, FileType::File));
+        assert_eq!(inode.size, 0);
+        assert_eq!(inode.compressed_size, 0);
+        assert_eq!(inode.blocks, [0u64; 12]);
+        assert!(!inode.encrypted);
+        assert_eq!(inode.encryption_nonce, [0u8; 24]);
+        // Filter fields must default to disabled
+        assert_eq!(inode.filter_typesize, 0);
+        assert!(!inode.filter_delta);
+        assert!(!inode.filter_shuffle);
+        assert!(!inode.filter_bitshuffle);
+    }
+
+    /// Prove that Inode::new(Directory) produces a valid directory inode.
+    #[kani::proof]
+    fn proof_inode_new_directory() {
+        let inode = Inode::new(FileType::Directory);
+        assert!(matches!(inode.mode, FileType::Directory));
+        assert_eq!(inode.size, 0);
+        assert_eq!(inode.compressed_size, 0);
+        assert_eq!(inode.blocks, [0u64; 12]);
+        assert!(!inode.encrypted);
+    }
+
+    /// Prove that no block pointer in a new inode is ever non-zero.
+    #[kani::proof]
+    fn proof_inode_no_dangling_blocks() {
+        let mode_flag: bool = kani::any();
+        let mode = if mode_flag { FileType::File } else { FileType::Directory };
+        let inode = Inode::new(mode);
+
+        for i in 0..12 {
+            assert_eq!(inode.blocks[i], 0, "All block pointers must be zero in a new inode");
         }
     }
 }

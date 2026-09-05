@@ -412,7 +412,7 @@ impl OifsSession {
         }
     }
 
-    /// Writes data to a file
+    /// Writes data to a file (default: no pre-compression filters)
     pub fn write_data(
         &self,
         inode_id: u64,
@@ -420,9 +420,27 @@ impl OifsSession {
         data: &[u8],
         compression_mode: CompressionMode,
     ) -> Result<(), SessionError> {
+        self.write_data_with_filters(
+            inode_id,
+            file_offset,
+            data,
+            compression_mode,
+            crate::filters::FilterConfig::none(),
+        )
+    }
+
+    /// Writes data to a file with custom pre-compression filters
+    pub fn write_data_with_filters(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        data: &[u8],
+        compression_mode: CompressionMode,
+        filter_config: crate::filters::FilterConfig,
+    ) -> Result<(), SessionError> {
         match self {
             OifsSession::Direct { dm, .. } => {
-                Ok(dm.write_data(inode_id, file_offset, data, compression_mode)?)
+                Ok(dm.write_data_with_filters(inode_id, file_offset, data, compression_mode, filter_config)?)
             }
             OifsSession::Remote { .. } => {
                 let resp = self.send_request(IpcRequest::WriteData {
@@ -430,6 +448,7 @@ impl OifsSession {
                     file_offset,
                     data: data.to_vec(),
                     compression_mode,
+                    filter_config,
                 })?;
 
                 match resp {

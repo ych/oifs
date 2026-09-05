@@ -230,6 +230,7 @@ pub enum IpcRequest {
         file_offset: u64,
         data: Vec<u8>,
         compression_mode: CompressionMode,
+        filter_config: crate::filters::FilterConfig,
     },
     DeleteFile {
         parent_inode_id: u64,
@@ -640,8 +641,9 @@ impl IpcServer {
                 file_offset,
                 data,
                 compression_mode,
+                filter_config,
             } => {
-                dm.write_data(inode_id, file_offset, &data, compression_mode)?;
+                dm.write_data_with_filters(inode_id, file_offset, &data, compression_mode, filter_config)?;
                 Ok(IpcResponseData::Unit)
             }
             IpcRequest::DeleteFile {

@@ -11,7 +11,7 @@ use serde_json::json;
 #[command(author, version, about, long_about = None)]
 struct Cli {
     #[arg(short, long)]
-    image: PathBuf,
+    image: Option<PathBuf>,
     
     /// Password for encrypted filesystem (optional, will prompt if needed)
     #[arg(short, long)]
@@ -64,6 +64,17 @@ enum Commands {
         /// Never compress the file
         #[arg(long)]
         no_compress: bool,
+        /// Pre-compression filter to apply: none, delta, shuffle, both (numeric), or auto
+        #[arg(long, default_value = "none")]
+        filter: String,
+        /// Element size in bytes for filter (1, 2, 4, 8)
+        #[arg(long, default_value_t = 0)]
+        typesize: u8,
+    },
+    /// Analyze a file and recommend optimal blosc2-style compression filters
+    FilterAnalyze {
+        /// File path on host to analyze
+        host_path: PathBuf,
     },
     /// Export a file from the image
     Get {
@@ -202,10 +213,71 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         oifs::ipc::SessionMode::Local
     };
 
+    if let Commands::FilterAnalyze { host_path } = &cli.command {
+        if !host_path.exists() {
+            return Err(format!("Host file {:?} does not exist.", host_path).into());
+        }
+        let content = std::fs::read(host_path)?;
+        let rec = oifs::filters::recommend_filters(&content);
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&rec)?);
+        } else {
+            println!("=== OIFS Filter Recommendation Report for {:?} ===", host_path);
+            println!("Original Size:        {} bytes", rec.original_size);
+            println!("Baseline Zstd Size:   {} bytes (Entropy: {:.3} bits/byte)", rec.baseline_compressed_size, rec.baseline_entropy);
+            println!("{:-<80}", "");
+            println!("{:<32} {:>10} {:>10} {:>10} {:>10}", "Filter Pipeline", "Entropy", "Zstd Size", "Ratio", "Savings");
+            println!("{:-<80}", "");
+            for c in &rec.candidates {
+                let marker = if c.config == rec.best_config { " [*RECOMMENDED*]" } else { "" };
+                println!("{:<32} {:>10.3} {:>10} {:>9.2}x {:>9.1}%{}",
+                    c.label, c.entropy, c.compressed_size, c.compression_ratio, c.space_savings_percent, marker);
+            }
+            println!("{:-<80}", "");
+            let filter_arg = if rec.best_config.delta && rec.best_config.shuffle { "both" }
+                else if rec.best_config.delta { "delta" }
+                else if rec.best_config.shuffle { "shuffle" }
+                else if rec.best_config.bitshuffle { "bitshuffle" }
+                else { "none" };
+
+            let rationale = if rec.best_config.delta {
+                "Data displays strong linear/temporal correlation; first-order delta collapses dynamic range, shrinking entropy."
+            } else if rec.best_config.bitshuffle {
+                "Data displays sparse bits, boolean masks, or low entropy per bit; bit-level shuffle aggregates identical bits."
+            } else if rec.best_config.shuffle {
+                "Data displays structured record alignment (AoS); byte shuffle groups identical significance bytes into contiguous runs."
+            } else {
+                "Data appears high-entropy or unstructured; raw compression without pre-filtering is optimal."
+            };
+
+            let blosc_equivalents: Vec<&str> = if rec.best_config.delta && rec.best_config.shuffle {
+                vec!["blosc2::Filter::Delta", "blosc2::Filter::ByteShuffle"]
+            } else if rec.best_config.delta {
+                vec!["blosc2::Filter::Delta"]
+            } else if rec.best_config.bitshuffle {
+                vec!["blosc2::Filter::BitShuffle"]
+            } else if rec.best_config.shuffle {
+                vec!["blosc2::Filter::ByteShuffle"]
+            } else {
+                vec!["blosc2::Filter::None"]
+            };
+
+            println!("Recommendation Rationale: {}", rationale);
+            println!("Recommended Blosc2 Filter(s): {:?}", blosc_equivalents);
+            println!("Command to import with recommended filter:");
+            println!("  oifs -i <image.img> put {:?} --filter {} --typesize {}",
+                host_path, filter_arg, rec.best_config.typesize);
+        }
+        return Ok(());
+    }
+
+    let image = cli.image.as_ref().ok_or("Image path must be provided via -i / --image")?;
+
     match &cli.command {
+        Commands::FilterAnalyze { .. } => unreachable!(),
         Commands::Create { size, encrypt } => {
-            if cli.image.exists() {
-                return Err(format!("Image {:?} already exists.", cli.image).into());
+            if image.exists() {
+                return Err(format!("Image {:?} already exists.", image).into());
             }
             let size_bytes = size * 1024 * 1024;
             
@@ -230,25 +302,25 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("⚠️  Warning: Password is shorter than 8 characters");
                 }
                 
-                let _session = OifsSession::open_with_mode(&cli.image, size_bytes, session_mode, Some(&password), true)?;
+                let _session = OifsSession::open_with_mode(image, size_bytes, session_mode, Some(&password), true)?;
                 if cli.json {
                     println!("{}", json!({"ok": true, "message": "Encrypted filesystem created"}));
                 } else {
-                    println!("✅ Encrypted filesystem created: {:?}", cli.image);
+                    println!("✅ Encrypted filesystem created: {:?}", image);
                 }
             } else {
-                let _session = OifsSession::open_with_mode(&cli.image, size_bytes, session_mode, None, false)?;
+                let _session = OifsSession::open_with_mode(image, size_bytes, session_mode, None, false)?;
                 if cli.json {
                     println!("{}", json!({"ok": true, "message": "Filesystem created"}));
                 } else {
-                    println!("Created image {:?} with size {}MB", cli.image, size);
+                    println!("Created image {:?} with size {}MB", image, size);
                 }
             }
             Ok(())
         }
-        Commands::Put { host_path, remote_name, compress, no_compress } => {
-            if !cli.image.exists() {
-                return Err(format!("Image {:?} does not exist.", cli.image).into());
+        Commands::Put { host_path, remote_name, compress, no_compress, filter, typesize } => {
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
             }
             if !host_path.exists() {
                 return Err(format!("Host file {:?} does not exist.", host_path).into());
@@ -268,7 +340,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 CompressionMode::Auto
             };
 
-            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             
             let dm_clone = dm.clone();
             ctrlc::set_handler(move || {
@@ -284,7 +356,25 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             
             let inode_id = dm.create_file(parent_id, &filename)?;
             let content = std::fs::read(host_path)?;
-            dm.write_data(inode_id, 0, &content, compression_mode)?;
+
+            let filter_config = match filter.to_lowercase().as_str() {
+                "auto" => {
+                    let rec = oifs::filters::recommend_filters(&content);
+                    if !cli.json {
+                        println!("Auto-selected filter: {} (entropy: {:.2} -> {:.2}, saving: {:.1}%)",
+                            rec.best_report.label, rec.baseline_entropy, rec.best_report.entropy, rec.best_report.space_savings_percent);
+                    }
+                    rec.best_config
+                }
+                "delta" => oifs::filters::FilterConfig::delta_only(if *typesize == 0 { 4 } else { *typesize }),
+                "shuffle" => oifs::filters::FilterConfig::shuffle_only(if *typesize == 0 { 4 } else { *typesize }),
+                "bitshuffle" => oifs::filters::FilterConfig::bitshuffle_only(if *typesize == 0 { 4 } else { *typesize }),
+                "both" | "numeric" => oifs::filters::FilterConfig::numeric(if *typesize == 0 { 4 } else { *typesize }),
+                "none" | "" => oifs::filters::FilterConfig::none(),
+                other => return Err(format!("Unknown filter mode '{}'. Supported: none, delta, shuffle, bitshuffle, both, auto", other).into()),
+            };
+
+            dm.write_data_with_filters(inode_id, 0, &content, compression_mode, filter_config)?;
             
             if cli.json {
                 println!("{}", json!({"ok": true, "inode": inode_id, "bytes": content.len()}));
@@ -294,10 +384,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Append { remote_name, content, no_newline } => {
-            if !cli.image.exists() {
-                return Err(format!("Image {:?} does not exist.", cli.image).into());
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             
             let dm_clone = dm.clone();
             ctrlc::set_handler(move || {
@@ -328,10 +418,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Get { remote_name, host_path } => {
-             if !cli.image.exists() {
-                return Err(format!("Image {:?} does not exist.", cli.image).into());
+             if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             let inode_id = dm.resolve_path(remote_name)?;
             let data = dm.read_data(inode_id)?;
             let dest = host_path.clone().unwrap_or_else(|| PathBuf::from(PathBuf::from(remote_name).file_name().unwrap()));
@@ -349,10 +439,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Mkdir { dir_name } => {
-            if !cli.image.exists() {
-                return Err(format!("Image {:?} does not exist.", cli.image).into());
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             let (parent_id, filename) = dm.resolve_parent(dir_name)?;
             
             if dm.lookup(parent_id, &filename).is_ok() {
@@ -368,10 +458,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Ls { path, recursive } => {
-             if !cli.image.exists() {
-                return Err(format!("Image {:?} does not exist.", cli.image).into());
+             if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             
             let target_inode_id = if let Some(p) = path.as_ref() {
                 dm.resolve_path(p)?
@@ -448,10 +538,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Analyze => {
-            if !cli.image.exists() {
-                return Err(format!("Image {:?} does not exist.", cli.image).into());
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             let stats = dm.analyze_fragmentation()?;
             
             if cli.json {
@@ -480,8 +570,8 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Defrag { mode } => {
-            if !cli.image.exists() {
-                return Err(format!("Image {:?} does not exist.", cli.image).into());
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
             }
             
             let defrag_mode = match mode.to_lowercase().as_str() {
@@ -490,7 +580,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 _ => return Err(format!("Invalid mode '{}'. Use 'safe' or 'inplace'.", mode).into())
             };
             
-            let image_path = cli.image.to_str().ok_or("Invalid image path")?;
+            let image_path = image.to_str().ok_or("Invalid image path")?;
             
             if !cli.json {
                 println!("Starting defragmentation in {:?} mode...", defrag_mode);
@@ -501,7 +591,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             
-            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             match dm.defragment(image_path, defrag_mode, None) {
                 Ok(stats) => {
                     if cli.json {
@@ -529,10 +619,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Fsck => {
-            if !cli.image.exists() {
-                return Err(format!("Image {:?} does not exist.", cli.image).into());
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(&cli.image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             match dm.verify_integrity() {
                 Ok(report) => {
                     if cli.json {

@@ -3,6 +3,10 @@ name = "oifs"
 version = "0.1.0"
 edition = "2024"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -31,6 +35,7 @@ rmcp = { version = "0.16", features = ["server", "macros", "transport-async-rw",
 tokio = { version = "1", features = ["full"], optional = true }
 anyhow = { version = "1", optional = true }
 schemars = { version = "1", optional = true }
+blosc2 = "0.2.3"
 
 [features]
 default = []

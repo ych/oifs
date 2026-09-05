@@ -813,19 +813,41 @@ impl DiskManager {
         if inode.mode == crate::inode::FileType::File && inode.compressed_size > 0 {
              let decoded = zstd::stream::decode_all(std::io::Cursor::new(&decrypted_data))
                  .map_err(|e| DiskManagerError::Io(e))?;
-             Ok(decoded)
-        } else {
-             Ok(decrypted_data)
+             decrypted_data = decoded;
         }
+
+        // === POST-DECOMPRESSION FILTER STEP ===
+        // Reverse the filter pipeline: Unshuffle -> Undelta
+        let filter_config = crate::filters::FilterConfig {
+            typesize: inode.filter_typesize,
+            delta: inode.filter_delta,
+            shuffle: inode.filter_shuffle,
+            bitshuffle: inode.filter_bitshuffle,
+        };
+        let result = crate::filters::unapply_filters(&decrypted_data, &filter_config);
+        Ok(result)
     }
 
-    /// Writes data to a file
+    /// Writes data to a file (default: no pre-compression filters)
+    ///
+    /// For custom filter pipeline (Delta / Shuffle / typesize), use [`write_data_with_filters`].
+    pub fn write_data(&self, inode_id: u64, file_offset: u64, data: &[u8], compression_mode: CompressionMode) -> Result<(), DiskManagerError> {
+        self.write_data_with_filters(inode_id, file_offset, data, compression_mode, crate::filters::FilterConfig::none())
+    }
+
+    /// Writes data to a file with custom pre-compression filters
     ///
     /// # Arguments
     /// * `inode_id` - The inode ID of the file to write to
     /// * `file_offset` - Byte offset to start writing at
     /// * `data` - Data to write
     /// * `compression_mode` - Compression mode (Always, Never, or Auto)
+    /// * `filter_config` - Pre-compression filter configuration (delta/shuffle/typesize)
+    ///
+    /// # Data Pipeline (Write)
+    /// ```text
+    /// Raw Data → [Delta Encode] → [Byte Shuffle] → [Zstd Compress] → [Encrypt] → Disk
+    /// ```
     ///
     /// # Compression Strategy
     /// - `Always`: Always compress regardless of size
@@ -836,10 +858,15 @@ impl DiskManager {
     /// - Maximum file size: 48KB (12 blocks × 4KB)
     /// - Cannot append to already-compressed files (offset > 0)
     /// - Exceeding 48KB returns `FileTooLarge` error
-    pub fn write_data(&self, inode_id: u64, file_offset: u64, data: &[u8], compression_mode: CompressionMode) -> Result<(), DiskManagerError> {
+    pub fn write_data_with_filters(&self, inode_id: u64, file_offset: u64, data: &[u8], compression_mode: CompressionMode, filter_config: crate::filters::FilterConfig) -> Result<(), DiskManagerError> {
         let mut guard = self.inner.lock().unwrap();
         let mut inode = Self::read_inode_internal(&guard, inode_id)?;
         
+        // === PRE-COMPRESSION FILTER STEP ===
+        // Apply filters (Delta -> Shuffle) before compression for better entropy reduction
+        let filtered_data = crate::filters::apply_filters(data, &filter_config);
+        let working_data: &[u8] = &filtered_data;
+
         let final_data: std::borrow::Cow<[u8]>;
         let mut is_compressed = false;
 
@@ -847,12 +874,12 @@ impl DiskManager {
         let should_compress = match compression_mode {
             CompressionMode::Always => true,
             CompressionMode::Never => false,
-            CompressionMode::Auto => data.len() >= 8192,
+            CompressionMode::Auto => working_data.len() >= 8192,
         };
 
         // Attempt compression for files written from start
         if inode.mode == crate::inode::FileType::File && file_offset == 0 && should_compress {
-            let compressed = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
+            let compressed = zstd::stream::encode_all(std::io::Cursor::new(working_data), 0)
                 .map_err(|e| DiskManagerError::Io(e))?;
             
             // Decision logic based on compression mode
@@ -865,16 +892,16 @@ impl DiskManager {
                 }
                 CompressionMode::Auto => {
                     // Only use compression if it reduces size
-                    if compressed.len() < data.len() {
+                    if compressed.len() < working_data.len() {
                         final_data = std::borrow::Cow::Owned(compressed);
                         is_compressed = true;
                     } else {
-                        final_data = std::borrow::Cow::Borrowed(data);
+                        final_data = std::borrow::Cow::Owned(filtered_data);
                     }
                 }
                 CompressionMode::Never => {
                     // Should not reach here due to should_compress check above
-                    final_data = std::borrow::Cow::Borrowed(data);
+                    final_data = std::borrow::Cow::Owned(filtered_data);
                 }
             }
         } else {
@@ -885,9 +912,9 @@ impl DiskManager {
                 if inode.compressed_size > 0 {
                      return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Cannot append to compressed file")));
                 }
-                final_data = std::borrow::Cow::Borrowed(data);
+                final_data = std::borrow::Cow::Owned(filtered_data);
             } else {
-                final_data = std::borrow::Cow::Borrowed(data);
+                final_data = std::borrow::Cow::Owned(filtered_data);
             }
         }
 
@@ -938,6 +965,12 @@ impl DiskManager {
             inode.size = std::cmp::max(inode.size, current_offset);
             // inode.compressed_size stays 0 (Raw)
         }
+
+        // Store filter metadata in inode for correct reverse-filtering on read
+        inode.filter_typesize = filter_config.typesize;
+        inode.filter_delta = filter_config.delta;
+        inode.filter_shuffle = filter_config.shuffle;
+        inode.filter_bitshuffle = filter_config.bitshuffle;
 
         inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         Self::write_inode_internal(&mut guard, inode_id, &inode)?;
@@ -1496,7 +1529,13 @@ impl DiskManager {
                 CompressionMode::Never
             };
             
-            temp_dm.write_data(inode_id, 0, &data, comp_mode)?;
+            let filter_cfg = crate::filters::FilterConfig {
+                typesize: inode.filter_typesize,
+                delta: inode.filter_delta,
+                shuffle: inode.filter_shuffle,
+                bitshuffle: inode.filter_bitshuffle,
+            };
+            temp_dm.write_data_with_filters(inode_id, 0, &data, comp_mode, filter_cfg)?;
             
             // Count statistics
             if inode.mode == crate::inode::FileType::File {

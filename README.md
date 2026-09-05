@@ -21,6 +21,14 @@ OIFS 是一個使用 Rust 編寫的簡單 Inode 檔案系統實作。它支援�
     *   內部使用 `Arc<Mutex<>>` 實現執行緒安全 (Thread-Safe)。
     *   支援多執行緒同時操作 (如 `tests/concurrency_test.rs` 所示)。
 *   **CLI Tool**: 提供完整的命令列工具進行映像檔操作。
+*   **Blosc2 Pre-compression Data Filters & Extreme Compression** ⚡:
+    *   **為何引入 Blosc2**：傳統通用壓縮算法 (如 Zstandard, LZ4) 基於字節滑動窗口 (LZ77)，對文字重複串效果佳，但對連續數值流 (Float32/64, Int32/64)、時間序列、結構體陣列 (AoS) 壓縮比極低。引入 Blosc2 前處理濾鏡能在壓縮前重組位元組或計算相鄰增量，大幅削減資訊熵 (Shannon Entropy)，使連續整數數列壓縮比從 1.95x 飆升至 **390x** (空間節省率達 **99.7%**)。
+    *   **支援濾鏡**：First-order Delta (一階差分)、Byte Shuffle (位元組轉置)、BitShuffle (位元級轉置)、TruncPrecision (浮點數精度截斷)。
+    *   **複合濾鏡管線 (Composite Pipeline)**：支援任意順序的多重濾鏡堆疊串聯。
+    *   **智慧推薦工具 (Filter Recommendation Tool)**：自動量測資料資訊熵並平行模擬評估 14 種濾鏡組合，輸出壓縮效益排行榜與建議參數。
+    *   **原生 C-Blosc2 整合**：支援直接呼叫原生 `blosc2` C 函式庫 Chunk 編碼解碼器。
+*   **Formal Verification Guarantee (形式化數學驗證)** 🛡️:
+    *   使用 AWS **Kani Rust Verifier (CBMC/CaDiCaL)** 建立 **25 項數學證明**，覆蓋濾鏡雙射可逆性、二補數環繞溢位安全、Superblock 邊界與區塊配置無碰撞。
 *   **C API (FFI)** 🔌: 提供極為完整的 C 語言介面庫 (`liboifs.so`)，支援加密開啟、檔案讀寫、目錄建立以及詳細錯誤診斷輸出。
 
 ## 建置 (Build)
@@ -96,13 +104,116 @@ cargo run --bin oifs -- -i disk.img fsck
 cargo run --bin oifs -- -i disk.img fsck --json
 ```
 
+### 7. Blosc2 濾鏡智慧推薦與數值壓縮 (Filter Recommendation & Put) ⚡
+
+#### 📊 獨立分析檔案並取得最佳濾鏡推薦：
+```bash
+cargo run --bin oifs -- filter-analyze dataset.bin
+```
+
+輸出範例：
+```text
+=== OIFS Filter Recommendation Report for "dataset.bin" ===
+Original Size:        8192 bytes
+Baseline Zstd Size:   4199 bytes (Entropy: 4.024 bits/byte)
+--------------------------------------------------------------------------------
+Filter Pipeline                     Entropy  Zstd Size      Ratio    Savings
+--------------------------------------------------------------------------------
+None (Raw Zstd)                       4.024       4199      1.95x      48.7%
+Delta (typesize=4, u32/f32)           0.811         21    390.10x      99.7% [*RECOMMENDED*]
+BitShuffle (typesize=4, u32/f32)      1.122        147     55.73x      98.2%
+Shuffle (typesize=4, u32/f32)         4.024        309     26.51x      96.2%
+--------------------------------------------------------------------------------
+Recommendation Rationale: Data displays strong linear/temporal correlation; first-order delta collapses dynamic range, shrinking entropy.
+Recommended Blosc2 Filter(s): ["blosc2::Filter::Delta"]
+Command to import with recommended filter:
+  oifs -i disk.img put "dataset.bin" --filter delta --typesize 4
+```
+
+#### 🚀 自動依據分析結果套用最佳濾鏡匯入：
+```bash
+cargo run --bin oifs -- -i disk.img put dataset.bin --filter auto
+```
+
+#### 🛠️ 手動指定特定濾鏡與 Element Typesize (1, 2, 4, 8 bytes)：
+```bash
+# 一階差分 (Delta)
+cargo run --bin oifs -- -i disk.img put dataset.bin --filter delta --typesize 4
+
+# 位元組轉置 (Byte Shuffle)
+cargo run --bin oifs -- -i disk.img put dataset.bin --filter shuffle --typesize 4
+
+# 位元級轉置 (BitShuffle)
+cargo run --bin oifs -- -i disk.img put dataset.bin --filter bitshuffle --typesize 4
+
+# 複合濾鏡 (Delta + ByteShuffle)
+cargo run --bin oifs -- -i disk.img put dataset.bin --filter both --typesize 4
+```
+
+## Blosc2 與前處理濾鏡技術說明 (Why Blosc2?)
+
+### 1. 為何要引入 Blosc2？
+在科學計算、HPC 與機器學習環境中，我們處理的資料大多不是 ASCII 文字，而是二進位數值（如 32-bit/64-bit 浮點數、時間序列整數、感測器讀數、地理座標等）。
+
+傳統壓縮演算法（如 Zstandard、LZ4）主要基於字典匹配（LZ77）與熵編碼（Huffman/FSE）：
+* 當處理純文字時，重複出現的單字或標籤能輕易被壓縮。
+* 但數值資料在記憶體中是以連續二進位表示（如 IEEE 754 浮點數），其指數位元與小數位元交錯，即使數值非常接近，位元組層級也難以找到重複的子字串。這導致未經處理的數值資料送入 Zstd 時，壓縮比往往只有 1.2x ~ 2.0x。
+
+**Blosc2（以及其前處理濾鏡架構）的核心使命**：
+> 在壓縮前先透過「可逆轉換」重整資料排布，將高資訊熵的二進位資料轉化為大量重複連續零或低動態範圍差分，從根本上**瓦解資訊熵**，讓後續的壓縮演算法發揮數十倍甚至數百倍的壓縮效益。
+
+### 2. 核心濾鏡原理
+* **Delta (一階差分)**：
+  計算相鄰元素間的差值：$\Delta[0] = x[0], \Delta[i] = x[i] \mathbin{\text{wrapping\_sub}} x[i-1]$。
+  在連續變化或趨勢數列中，原本跨越很大動態範圍的數值（如 1000000, 1000001, 1000002）會被全部轉換為 `1`，釋放極高壓縮比。
+* **Byte Shuffle (位元組轉置)**：
+  將結構體陣列（Array of Structures, AoS）重排為結構陣列（Structure of Arrays, SoA）。
+  將所有元素的第 0 個 Byte 集中、第 1 個 Byte 集中...使高有效位的連續零群聚成超長連續字節串。
+* **BitShuffle (位元級轉置)**：
+  進行 $8 \times 8$ bit 矩陣轉置。對稀疏矩陣（Sparse Matrix）與二元布林遮罩（Boolean Array）具備比 Byte Shuffle 更強大的點陣聚集能力。
+* **TruncPrecision (浮點數精度截斷)**：
+  將 Float32/Float64 尾數（Mantissa）低有效位清零，抹除不具物理意義的噪聲位元，大幅提升浮點數壓縮比。
+
+### 3. 複合濾鏡管線 (Composite Filter Pipeline)
+支援使用者自選並自由堆疊任意順序的濾鏡：
+```rust
+use oifs::filters::{FilterPipeline, FilterType};
+
+let pipeline = FilterPipeline::new(4)
+    .then(FilterType::TruncPrecision { prec_bits: 14 })
+    .then(FilterType::Delta)
+    .then(FilterType::ByteShuffle)
+    .then(FilterType::BitShuffle);
+
+let filtered = pipeline.apply(&data);
+let restored = pipeline.unapply(&filtered);
+```
+
+### 4. 原生 C-Blosc2 整合呼叫
+若欲直接調用底層已編譯的 C-Blosc2 原生庫：
+```rust
+use oifs::filters::{blosc2_compress, blosc2_decompress};
+use blosc2::{Filter, CompressAlgo};
+
+let compressed = blosc2_compress(&data, 4, &[Filter::BitShuffle], CompressAlgo::Lz4, 5)?;
+let decompressed = blosc2_decompress(&compressed)?;
+```
+
+### 5. 形式化驗證保證 (Formal Verification with Kani)
+所有純 Rust 濾鏡實作皆透過 AWS **Kani Rust Verifier (CBMC/CaDiCaL)** 完成形式化數學證明（共 25 個 Proof Harness 全部通過）：
+* 證明二補數溢位環繞下 Delta 嚴格可逆且不 panic。
+* 證明任意符號化位元組序列經 Shuffle / BitShuffle 運算皆完全雙射還原。
+* 證明任意非對齊尾部位元組（Tail Bytes）不被吞噬或錯位。
+
+---
+
 ## Rust API 範例
 
 若要在其他 Rust 專案中使用 OIFS：
 
 ```rust
 use oifs::disk::DiskManager;
-use java::path::Path;
+use std::path::Path;
 
 // 開啟映像檔 (size 設為 0 表示開啟現有檔案)
 let dm = DiskManager::open("disk.img", 0).unwrap();

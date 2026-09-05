@@ -4,7 +4,6 @@
 //! including the locations of bitmaps, inode tables, and data blocks.
 
 use serde::{Deserialize, Serialize};
-use std::mem::size_of;
 
 /// SuperBlock structure containing file system metadata
 ///
@@ -59,25 +58,42 @@ impl SuperBlock {
     ///
     /// # Layout Calculation
     /// - Block 0: SuperBlock
-    /// - Block 1: Inode Bitmap (1 block = 32,768 inodes)
-    /// - Block 2: Data Bitmap (1 block = 32,768 blocks ≈ 128MB)
-    /// - Block 3+: Inode Table (1024 blocks for 32,768 inodes @ 256 bytes each)
+    /// - Block 1: Inode Bitmap (1 block = up to 32,768 inodes)
+    /// - Block 2: Data Bitmap (1 block = up to 32,768 data blocks)
+    /// - Block 3+: Inode Table (dynamically sized based on available space)
     /// - Remaining: Data Blocks
+    ///
+    /// # Panics
+    /// Panics if `total_blocks < 5` (minimum: superblock + 2 bitmaps + 1 inode table + 1 data)
     pub fn new(total_blocks: u64) -> Self {
+        assert!(total_blocks >= 5, "File system requires at least 5 blocks");
+
         let inode_bitmap_block = 1;
         let data_bitmap_block = 2;
-        let inode_table_block = 3;
-        
-        // Calculate inode capacity: 1 block of bitmap = 4096 bytes * 8 bits/byte = 32,768 inodes
-        let inode_count = 4096 * 8;
-        let _inode_size = size_of::<crate::inode::Inode>() as u64;
-        
-        // Note: Current implementation uses 256 bytes per inode for storage
-        // 32,768 inodes * 256 bytes = 8MB
-        // 8MB / 4096 bytes/block = 2048 blocks
-        // Using 128 for backward compatibility in calculation
-        let inode_table_blocks = (inode_count * 128) / 4096;
-        
+        let inode_table_block: u64 = 3;
+
+        // Blocks available after fixed metadata (superblock + 2 bitmaps)
+        let available = total_blocks - 3;
+
+        // Maximum inodes the bitmap can track (1 block = 4096 * 8 = 32,768 bits)
+        let bitmap_max_inodes: u64 = 4096 * 8;
+
+        // Each inode occupies 128 bytes in the table → 32 inodes per block
+        let inodes_per_block: u64 = 4096 / 128;
+
+        // Maximum inode table blocks to fill the bitmap
+        let inode_table_blocks_cap = bitmap_max_inodes / inodes_per_block; // = 1024
+
+        // If the filesystem has room for the standard 1024 inode table blocks (plus at least 1 data block),
+        // allocate the standard 1024 blocks (32,768 inodes) for full capacity and backward compatibility.
+        // For smaller filesystems (< 1028 blocks), dynamically size the table up to 25% of available space.
+        let inode_table_blocks = if total_blocks >= inode_table_block + inode_table_blocks_cap + 1 {
+            inode_table_blocks_cap // = 1024 blocks = 32,768 inodes
+        } else {
+            (available.saturating_sub(1) / 4).min(inode_table_blocks_cap)
+        };
+
+        let inode_count = inode_table_blocks * inodes_per_block;
         let data_block_start = inode_table_block + inode_table_blocks;
 
         Self {
@@ -95,5 +111,60 @@ impl SuperBlock {
             encryption_salt: [0u8; 16],
             encryption_version: 0,
         }
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove that SuperBlock::new always produces valid layout ordering.
+    #[kani::proof]
+    fn proof_superblock_layout_ordering() {
+        let total_blocks: u64 = kani::any();
+        // Minimum 5 blocks (enforced by assert in new()), cap for CBMC tractability
+        kani::assume(total_blocks >= 5 && total_blocks <= 1_000_000);
+
+        let sb = SuperBlock::new(total_blocks);
+
+        // Magic must always be set correctly
+        assert_eq!(sb.magic, SuperBlock::MAGIC);
+
+        // Block size must match
+        assert_eq!(sb.block_size, crate::BLOCK_SIZE as u32);
+
+        // Layout ordering: superblock(0) < inode_bitmap < data_bitmap <= inode_table <= data_start
+        assert!(sb.inode_bitmap_block < sb.data_bitmap_block);
+        assert!(sb.data_bitmap_block < sb.inode_table_block);
+        assert!(sb.inode_table_block <= sb.data_block_start);
+
+        // Data must start within the total block range (the original bug)
+        assert!(sb.data_block_start <= sb.block_count);
+
+        // Must have at least 1 data block
+        assert!(sb.block_count - sb.data_block_start >= 1);
+
+        // Root inode is always 0
+        assert_eq!(sb.root_inode, 0);
+    }
+
+    /// Prove that large file systems (>= 1028 blocks) get the full 32,768 inodes.
+    #[kani::proof]
+    fn proof_superblock_large_fs_full_inodes() {
+        let total_blocks: u64 = kani::any();
+        // At total_blocks >= 1028: full capacity
+        kani::assume(total_blocks >= 1028 && total_blocks <= 1_000_000);
+
+        let sb = SuperBlock::new(total_blocks);
+        assert_eq!(sb.inode_count, 4096 * 8, "Large FS must have full 32,768 inodes");
+    }
+
+    /// Prove that new SuperBlock defaults to unencrypted.
+    #[kani::proof]
+    fn proof_superblock_default_unencrypted() {
+        let sb = SuperBlock::new(1000);
+        assert!(!sb.encrypted);
+        assert_eq!(sb.encryption_salt, [0u8; 16]);
+        assert_eq!(sb.encryption_version, 0);
     }
 }

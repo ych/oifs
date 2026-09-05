@@ -59,19 +59,22 @@ fn test_wrong_password_fails() {
     let size = 10 * 1024 * 1024;
     
     // Create encrypted filesystem with correct password
+    let file_inode;
     {
         let dm = DiskManager::create_encrypted(&image_path, size, correct_password).unwrap();
         let root_inode = dm.superblock().root_inode;
-        let file_inode = dm.create_file(root_inode, "file.txt").unwrap();
+        file_inode = dm.create_file(root_inode, "file.txt").unwrap();
         dm.write_data(file_inode, 0, b"secret", CompressionMode::Never).unwrap();
     }
     
-    // Try to open with wrong password - should succeed in opening
+    // Try to open with wrong password - should succeed in opening disk manager
     let dm = DiskManager::open_with_password(&image_path, 0, Some(wrong_password)).unwrap();
     
-    // But reading should fail with decryption error
-    let root_inode = dm.superblock().root_inode;
-    let file_inode = dm.lookup(root_inode, "file.txt").unwrap();
+    // With filename encryption (Option 2), lookup with wrong password cannot match the encrypted filename
+    let lookup_result = dm.lookup(0, "file.txt");
+    assert!(lookup_result.is_err(), "Lookup with wrong password must fail to protect filename confidentiality");
+
+    // And reading data directly by inode with wrong password fails with DecryptionFailed
     let read_result = dm.read_data(file_inode);
     assert!(read_result.is_err(), "Reading with wrong password should fail");
     
@@ -178,11 +181,13 @@ fn test_data_is_actually_encrypted_on_disk() {
     let size = 10 * 1024 * 1024;
     let plaintext = b"VERY_DISTINCTIVE_SECRET_TEXT_THAT_SHOULD_NOT_APPEAR_IN_RAW_DISK";
     
+    let secret_filename = "VERY_DISTINCTIVE_SECRET_FILENAME_XYZ12345.TXT";
+
     // Create encrypted filesystem and write data
     {
         let dm = DiskManager::create_encrypted(&image_path, size, password).unwrap();
         let root_inode = dm.superblock().root_inode;
-        let file_inode = dm.create_file(root_inode, "secret.txt").unwrap();
+        let file_inode = dm.create_file(root_inode, secret_filename).unwrap();
         dm.write_data(file_inode, 0, plaintext, CompressionMode::Never).unwrap();
     }
     
@@ -193,17 +198,23 @@ fn test_data_is_actually_encrypted_on_disk() {
     let plaintext_str = String::from_utf8_lossy(plaintext);
     let raw_disk_str = String::from_utf8_lossy(&raw_disk);
     
-    // Verify plaintext does NOT appear in raw disk
+    // Verify plaintext data does NOT appear in raw disk
     assert!(
         !raw_disk_str.contains(plaintext_str.as_ref()),
         "Plaintext should not be visible in raw disk image - data is not encrypted!"
+    );
+
+    // Verify filename does NOT appear in raw disk (Option 2: Filename Encryption)
+    assert!(
+        !raw_disk_str.contains(secret_filename),
+        "Filename should not be visible in raw disk image - filename is not encrypted!"
     );
     
     // Verify we can still read it correctly with password
     // Need to reopen the file since we closed it above
     let dm = DiskManager::open_with_password(&image_path, size, Some(password)).unwrap();
     let root_inode = dm.superblock().root_inode;
-    let file_inode = dm.lookup(root_inode, "secret.txt").unwrap();
+    let file_inode = dm.lookup(root_inode, secret_filename).unwrap();
     let decrypted = dm.read_data(file_inode).unwrap();
     assert_eq!(decrypted, plaintext, "Should be able to decrypt with correct password");
 }

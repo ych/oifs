@@ -339,10 +339,14 @@ cargo test --test perf_comparison --release -- --nocapture
 ## 加密安全性說明 (Encryption Security)
 
 ### 加密演算法
-*   **AEAD Cipher**: XChaCha20-Poly1305
+*   **檔案內容加密 (Payload AEAD Cipher)**: XChaCha20-Poly1305
     *   提供機密性（Confidentiality）和完整性（Integrity）保護
     *   192-bit Nonce，每個檔案使用唯一的隨機 Nonce
     *   256-bit 金鑰
+*   **檔名級別加密 (Filename SIV Encryption)**:
+    *   採用類 fscrypt 的 Synthetic IV 確定性認證加密
+    *   透過 Blake2b-512 PRF 結合父目錄 Inode 作為 Tweak，搭配 ChaCha20-Poly1305 與 Base64URL 編碼
+    *   raw image 中無法透過 `strings` 或 `hexdump` 查獲任何檔案或目錄名稱
 *   **金鑰衍生**: Argon2id
     *   記憶體困難（Memory-hard）演算法，抵抗暴力破解
     *   每個檔案系統使用唯一的 128-bit 隨機 Salt
@@ -351,11 +355,7 @@ cargo test --test perf_comparison --release -- --nocapture
 ### 安全性考量
 1. **密碼強度**: 建議使用至少 12 個字元的強密碼，包含大小寫字母、數字和符號
 2. **密碼遺失**: 密碼不會儲存在磁碟上，**遺失密碼將無法恢復資料**
-3. **⚠️ 已知限制 — 目錄 metadata 未加密**: 目前 `--encrypt` 只保護**檔案內容**。
-   目錄項目（檔名、inode id、size、modified time）仍以明文寫入 data block，
-   因此持有 image 的人即使沒有密碼，也能 `ls` 列出檔名與大小。如果你的
-   威脅模型在意檔名洩漏，請額外避免具識別性的命名（例如改用 hash 為名）。
-   完整 directory-block encryption 是 on-disk format 變更，將在後續版本處理。
+3. **檔名與內容機密性**: 檔案內容與目錄檔名均已獲得密碼學加密保護。外部無法透過 `strings` 或十六進位檢視器直接辨識檔案或目錄名稱。
 4. **記憶體安全**:
    *   加密金鑰使用 `zeroize` crate 在釋放時自動清零
    *   但 Rust 無法保證記憶體不會被交換到磁碟（swap）

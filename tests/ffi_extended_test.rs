@@ -78,7 +78,10 @@ fn test_ffi_extended_flow() {
     assert_eq!(err_res_wrong, 0);
     let err_msg_wrong = unsafe { CStr::from_ptr(err_msg_buf_wrong.as_ptr()) }.to_str().unwrap();
     println!("Caught expected wrong-password error: {}", err_msg_wrong);
-    assert!(err_msg_wrong.to_lowercase().contains("decryption"), "Error message should describe decryption failure");
+    assert!(
+        err_msg_wrong.to_lowercase().contains("decryption") || err_msg_wrong.to_lowercase().contains("not found"),
+        "Error message should describe failure with wrong password (either filename lookup or data decryption failure)"
+    );
 
     // 9. Test oifs_last_error on a fake file read on the good handle
     let c_fake_file = CString::new("fake.txt").unwrap();

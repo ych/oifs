@@ -28,6 +28,9 @@ chacha20poly1305 = "0.10"  # XChaCha20-Poly1305 AEAD cipher
 argon2 = "0.5"             # Key derivation function
 rand = "0.8"               # CSPRNG for nonce generation
 zeroize = { version = "1.7", features = ["derive"] }  # Secure memory wiping
+blake2 = "0.10"            # Fast cryptographic hashing for Synthetic IV
+base64ct = { version = "1.8", features = ["alloc"] } # Constant-time Base64url encoding
+
 
 # Optional: MCP server stack. Only pulled in when the `mcp` feature is on,
 # which keeps the CLI binary buildable on older rustc toolchains.

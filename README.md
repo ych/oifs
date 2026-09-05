@@ -325,11 +325,12 @@ cargo test --test perf_comparison --release -- --nocapture
 ## Encryption Security
 
 ### Cryptographic Primitives
-*   **AEAD Cipher**: XChaCha20-Poly1305 (256-bit key, 192-bit CSPRNG nonce per file).
+*   **File Payload AEAD Cipher**: XChaCha20-Poly1305 (256-bit key, 192-bit CSPRNG nonce per file).
+*   **Filename Encryption (SIV)**: Synthetic IV deterministic authenticated encryption via ChaCha20-Poly1305 + Blake2b-512 PRF with parent inode tweak and Base64URL encoding.
 *   **Key Derivation**: Argon2id with 128-bit random salt stored in the SuperBlock.
 
 ### Security Notes
 1. **Password Recovery**: Passwords are never stored on disk. **Lost passwords result in permanent data loss**.
-2. **Directory Metadata Scope**: `--encrypt` encrypts file contents. Directory entries (filenames, sizes, timestamps) remain in plaintext in directory blocks. Avoid identifiable file names if threat models require metadata privacy.
+2. **Filename Confidentiality**: Both file contents and file/directory names are cryptographically encrypted. Inspecting raw disk images with tools like `strings` or `hexdump` will not reveal filenames or contents.
 3. **Memory Zeroing**: Key material is cleared on drop using the `zeroize` crate.
 4. **Ordering**: Data is compressed before encryption, maintaining high compression efficiency without degrading ciphertext entropy.

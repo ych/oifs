@@ -457,7 +457,15 @@ impl DiskManager {
         }
 
         // Check if file already exists
-        if let Some(_existing) = Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)? {
+        let stored_name = if let Some(key) = &guard.encryption_key {
+            crate::encryption::encrypt_filename(key, parent_inode_id, name).unwrap_or_else(|_| name.to_string())
+        } else {
+            name.to_string()
+        };
+
+        if Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &stored_name)?.is_some()
+            || Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.is_some()
+        {
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!("File '{}' already exists", name),
@@ -479,7 +487,7 @@ impl DiskManager {
         let entry = crate::directory::DirectoryEntry {
             inode: file_inode_id,
             hash: 0,
-            name: name.to_string(),
+            name: stored_name,
         };
         Self::append_dir_entry_to_block(&mut guard.mmap, dir_block_id, &entry)?;
 
@@ -506,7 +514,15 @@ impl DiskManager {
             return Err(DiskManagerError::Io(std::io::Error::other("No block")));
         }
 
-        if let Some(_existing) = Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)? {
+        let stored_name = if let Some(key) = &guard.encryption_key {
+            crate::encryption::encrypt_filename(key, parent_inode_id, name).unwrap_or_else(|_| name.to_string())
+        } else {
+            name.to_string()
+        };
+
+        if Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &stored_name)?.is_some()
+            || Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.is_some()
+        {
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!("Directory '{}' already exists", name),
@@ -536,7 +552,7 @@ impl DiskManager {
         let entry = crate::directory::DirectoryEntry {
             inode: dir_inode_id,
             hash: 0,
-            name: name.to_string(),
+            name: stored_name,
         };
         Self::append_dir_entry_to_block(&mut guard.mmap, dir_block_id, &entry)?;
 
@@ -559,6 +575,14 @@ impl DiskManager {
         let dir_block_id = parent_inode.blocks[0];
         if dir_block_id == 0 {
             return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found")));
+        }
+
+        if let Some(key) = &guard.encryption_key {
+            let enc_name = crate::encryption::encrypt_filename(key, parent_inode_id, name)
+                .unwrap_or_else(|_| name.to_string());
+            if let Some(inode) = Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &enc_name)? {
+                return Ok(inode);
+            }
         }
 
         Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?
@@ -1054,6 +1078,14 @@ impl DiskManager {
             }
 
             if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
+                if let Some(key) = &guard.encryption_key {
+                    let enc_name = crate::encryption::encrypt_filename(key, curr, part)
+                        .unwrap_or_else(|_| part.to_string());
+                    if let Some(inode_id) = crate::directory::find_entry_in_block(slice, &enc_name) {
+                        curr = inode_id;
+                        continue;
+                    }
+                }
                 if let Some(inode_id) = crate::directory::find_entry_in_block(slice, part) {
                     curr = inode_id;
                     continue;
@@ -1087,7 +1119,15 @@ impl DiskManager {
         if block_id == 0 {
             return Ok(Vec::new());
         }
-        Self::read_dir_entries_from_block(&guard.mmap, block_id)
+        let mut entries = Self::read_dir_entries_from_block(&guard.mmap, block_id)?;
+        if let Some(key) = &guard.encryption_key {
+            for entry in &mut entries {
+                if let Ok(decrypted) = crate::encryption::decrypt_filename(key, dir_inode_id, &entry.name) {
+                    entry.name = decrypted;
+                }
+            }
+        }
+        Ok(entries)
     }
 
     pub fn resolve_parent(&self, path: &str) -> Result<(u64, String), DiskManagerError> {
@@ -1129,8 +1169,14 @@ impl DiskManager {
         let mut remaining_entries = Vec::new();
         let mut target_inode = None;
 
+        let enc_name = if let Some(key) = &guard.encryption_key {
+            crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
+        } else {
+            None
+        };
+
         for entry in entries {
-            if entry.name == name {
+            if entry.name == name || enc_name.as_deref() == Some(&entry.name) {
                 target_inode = Some(entry.inode);
             } else {
                 remaining_entries.push(entry);

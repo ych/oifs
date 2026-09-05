@@ -938,7 +938,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argon2",
+ "base64ct",
  "bincode",
+ "blake2",
  "blosc2",
  "chacha20poly1305",
  "chrono",

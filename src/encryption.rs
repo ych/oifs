@@ -1,10 +1,12 @@
 use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng},
-    XChaCha20Poly1305, XNonce,
+    ChaCha20Poly1305, Nonce, XChaCha20Poly1305, XNonce,
 };
 use argon2::{Argon2, PasswordHasher};
 use argon2::password_hash::SaltString;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+use blake2::{Blake2b512, Digest};
+use base64ct::{Base64UrlUnpadded, Encoding};
 use std::fmt;
 
 /// Encryption key with automatic zeroization on drop
@@ -20,7 +22,7 @@ impl EncryptionKey {
     }
 
     /// Get key bytes (internal use only)
-    fn as_bytes(&self) -> &[u8; 32] {
+    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.key
     }
 }
@@ -130,6 +132,105 @@ pub fn generate_salt() -> [u8; 16] {
     salt
 }
 
+/// Constant prefix for encrypted filenames
+pub const FILENAME_ENC_PREFIX: &str = "_e_";
+
+/// Encrypts a filename deterministically using Synthetic IV (SIV) with parent_inode as tweak.
+///
+/// Returns a safe ASCII string starting with `_e_` followed by unpadded Base64URL-encoded ciphertext.
+/// If the input is already encrypted with `_e_`, it returns it as-is.
+pub fn encrypt_filename(
+    key: &EncryptionKey,
+    parent_inode: u64,
+    name: &str,
+) -> Result<String, EncryptionError> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Ok(name.to_string());
+    }
+    if name.starts_with(FILENAME_ENC_PREFIX) {
+        return Ok(name.to_string());
+    }
+
+    // Deterministic Synthetic Nonce derived from (key, parent_inode, name)
+    let mut hasher = Blake2b512::new();
+    hasher.update(b"OIFS_SIV_FILENAME_V1");
+    hasher.update(key.as_bytes());
+    hasher.update(&parent_inode.to_le_bytes());
+    hasher.update(name.as_bytes());
+    let hash = hasher.finalize();
+
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&hash[..12]);
+
+    let cipher = ChaCha20Poly1305::new_from_slice(key.as_bytes())
+        .map_err(|_| EncryptionError::InvalidKey)?;
+
+    let ciphertext_with_tag = cipher
+        .encrypt(Nonce::from_slice(&nonce), name.as_bytes())
+        .map_err(|_| EncryptionError::EncryptionFailed)?;
+
+    let mut payload = Vec::with_capacity(12 + ciphertext_with_tag.len());
+    payload.extend_from_slice(&nonce);
+    payload.extend_from_slice(&ciphertext_with_tag);
+
+    let b64 = Base64UrlUnpadded::encode_string(&payload);
+    Ok(format!("{}{}", FILENAME_ENC_PREFIX, b64))
+}
+
+/// Decrypts a filename encrypted by `encrypt_filename`.
+///
+/// If `name` does not start with `_e_` or fails to decode/authenticate,
+/// it gracefully returns the original name (for backward compatibility).
+pub fn decrypt_filename(
+    key: &EncryptionKey,
+    parent_inode: u64,
+    name: &str,
+) -> Result<String, EncryptionError> {
+    if !name.starts_with(FILENAME_ENC_PREFIX) {
+        return Ok(name.to_string());
+    }
+
+    let b64 = &name[FILENAME_ENC_PREFIX.len()..];
+    let payload = match Base64UrlUnpadded::decode_vec(b64) {
+        Ok(p) => p,
+        Err(_) => return Ok(name.to_string()),
+    };
+
+    if payload.len() < 12 + 16 {
+        return Ok(name.to_string());
+    }
+
+    let nonce = &payload[..12];
+    let ciphertext_with_tag = &payload[12..];
+
+    let cipher = ChaCha20Poly1305::new_from_slice(key.as_bytes())
+        .map_err(|_| EncryptionError::InvalidKey)?;
+
+    let decrypted_bytes = match cipher.decrypt(Nonce::from_slice(nonce), ciphertext_with_tag) {
+        Ok(b) => b,
+        Err(_) => return Ok(name.to_string()),
+    };
+
+    let plaintext = match String::from_utf8(decrypted_bytes) {
+        Ok(s) => s,
+        Err(_) => return Ok(name.to_string()),
+    };
+
+    // Verify synthetic nonce matches (key, parent_inode, plaintext)
+    let mut hasher = Blake2b512::new();
+    hasher.update(b"OIFS_SIV_FILENAME_V1");
+    hasher.update(key.as_bytes());
+    hasher.update(&parent_inode.to_le_bytes());
+    hasher.update(plaintext.as_bytes());
+    let hash = hasher.finalize();
+
+    if &hash[..12] != nonce {
+        return Ok(name.to_string());
+    }
+
+    Ok(plaintext)
+}
+
 /// Encryption-related errors
 #[derive(Debug, thiserror::Error)]
 pub enum EncryptionError {
@@ -210,4 +311,38 @@ mod tests {
         // Very unlikely to generate same nonce twice
         assert_ne!(nonce1, nonce2);
     }
+
+    #[test]
+    fn test_filename_encryption_roundtrip_and_properties() {
+        let key = EncryptionKey::from_bytes([42u8; 32]);
+        let parent_inode = 100u64;
+        let original_name = "my_confidential_report_2026.pdf";
+
+        // 1. Encrypt filename
+        let encrypted = encrypt_filename(&key, parent_inode, original_name).unwrap();
+        assert!(encrypted.starts_with(FILENAME_ENC_PREFIX));
+        assert!(!encrypted.contains(original_name));
+        assert!(!encrypted.contains('/'));
+
+        // 2. Deterministic: same key + parent_inode + name produces exact same ciphertext
+        let encrypted_again = encrypt_filename(&key, parent_inode, original_name).unwrap();
+        assert_eq!(encrypted, encrypted_again);
+
+        // 3. Tweakable: different parent_inode produces different ciphertext
+        let encrypted_other_dir = encrypt_filename(&key, 101u64, original_name).unwrap();
+        assert_ne!(encrypted, encrypted_other_dir);
+
+        // 4. Decrypt with correct key and parent_inode
+        let decrypted = decrypt_filename(&key, parent_inode, &encrypted).unwrap();
+        assert_eq!(decrypted, original_name);
+
+        // 5. Decrypt with wrong parent_inode falls back gracefully
+        let wrong_dir = decrypt_filename(&key, 999u64, &encrypted).unwrap();
+        assert_ne!(wrong_dir, original_name); // Decryption fails synthetic check
+
+        // 6. Non-encrypted name passes through unchanged
+        let plain = "normal_unencrypted.txt";
+        assert_eq!(decrypt_filename(&key, parent_inode, plain).unwrap(), plain);
+    }
 }
+

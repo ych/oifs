@@ -35,10 +35,9 @@ impl OifsMcpServer {
     fn new(image_path: PathBuf, size_bytes: u64, password: Option<&str>) -> Result<Self> {
         // If image doesn't yet exist AND a password was supplied,
         // bootstrap an encrypted image; otherwise open (auto-create plain).
-        let dm = if !image_path.exists() && password.is_some() {
-            DiskManager::create_encrypted(&image_path, size_bytes, password.unwrap())?
-        } else {
-            DiskManager::open_with_password(&image_path, size_bytes, password)?
+        let dm = match (!image_path.exists(), password) {
+            (true, Some(pwd)) => DiskManager::create_encrypted(&image_path, size_bytes, pwd)?,
+            _ => DiskManager::open_with_password(&image_path, size_bytes, password)?,
         };
         Ok(Self {
             dm: Arc::new(TokioMutex::new(dm)),

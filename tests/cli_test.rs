@@ -72,7 +72,7 @@ fn test_cli_ls() {
 
     // 2. Run CLI
     let output = Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", path_str, "ls"])
+        .args(["--image", path_str, "ls"])
         .output()
         .expect("Failed to execute command");
 

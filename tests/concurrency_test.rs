@@ -13,7 +13,7 @@ fn test_intra_process_threading() {
     if Path::new(image_path).exists() { fs::remove_file(image_path).unwrap(); }
 
     Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "create", "--size", "10"])
+        .args(["--image", image_path, "create", "--size", "10"])
         .status().expect("Cmd failed");
 
     let dm = DiskManager::open(image_path, 0).expect("Open failed");
@@ -81,7 +81,7 @@ fn test_intra_process_threading() {
     // List files via CLI to stdout
     println!("--- Files after concurrency test ---");
     let output = Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "ls", "-r"])
+        .args(["--image", image_path, "ls", "-r"])
         .output().expect("LS Failed");
     println!("{}", String::from_utf8_lossy(&output.stdout));
     println!("------------------------------------");
@@ -95,7 +95,7 @@ fn test_inter_process_locking() {
     if Path::new(image_path).exists() { fs::remove_file(image_path).unwrap(); }
 
     Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "create", "--size", "10"])
+        .args(["--image", image_path, "create", "--size", "10"])
         .status().expect("Cmd failed");
 
     let py_script = r#"

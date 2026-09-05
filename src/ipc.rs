@@ -27,21 +27,16 @@ use crate::inode::Inode;
 use crate::superblock::SuperBlock;
 
 /// Session transport mode
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SessionMode {
     /// Default: Local machine only, using Unix Domain Socket (UDS) in `/tmp`
+    #[default]
     Local,
     /// Network / Cluster mode: uses Rendezvous master file in the image directory + TCP transport + Active Ping Probe
     Network {
         /// Custom bind address (e.g. "0.0.0.0:9050" or "127.0.0.1:0")
         bind_addr: Option<String>,
     },
-}
-
-impl Default for SessionMode {
-    fn default() -> Self {
-        SessionMode::Local
-    }
 }
 
 /// Metadata stored in the `.image.master` rendezvous file for Network Mode
@@ -119,24 +114,7 @@ pub fn get_socket_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let path_ref = image_path.as_ref();
-    let abs_path = if let Ok(canon) = fs::canonicalize(path_ref) {
-        canon
-    } else {
-        let parent = path_ref.parent().unwrap_or(Path::new(""));
-        let parent_canon = if parent.as_os_str().is_empty() {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        } else {
-            fs::canonicalize(parent)
-                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        };
-
-        if let Some(name) = path_ref.file_name() {
-            parent_canon.join(name)
-        } else {
-            parent_canon
-        }
-    };
+    let abs_path = crate::session::canonicalize_path(image_path);
 
     let mut hasher = DefaultHasher::new();
     abs_path.to_string_lossy().hash(&mut hasher);
@@ -157,23 +135,7 @@ pub fn get_socket_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
 
 /// Computes the path for the `.image.master` rendezvous file in the image directory
 pub fn get_master_info_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
-    let p = image_path.as_ref();
-    let abs_p = if let Ok(canon) = fs::canonicalize(p) {
-        canon
-    } else {
-        let parent = p.parent().unwrap_or(Path::new(""));
-        let parent_canon = if parent.as_os_str().is_empty() {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        } else {
-            fs::canonicalize(parent)
-                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        };
-        if let Some(name) = p.file_name() {
-            parent_canon.join(name)
-        } else {
-            parent_canon
-        }
-    };
+    let abs_p = crate::session::canonicalize_path(image_path);
 
     let file_name = abs_p
         .file_name()
@@ -194,12 +156,11 @@ pub fn is_tcp_master_alive(addr_str: &str) -> bool {
         if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
             let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-            if write_framed(&mut stream, &IpcRequest::Ping).is_ok() {
-                if let Ok(IpcResponse::Success(IpcResponseData::Pong)) =
+            if write_framed(&mut stream, &IpcRequest::Ping).is_ok()
+                && let Ok(IpcResponse::Success(IpcResponseData::Pong)) =
                     read_framed::<_, IpcResponse>(&mut stream)
-                {
-                    return true;
-                }
+            {
+                return true;
             }
         }
     }
@@ -327,6 +288,17 @@ pub enum MasterOrClient {
     },
 }
 
+fn is_addr_in_use(err: &io::Error) -> bool {
+    if err.kind() == io::ErrorKind::AddrInUse || err.kind() == io::ErrorKind::AlreadyExists {
+        return true;
+    }
+    if let Some(code) = err.raw_os_error()
+        && (code == libc::EADDRINUSE || code == libc::EEXIST) {
+            return true;
+        }
+    false
+}
+
 /// Attempts to bind as Master or connect as Client according to SessionMode
 pub fn bind_or_connect<P: AsRef<Path>>(
     image_path: P,
@@ -337,7 +309,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
             let socket_path = get_socket_path(image_path);
 
             if socket_path.exists() {
-                for attempt in 0..4 {
+                for attempt in 0..10 {
                     match UnixStream::connect(&socket_path) {
                         Ok(stream) => {
                             return Ok(MasterOrClient::Client {
@@ -346,7 +318,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                             });
                         }
                         Err(_) => {
-                            if attempt < 3 {
+                            if attempt < 9 {
                                 thread::sleep(Duration::from_millis(15));
                             }
                         }
@@ -360,12 +332,37 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                     listener,
                     socket_path,
                 })),
-                Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
-                    let stream = UnixStream::connect(&socket_path)?;
-                    Ok(MasterOrClient::Client {
-                        stream: IpcStream::Unix(stream),
-                        target_path: socket_path,
-                    })
+                Err(e) if is_addr_in_use(&e) => {
+                    for attempt in 0..15 {
+                        match UnixStream::connect(&socket_path) {
+                            Ok(stream) => {
+                                return Ok(MasterOrClient::Client {
+                                    stream: IpcStream::Unix(stream),
+                                    target_path: socket_path,
+                                });
+                            }
+                            Err(_) => {
+                                if attempt < 14 {
+                                    thread::sleep(Duration::from_millis(15));
+                                }
+                            }
+                        }
+                    }
+                    // If connecting still fails because socket became stale/dead, remove and retry bind
+                    let _ = fs::remove_file(&socket_path);
+                    match UnixListener::bind(&socket_path) {
+                        Ok(listener) => Ok(MasterOrClient::Master(IpcListener::Unix {
+                            listener,
+                            socket_path,
+                        })),
+                        Err(_) => {
+                            let stream = UnixStream::connect(&socket_path)?;
+                            Ok(MasterOrClient::Client {
+                                stream: IpcStream::Unix(stream),
+                                target_path: socket_path,
+                            })
+                        }
+                    }
                 }
                 Err(e) => Err(e),
             }
@@ -375,17 +372,15 @@ pub fn bind_or_connect<P: AsRef<Path>>(
 
             // 1. Check if rendezvous master file exists
             if master_path.exists() {
-                if let Ok(content) = fs::read_to_string(&master_path) {
-                    if let Ok(info) = serde_json::from_str::<MasterInfo>(&content) {
-                        if is_tcp_master_alive(&info.addr) {
-                            if let Ok(stream) = TcpStream::connect(&info.addr) {
-                                return Ok(MasterOrClient::Client {
-                                    stream: IpcStream::Tcp(stream),
-                                    target_path: master_path,
-                                });
-                            }
-                        }
-                    }
+                if let Ok(content) = fs::read_to_string(&master_path)
+                    && let Ok(info) = serde_json::from_str::<MasterInfo>(&content)
+                    && is_tcp_master_alive(&info.addr)
+                    && let Ok(stream) = TcpStream::connect(&info.addr)
+                {
+                    return Ok(MasterOrClient::Client {
+                        stream: IpcStream::Tcp(stream),
+                        target_path: master_path,
+                    });
                 }
                 // Dead master! Clean up stale rendezvous file
                 let _ = fs::remove_file(&master_path);
@@ -419,8 +414,22 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                         master_file_path: master_path,
                     }))
                 }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    // Another process won the race. Read info and connect.
+                Err(e) if is_addr_in_use(&e) => {
+                    // Another process won the race. Retry reading info and connecting
+                    for attempt in 0..10 {
+                        if let Ok(content) = fs::read_to_string(&master_path)
+                            && let Ok(info) = serde_json::from_str::<MasterInfo>(&content)
+                            && let Ok(stream) = TcpStream::connect(&info.addr)
+                        {
+                            return Ok(MasterOrClient::Client {
+                                stream: IpcStream::Tcp(stream),
+                                target_path: master_path,
+                            });
+                        }
+                        if attempt < 9 {
+                            thread::sleep(Duration::from_millis(20));
+                        }
+                    }
                     let content = fs::read_to_string(&master_path)?;
                     let info: MasterInfo = serde_json::from_str(&content).map_err(|e| {
                         io::Error::new(io::ErrorKind::InvalidData, e.to_string())
@@ -488,7 +497,7 @@ impl IpcServer {
                                 );
                             }
                             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                thread::sleep(Duration::from_millis(20));
+                                thread::sleep(Duration::from_millis(2));
                             }
                             Err(_) => break,
                         }
@@ -510,7 +519,7 @@ impl IpcServer {
                                 );
                             }
                             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                thread::sleep(Duration::from_millis(20));
+                                thread::sleep(Duration::from_millis(2));
                             }
                             Err(_) => break,
                         }
@@ -553,35 +562,30 @@ impl IpcServer {
 
         let handle = thread::spawn(move || {
             let _ = stream.set_nonblocking(false);
-            loop {
-                match read_framed::<_, IpcRequest>(&mut stream) {
-                    Ok(req) => {
-                        let req_name = format!("{:?}", req);
-                        let short_name = req_name
-                            .split('{')
-                            .next()
-                            .unwrap_or("Req")
-                            .trim()
-                            .to_string();
+            while let Ok(req) = read_framed::<_, IpcRequest>(&mut stream) {
+                let req_name = format!("{:?}", req);
+                let short_name = req_name
+                    .split('{')
+                    .next()
+                    .unwrap_or("Req")
+                    .trim()
+                    .to_string();
 
-                        let resp_data = Self::handle_request(&dm_worker, req);
-                        let resp = match resp_data {
-                            Ok(data) => IpcResponse::Success(data),
-                            Err(e) => IpcResponse::Error(e.to_string()),
-                        };
+                let resp_data = Self::handle_request(&dm_worker, req);
+                let resp = match resp_data {
+                    Ok(data) => IpcResponse::Success(data),
+                    Err(e) => IpcResponse::Error(e.to_string()),
+                };
 
-                        if write_framed(&mut stream, &resp).is_err() {
-                            break;
-                        }
+                if write_framed(&mut stream, &resp).is_err() {
+                    break;
+                }
 
-                        if let Some(tx) = &tx_worker {
-                            let _ = tx.send(SessionEvent::RequestHandled {
-                                peer_id,
-                                req_type: short_name,
-                            });
-                        }
-                    }
-                    Err(_) => break,
+                if let Some(tx) = &tx_worker {
+                    let _ = tx.send(SessionEvent::RequestHandled {
+                        peer_id,
+                        req_type: short_name,
+                    });
                 }
             }
 
@@ -741,7 +745,7 @@ impl IpcClient {
 
         match resp {
             IpcResponse::Success(data) => Ok(data),
-            IpcResponse::Error(err_msg) => Err(io::Error::new(io::ErrorKind::Other, err_msg)),
+            IpcResponse::Error(err_msg) => Err(io::Error::other(err_msg)),
         }
     }
 

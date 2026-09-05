@@ -330,9 +330,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 host_path.file_name().unwrap().to_string_lossy().to_string()
             });
 
-            let compression_mode = if *compress && *no_compress {
-                CompressionMode::Always
-            } else if *compress {
+            let compression_mode = if *compress {
                 CompressionMode::Always
             } else if *no_compress {
                 CompressionMode::Never

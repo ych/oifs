@@ -138,3 +138,47 @@ mod kani_proofs {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_inode_creation() {
+        let file_inode = Inode::new(FileType::File);
+        assert_eq!(file_inode.mode, FileType::File);
+        assert_eq!(file_inode.size, 0);
+        assert_eq!(file_inode.compressed_size, 0);
+        assert_eq!(file_inode.blocks, [0; 12]);
+        assert!(!file_inode.encrypted);
+
+        let dir_inode = Inode::new(FileType::Directory);
+        assert_eq!(dir_inode.mode, FileType::Directory);
+    }
+
+    #[test]
+    fn test_inode_serialization_size_limit() {
+        let mut inode = Inode::new(FileType::File);
+        inode.size = 1048576;
+        inode.compressed_size = 524288;
+        inode.created_at = 1600000000;
+        inode.modified_at = 1600000100;
+        inode.blocks[0] = 100;
+        inode.blocks[10] = 200; // single indirect
+        inode.blocks[11] = 300; // double indirect
+        inode.encrypted = true;
+        inode.encryption_nonce = [9u8; 24];
+
+        let bytes = bincode::serialize(&inode).expect("serialize inode");
+        // An inode table entry slot is 256 bytes; serialized inode must fit
+        assert!(bytes.len() <= 256);
+
+        let deserialized: Inode = bincode::deserialize(&bytes).expect("deserialize inode");
+        assert_eq!(deserialized.mode, FileType::File);
+        assert_eq!(deserialized.size, 1048576);
+        assert_eq!(deserialized.blocks[10], 200);
+        assert_eq!(deserialized.blocks[11], 300);
+        assert_eq!(deserialized.encryption_nonce, [9u8; 24]);
+    }
+}
+

@@ -10,7 +10,7 @@ fn test_flush_persistence() {
 
     // 1. Create Image
     Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "create", "--size", "10"])
+        .args(["--image", image_path, "create", "--size", "10"])
         .status().expect("Cmd failed");
 
     // 2. Open and Write Data
@@ -45,7 +45,7 @@ fn test_drop_flush() {
 
     // 1. Create Image
     Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(&["--image", image_path, "create", "--size", "10"])
+        .args(["--image", image_path, "create", "--size", "10"])
         .status().expect("Cmd failed");
 
     // 2. Write Data and Drop WITHOUT explicit flush

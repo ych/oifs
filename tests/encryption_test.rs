@@ -235,3 +235,26 @@ fn test_unencrypted_filesystem_still_works() {
     let inode = dm.read_inode(file_inode).unwrap();
     assert!(!inode.encrypted, "Inode should not be encrypted");
 }
+
+#[test]
+fn test_encrypted_compressed_append() {
+    let temp_dir = TempDir::new().unwrap();
+    let image_path = temp_dir.path().join("enc_append.img");
+    let size = 10 * 1024 * 1024;
+    let password = "append_secret_pwd";
+
+    let dm = DiskManager::create_encrypted(&image_path, size, password).unwrap();
+    let root_inode = dm.superblock().root_inode;
+    let file_inode = dm.create_file(root_inode, "encrypted_log.txt").unwrap();
+
+    // 1. Initial write with compression + encryption
+    dm.write_data(file_inode, 0, b"Part 1: Encrypted initial\n", CompressionMode::Always).unwrap();
+
+    // 2. Append to compressed + encrypted file
+    dm.write_data(file_inode, 26, b"Part 2: Encrypted appended\n", CompressionMode::Always).unwrap();
+
+    // 3. Read back and verify
+    let read_back = dm.read_data(file_inode).unwrap();
+    assert_eq!(read_back, b"Part 1: Encrypted initial\nPart 2: Encrypted appended\n");
+}
+

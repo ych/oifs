@@ -577,20 +577,15 @@ impl DiskManager {
     /// # Compression Handling
     /// - If `compressed_size > 0`: Read compressed data and decompress using zstd
     /// - If `compressed_size == 0`: Read and return raw data
-    pub fn read_data(&self, inode_id: u64) -> Result<Vec<u8>, DiskManagerError> {
-        let mut guard = self.inner.lock().unwrap();
-        let inode = Self::read_inode_internal(&guard, inode_id)?;
-        
-        // Determine physical size on disk
-        // If file is compressed, use compressed_size; otherwise use logical size
+    fn read_data_internal(guard: &mut DiskManagerInner, inode: &Inode) -> Result<Vec<u8>, DiskManagerError> {
         let physical_size = if inode.compressed_size > 0 { inode.compressed_size } else { inode.size };
         let mut raw_data = Vec::with_capacity(physical_size as usize);
         let mut read = 0;
         
-        let mut inode_clone = inode;
+        let mut inode_clone = *inode;
         let mut blk_idx = 0;
         while read < physical_size {
-            let blk = Self::get_or_alloc_block(&mut guard, &mut inode_clone, blk_idx, false)?;
+            let blk = Self::get_or_alloc_block(guard, &mut inode_clone, blk_idx, false)?;
             let rem = (physical_size - read) as usize;
             let to_read = std::cmp::min(rem, BLOCK_SIZE);
             if blk == 0 {
@@ -606,13 +601,11 @@ impl DiskManager {
         }
         
         // === DECRYPTION STEP ===
-        // Decrypt before decompression (if file is encrypted)
         let mut decrypted_data = raw_data;
         if inode.encrypted {
             let encryption_key = guard.encryption_key.as_ref()
                 .ok_or(DiskManagerError::PasswordRequired)?;
             
-            // Decrypt using stored nonce
             decrypted_data = crate::encryption::decrypt_data(
                 &decrypted_data,
                 encryption_key,
@@ -620,7 +613,7 @@ impl DiskManager {
             ).map_err(|_| DiskManagerError::DecryptionFailed)?;
         }
         
-        // Decompress if this is a compressed file
+        // Decompress if this is a compressed file (natively decompresses concatenated multi-frame Zstd streams)
         if inode.mode == crate::inode::FileType::File && inode.compressed_size > 0 {
              let decoded = zstd::stream::decode_all(std::io::Cursor::new(&decrypted_data))
                  .map_err(DiskManagerError::Io)?;
@@ -628,7 +621,6 @@ impl DiskManager {
         }
 
         // === POST-DECOMPRESSION FILTER STEP ===
-        // Reverse the filter pipeline: Unshuffle -> Undelta
         let filter_config = crate::filters::FilterConfig {
             typesize: inode.filter_typesize,
             delta: inode.filter_delta,
@@ -642,6 +634,20 @@ impl DiskManager {
         Ok(result)
     }
 
+    /// Reads data from a file
+    ///
+    /// # Arguments
+    /// * `inode_id` - The inode ID of the file to read
+    ///
+    /// # Returns
+    /// The file's data as a Vec<u8>. If the file is compressed, it will be
+    /// automatically decompressed before returning.
+    pub fn read_data(&self, inode_id: u64) -> Result<Vec<u8>, DiskManagerError> {
+        let mut guard = self.inner.lock().unwrap();
+        let inode = Self::read_inode_internal(&guard, inode_id)?;
+        Self::read_data_internal(&mut guard, &inode)
+    }
+
     /// Writes data to a file (default: no pre-compression filters)
     ///
     /// For custom filter pipeline (Delta / Shuffle / typesize), use [`write_data_with_filters`].
@@ -649,63 +655,37 @@ impl DiskManager {
         self.write_data_with_filters(inode_id, file_offset, data, compression_mode, crate::filters::FilterConfig::none())
     }
 
-    /// Writes data to a file with custom pre-compression filters
-    ///
-    /// # Arguments
-    /// * `inode_id` - The inode ID of the file to write to
-    /// * `file_offset` - Byte offset to start writing at
-    /// * `data` - Data to write
-    /// * `compression_mode` - Compression mode (Always, Never, or Auto)
-    /// * `filter_config` - Pre-compression filter configuration (delta/shuffle/typesize)
-    ///
-    /// # Data Pipeline (Write)
-    /// ```text
-    /// Raw Data → [Delta Encode] → [Byte Shuffle] → [Zstd Compress] → [Encrypt] → Disk
-    /// ```
-    ///
-    /// # Compression Strategy
-    /// - `Always`: Always compress regardless of size
-    /// - `Never`: Never compress
-    /// - `Auto`: Compress files >= 8KB if beneficial
-    ///
-    /// # Limitations
-    /// - Maximum file size: 48KB (12 blocks × 4KB)
-    /// - Cannot append to already-compressed files (offset > 0)
-    /// - Exceeding 48KB returns `FileTooLarge` error
-    pub fn write_data_with_filters(&self, inode_id: u64, file_offset: u64, data: &[u8], compression_mode: CompressionMode, filter_config: crate::filters::FilterConfig) -> Result<(), DiskManagerError> {
-        let mut guard = self.inner.lock().unwrap();
-        let mut inode = Self::read_inode_internal(&guard, inode_id)?;
-        
+    fn write_data_from_start_internal(
+        guard: &mut DiskManagerInner,
+        inode_id: u64,
+        inode: &mut Inode,
+        data: &[u8],
+        compression_mode: CompressionMode,
+        filter_config: crate::filters::FilterConfig,
+    ) -> Result<(), DiskManagerError> {
         // === PRE-COMPRESSION FILTER STEP ===
-        // Apply filters (Delta -> Shuffle) before compression for better entropy reduction
         let filtered_data = crate::filters::apply_filters_cow(data, &filter_config);
         let working_data: &[u8] = &filtered_data;
 
         let final_data: std::borrow::Cow<[u8]>;
         let mut is_compressed = false;
 
-        // Determine if we should compress based on mode
         let should_compress = match compression_mode {
             CompressionMode::Always => true,
             CompressionMode::Never => false,
             CompressionMode::Auto => working_data.len() >= 8192,
         };
 
-        // Attempt compression for files written from start
-        if inode.mode == crate::inode::FileType::File && file_offset == 0 && should_compress {
+        if should_compress {
             let compressed = zstd::stream::encode_all(std::io::Cursor::new(working_data), 0)
                 .map_err(DiskManagerError::Io)?;
-            
-            // Decision logic based on compression mode
+
             match compression_mode {
                 CompressionMode::Always => {
-                    // Always use compression, even if it increases size
-                    // (User may want this for privacy - to prevent hexdump visibility)
                     final_data = std::borrow::Cow::Owned(compressed);
                     is_compressed = true;
                 }
                 CompressionMode::Auto => {
-                    // Only use compression if it reduces size
                     if compressed.len() < working_data.len() {
                         final_data = std::borrow::Cow::Owned(compressed);
                         is_compressed = true;
@@ -718,73 +698,195 @@ impl DiskManager {
                 }
             }
         } else {
-            // Handle non-compressed writes (small files, directories, appends)
-            if inode.mode == crate::inode::FileType::File && inode.compressed_size > 0 {
-                // Prevent appending to already-compressed files
-                // (would require decompress-modify-recompress sequence)
-                return Err(DiskManagerError::Io(std::io::Error::other("Cannot append to compressed file")));
-            }
             final_data = filtered_data;
         }
 
         // === ENCRYPTION STEP ===
-        // Encrypt after compression (if encryption key available)
         let final_encrypted: Vec<u8>;
         let write_buffer: &[u8] = if let Some(encryption_key) = &guard.encryption_key {
-            // Generate unique nonce
             let nonce = crate::encryption::generate_nonce();
-            
-            // Encrypt (possibly compressed) data
             final_encrypted = crate::encryption::encrypt_data(
                 final_data.as_ref(),
                 encryption_key,
                 &nonce
             )?;
-            
-            // Mark inode as encrypted
             inode.encrypted = true;
             inode.encryption_nonce = nonce;
-            
             &final_encrypted
         } else {
             final_data.as_ref()
         };
+
         let mut written = 0;
-        let mut current_offset = file_offset;
-        
+        let mut current_offset = 0u64;
+
         while written < write_buffer.len() {
             let blk_idx = (current_offset / BLOCK_SIZE as u64) as usize;
-            let blk_id = Self::get_or_alloc_block(&mut guard, &mut inode, blk_idx, true)?;
-            
+            let blk_id = Self::get_or_alloc_block(guard, inode, blk_idx, true)?;
+
             let in_blk_off = (current_offset % BLOCK_SIZE as u64) as usize;
             let to_write = std::cmp::min(write_buffer.len() - written, BLOCK_SIZE - in_blk_off);
-            
+
             if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk_id) {
                 slice[in_blk_off..in_blk_off+to_write].copy_from_slice(&write_buffer[written..written+to_write]);
             }
             written += to_write;
             current_offset += to_write as u64;
         }
-        
+
         if is_compressed {
-            inode.size = data.len() as u64; // Logical
-            inode.compressed_size = write_buffer.len() as u64; // Physical
+            inode.size = data.len() as u64; // Logical size
+            inode.compressed_size = write_buffer.len() as u64; // Physical size
         } else {
-            // If append mode (offset > 0)
-            inode.size = std::cmp::max(inode.size, current_offset);
-            // inode.compressed_size stays 0 (Raw)
+            inode.size = std::cmp::max(inode.size, write_buffer.len() as u64);
+            inode.compressed_size = 0;
         }
 
-        // Store filter metadata in inode for correct reverse-filtering on read
         inode.filter_typesize = filter_config.typesize;
         inode.filter_delta = filter_config.delta;
         inode.filter_shuffle = filter_config.shuffle;
         inode.filter_bitshuffle = filter_config.bitshuffle;
 
         inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        Self::write_inode_internal(guard, inode_id, inode)?;
+        guard.mmap.flush()?;
+        Ok(())
+    }
+
+    /// Writes data to a file with custom pre-compression filters
+    ///
+    /// # Arguments
+    /// * `inode_id` - The inode ID of the file to write to
+    /// * `file_offset` - Byte offset to start writing at
+    /// * `data` - Data to write
+    /// * `compression_mode` - Compression mode (Always, Never, or Auto)
+    /// * `filter_config` - Pre-compression filter configuration (delta/shuffle/typesize)
+    ///
+    /// # Compression Handling & Append
+    /// - `file_offset == 0`: Initial write or full overwrite.
+    /// - `file_offset > 0` on compressed files:
+    ///   - **Fast Path (Zstd Multi-Frame)**: Appending strictly at EOF to an unencrypted file
+    ///     compresses the new chunk into an independent Zstd frame and writes it directly
+    ///     without decompressing existing blocks.
+    ///   - **Transparent Fallback (Read-Modify-Recompress)**: For encrypted files, random-offset
+    ///     writes, or files with active filters, decompresses existing data, splices in the change,
+    ///     and re-writes contiguously from offset 0.
+    pub fn write_data_with_filters(&self, inode_id: u64, file_offset: u64, data: &[u8], compression_mode: CompressionMode, filter_config: crate::filters::FilterConfig) -> Result<(), DiskManagerError> {
+        let mut guard = self.inner.lock().unwrap();
+        let mut inode = Self::read_inode_internal(&guard, inode_id)?;
+
+        if inode.mode != crate::inode::FileType::File {
+            return Err(DiskManagerError::Io(std::io::Error::other("Cannot write data to non-file inode")));
+        }
+
+        // Case 1: Writing from offset 0 (initial write or complete overwrite)
+        if file_offset == 0 {
+            return Self::write_data_from_start_internal(&mut guard, inode_id, &mut inode, data, compression_mode, filter_config);
+        }
+
+        // Case 2: Append or random write to an already-compressed file
+        if inode.compressed_size > 0 {
+            // Fast Path: Zstd Multi-Frame Append
+            // When appending strictly at EOF to an unencrypted file with no active pre-compression filters,
+            // we directly compress `data` as a new independent Zstd Frame and append it to the physical
+            // compressed stream. Zstd decoders (such as zstd::stream::decode_all) naturally decompress concatenated
+            // multi-frame streams seamlessly without needing to decompress previous blocks.
+            if file_offset == inode.size && !inode.encrypted && !filter_config.is_active() && inode.filter_typesize == 0 {
+                if data.is_empty() {
+                    return Ok(());
+                }
+                let new_frame = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
+                    .map_err(DiskManagerError::Io)?;
+
+                let mut written = 0;
+                let mut current_offset = inode.compressed_size;
+
+                while written < new_frame.len() {
+                    let blk_idx = (current_offset / BLOCK_SIZE as u64) as usize;
+                    let blk_id = Self::get_or_alloc_block(&mut guard, &mut inode, blk_idx, true)?;
+
+                    let in_blk_off = (current_offset % BLOCK_SIZE as u64) as usize;
+                    let to_write = std::cmp::min(new_frame.len() - written, BLOCK_SIZE - in_blk_off);
+
+                    if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk_id) {
+                        slice[in_blk_off..in_blk_off + to_write].copy_from_slice(&new_frame[written..written + to_write]);
+                    }
+                    written += to_write;
+                    current_offset += to_write as u64;
+                }
+
+                inode.size += data.len() as u64;
+                inode.compressed_size += new_frame.len() as u64;
+                inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                Self::write_inode_internal(&mut guard, inode_id, &inode)?;
+                guard.mmap.flush()?;
+                return Ok(());
+            }
+
+            // Fallback: Read-Modify-Recompress
+            // For encrypted files, middle-offset random writes, or files with active filters,
+            // transparently decompress the existing payload, splice in the new data, and re-write from offset 0.
+            let mut full_data = Self::read_data_internal(&mut guard, &inode)?;
+            let end_offset = (file_offset as usize) + data.len();
+            if full_data.len() < file_offset as usize {
+                full_data.resize(file_offset as usize, 0);
+            }
+            if full_data.len() < end_offset {
+                full_data.resize(end_offset, 0);
+            }
+            full_data[file_offset as usize..end_offset].copy_from_slice(data);
+
+            // Free previous blocks
+            let old_blocks = Self::collect_inode_blocks(&guard.mmap, &inode);
+            {
+                let db_blk = guard.superblock.data_bitmap_block;
+                let db_start = guard.superblock.data_block_start;
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, db_blk) {
+                    let mut da = SimpleBlockAllocator::new(slice, db_start);
+                    for blk in old_blocks {
+                        let _ = da.free(blk);
+                    }
+                }
+            }
+            inode.blocks = [0; 12];
+            inode.size = 0;
+            inode.compressed_size = 0;
+
+            let effective_filter = if filter_config.is_active() {
+                filter_config
+            } else {
+                crate::filters::FilterConfig {
+                    typesize: inode.filter_typesize,
+                    delta: inode.filter_delta,
+                    shuffle: inode.filter_shuffle,
+                    bitshuffle: inode.filter_bitshuffle,
+                }
+            };
+
+            return Self::write_data_from_start_internal(&mut guard, inode_id, &mut inode, &full_data, compression_mode, effective_filter);
+        }
+
+        // Case 3: Raw (uncompressed) file append or random write
+        let mut written = 0;
+        let mut current_offset = file_offset;
+
+        while written < data.len() {
+            let blk_idx = (current_offset / BLOCK_SIZE as u64) as usize;
+            let blk_id = Self::get_or_alloc_block(&mut guard, &mut inode, blk_idx, true)?;
+
+            let in_blk_off = (current_offset % BLOCK_SIZE as u64) as usize;
+            let to_write = std::cmp::min(data.len() - written, BLOCK_SIZE - in_blk_off);
+
+            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk_id) {
+                slice[in_blk_off..in_blk_off + to_write].copy_from_slice(&data[written..written + to_write]);
+            }
+            written += to_write;
+            current_offset += to_write as u64;
+        }
+
+        inode.size = std::cmp::max(inode.size, current_offset);
+        inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         Self::write_inode_internal(&mut guard, inode_id, &inode)?;
-        
-        // Explicit sync for metadata update
         guard.mmap.flush()?;
         Ok(())
     }

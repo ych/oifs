@@ -113,10 +113,68 @@ fn test_append_semantics() {
     let read_log = dm.read_data(file_uncomp).expect("read log");
     assert_eq!(read_log, b"Line 1\nLine 2\n");
 
-    // 2. Attempt append to compressed file -> should return error
+    // 2. Append to compressed file using Zstd multi-frame concatenation
     let file_comp = dm.create_file(root_id, "compressed_log.txt").expect("create file");
-    dm.write_data(file_comp, 0, b"Initial compressed data", CompressionMode::Always).expect("write initial");
+    dm.write_data(file_comp, 0, b"Initial compressed data\n", CompressionMode::Always).expect("write initial");
 
-    let append_err = dm.write_data(file_comp, 23, b"Appended data", CompressionMode::Never);
-    assert!(append_err.is_err(), "Appending to an already-compressed file must return an error");
+    let inode_initial = dm.read_inode(file_comp).expect("read inode");
+    assert!(inode_initial.compressed_size > 0, "File should be compressed");
+    assert_eq!(inode_initial.size, 24);
+
+    // First multi-frame append
+    dm.write_data(file_comp, 24, b"Second line of log\n", CompressionMode::Always).expect("append frame 1");
+    let inode_append1 = dm.read_inode(file_comp).expect("read inode");
+    assert_eq!(inode_append1.size, 43);
+    assert!(inode_append1.compressed_size > inode_initial.compressed_size);
+
+    // Second multi-frame append
+    dm.write_data(file_comp, 43, b"Third line of log\n", CompressionMode::Always).expect("append frame 2");
+    let inode_append2 = dm.read_inode(file_comp).expect("read inode");
+    assert_eq!(inode_append2.size, 61);
+    assert!(inode_append2.compressed_size > inode_append1.compressed_size);
+
+    // Verify all frames decode seamlessly via zstd multi-frame
+    let read_comp = dm.read_data(file_comp).expect("read compressed file");
+    assert_eq!(read_comp, b"Initial compressed data\nSecond line of log\nThird line of log\n");
+}
+
+#[test]
+fn test_compressed_append_across_block_boundaries() {
+    let ctx = TestContext::new("test_compressed_boundary");
+    let dm = DiskManager::open(&ctx.image_path, 10 * 1024 * 1024).expect("open dm");
+    let root_id = dm.superblock().root_inode;
+
+    let file_id = dm.create_file(root_id, "large_stream.bin").expect("create file");
+
+    // Write a large initial chunk (10KB)
+    let chunk1: Vec<u8> = (0..10240).map(|i| (i % 256) as u8).collect();
+    dm.write_data(file_id, 0, &chunk1, CompressionMode::Always).expect("write chunk 1");
+
+    let inode_1 = dm.read_inode(file_id).expect("read inode");
+    assert!(inode_1.compressed_size > 0);
+
+    // Append another large chunk (20KB) to cross block boundaries
+    let chunk2: Vec<u8> = (0..20480).map(|i| ((i + 7) % 256) as u8).collect();
+    dm.write_data(file_id, 10240, &chunk2, CompressionMode::Always).expect("append chunk 2");
+
+    let read_full = dm.read_data(file_id).expect("read full data");
+    assert_eq!(read_full.len(), 30720);
+    assert_eq!(&read_full[..10240], &chunk1[..]);
+    assert_eq!(&read_full[10240..], &chunk2[..]);
+}
+
+#[test]
+fn test_compressed_middle_overwrite_fallback() {
+    let ctx = TestContext::new("test_compressed_middle");
+    let dm = DiskManager::open(&ctx.image_path, 10 * 1024 * 1024).expect("open dm");
+    let root_id = dm.superblock().root_inode;
+
+    let file_id = dm.create_file(root_id, "middle_modify.txt").expect("create file");
+    dm.write_data(file_id, 0, b"AAAAABBBBBCCCCC", CompressionMode::Always).expect("write initial");
+
+    // Overwrite middle "BBBBB" with "XXXXX"
+    dm.write_data(file_id, 5, b"XXXXX", CompressionMode::Always).expect("modify middle");
+
+    let read = dm.read_data(file_id).expect("read modified");
+    assert_eq!(read, b"AAAAAXXXXXCCCCC");
 }

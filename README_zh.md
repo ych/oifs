@@ -307,7 +307,7 @@ assert_eq!(content, data);
 | :--- | :--- | :--- |
 | **同 Block、不重疊位移 (Disjoint Slices)** | **In-place Byte Merging (原地合併)** | 例如 Process A 寫 `0..100`，Process B 寫 `200..300`。兩者在 4KB 切片中各自寫入自己的 offset，未觸及的 byte 原樣保留，**雙方資料完美合併共存**。 |
 | **同 Block、重疊位移 (Overlapping Slices)** | **Last-Writer-Wins (原子性後寫者勝)** | 重疊部分依 Master Mutex 獲取順序，由後寫入者原子性覆蓋；單次寫入受 Mutex 保護，**絕不產生位元撕裂 (No Torn Writes)**。符合標準 POSIX `pwrite()` 語意。 |
-| **同 Block、已壓縮檔案 (Compressed File)** | **Whole-File Replace Only (拒絕部分追加)** | 壓縮檔案具全局上下文相依性，系統自動防禦拒絕非 0 offset 的部分寫入；若從 offset 0 寫入則原子性覆寫整個壓縮流。 |
+| **同 Block、已壓縮檔案 (Compressed File)** | **Zstd 多幀追加 (Multi-Frame Append) / 讀取-修改-重壓回退** | 當從檔案末端追加（`file_offset == size`）時，OIFS 透過 Zstandard 多幀串聯 (Multi-Frame Concatenation) 直接寫入獨立壓縮幀，無需解壓縮歷史區塊；若為中間位移隨機寫入或加密檔案，則透明透過 Read-Modify-Recompress 回退機制確保流一致性與正確性。 |
 
 ## 測試 (Testing)
 

@@ -289,7 +289,7 @@ When multiple processes write to the **same file and the same 4KB block**, OIFS 
 | :--- | :--- | :--- |
 | **Same Block, Disjoint Offsets** | **In-place Byte Merging** | For example, Process A writes `0..100` and Process B writes `200..300`. Each writes only to its designated offset range in the 4KB block slice. Untouched bytes remain intact, and **both writes coexist and merge seamlessly**. |
 | **Same Block, Overlapping Offsets** | **Last-Writer-Wins (Atomic)** | Overlapping byte ranges are overwritten by whichever write acquires the Master Mutex later. The mutex ensures atomicity, **guaranteeing no torn writes**. Conforms to standard POSIX `pwrite()` semantics. |
-| **Same Block, Compressed File** | **Whole-File Replace Only** | Due to stream dependencies in compressed blocks, partial appends (offset > 0) are rejected with an error; full rewrites starting at offset 0 atomically replace the compressed stream. |
+| **Same Block, Compressed File** | **Zstd Multi-Frame Append / Read-Modify-Recompress Fallback** | For sequential EOF appends (`file_offset == size`), OIFS natively writes independent Zstd frames via Multi-Frame concatenation without decompressing previous blocks. For middle-offset random writes or encrypted files, OIFS transparently performs Read-Modify-Recompress to ensure stream consistency. |
 
 ---
 

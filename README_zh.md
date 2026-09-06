@@ -7,7 +7,7 @@ OIFS 是一個使用 Rust 編寫的簡單 Inode 檔案系統實作。它支援�
 ## 功能特色 (Features)
 
 *   **Inode-based Architecture**: 採用標準的 Inode 設計管理檔案與目錄。
-*   **Large File Support**: 支援單級間接 (Single Indirect) 與雙級間接 (Double Indirect) 區塊，單一檔案大小上限提升至 **1GB** (取消原本 48KB 限制)。
+*   **Large File Support**: 支援單級 (Single)、雙級 (Double) 與三級間接 (Triple Indirect) 區塊，單一檔案大小上限提升至 **513GB** (134,480,394 個 4KB 區塊)，且 100% 向後相容舊版映像檔。
 *   **Encryption Support** 🔒:
     *   XChaCha20-Poly1305 AEAD 加密演算法
     *   Argon2id 密碼金鑰衍生

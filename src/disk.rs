@@ -438,6 +438,45 @@ impl DiskManager {
             }
         }
 
+        // 4. Triple Indirect block
+        let tib_id = inode.triple_indirect;
+        if tib_id != 0 {
+            blks.push(tib_id);
+            if let Some(slice) = Self::get_block_from_map(mmap, tib_id) {
+                for t_idx in 0..512 {
+                    let t_start = t_idx * 8;
+                    let mut dib_bytes = [0u8; 8];
+                    dib_bytes.copy_from_slice(&slice[t_start..t_start + 8]);
+                    let dib = u64::from_le_bytes(dib_bytes);
+                    if dib != 0 {
+                        blks.push(dib);
+                        if let Some(d_slice) = Self::get_block_from_map(mmap, dib) {
+                            for s_idx in 0..512 {
+                                let s_start = s_idx * 8;
+                                let mut sib_bytes = [0u8; 8];
+                                sib_bytes.copy_from_slice(&d_slice[s_start..s_start + 8]);
+                                let sib = u64::from_le_bytes(sib_bytes);
+                                if sib != 0 {
+                                    blks.push(sib);
+                                    if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
+                                        for d_idx in 0..512 {
+                                            let d_start = d_idx * 8;
+                                            let mut blk_bytes = [0u8; 8];
+                                            blk_bytes.copy_from_slice(&s_slice[d_start..d_start + 8]);
+                                            let blk = u64::from_le_bytes(blk_bytes);
+                                            if blk != 0 {
+                                                blks.push(blk);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         blks
     }
 
@@ -873,6 +912,7 @@ impl DiskManager {
                 }
             }
             inode.blocks = [0; 12];
+            inode.triple_indirect = 0;
             inode.size = 0;
             inode.compressed_size = 0;
 
@@ -1055,8 +1095,87 @@ impl DiskManager {
             return Ok(blk_id);
         }
 
+        // Triple Indirect block case (indices 262666 .. 134480394, up to ~513GB)
+        let max_blocks = 10 + 512 + 512 * 512 + 512 * 512 * 512;
+        if logical_block_idx < max_blocks {
+            let idx = logical_block_idx - (10 + 512 + 512 * 512);
+            let t_idx = idx / (512 * 512);
+            let rem = idx % (512 * 512);
+            let d_idx = rem / 512;
+            let s_idx = rem % 512;
+
+            let mut tib_id = inode.triple_indirect;
+            if tib_id == 0 {
+                if !allocate { return Ok(0); }
+                tib_id = Self::allocate_block(guard)?;
+                inode.triple_indirect = tib_id;
+
+                // Zero out the newly allocated triple indirect block
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, tib_id) {
+                    slice.fill(0);
+                }
+            }
+
+            // Level 2: Double indirect block within triple indirect block
+            let mut dib_id = 0;
+            let t_start = t_idx * 8;
+            if let Some(slice) = Self::get_block_from_map(&guard.mmap, tib_id) {
+                let mut dib_bytes = [0u8; 8];
+                dib_bytes.copy_from_slice(&slice[t_start..t_start + 8]);
+                dib_id = u64::from_le_bytes(dib_bytes);
+            }
+
+            if dib_id == 0 {
+                if !allocate { return Ok(0); }
+                dib_id = Self::allocate_block(guard)?;
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, tib_id) {
+                    slice[t_start..t_start + 8].copy_from_slice(&dib_id.to_le_bytes());
+                }
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, dib_id) {
+                    slice.fill(0);
+                }
+            }
+
+            // Level 3: Single indirect block within double indirect block
+            let mut sib_id = 0;
+            let d_start = d_idx * 8;
+            if let Some(slice) = Self::get_block_from_map(&guard.mmap, dib_id) {
+                let mut sib_bytes = [0u8; 8];
+                sib_bytes.copy_from_slice(&slice[d_start..d_start + 8]);
+                sib_id = u64::from_le_bytes(sib_bytes);
+            }
+
+            if sib_id == 0 {
+                if !allocate { return Ok(0); }
+                sib_id = Self::allocate_block(guard)?;
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, dib_id) {
+                    slice[d_start..d_start + 8].copy_from_slice(&sib_id.to_le_bytes());
+                }
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
+                    slice.fill(0);
+                }
+            }
+
+            // Level 4: Data block within single indirect block
+            let s_start = s_idx * 8;
+            let mut blk_id = 0;
+            if let Some(slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
+                let mut blk_bytes = [0u8; 8];
+                blk_bytes.copy_from_slice(&slice[s_start..s_start + 8]);
+                blk_id = u64::from_le_bytes(blk_bytes);
+            }
+
+            if blk_id == 0 && allocate {
+                blk_id = Self::allocate_block(guard)?;
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
+                    slice[s_start..s_start + 8].copy_from_slice(&blk_id.to_le_bytes());
+                }
+            }
+            return Ok(blk_id);
+        }
+
         // Limit exceeded
-        Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::FileTooLarge, "File too large (max 1GB)")))
+        Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::FileTooLarge, "File too large (max 513GB)")))
     }
     
     fn get_block_from_map(mmap: &MmapMut, block_id: u64) -> Option<&[u8]> {
@@ -1384,6 +1503,7 @@ impl DiskManager {
                     cleared_inode.size = 0;
                     cleared_inode.compressed_size = 0;
                     cleared_inode.blocks = [0; 12];
+                    cleared_inode.triple_indirect = 0;
                     temp_dm.write_inode(inode_id, &cleared_inode)?;
                 }
             }

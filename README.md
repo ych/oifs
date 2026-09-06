@@ -9,7 +9,7 @@ OIFS is an inode-based file system implemented in Rust. It provides robust file 
 ## Features
 
 *   **Inode-based Architecture**: Standard Unix-like inode design managing files, directories, permissions, and timestamps.
-*   **Large File Support**: Single indirect and double indirect block indexing, expanding maximum file size up to **1GB** (removing the legacy 48KB direct-block ceiling).
+*   **Large File Support**: Single indirect, double indirect, and triple indirect block indexing, expanding maximum file size up to **513GB** (134,480,394 blocks of 4KB), while maintaining 100% backward compatibility with legacy images.
 *   **Encryption Support 🔒**:
     *   **XChaCha20-Poly1305 AEAD**: Authenticated Encryption with Associated Data providing confidentiality and cryptographic tamper-proofing.
     *   **Argon2id Key Derivation**: Memory-hard password hashing resistant to GPU/ASIC brute-force attacks.
@@ -299,7 +299,7 @@ OIFS is backed by over 50 automated tests and formal verification harnesses:
 
 *   **Unit Tests**: Core module functionality (Superblock, Inode, Directory, Allocator).
 *   **Integration Tests**: End-to-end file system operations and persistence across re-openings.
-*   **Large File Tests**: Validates boundary limits across single and double indirect blocks (up to 1GB).
+*   **Large File Tests**: Validates boundary limits across single, double, and triple indirect blocks (up to 513GB).
 *   **FSCK Extended Tests**: Verifies detection of orphan inodes, leaked blocks, missing blocks, and cross-linked references.
 *   **Online Defrag Tests**: Verifies fragmentation analysis, 3-step atomic rename, and metadata preservation.
 *   **Shuttle Concurrency Tests**: Uses **Shuttle** randomized schedule permutation testing to exhaustively explore race conditions and deadlock freedom.

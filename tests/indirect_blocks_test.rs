@@ -98,3 +98,42 @@ fn test_double_indirect_blocks_and_sparse_offsets() {
     let fsck = dm.verify_integrity().expect("verify integrity");
     assert!(fsck.is_clean, "fsck should be clean after deleting double-indirect file: {:?}", fsck);
 }
+
+#[test]
+fn test_triple_indirect_blocks_and_sparse_offsets() {
+    let ctx = TestContext::new("test_triple_indirect", 40);
+    let dm = DiskManager::open(&ctx.image_path, 40 * 1024 * 1024).expect("open dm");
+
+    let root_id = dm.superblock().root_inode;
+    let file_id = dm.create_file(root_id, "triple_indirect.bin").expect("create file");
+
+    // Double indirect limit is 262666 blocks (10 + 512 + 512*512) = 1,075,879,936 bytes.
+    // Triple indirect starts at block 262666.
+    let triple_indirect_blk = 262666 + 10;
+    let triple_indirect_offset = triple_indirect_blk * 4096;
+    let chunk_size = 8 * 1024; // 8KB write (2 blocks)
+    let chunk_data: Vec<u8> = (0..chunk_size).map(|i| ((i * 7) % 256) as u8).collect();
+
+    // Write at direct block offset (0)
+    dm.write_data(file_id, 0, b"TRIPLE_HEADER", CompressionMode::Never).expect("write header");
+
+    // Write past 1GB into triple indirect blocks
+    dm.write_data(file_id, triple_indirect_offset, &chunk_data, CompressionMode::Never).expect("write triple indirect");
+
+    // Verify inode metadata
+    let inode = dm.read_inode(file_id).expect("read inode");
+    assert_ne!(inode.triple_indirect, 0, "triple_indirect block pointer must be allocated");
+    assert_eq!(inode.size, triple_indirect_offset + chunk_size as u64);
+
+    // Verify read back
+    let read_back = dm.read_data(file_id).expect("read data");
+    assert_eq!(read_back.len() as u64, triple_indirect_offset + chunk_size as u64);
+    assert_eq!(&read_back[..13], b"TRIPLE_HEADER");
+    assert_eq!(&read_back[triple_indirect_offset as usize..], chunk_data.as_slice());
+
+    // Delete and verify clean fsck
+    dm.delete_file(root_id, "triple_indirect.bin").expect("delete file");
+    let fsck = dm.verify_integrity().expect("verify integrity");
+    assert!(fsck.is_clean, "fsck should be clean after deleting triple-indirect file: {:?}", fsck);
+}
+

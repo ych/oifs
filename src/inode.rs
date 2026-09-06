@@ -60,6 +60,9 @@ pub struct Inode {
     pub filter_shuffle: bool,
     /// Whether bit shuffle was applied before compression
     pub filter_bitshuffle: bool,
+
+    /// Triple indirect block pointer for files > 1GB (supports up to 513GB)
+    pub triple_indirect: u64,
 }
 
 impl Inode {
@@ -74,6 +77,7 @@ impl Inode {
     /// - No allocated blocks
     /// - Zero timestamps (to be set by DiskManager)
     /// - No filters applied
+    /// - Zero triple indirect block pointer
     pub fn new(mode: FileType) -> Self {
         Self {
             mode,
@@ -90,6 +94,8 @@ impl Inode {
             filter_delta: false,
             filter_shuffle: false,
             filter_bitshuffle: false,
+            // Triple indirect block
+            triple_indirect: 0,
         }
     }
 }
@@ -113,6 +119,7 @@ mod kani_proofs {
         assert!(!inode.filter_delta);
         assert!(!inode.filter_shuffle);
         assert!(!inode.filter_bitshuffle);
+        assert_eq!(inode.triple_indirect, 0);
     }
 
     /// Prove that Inode::new(Directory) produces a valid directory inode.
@@ -124,6 +131,7 @@ mod kani_proofs {
         assert_eq!(inode.compressed_size, 0);
         assert_eq!(inode.blocks, [0u64; 12]);
         assert!(!inode.encrypted);
+        assert_eq!(inode.triple_indirect, 0);
     }
 
     /// Prove that no block pointer in a new inode is ever non-zero.
@@ -136,6 +144,7 @@ mod kani_proofs {
         for i in 0..12 {
             assert_eq!(inode.blocks[i], 0, "All block pointers must be zero in a new inode");
         }
+        assert_eq!(inode.triple_indirect, 0, "Triple indirect block pointer must be zero in a new inode");
     }
 }
 
@@ -150,10 +159,12 @@ mod tests {
         assert_eq!(file_inode.size, 0);
         assert_eq!(file_inode.compressed_size, 0);
         assert_eq!(file_inode.blocks, [0; 12]);
+        assert_eq!(file_inode.triple_indirect, 0);
         assert!(!file_inode.encrypted);
 
         let dir_inode = Inode::new(FileType::Directory);
         assert_eq!(dir_inode.mode, FileType::Directory);
+        assert_eq!(dir_inode.triple_indirect, 0);
     }
 
     #[test]
@@ -166,6 +177,7 @@ mod tests {
         inode.blocks[0] = 100;
         inode.blocks[10] = 200; // single indirect
         inode.blocks[11] = 300; // double indirect
+        inode.triple_indirect = 400; // triple indirect
         inode.encrypted = true;
         inode.encryption_nonce = [9u8; 24];
 
@@ -178,6 +190,7 @@ mod tests {
         assert_eq!(deserialized.size, 1048576);
         assert_eq!(deserialized.blocks[10], 200);
         assert_eq!(deserialized.blocks[11], 300);
+        assert_eq!(deserialized.triple_indirect, 400);
         assert_eq!(deserialized.encryption_nonce, [9u8; 24]);
     }
 }

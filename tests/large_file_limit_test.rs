@@ -34,12 +34,22 @@ fn test_large_file_success_and_boundary() {
     let decrypted = read_res.unwrap();
     assert_eq!(decrypted, plaintext, "Read data matches written data exactly");
 
-    // 6. Test FileTooLarge boundary by trying to write at > 1GB offset
-    // Max blocks: 10 direct + 512 single indirect + 262144 double indirect = 262666 blocks
-    // 262666 * 4096 = 1,075,879,936 bytes
-    let too_large_offset = 262666 * 4096;
-    let limit_res = dm.write_data(file_inode, too_large_offset, &[0u8], CompressionMode::Never);
-    assert!(limit_res.is_err(), "Writing past 1GB boundary should fail");
+    // 6. Test writing past 1GB boundary (requires triple indirect block)
+    // Double indirect capped at 262666 blocks (1,075,879,936 bytes).
+    // With Triple Indirect blocks, writing at > 1GB succeeds!
+    let past_1gb_offset = 262666 * 4096;
+    let beyond_1gb_res = dm.write_data(file_inode, past_1gb_offset, &[42u8], CompressionMode::Never);
+    assert!(beyond_1gb_res.is_ok(), "Writing beyond 1GB must succeed via triple indirect blocks: {:?}", beyond_1gb_res);
+
+    let inode = dm.read_inode(file_inode).expect("read inode");
+    assert!(inode.triple_indirect > 0, "Triple indirect block pointer must be allocated");
+    assert_eq!(inode.size, past_1gb_offset + 1);
+
+    // 7. Test FileTooLarge boundary past Triple Indirect limit (~513GB)
+    // Max blocks: 10 direct + 512 single + 262144 double + 134217728 triple = 134480394 blocks
+    let past_513gb_offset = 134480394u64 * 4096;
+    let limit_res = dm.write_data(file_inode, past_513gb_offset, &[0u8], CompressionMode::Never);
+    assert!(limit_res.is_err(), "Writing past 513GB boundary should fail");
     
     let err = limit_res.unwrap_err();
     println!("Caught expected limit error: {:?}", err);
@@ -47,7 +57,7 @@ fn test_large_file_success_and_boundary() {
     match err {
         oifs::disk::DiskManagerError::Io(io_err) => {
             assert_eq!(io_err.kind(), std::io::ErrorKind::FileTooLarge);
-            assert!(io_err.to_string().contains("File too large"));
+            assert!(io_err.to_string().contains("File too large (max 513GB)"));
         }
         other => panic!("Unexpected error type: {:?}", other),
     }

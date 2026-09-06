@@ -22,7 +22,7 @@ pub enum FileType {
 /// # Storage Layout
 /// - Inodes are stored in a contiguous inode table
 /// - Each inode occupies 256 bytes on disk
-/// - Maximum file size: 48KB (12 direct blocks × 4KB)
+/// - Maximum file size: ~513GB (10 direct + 512 single + 512^2 double + 512^3 triple indirect blocks)
 ///
 /// # Compression
 /// Files ≥ 8KB may be compressed using zstd:

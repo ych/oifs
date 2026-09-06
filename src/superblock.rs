@@ -78,7 +78,7 @@ impl SuperBlock {
         // Maximum inodes the bitmap can track (1 block = 4096 * 8 = 32,768 bits)
         let bitmap_max_inodes: u64 = 4096 * 8;
 
-        // Each inode occupies 128 bytes in the table → 32 inodes per block
+        // Standard inode capacity sizing (historical 128 bytes ratio yields standard 1024 blocks = 32,768 inodes)
         let inodes_per_block: u64 = 4096 / 128;
 
         // Maximum inode table blocks to fill the bitmap

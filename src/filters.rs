@@ -42,14 +42,14 @@ impl FilterPipeline {
     pub fn apply(&self, data: &[u8]) -> Vec<u8> {
         let mut cur = data.to_vec();
         for f in &self.filters {
-            cur = match f {
-                FilterType::Delta => delta_encode(&cur, self.typesize as usize),
-                FilterType::ByteShuffle => shuffle_encode(&cur, self.typesize as usize),
-                FilterType::BitShuffle => bitshuffle_encode(&cur, self.typesize as usize),
+            match f {
+                FilterType::Delta => delta_encode_inplace(&mut cur, self.typesize as usize),
+                FilterType::ByteShuffle => cur = shuffle_encode(&cur, self.typesize as usize),
+                FilterType::BitShuffle => cur = bitshuffle_encode(&cur, self.typesize as usize),
                 FilterType::TruncPrecision { prec_bits } => {
-                    trunc_precision_encode(&cur, self.typesize as usize, *prec_bits)
+                    trunc_precision_encode_inplace(&mut cur, self.typesize as usize, *prec_bits);
                 }
-            };
+            }
         }
         cur
     }
@@ -58,12 +58,12 @@ impl FilterPipeline {
     pub fn unapply(&self, data: &[u8]) -> Vec<u8> {
         let mut cur = data.to_vec();
         for f in self.filters.iter().rev() {
-            cur = match f {
-                FilterType::Delta => delta_decode(&cur, self.typesize as usize),
-                FilterType::ByteShuffle => shuffle_decode(&cur, self.typesize as usize),
-                FilterType::BitShuffle => bitshuffle_decode(&cur, self.typesize as usize),
-                FilterType::TruncPrecision { .. } => cur, // Truncation is lossy; unapply is identity
-            };
+            match f {
+                FilterType::Delta => delta_decode_inplace(&mut cur, self.typesize as usize),
+                FilterType::ByteShuffle => cur = shuffle_decode(&cur, self.typesize as usize),
+                FilterType::BitShuffle => cur = bitshuffle_decode(&cur, self.typesize as usize),
+                FilterType::TruncPrecision { .. } => {} // Truncation is lossy; unapply is identity
+            }
         }
         cur
     }
@@ -196,112 +196,91 @@ impl FilterConfig {
     }
 }
 
-fn delta_encode(data: &[u8], typesize: usize) -> Vec<u8> {
-    let mut out = vec![0; data.len()];
+/// In-place first-order delta encoding with zero allocations
+pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
     let n = data.len() / typesize;
+    if n <= 1 {
+        return;
+    }
 
     match typesize {
         1 => {
-            if n > 0 {
-                out[0] = data[0];
-            }
-            for i in 1..n {
-                out[i] = data[i].wrapping_sub(data[i - 1]);
+            for i in (1..n).rev() {
+                data[i] = data[i].wrapping_sub(data[i - 1]);
             }
         }
         2 => {
-            if n > 0 {
-                out[..2].copy_from_slice(&data[..2]);
-            }
-            for i in 1..n {
+            for i in (1..n).rev() {
                 let curr = u16::from_le_bytes(data[i * 2..i * 2 + 2].try_into().unwrap());
                 let prev = u16::from_le_bytes(data[(i - 1) * 2..i * 2].try_into().unwrap());
-                out[i * 2..i * 2 + 2].copy_from_slice(&curr.wrapping_sub(prev).to_le_bytes());
+                data[i * 2..i * 2 + 2].copy_from_slice(&curr.wrapping_sub(prev).to_le_bytes());
             }
         }
         4 => {
-            if n > 0 {
-                out[..4].copy_from_slice(&data[..4]);
-            }
-            for i in 1..n {
+            for i in (1..n).rev() {
                 let curr = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
                 let prev = u32::from_le_bytes(data[(i - 1) * 4..i * 4].try_into().unwrap());
-                out[i * 4..i * 4 + 4].copy_from_slice(&curr.wrapping_sub(prev).to_le_bytes());
+                data[i * 4..i * 4 + 4].copy_from_slice(&curr.wrapping_sub(prev).to_le_bytes());
             }
         }
         8 => {
-            if n > 0 {
-                out[..8].copy_from_slice(&data[..8]);
-            }
-            for i in 1..n {
+            for i in (1..n).rev() {
                 let curr = u64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().unwrap());
                 let prev = u64::from_le_bytes(data[(i - 1) * 8..i * 8].try_into().unwrap());
-                out[i * 8..i * 8 + 8].copy_from_slice(&curr.wrapping_sub(prev).to_le_bytes());
+                data[i * 8..i * 8 + 8].copy_from_slice(&curr.wrapping_sub(prev).to_le_bytes());
             }
         }
-        _ => unreachable!(),
+        _ => {}
+    }
+}
+
+/// In-place first-order delta decoding with zero allocations
+pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
+    let n = data.len() / typesize;
+    if n <= 1 {
+        return;
     }
 
-    // Copy tail
-    let tail_start = n * typesize;
-    if tail_start < data.len() {
-        out[tail_start..].copy_from_slice(&data[tail_start..]);
+    match typesize {
+        1 => {
+            for i in 1..n {
+                data[i] = data[i - 1].wrapping_add(data[i]);
+            }
+        }
+        2 => {
+            for i in 1..n {
+                let prev = u16::from_le_bytes(data[(i - 1) * 2..i * 2].try_into().unwrap());
+                let curr = u16::from_le_bytes(data[i * 2..i * 2 + 2].try_into().unwrap());
+                data[i * 2..i * 2 + 2].copy_from_slice(&prev.wrapping_add(curr).to_le_bytes());
+            }
+        }
+        4 => {
+            for i in 1..n {
+                let prev = u32::from_le_bytes(data[(i - 1) * 4..i * 4].try_into().unwrap());
+                let curr = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
+                data[i * 4..i * 4 + 4].copy_from_slice(&prev.wrapping_add(curr).to_le_bytes());
+            }
+        }
+        8 => {
+            for i in 1..n {
+                let prev = u64::from_le_bytes(data[(i - 1) * 8..i * 8].try_into().unwrap());
+                let curr = u64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().unwrap());
+                data[i * 8..i * 8 + 8].copy_from_slice(&prev.wrapping_add(curr).to_le_bytes());
+            }
+        }
+        _ => {}
     }
+}
 
+pub fn delta_encode(data: &[u8], typesize: usize) -> Vec<u8> {
+    let mut out = data.to_vec();
+    delta_encode_inplace(&mut out, typesize);
     out
 }
 
-fn delta_decode(data: &[u8], typesize: usize) -> Vec<u8> {
-    let mut out = vec![0; data.len()];
-    let n = data.len() / typesize;
-
-    match typesize {
-        1 => {
-            if n > 0 {
-                out[0] = data[0];
-            }
-            for i in 1..n {
-                out[i] = out[i - 1].wrapping_add(data[i]);
-            }
-        }
-        2 => {
-            if n > 0 {
-                out[..2].copy_from_slice(&data[..2]);
-            }
-            for i in 1..n {
-                let prev = u16::from_le_bytes(out[(i - 1) * 2..i * 2].try_into().unwrap());
-                let curr_delta = u16::from_le_bytes(data[i * 2..i * 2 + 2].try_into().unwrap());
-                out[i * 2..i * 2 + 2].copy_from_slice(&prev.wrapping_add(curr_delta).to_le_bytes());
-            }
-        }
-        4 => {
-            if n > 0 {
-                out[..4].copy_from_slice(&data[..4]);
-            }
-            for i in 1..n {
-                let prev = u32::from_le_bytes(out[(i - 1) * 4..i * 4].try_into().unwrap());
-                let curr_delta = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
-                out[i * 4..i * 4 + 4].copy_from_slice(&prev.wrapping_add(curr_delta).to_le_bytes());
-            }
-        }
-        8 => {
-            if n > 0 {
-                out[..8].copy_from_slice(&data[..8]);
-            }
-            for i in 1..n {
-                let prev = u64::from_le_bytes(out[(i - 1) * 8..i * 8].try_into().unwrap());
-                let curr_delta = u64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().unwrap());
-                out[i * 8..i * 8 + 8].copy_from_slice(&prev.wrapping_add(curr_delta).to_le_bytes());
-            }
-        }
-        _ => unreachable!(),
-    }
-
-    let tail_start = n * typesize;
-    if tail_start < data.len() {
-        out[tail_start..].copy_from_slice(&data[tail_start..]);
-    }
-
+pub fn delta_decode(data: &[u8], typesize: usize) -> Vec<u8> {
+    let mut out = data.to_vec();
+    delta_decode_inplace(&mut out, typesize);
     out
 }
 
@@ -398,12 +377,11 @@ pub fn bitshuffle_decode(data: &[u8], typesize: usize) -> Vec<u8> {
     shuffle_decode(&unbit, typesize)
 }
 
-/// Truncate mantissa precision for floating point numbers (lossy compression filter)
-pub fn trunc_precision_encode(data: &[u8], typesize: usize, prec_bits: i8) -> Vec<u8> {
+/// In-place mantissa precision truncation for floating point numbers
+pub fn trunc_precision_encode_inplace(data: &mut [u8], typesize: usize, prec_bits: i8) {
     if data.is_empty() || prec_bits <= 0 {
-        return data.to_vec();
+        return;
     }
-    let mut out = data.to_vec();
     match typesize {
         4 => {
             // f32: 1 sign, 8 exponent, 23 mantissa
@@ -413,8 +391,8 @@ pub fn trunc_precision_encode(data: &[u8], typesize: usize, prec_bits: i8) -> Ve
                 let mask = !((1u32 << bits_to_zero) - 1);
                 let n = data.len() / 4;
                 for i in 0..n {
-                    let val = u32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
-                    out[i * 4..i * 4 + 4].copy_from_slice(&(val & mask).to_le_bytes());
+                    let val = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
+                    data[i * 4..i * 4 + 4].copy_from_slice(&(val & mask).to_le_bytes());
                 }
             }
         }
@@ -426,13 +404,19 @@ pub fn trunc_precision_encode(data: &[u8], typesize: usize, prec_bits: i8) -> Ve
                 let mask = !((1u64 << bits_to_zero) - 1);
                 let n = data.len() / 8;
                 for i in 0..n {
-                    let val = u64::from_le_bytes(out[i * 8..i * 8 + 8].try_into().unwrap());
-                    out[i * 8..i * 8 + 8].copy_from_slice(&(val & mask).to_le_bytes());
+                    let val = u64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().unwrap());
+                    data[i * 8..i * 8 + 8].copy_from_slice(&(val & mask).to_le_bytes());
                 }
             }
         }
         _ => {}
     }
+}
+
+/// Truncate mantissa precision for floating point numbers (lossy compression filter)
+pub fn trunc_precision_encode(data: &[u8], typesize: usize, prec_bits: i8) -> Vec<u8> {
+    let mut out = data.to_vec();
+    trunc_precision_encode_inplace(&mut out, typesize, prec_bits);
     out
 }
 

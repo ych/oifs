@@ -1,39 +1,22 @@
-pub struct Bitmap<'a> {
-    data: &'a mut [u8],
+/// Read-only view over a bitmap slice
+pub struct BitmapRef<'a> {
+    data: &'a [u8],
 }
 
-impl<'a> Bitmap<'a> {
-    pub fn new(data: &'a mut [u8]) -> Self {
+impl<'a> BitmapRef<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
         Self { data }
     }
 
-    /// Set bit at index to 1 (used)
-    pub fn set(&mut self, index: usize) {
-        let byte_index = index / 8;
-        let bit_index = index % 8;
-        if byte_index < self.data.len() {
-            self.data[byte_index] |= 1 << bit_index;
-        }
-    }
-
-    /// Set bit at index to 0 (free)
-    pub fn clear(&mut self, index: usize) {
-        let byte_index = index / 8;
-        let bit_index = index % 8;
-        if byte_index < self.data.len() {
-            self.data[byte_index] &= !(1 << bit_index);
-        }
-    }
-
     /// Check if bit is set (used)
+    #[inline]
     pub fn get(&self, index: usize) -> bool {
         let byte_index = index / 8;
         let bit_index = index % 8;
         if byte_index < self.data.len() {
             (self.data[byte_index] & (1 << bit_index)) != 0
         } else {
-            false // Out of bounds is considered "not set" or should be error? 
-                  // For safety, let's say false, but caller should check bounds.
+            false
         }
     }
 
@@ -61,6 +44,49 @@ impl<'a> Bitmap<'a> {
         None
     }
 }
+
+pub struct Bitmap<'a> {
+    data: &'a mut [u8],
+}
+
+impl<'a> Bitmap<'a> {
+    pub fn new(data: &'a mut [u8]) -> Self {
+        Self { data }
+    }
+
+    /// Set bit at index to 1 (used)
+    #[inline]
+    pub fn set(&mut self, index: usize) {
+        let byte_index = index / 8;
+        let bit_index = index % 8;
+        if byte_index < self.data.len() {
+            self.data[byte_index] |= 1 << bit_index;
+        }
+    }
+
+    /// Set bit at index to 0 (free)
+    #[inline]
+    pub fn clear(&mut self, index: usize) {
+        let byte_index = index / 8;
+        let bit_index = index % 8;
+        if byte_index < self.data.len() {
+            self.data[byte_index] &= !(1 << bit_index);
+        }
+    }
+
+    /// Check if bit is set (used)
+    #[inline]
+    pub fn get(&self, index: usize) -> bool {
+        BitmapRef::new(self.data).get(index)
+    }
+
+    /// Find first bit that is 0 (free)
+    #[inline]
+    pub fn find_first_free(&self) -> Option<usize> {
+        BitmapRef::new(self.data).find_first_free()
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

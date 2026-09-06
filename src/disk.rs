@@ -414,8 +414,18 @@ impl DiskManager {
         let dib_id = inode.blocks[11];
         if dib_id != 0 {
             blks.push(dib_id);
+            let physical_size = if inode.compressed_size > 0 { inode.compressed_size } else { inode.size };
+            let total_logical_blocks = (physical_size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
+            let max_s_entries = if total_logical_blocks > 522 {
+                let diff = total_logical_blocks - 522;
+                let needed = ((diff + 511) / 512) as usize;
+                needed.min(512)
+            } else {
+                512 // Fallback if size was 0 or reset before collect
+            };
+
             if let Some(slice) = Self::get_block_from_map(mmap, dib_id) {
-                for s_idx in 0..512 {
+                for s_idx in 0..max_s_entries {
                     let s_start = s_idx * 8;
                     let mut sib_bytes = [0u8; 8];
                     sib_bytes.copy_from_slice(&slice[s_start..s_start + 8]);
@@ -442,8 +452,18 @@ impl DiskManager {
         let tib_id = inode.triple_indirect;
         if tib_id != 0 {
             blks.push(tib_id);
+            let physical_size = if inode.compressed_size > 0 { inode.compressed_size } else { inode.size };
+            let total_logical_blocks = (physical_size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
+            let max_t_entries = if total_logical_blocks > 262666 {
+                let diff = total_logical_blocks - 262666;
+                let needed = ((diff + (512 * 512) - 1) / (512 * 512)) as usize;
+                needed.min(512)
+            } else {
+                512 // Fallback if size was 0 or reset before collect
+            };
+
             if let Some(slice) = Self::get_block_from_map(mmap, tib_id) {
-                for t_idx in 0..512 {
+                for t_idx in 0..max_t_entries {
                     let t_start = t_idx * 8;
                     let mut dib_bytes = [0u8; 8];
                     dib_bytes.copy_from_slice(&slice[t_start..t_start + 8]);
@@ -480,8 +500,12 @@ impl DiskManager {
         blks
     }
 
-    /// Creates a new file in a directory
-    pub fn create_file(&self, parent_inode_id: u64, name: &str) -> Result<u64, DiskManagerError> {
+    fn create_entry_internal(
+        &self,
+        parent_inode_id: u64,
+        name: &str,
+        file_type: crate::inode::FileType,
+    ) -> Result<u64, DiskManagerError> {
         let mut guard = self.inner.lock().unwrap();
 
         // 1. Read Parent
@@ -495,7 +519,7 @@ impl DiskManager {
             return Err(DiskManagerError::Io(std::io::Error::other("No block")));
         }
 
-        // Check if file already exists
+        // Check if file or directory already exists
         let stored_name = if let Some(key) = &guard.encryption_key {
             crate::encryption::encrypt_filename(key, parent_inode_id, name).unwrap_or_else(|_| name.to_string())
         } else {
@@ -505,9 +529,10 @@ impl DiskManager {
         if Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &stored_name)?.is_some()
             || Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.is_some()
         {
+            let type_str = if file_type == crate::inode::FileType::Directory { "Directory" } else { "File" };
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
-                format!("File '{}' already exists", name),
+                format!("{} '{}' already exists", type_str, name),
             )));
         }
 
@@ -515,16 +540,28 @@ impl DiskManager {
         let inode_bitmap = guard.superblock.inode_bitmap_block;
         let bitmap_slice = Self::get_block_mut_from_map(&mut guard.mmap, inode_bitmap).unwrap();
         let mut allocator = SimpleBlockAllocator::new(bitmap_slice, 0);
-        let file_inode_id = allocator.allocate()?;
+        let new_inode_id = allocator.allocate()?;
 
-        // 3. Init Inode
-        let mut file_inode = Inode::new(crate::inode::FileType::File);
-        file_inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        Self::write_inode_internal(&mut guard, file_inode_id, &file_inode)?;
+        // 3. Init Inode with proper timestamps
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let mut new_inode = Inode::new(file_type);
+        new_inode.created_at = now;
+        new_inode.modified_at = now;
+
+        if file_type == crate::inode::FileType::Directory {
+            let data_bitmap = guard.superblock.data_bitmap_block;
+            let data_start = guard.superblock.data_block_start;
+            let data_slice = Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap).unwrap();
+            let mut da = SimpleBlockAllocator::new(data_slice, data_start);
+            let dir_data_block = da.allocate()?;
+            new_inode.blocks[0] = dir_data_block;
+        }
+
+        Self::write_inode_internal(&mut guard, new_inode_id, &new_inode)?;
 
         // 4. Update Parent Dir
         let entry = crate::directory::DirectoryEntry {
-            inode: file_inode_id,
+            inode: new_inode_id,
             hash: 0,
             name: stored_name,
         };
@@ -532,75 +569,21 @@ impl DiskManager {
 
         // 5. Update Parent Mtime
         let mut parent_inode = parent_inode;
-        parent_inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        parent_inode.modified_at = now;
         Self::write_inode_internal(&mut guard, parent_inode_id, &parent_inode)?;
 
         guard.mmap.flush()?;
-        Ok(file_inode_id)
+        Ok(new_inode_id)
+    }
+
+    /// Creates a new file in a directory
+    pub fn create_file(&self, parent_inode_id: u64, name: &str) -> Result<u64, DiskManagerError> {
+        self.create_entry_internal(parent_inode_id, name, crate::inode::FileType::File)
     }
 
     /// Creates a new directory in a parent directory
     pub fn create_directory(&self, parent_inode_id: u64, name: &str) -> Result<u64, DiskManagerError> {
-        let mut guard = self.inner.lock().unwrap();
-
-        let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
-        if parent_inode.mode != crate::inode::FileType::Directory {
-            return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
-        }
-
-        let dir_block_id = parent_inode.blocks[0];
-        if dir_block_id == 0 {
-            return Err(DiskManagerError::Io(std::io::Error::other("No block")));
-        }
-
-        let stored_name = if let Some(key) = &guard.encryption_key {
-            crate::encryption::encrypt_filename(key, parent_inode_id, name).unwrap_or_else(|_| name.to_string())
-        } else {
-            name.to_string()
-        };
-
-        if Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &stored_name)?.is_some()
-            || Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.is_some()
-        {
-            return Err(DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!("Directory '{}' already exists", name),
-            )));
-        }
-
-        // Alloc Inode
-        let inode_bitmap = guard.superblock.inode_bitmap_block;
-        let bitmap_slice = Self::get_block_mut_from_map(&mut guard.mmap, inode_bitmap).unwrap();
-        let mut ia = SimpleBlockAllocator::new(bitmap_slice, 0);
-        let dir_inode_id = ia.allocate()?;
-
-        // Alloc Data
-        let data_bitmap = guard.superblock.data_bitmap_block;
-        let data_start = guard.superblock.data_block_start;
-        let data_slice = Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap).unwrap();
-        let mut da = SimpleBlockAllocator::new(data_slice, data_start);
-        let dir_data_block = da.allocate()?;
-
-        // Init Inode
-        let mut dir_inode = Inode::new(crate::inode::FileType::Directory);
-        dir_inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        dir_inode.blocks[0] = dir_data_block;
-        Self::write_inode_internal(&mut guard, dir_inode_id, &dir_inode)?;
-
-        // Add to Parent
-        let entry = crate::directory::DirectoryEntry {
-            inode: dir_inode_id,
-            hash: 0,
-            name: stored_name,
-        };
-        Self::append_dir_entry_to_block(&mut guard.mmap, dir_block_id, &entry)?;
-
-        let mut parent_inode = parent_inode;
-        parent_inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        Self::write_inode_internal(&mut guard, parent_inode_id, &parent_inode)?;
-
-        guard.mmap.flush()?;
-        Ok(dir_inode_id)
+        self.create_entry_internal(parent_inode_id, name, crate::inode::FileType::Directory)
     }
 
     /// Looks up a file/directory by name within a parent directory
@@ -718,6 +701,29 @@ impl DiskManager {
         self.write_data_with_filters(inode_id, file_offset, data, compression_mode, crate::filters::FilterConfig::none())
     }
 
+    fn write_buffer_at_offset(
+        guard: &mut DiskManagerInner,
+        inode: &mut Inode,
+        mut current_offset: u64,
+        data: &[u8],
+    ) -> Result<u64, DiskManagerError> {
+        let mut written = 0;
+        while written < data.len() {
+            let blk_idx = (current_offset / BLOCK_SIZE as u64) as usize;
+            let blk_id = Self::get_or_alloc_block(guard, inode, blk_idx, true)?;
+
+            let in_blk_off = (current_offset % BLOCK_SIZE as u64) as usize;
+            let to_write = std::cmp::min(data.len() - written, BLOCK_SIZE - in_blk_off);
+
+            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk_id) {
+                slice[in_blk_off..in_blk_off + to_write].copy_from_slice(&data[written..written + to_write]);
+            }
+            written += to_write;
+            current_offset += to_write as u64;
+        }
+        Ok(current_offset)
+    }
+
     fn write_data_from_start_internal(
         guard: &mut DiskManagerInner,
         inode_id: u64,
@@ -780,22 +786,7 @@ impl DiskManager {
             final_data.as_ref()
         };
 
-        let mut written = 0;
-        let mut current_offset = 0u64;
-
-        while written < write_buffer.len() {
-            let blk_idx = (current_offset / BLOCK_SIZE as u64) as usize;
-            let blk_id = Self::get_or_alloc_block(guard, inode, blk_idx, true)?;
-
-            let in_blk_off = (current_offset % BLOCK_SIZE as u64) as usize;
-            let to_write = std::cmp::min(write_buffer.len() - written, BLOCK_SIZE - in_blk_off);
-
-            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk_id) {
-                slice[in_blk_off..in_blk_off+to_write].copy_from_slice(&write_buffer[written..written+to_write]);
-            }
-            written += to_write;
-            current_offset += to_write as u64;
-        }
+        Self::write_buffer_at_offset(guard, inode, 0, write_buffer)?;
 
         if is_compressed {
             inode.size = data.len() as u64; // Logical size
@@ -861,22 +852,8 @@ impl DiskManager {
                 let new_frame = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
                     .map_err(DiskManagerError::Io)?;
 
-                let mut written = 0;
-                let mut current_offset = inode.compressed_size;
-
-                while written < new_frame.len() {
-                    let blk_idx = (current_offset / BLOCK_SIZE as u64) as usize;
-                    let blk_id = Self::get_or_alloc_block(&mut guard, &mut inode, blk_idx, true)?;
-
-                    let in_blk_off = (current_offset % BLOCK_SIZE as u64) as usize;
-                    let to_write = std::cmp::min(new_frame.len() - written, BLOCK_SIZE - in_blk_off);
-
-                    if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk_id) {
-                        slice[in_blk_off..in_blk_off + to_write].copy_from_slice(&new_frame[written..written + to_write]);
-                    }
-                    written += to_write;
-                    current_offset += to_write as u64;
-                }
+                let append_offset = inode.compressed_size;
+                Self::write_buffer_at_offset(&mut guard, &mut inode, append_offset, &new_frame)?;
 
                 inode.size += data.len() as u64;
                 inode.compressed_size += new_frame.len() as u64;
@@ -931,24 +908,8 @@ impl DiskManager {
         }
 
         // Case 3: Raw (uncompressed) file append or random write
-        let mut written = 0;
-        let mut current_offset = file_offset;
-
-        while written < data.len() {
-            let blk_idx = (current_offset / BLOCK_SIZE as u64) as usize;
-            let blk_id = Self::get_or_alloc_block(&mut guard, &mut inode, blk_idx, true)?;
-
-            let in_blk_off = (current_offset % BLOCK_SIZE as u64) as usize;
-            let to_write = std::cmp::min(data.len() - written, BLOCK_SIZE - in_blk_off);
-
-            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk_id) {
-                slice[in_blk_off..in_blk_off + to_write].copy_from_slice(&data[written..written + to_write]);
-            }
-            written += to_write;
-            current_offset += to_write as u64;
-        }
-
-        inode.size = std::cmp::max(inode.size, current_offset);
+        let final_offset = Self::write_buffer_at_offset(&mut guard, &mut inode, file_offset, data)?;
+        inode.size = std::cmp::max(inode.size, final_offset);
         inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         Self::write_inode_internal(&mut guard, inode_id, &inode)?;
         guard.mmap.flush()?;
@@ -982,6 +943,53 @@ impl DiskManager {
         da.allocate().map_err(DiskManagerError::Allocator)
     }
 
+    #[inline]
+    fn read_block_ptr(mmap: &MmapMut, block_id: u64, entry_idx: usize) -> u64 {
+        if let Some(slice) = Self::get_block_from_map(mmap, block_id) {
+            let start = entry_idx * 8;
+            let mut blk_bytes = [0u8; 8];
+            blk_bytes.copy_from_slice(&slice[start..start + 8]);
+            u64::from_le_bytes(blk_bytes)
+        } else {
+            0
+        }
+    }
+
+    #[inline]
+    fn write_block_ptr(mmap: &mut MmapMut, block_id: u64, entry_idx: usize, ptr: u64) {
+        if let Some(slice) = Self::get_block_mut_from_map(mmap, block_id) {
+            let start = entry_idx * 8;
+            slice[start..start + 8].copy_from_slice(&ptr.to_le_bytes());
+        }
+    }
+
+    fn alloc_and_zero_block(guard: &mut DiskManagerInner) -> Result<u64, DiskManagerError> {
+        let blk = Self::allocate_block(guard)?;
+        if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk) {
+            slice.fill(0);
+        }
+        Ok(blk)
+    }
+
+    fn get_or_alloc_indirect_child(
+        guard: &mut DiskManagerInner,
+        parent_block_id: u64,
+        entry_idx: usize,
+        allocate: bool,
+        is_intermediate: bool,
+    ) -> Result<u64, DiskManagerError> {
+        let mut child_id = Self::read_block_ptr(&guard.mmap, parent_block_id, entry_idx);
+        if child_id == 0 && allocate {
+            child_id = if is_intermediate {
+                Self::alloc_and_zero_block(guard)?
+            } else {
+                Self::allocate_block(guard)?
+            };
+            Self::write_block_ptr(&mut guard.mmap, parent_block_id, entry_idx, child_id);
+        }
+        Ok(child_id)
+    }
+
     fn get_or_alloc_block(
         guard: &mut DiskManagerInner,
         inode: &mut Inode,
@@ -1001,36 +1009,11 @@ impl DiskManager {
         // Single Indirect block case (indices 10..522)
         if logical_block_idx < 10 + 512 {
             let idx = logical_block_idx - 10;
-            let mut sib_id = inode.blocks[10];
-            if sib_id == 0 {
+            if inode.blocks[10] == 0 {
                 if !allocate { return Ok(0); }
-                sib_id = Self::allocate_block(guard)?;
-                inode.blocks[10] = sib_id;
-                
-                // Zero out the newly allocated single indirect block
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
-                    slice.fill(0);
-                }
+                inode.blocks[10] = Self::alloc_and_zero_block(guard)?;
             }
-
-            let start = idx * 8;
-            let mut blk_id = 0;
-            
-            // Read existing pointer using immutable borrow
-            if let Some(slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
-                let mut blk_bytes = [0u8; 8];
-                blk_bytes.copy_from_slice(&slice[start..start+8]);
-                blk_id = u64::from_le_bytes(blk_bytes);
-            }
-
-            // Allocate and write back if needed
-            if blk_id == 0 && allocate {
-                blk_id = Self::allocate_block(guard)?;
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
-                    slice[start..start+8].copy_from_slice(&blk_id.to_le_bytes());
-                }
-            }
-            return Ok(blk_id);
+            return Self::get_or_alloc_indirect_child(guard, inode.blocks[10], idx, allocate, false);
         }
 
         // Double Indirect block case (indices 522..262666)
@@ -1039,60 +1022,15 @@ impl DiskManager {
             let s_idx = idx / 512;
             let d_idx = idx % 512;
 
-            let mut dib_id = inode.blocks[11];
-            if dib_id == 0 {
+            if inode.blocks[11] == 0 {
                 if !allocate { return Ok(0); }
-                dib_id = Self::allocate_block(guard)?;
-                inode.blocks[11] = dib_id;
-                
-                // Zero out the newly allocated double indirect block
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, dib_id) {
-                    slice.fill(0);
-                }
+                inode.blocks[11] = Self::alloc_and_zero_block(guard)?;
             }
-
-            // Get or allocate single indirect block within double indirect block
-            let mut sib_id = 0;
-            let s_start = s_idx * 8;
-            
-            // Read sib_id immutably
-            if let Some(slice) = Self::get_block_from_map(&guard.mmap, dib_id) {
-                let mut sib_bytes = [0u8; 8];
-                sib_bytes.copy_from_slice(&slice[s_start..s_start+8]);
-                sib_id = u64::from_le_bytes(sib_bytes);
-            }
-
+            let sib_id = Self::get_or_alloc_indirect_child(guard, inode.blocks[11], s_idx, allocate, true)?;
             if sib_id == 0 {
-                if !allocate { return Ok(0); }
-                sib_id = Self::allocate_block(guard)?;
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, dib_id) {
-                    slice[s_start..s_start+8].copy_from_slice(&sib_id.to_le_bytes());
-                }
-                
-                // Zero out the newly allocated single indirect block
-                if let Some(s_slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
-                    s_slice.fill(0);
-                }
+                return Ok(0);
             }
-
-            // Get or allocate data block within single indirect block
-            let d_start = d_idx * 8;
-            let mut blk_id = 0;
-            
-            // Read blk_id immutably
-            if let Some(slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
-                let mut blk_bytes = [0u8; 8];
-                blk_bytes.copy_from_slice(&slice[d_start..d_start+8]);
-                blk_id = u64::from_le_bytes(blk_bytes);
-            }
-
-            if blk_id == 0 && allocate {
-                blk_id = Self::allocate_block(guard)?;
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
-                    slice[d_start..d_start+8].copy_from_slice(&blk_id.to_le_bytes());
-                }
-            }
-            return Ok(blk_id);
+            return Self::get_or_alloc_indirect_child(guard, sib_id, d_idx, allocate, false);
         }
 
         // Triple Indirect block case (indices 262666 .. 134480394, up to ~513GB)
@@ -1104,74 +1042,19 @@ impl DiskManager {
             let d_idx = rem / 512;
             let s_idx = rem % 512;
 
-            let mut tib_id = inode.triple_indirect;
-            if tib_id == 0 {
+            if inode.triple_indirect == 0 {
                 if !allocate { return Ok(0); }
-                tib_id = Self::allocate_block(guard)?;
-                inode.triple_indirect = tib_id;
-
-                // Zero out the newly allocated triple indirect block
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, tib_id) {
-                    slice.fill(0);
-                }
+                inode.triple_indirect = Self::alloc_and_zero_block(guard)?;
             }
-
-            // Level 2: Double indirect block within triple indirect block
-            let mut dib_id = 0;
-            let t_start = t_idx * 8;
-            if let Some(slice) = Self::get_block_from_map(&guard.mmap, tib_id) {
-                let mut dib_bytes = [0u8; 8];
-                dib_bytes.copy_from_slice(&slice[t_start..t_start + 8]);
-                dib_id = u64::from_le_bytes(dib_bytes);
-            }
-
+            let dib_id = Self::get_or_alloc_indirect_child(guard, inode.triple_indirect, t_idx, allocate, true)?;
             if dib_id == 0 {
-                if !allocate { return Ok(0); }
-                dib_id = Self::allocate_block(guard)?;
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, tib_id) {
-                    slice[t_start..t_start + 8].copy_from_slice(&dib_id.to_le_bytes());
-                }
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, dib_id) {
-                    slice.fill(0);
-                }
+                return Ok(0);
             }
-
-            // Level 3: Single indirect block within double indirect block
-            let mut sib_id = 0;
-            let d_start = d_idx * 8;
-            if let Some(slice) = Self::get_block_from_map(&guard.mmap, dib_id) {
-                let mut sib_bytes = [0u8; 8];
-                sib_bytes.copy_from_slice(&slice[d_start..d_start + 8]);
-                sib_id = u64::from_le_bytes(sib_bytes);
-            }
-
+            let sib_id = Self::get_or_alloc_indirect_child(guard, dib_id, d_idx, allocate, true)?;
             if sib_id == 0 {
-                if !allocate { return Ok(0); }
-                sib_id = Self::allocate_block(guard)?;
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, dib_id) {
-                    slice[d_start..d_start + 8].copy_from_slice(&sib_id.to_le_bytes());
-                }
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
-                    slice.fill(0);
-                }
+                return Ok(0);
             }
-
-            // Level 4: Data block within single indirect block
-            let s_start = s_idx * 8;
-            let mut blk_id = 0;
-            if let Some(slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
-                let mut blk_bytes = [0u8; 8];
-                blk_bytes.copy_from_slice(&slice[s_start..s_start + 8]);
-                blk_id = u64::from_le_bytes(blk_bytes);
-            }
-
-            if blk_id == 0 && allocate {
-                blk_id = Self::allocate_block(guard)?;
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, sib_id) {
-                    slice[s_start..s_start + 8].copy_from_slice(&blk_id.to_le_bytes());
-                }
-            }
-            return Ok(blk_id);
+            return Self::get_or_alloc_indirect_child(guard, sib_id, s_idx, allocate, false);
         }
 
         // Limit exceeded
@@ -1356,9 +1239,8 @@ impl DiskManager {
         let bitmap_slice = Self::get_block_from_map(&guard.mmap, bitmap_block)
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("Bitmap not found")))?;
         
-        // Create mutable copy for Bitmap analysis (it requires &mut but we only read)
-        let mut bitmap_data = bitmap_slice.to_vec();
-        let bitmap = crate::bitmap::Bitmap::new(&mut bitmap_data);
+        // Zero-allocation BitmapRef analysis
+        let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
         let total_blocks = (sb.block_count - sb.data_block_start) as usize;
         
         let mut used_blocks = 0;
@@ -1470,8 +1352,7 @@ impl DiskManager {
             let guard = temp_dm.inner.lock().unwrap();
             let ib_blk = guard.superblock.inode_bitmap_block;
             if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, ib_blk) {
-                let mut bitmap_copy = bitmap_slice.to_vec();
-                let bitmap = crate::bitmap::Bitmap::new(&mut bitmap_copy);
+                let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
                 for i in 0..sb.inode_count as usize {
                     if bitmap.get(i) {
                         allocated_inodes.push(i as u64);
@@ -1604,8 +1485,7 @@ impl DiskManager {
         let mut allocated_inodes = std::collections::HashSet::new();
         let ib_blk = sb.inode_bitmap_block;
         if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, ib_blk) {
-            let mut bitmap_copy = bitmap_slice.to_vec();
-            let bitmap = crate::bitmap::Bitmap::new(&mut bitmap_copy);
+            let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
             for i in 0..sb.inode_count as usize {
                 if bitmap.get(i) {
                     allocated_inodes.insert(i as u64);
@@ -1618,8 +1498,7 @@ impl DiskManager {
         let db_blk = sb.data_bitmap_block;
         let db_start = sb.data_block_start;
         if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, db_blk) {
-            let mut bitmap_copy = bitmap_slice.to_vec();
-            let bitmap = crate::bitmap::Bitmap::new(&mut bitmap_copy);
+            let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
             let max_data_blocks = sb.block_count.saturating_sub(db_start);
             for i in 0..max_data_blocks as usize {
                 if bitmap.get(i) {

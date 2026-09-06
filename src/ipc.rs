@@ -223,6 +223,32 @@ pub enum IpcRequest {
     },
 }
 
+impl IpcRequest {
+    /// Returns the short operation name without formatting debug strings or allocating memory
+    pub fn name(&self) -> &'static str {
+        match self {
+            IpcRequest::Ping => "Ping",
+            IpcRequest::CreateFile { .. } => "CreateFile",
+            IpcRequest::CreateDirectory { .. } => "CreateDirectory",
+            IpcRequest::Lookup { .. } => "Lookup",
+            IpcRequest::ReadData { .. } => "ReadData",
+            IpcRequest::WriteData { .. } => "WriteData",
+            IpcRequest::DeleteFile { .. } => "DeleteFile",
+            IpcRequest::ResolvePath { .. } => "ResolvePath",
+            IpcRequest::ResolveParent { .. } => "ResolveParent",
+            IpcRequest::ReadInode { .. } => "ReadInode",
+            IpcRequest::ListDir { .. } => "ListDir",
+            IpcRequest::GetSuperblock => "GetSuperblock",
+            IpcRequest::Flush => "Flush",
+            IpcRequest::AnalyzeFragmentation => "AnalyzeFragmentation",
+            IpcRequest::Defragment { .. } => "Defragment",
+            IpcRequest::VerifyIntegrity => "VerifyIntegrity",
+            IpcRequest::GetBlockCopy { .. } => "GetBlockCopy",
+        }
+    }
+}
+
+
 /// Data returned on successful IPC request execution
 #[derive(Debug, Serialize, Deserialize)]
 pub enum IpcResponseData {
@@ -563,13 +589,7 @@ impl IpcServer {
         let handle = thread::spawn(move || {
             let _ = stream.set_nonblocking(false);
             while let Ok(req) = read_framed::<_, IpcRequest>(&mut stream) {
-                let req_name = format!("{:?}", req);
-                let short_name = req_name
-                    .split('{')
-                    .next()
-                    .unwrap_or("Req")
-                    .trim()
-                    .to_string();
+                let short_name = req.name().to_string();
 
                 let resp_data = Self::handle_request(&dm_worker, req);
                 let resp = match resp_data {

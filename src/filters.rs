@@ -95,7 +95,7 @@ pub fn blosc2_decompress(compressed: &[u8]) -> Result<Vec<u8>, blosc2::Error> {
 }
 
 /// Configuration for pre-compression data filters (compact representation stored in Inode metadata).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FilterConfig {
     /// Element size in bytes for shuffle/delta (1, 2, 4, or 8). 0 = disabled.
     pub typesize: u8,
@@ -106,17 +106,6 @@ pub struct FilterConfig {
     /// Enable bit shuffle
     #[serde(default)]
     pub bitshuffle: bool,
-}
-
-impl Default for FilterConfig {
-    fn default() -> Self {
-        Self {
-            typesize: 0,
-            delta: false,
-            shuffle: false,
-            bitshuffle: false,
-        }
-    }
 }
 
 impl FilterConfig {
@@ -211,23 +200,37 @@ pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
         }
         2 => {
             for i in (1..n).rev() {
-                let curr = u16::from_le_bytes(data[i * 2..i * 2 + 2].try_into().unwrap());
-                let prev = u16::from_le_bytes(data[(i - 1) * 2..i * 2].try_into().unwrap());
-                data[i * 2..i * 2 + 2].copy_from_slice(&curr.wrapping_sub(prev).to_le_bytes());
+                let curr = u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]);
+                let prev = u16::from_le_bytes([data[(i - 1) * 2], data[(i - 1) * 2 + 1]]);
+                let diff = curr.wrapping_sub(prev).to_le_bytes();
+                data[i * 2] = diff[0];
+                data[i * 2 + 1] = diff[1];
             }
         }
         4 => {
             for i in (1..n).rev() {
-                let curr = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
-                let prev = u32::from_le_bytes(data[(i - 1) * 4..i * 4].try_into().unwrap());
-                data[i * 4..i * 4 + 4].copy_from_slice(&curr.wrapping_sub(prev).to_le_bytes());
+                let curr = u32::from_le_bytes([
+                    data[i * 4],
+                    data[i * 4 + 1],
+                    data[i * 4 + 2],
+                    data[i * 4 + 3],
+                ]);
+                let prev = u32::from_le_bytes([
+                    data[(i - 1) * 4],
+                    data[(i - 1) * 4 + 1],
+                    data[(i - 1) * 4 + 2],
+                    data[(i - 1) * 4 + 3],
+                ]);
+                let diff = curr.wrapping_sub(prev).to_le_bytes();
+                data[i * 4..i * 4 + 4].copy_from_slice(&diff);
             }
         }
         8 => {
             for i in (1..n).rev() {
                 let curr = u64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().unwrap());
                 let prev = u64::from_le_bytes(data[(i - 1) * 8..i * 8].try_into().unwrap());
-                data[i * 8..i * 8 + 8].copy_from_slice(&curr.wrapping_sub(prev).to_le_bytes());
+                let diff = curr.wrapping_sub(prev).to_le_bytes();
+                data[i * 8..i * 8 + 8].copy_from_slice(&diff);
             }
         }
         _ => {}
@@ -249,23 +252,37 @@ pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
         }
         2 => {
             for i in 1..n {
-                let prev = u16::from_le_bytes(data[(i - 1) * 2..i * 2].try_into().unwrap());
-                let curr = u16::from_le_bytes(data[i * 2..i * 2 + 2].try_into().unwrap());
-                data[i * 2..i * 2 + 2].copy_from_slice(&prev.wrapping_add(curr).to_le_bytes());
+                let prev = u16::from_le_bytes([data[(i - 1) * 2], data[(i - 1) * 2 + 1]]);
+                let curr = u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]);
+                let sum = prev.wrapping_add(curr).to_le_bytes();
+                data[i * 2] = sum[0];
+                data[i * 2 + 1] = sum[1];
             }
         }
         4 => {
             for i in 1..n {
-                let prev = u32::from_le_bytes(data[(i - 1) * 4..i * 4].try_into().unwrap());
-                let curr = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
-                data[i * 4..i * 4 + 4].copy_from_slice(&prev.wrapping_add(curr).to_le_bytes());
+                let prev = u32::from_le_bytes([
+                    data[(i - 1) * 4],
+                    data[(i - 1) * 4 + 1],
+                    data[(i - 1) * 4 + 2],
+                    data[(i - 1) * 4 + 3],
+                ]);
+                let curr = u32::from_le_bytes([
+                    data[i * 4],
+                    data[i * 4 + 1],
+                    data[i * 4 + 2],
+                    data[i * 4 + 3],
+                ]);
+                let sum = prev.wrapping_add(curr).to_le_bytes();
+                data[i * 4..i * 4 + 4].copy_from_slice(&sum);
             }
         }
         8 => {
             for i in 1..n {
                 let prev = u64::from_le_bytes(data[(i - 1) * 8..i * 8].try_into().unwrap());
                 let curr = u64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().unwrap());
-                data[i * 8..i * 8 + 8].copy_from_slice(&prev.wrapping_add(curr).to_le_bytes());
+                let sum = prev.wrapping_add(curr).to_le_bytes();
+                data[i * 8..i * 8 + 8].copy_from_slice(&sum);
             }
         }
         _ => {}
@@ -284,13 +301,46 @@ pub fn delta_decode(data: &[u8], typesize: usize) -> Vec<u8> {
     out
 }
 
-fn shuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
+pub fn shuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
+    if typesize <= 1 || data.is_empty() {
+        return data.to_vec();
+    }
     let mut out = vec![0; data.len()];
     let n = data.len() / typesize;
 
-    for i in 0..n {
-        for j in 0..typesize {
-            out[j * n + i] = data[i * typesize + j];
+    match typesize {
+        2 => {
+            for i in 0..n {
+                out[i] = data[i * 2];
+                out[n + i] = data[i * 2 + 1];
+            }
+        }
+        4 => {
+            for i in 0..n {
+                out[i] = data[i * 4];
+                out[n + i] = data[i * 4 + 1];
+                out[2 * n + i] = data[i * 4 + 2];
+                out[3 * n + i] = data[i * 4 + 3];
+            }
+        }
+        8 => {
+            for i in 0..n {
+                out[i] = data[i * 8];
+                out[n + i] = data[i * 8 + 1];
+                out[2 * n + i] = data[i * 8 + 2];
+                out[3 * n + i] = data[i * 8 + 3];
+                out[4 * n + i] = data[i * 8 + 4];
+                out[5 * n + i] = data[i * 8 + 5];
+                out[6 * n + i] = data[i * 8 + 6];
+                out[7 * n + i] = data[i * 8 + 7];
+            }
+        }
+        _ => {
+            for i in 0..n {
+                for j in 0..typesize {
+                    out[j * n + i] = data[i * typesize + j];
+                }
+            }
         }
     }
 
@@ -302,13 +352,46 @@ fn shuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
     out
 }
 
-fn shuffle_decode(data: &[u8], typesize: usize) -> Vec<u8> {
+pub fn shuffle_decode(data: &[u8], typesize: usize) -> Vec<u8> {
+    if typesize <= 1 || data.is_empty() {
+        return data.to_vec();
+    }
     let mut out = vec![0; data.len()];
     let n = data.len() / typesize;
 
-    for i in 0..n {
-        for j in 0..typesize {
-            out[i * typesize + j] = data[j * n + i];
+    match typesize {
+        2 => {
+            for i in 0..n {
+                out[i * 2] = data[i];
+                out[i * 2 + 1] = data[n + i];
+            }
+        }
+        4 => {
+            for i in 0..n {
+                out[i * 4] = data[i];
+                out[i * 4 + 1] = data[n + i];
+                out[i * 4 + 2] = data[2 * n + i];
+                out[i * 4 + 3] = data[3 * n + i];
+            }
+        }
+        8 => {
+            for i in 0..n {
+                out[i * 8] = data[i];
+                out[i * 8 + 1] = data[n + i];
+                out[i * 8 + 2] = data[2 * n + i];
+                out[i * 8 + 3] = data[3 * n + i];
+                out[i * 8 + 4] = data[4 * n + i];
+                out[i * 8 + 5] = data[5 * n + i];
+                out[i * 8 + 6] = data[6 * n + i];
+                out[i * 8 + 7] = data[7 * n + i];
+            }
+        }
+        _ => {
+            for i in 0..n {
+                for j in 0..typesize {
+                    out[i * typesize + j] = data[j * n + i];
+                }
+            }
         }
     }
 
@@ -336,6 +419,15 @@ pub fn bitshuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
         let block_offset = b * 8;
         for i in 0..8 {
             let byte_val = byte_shuffled[block_offset + i];
+            if byte_val == 0 {
+                continue;
+            }
+            if byte_val == 0xFF {
+                for j in 0..8 {
+                    out[block_offset + j] |= 1 << i;
+                }
+                continue;
+            }
             for j in 0..8 {
                 let bit = (byte_val >> j) & 1;
                 out[block_offset + j] |= bit << i;
@@ -363,6 +455,15 @@ pub fn bitshuffle_decode(data: &[u8], typesize: usize) -> Vec<u8> {
         let block_offset = b * 8;
         for j in 0..8 {
             let byte_val = data[block_offset + j];
+            if byte_val == 0 {
+                continue;
+            }
+            if byte_val == 0xFF {
+                for i in 0..8 {
+                    unbit[block_offset + i] |= 1 << j;
+                }
+                continue;
+            }
             for i in 0..8 {
                 let bit = (byte_val >> i) & 1;
                 unbit[block_offset + i] |= bit << j;

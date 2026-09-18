@@ -278,11 +278,13 @@ pub enum IpcResponse {
 
 /// Serializes and writes a length-prefixed frame to a stream
 pub fn write_framed<W: Write, T: Serialize>(writer: &mut W, val: &T) -> io::Result<()> {
-    let bytes =
-        bincode::serialize(val).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let len = bytes.len() as u32;
-    writer.write_all(&len.to_le_bytes())?;
-    writer.write_all(&bytes)?;
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&[0u8; 4]);
+    bincode::serialize_into(&mut buf, val)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let len = (buf.len() - 4) as u32;
+    buf[..4].copy_from_slice(&len.to_le_bytes());
+    writer.write_all(&buf)?;
     writer.flush()?;
     Ok(())
 }

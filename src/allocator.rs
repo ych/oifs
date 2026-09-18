@@ -60,24 +60,30 @@ impl<'a> SimpleBlockAllocator<'a> {
             start_block_offset,
         }
     }
-}
 
-impl<'a> BlockAllocator for SimpleBlockAllocator<'a> {
-    fn allocate(&mut self) -> Result<u64, AllocatorError> {
-        // Create bitmap view over the data
+    /// Allocates a free block starting from an optional hint block ID.
+    ///
+    /// Avoids O(N^2) search overhead when sequentially allocating multiple blocks.
+    pub fn allocate_with_hint(&mut self, hint_block_id: Option<u64>) -> Result<u64, AllocatorError> {
+        let hint_bit = hint_block_id
+            .and_then(|id| id.checked_sub(self.start_block_offset))
+            .map(|bit| bit as usize)
+            .unwrap_or(0);
+
         let mut bitmap = Bitmap::new(self.bitmap_data);
-        
-        // Find the first free bit (0) in the bitmap
-        if let Some(bit_index) = bitmap.find_first_free() {
-            // Mark the bit as used (set to 1)
+        if let Some(bit_index) = bitmap.find_next_free_wrapped(hint_bit) {
             bitmap.set(bit_index);
-            
-            // Convert bit index to actual block ID
             let block_id = self.start_block_offset + bit_index as u64;
             Ok(block_id)
         } else {
             Err(AllocatorError::NoSpace)
         }
+    }
+}
+
+impl<'a> BlockAllocator for SimpleBlockAllocator<'a> {
+    fn allocate(&mut self) -> Result<u64, AllocatorError> {
+        self.allocate_with_hint(None)
     }
 
     fn free(&mut self, block_id: u64) -> Result<(), AllocatorError> {

@@ -138,6 +138,10 @@ struct DiskManagerInner {
     pub superblock: SuperBlock,
     /// Encryption key (if filesystem is encrypted)
     pub encryption_key: Option<crate::encryption::EncryptionKey>,
+    /// Search hint for sequential O(1) block allocation
+    pub free_block_hint: u64,
+    /// Search hint for sequential O(1) inode allocation
+    pub free_inode_hint: u64,
 }
 
 impl Drop for DiskManagerInner {
@@ -260,11 +264,14 @@ impl DiskManager {
             }
         }
 
+        let free_block_hint = superblock.data_block_start;
         let inner = DiskManagerInner {
             file,
             mmap,
             superblock,
             encryption_key,
+            free_block_hint,
+            free_inode_hint: 0,
         };
 
         let dm = Self {
@@ -398,11 +405,8 @@ impl DiskManager {
         if sib_id != 0 {
             blks.push(sib_id);
             if let Some(slice) = Self::get_block_from_map(mmap, sib_id) {
-                for idx in 0..512 {
-                    let start = idx * 8;
-                    let mut blk_bytes = [0u8; 8];
-                    blk_bytes.copy_from_slice(&slice[start..start + 8]);
-                    let blk = u64::from_le_bytes(blk_bytes);
+                for chunk in slice.chunks_exact(8) {
+                    let blk = u64::from_le_bytes(chunk.try_into().unwrap());
                     if blk != 0 {
                         blks.push(blk);
                     }
@@ -415,29 +419,23 @@ impl DiskManager {
         if dib_id != 0 {
             blks.push(dib_id);
             let physical_size = if inode.compressed_size > 0 { inode.compressed_size } else { inode.size };
-            let total_logical_blocks = (physical_size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
+            let total_logical_blocks = physical_size.div_ceil(BLOCK_SIZE as u64);
             let max_s_entries = if total_logical_blocks > 522 {
                 let diff = total_logical_blocks - 522;
-                let needed = ((diff + 511) / 512) as usize;
+                let needed = diff.div_ceil(512) as usize;
                 needed.min(512)
             } else {
                 512 // Fallback if size was 0 or reset before collect
             };
 
             if let Some(slice) = Self::get_block_from_map(mmap, dib_id) {
-                for s_idx in 0..max_s_entries {
-                    let s_start = s_idx * 8;
-                    let mut sib_bytes = [0u8; 8];
-                    sib_bytes.copy_from_slice(&slice[s_start..s_start + 8]);
-                    let sib = u64::from_le_bytes(sib_bytes);
+                for chunk in slice[..max_s_entries * 8].chunks_exact(8) {
+                    let sib = u64::from_le_bytes(chunk.try_into().unwrap());
                     if sib != 0 {
                         blks.push(sib);
                         if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
-                            for d_idx in 0..512 {
-                                let d_start = d_idx * 8;
-                                let mut blk_bytes = [0u8; 8];
-                                blk_bytes.copy_from_slice(&s_slice[d_start..d_start + 8]);
-                                let blk = u64::from_le_bytes(blk_bytes);
+                            for d_chunk in s_slice.chunks_exact(8) {
+                                let blk = u64::from_le_bytes(d_chunk.try_into().unwrap());
                                 if blk != 0 {
                                     blks.push(blk);
                                 }
@@ -453,37 +451,28 @@ impl DiskManager {
         if tib_id != 0 {
             blks.push(tib_id);
             let physical_size = if inode.compressed_size > 0 { inode.compressed_size } else { inode.size };
-            let total_logical_blocks = (physical_size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
+            let total_logical_blocks = physical_size.div_ceil(BLOCK_SIZE as u64);
             let max_t_entries = if total_logical_blocks > 262666 {
                 let diff = total_logical_blocks - 262666;
-                let needed = ((diff + (512 * 512) - 1) / (512 * 512)) as usize;
+                let needed = diff.div_ceil(512 * 512) as usize;
                 needed.min(512)
             } else {
                 512 // Fallback if size was 0 or reset before collect
             };
 
             if let Some(slice) = Self::get_block_from_map(mmap, tib_id) {
-                for t_idx in 0..max_t_entries {
-                    let t_start = t_idx * 8;
-                    let mut dib_bytes = [0u8; 8];
-                    dib_bytes.copy_from_slice(&slice[t_start..t_start + 8]);
-                    let dib = u64::from_le_bytes(dib_bytes);
+                for chunk in slice[..max_t_entries * 8].chunks_exact(8) {
+                    let dib = u64::from_le_bytes(chunk.try_into().unwrap());
                     if dib != 0 {
                         blks.push(dib);
                         if let Some(d_slice) = Self::get_block_from_map(mmap, dib) {
-                            for s_idx in 0..512 {
-                                let s_start = s_idx * 8;
-                                let mut sib_bytes = [0u8; 8];
-                                sib_bytes.copy_from_slice(&d_slice[s_start..s_start + 8]);
-                                let sib = u64::from_le_bytes(sib_bytes);
+                            for s_chunk in d_slice.chunks_exact(8) {
+                                let sib = u64::from_le_bytes(s_chunk.try_into().unwrap());
                                 if sib != 0 {
                                     blks.push(sib);
                                     if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
-                                        for d_idx in 0..512 {
-                                            let d_start = d_idx * 8;
-                                            let mut blk_bytes = [0u8; 8];
-                                            blk_bytes.copy_from_slice(&s_slice[d_start..d_start + 8]);
-                                            let blk = u64::from_le_bytes(blk_bytes);
+                                        for blk_chunk in s_slice.chunks_exact(8) {
+                                            let blk = u64::from_le_bytes(blk_chunk.try_into().unwrap());
                                             if blk != 0 {
                                                 blks.push(blk);
                                             }
@@ -526,9 +515,14 @@ impl DiskManager {
             name.to_string()
         };
 
-        if Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &stored_name)?.is_some()
-            || Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.is_some()
-        {
+        let already_exists = if stored_name != name {
+            Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &stored_name)?.is_some()
+                || Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.is_some()
+        } else {
+            Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.is_some()
+        };
+
+        if already_exists {
             let type_str = if file_type == crate::inode::FileType::Directory { "Directory" } else { "File" };
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
@@ -536,11 +530,15 @@ impl DiskManager {
             )));
         }
 
-        // 2. Allocate Inode
+        // 2. Allocate Inode with search hint
         let inode_bitmap = guard.superblock.inode_bitmap_block;
-        let bitmap_slice = Self::get_block_mut_from_map(&mut guard.mmap, inode_bitmap).unwrap();
-        let mut allocator = SimpleBlockAllocator::new(bitmap_slice, 0);
-        let new_inode_id = allocator.allocate()?;
+        let hint = guard.free_inode_hint;
+        let new_inode_id = {
+            let bitmap_slice = Self::get_block_mut_from_map(&mut guard.mmap, inode_bitmap).unwrap();
+            let mut allocator = SimpleBlockAllocator::new(bitmap_slice, 0);
+            allocator.allocate_with_hint(Some(hint))?
+        };
+        guard.free_inode_hint = new_inode_id + 1;
 
         // 3. Init Inode with proper timestamps
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
@@ -549,11 +547,7 @@ impl DiskManager {
         new_inode.modified_at = now;
 
         if file_type == crate::inode::FileType::Directory {
-            let data_bitmap = guard.superblock.data_bitmap_block;
-            let data_start = guard.superblock.data_block_start;
-            let data_slice = Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap).unwrap();
-            let mut da = SimpleBlockAllocator::new(data_slice, data_start);
-            let dir_data_block = da.allocate()?;
+            let dir_data_block = Self::alloc_and_zero_block(&mut guard)?;
             new_inode.blocks[0] = dir_data_block;
         }
 
@@ -572,7 +566,7 @@ impl DiskManager {
         parent_inode.modified_at = now;
         Self::write_inode_internal(&mut guard, parent_inode_id, &parent_inode)?;
 
-        guard.mmap.flush()?;
+        let _ = guard.mmap.flush_async();
         Ok(new_inode_id)
     }
 
@@ -623,27 +617,134 @@ impl DiskManager {
     /// # Compression Handling
     /// - If `compressed_size > 0`: Read compressed data and decompress using zstd
     /// - If `compressed_size == 0`: Read and return raw data
+    #[allow(clippy::collapsible_if)]
     fn read_data_internal(guard: &mut DiskManagerInner, inode: &Inode) -> Result<Vec<u8>, DiskManagerError> {
         let physical_size = if inode.compressed_size > 0 { inode.compressed_size } else { inode.size };
-        let mut raw_data = Vec::with_capacity(physical_size as usize);
+        if physical_size == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut raw_data = vec![0u8; physical_size as usize];
         let mut read = 0;
-        
-        let mut inode_clone = *inode;
         let mut blk_idx = 0;
+
         while read < physical_size {
-            let blk = Self::get_or_alloc_block(guard, &mut inode_clone, blk_idx, false)?;
             let rem = (physical_size - read) as usize;
             let to_read = std::cmp::min(rem, BLOCK_SIZE);
-            if blk == 0 {
-                raw_data.extend(std::iter::repeat_n(0u8, to_read));
+
+            // 1. Direct blocks (0..10)
+            if blk_idx < 10 {
+                let blk = inode.blocks[blk_idx];
+                if blk != 0 {
+                    if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
+                        raw_data[read as usize..read as usize + to_read].copy_from_slice(&slice[..to_read]);
+                    }
+                }
                 read += to_read as u64;
-            } else if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                raw_data.extend_from_slice(&slice[..to_read]);
-                read += to_read as u64;
-            } else {
-                break;
+                blk_idx += 1;
+                continue;
             }
-            blk_idx += 1;
+
+            // 2. Single indirect blocks (10..522)
+            if blk_idx < 10 + 512 {
+                if inode.blocks[10] == 0 {
+                    let remaining_blocks = (10 + 512) - blk_idx;
+                    let skip_bytes = (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    read += skip_bytes;
+                    blk_idx = 10 + 512;
+                    continue;
+                }
+                let idx = blk_idx - 10;
+                let blk = Self::read_block_ptr(&guard.mmap, inode.blocks[10], idx);
+                if blk != 0 {
+                    if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
+                        raw_data[read as usize..read as usize + to_read].copy_from_slice(&slice[..to_read]);
+                    }
+                }
+                read += to_read as u64;
+                blk_idx += 1;
+                continue;
+            }
+
+            // 3. Double indirect blocks (522..262666)
+            if blk_idx < 10 + 512 + 512 * 512 {
+                if inode.blocks[11] == 0 {
+                    let remaining_blocks = (10 + 512 + 512 * 512) - blk_idx;
+                    let skip_bytes = (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    read += skip_bytes;
+                    blk_idx = 10 + 512 + 512 * 512;
+                    continue;
+                }
+                let idx = blk_idx - (10 + 512);
+                let s_idx = idx / 512;
+                let d_idx = idx % 512;
+
+                let sib_id = Self::read_block_ptr(&guard.mmap, inode.blocks[11], s_idx);
+                if sib_id == 0 {
+                    let skip_blocks = 512 - d_idx;
+                    let skip_bytes = (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    read += skip_bytes;
+                    blk_idx += skip_blocks;
+                    continue;
+                }
+
+                let blk = Self::read_block_ptr(&guard.mmap, sib_id, d_idx);
+                if blk != 0 {
+                    if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
+                        raw_data[read as usize..read as usize + to_read].copy_from_slice(&slice[..to_read]);
+                    }
+                }
+                read += to_read as u64;
+                blk_idx += 1;
+                continue;
+            }
+
+            // 4. Triple indirect blocks (262666 .. 134480394)
+            let max_blocks = 10 + 512 + 512 * 512 + 512 * 512 * 512;
+            if blk_idx < max_blocks {
+                if inode.triple_indirect == 0 {
+                    let remaining_blocks = max_blocks - blk_idx;
+                    let skip_bytes = (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    read += skip_bytes;
+                    blk_idx = max_blocks;
+                    continue;
+                }
+                let idx = blk_idx - (10 + 512 + 512 * 512);
+                let t_idx = idx / (512 * 512);
+                let rem_idx = idx % (512 * 512);
+                let d_idx = rem_idx / 512;
+                let s_idx = rem_idx % 512;
+
+                let dib_id = Self::read_block_ptr(&guard.mmap, inode.triple_indirect, t_idx);
+                if dib_id == 0 {
+                    let skip_blocks = (512 * 512) - rem_idx;
+                    let skip_bytes = (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    read += skip_bytes;
+                    blk_idx += skip_blocks;
+                    continue;
+                }
+
+                let sib_id = Self::read_block_ptr(&guard.mmap, dib_id, d_idx);
+                if sib_id == 0 {
+                    let skip_blocks = 512 - s_idx;
+                    let skip_bytes = (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    read += skip_bytes;
+                    blk_idx += skip_blocks;
+                    continue;
+                }
+
+                let blk = Self::read_block_ptr(&guard.mmap, sib_id, s_idx);
+                if blk != 0 {
+                    if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
+                        raw_data[read as usize..read as usize + to_read].copy_from_slice(&slice[..to_read]);
+                    }
+                }
+                read += to_read as u64;
+                blk_idx += 1;
+                continue;
+            }
+
+            break;
         }
         
         // === DECRYPTION STEP ===
@@ -803,7 +904,7 @@ impl DiskManager {
 
         inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         Self::write_inode_internal(guard, inode_id, inode)?;
-        guard.mmap.flush()?;
+        let _ = guard.mmap.flush_async();
         Ok(())
     }
 
@@ -859,7 +960,7 @@ impl DiskManager {
                 inode.compressed_size += new_frame.len() as u64;
                 inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                 Self::write_inode_internal(&mut guard, inode_id, &inode)?;
-                guard.mmap.flush()?;
+                let _ = guard.mmap.flush_async();
                 return Ok(());
             }
 
@@ -878,6 +979,7 @@ impl DiskManager {
 
             // Free previous blocks
             let old_blocks = Self::collect_inode_blocks(&guard.mmap, &inode);
+            let mut min_freed_blk = u64::MAX;
             {
                 let db_blk = guard.superblock.data_bitmap_block;
                 let db_start = guard.superblock.data_block_start;
@@ -885,8 +987,12 @@ impl DiskManager {
                     let mut da = SimpleBlockAllocator::new(slice, db_start);
                     for blk in old_blocks {
                         let _ = da.free(blk);
+                        min_freed_blk = min_freed_blk.min(blk);
                     }
                 }
+            }
+            if min_freed_blk < guard.free_block_hint {
+                guard.free_block_hint = min_freed_blk;
             }
             inode.blocks = [0; 12];
             inode.triple_indirect = 0;
@@ -912,7 +1018,7 @@ impl DiskManager {
         inode.size = std::cmp::max(inode.size, final_offset);
         inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         Self::write_inode_internal(&mut guard, inode_id, &inode)?;
-        guard.mmap.flush()?;
+        let _ = guard.mmap.flush_async();
         Ok(())
     }
     
@@ -938,21 +1044,25 @@ impl DiskManager {
     fn allocate_block(guard: &mut DiskManagerInner) -> Result<u64, DiskManagerError> {
         let db_blk = guard.superblock.data_bitmap_block;
         let db_start = guard.superblock.data_block_start;
-        let slice = Self::get_block_mut_from_map(&mut guard.mmap, db_blk).unwrap();
-        let mut da = SimpleBlockAllocator::new(slice, db_start);
-        da.allocate().map_err(DiskManagerError::Allocator)
+        let hint = guard.free_block_hint;
+        let blk = {
+            let slice = Self::get_block_mut_from_map(&mut guard.mmap, db_blk).unwrap();
+            let mut da = SimpleBlockAllocator::new(slice, db_start);
+            da.allocate_with_hint(Some(hint)).map_err(DiskManagerError::Allocator)?
+        };
+        guard.free_block_hint = blk + 1;
+        Ok(blk)
     }
 
     #[inline]
     fn read_block_ptr(mmap: &MmapMut, block_id: u64, entry_idx: usize) -> u64 {
         if let Some(slice) = Self::get_block_from_map(mmap, block_id) {
             let start = entry_idx * 8;
-            let mut blk_bytes = [0u8; 8];
-            blk_bytes.copy_from_slice(&slice[start..start + 8]);
-            u64::from_le_bytes(blk_bytes)
-        } else {
-            0
+            if start + 8 <= slice.len() {
+                return u64::from_le_bytes(slice[start..start + 8].try_into().unwrap());
+            }
         }
+        0
     }
 
     #[inline]
@@ -1072,7 +1182,7 @@ impl DiskManager {
         for &part in parts {
             let parent = Self::read_inode_internal(guard, curr)?;
             if parent.mode != crate::inode::FileType::Directory {
-                return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Not dir")));
+                return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
             }
             let blk = parent.blocks[0];
             if blk == 0 {
@@ -1195,6 +1305,7 @@ impl DiskManager {
         let blocks_to_free = Self::collect_inode_blocks(&guard.mmap, &file_inode);
 
         // Free Data Blocks
+        let mut min_freed_blk = u64::MAX;
         {
             let db_blk = guard.superblock.data_bitmap_block;
             let db_start = guard.superblock.data_block_start;
@@ -1203,7 +1314,11 @@ impl DiskManager {
 
             for blk in blocks_to_free {
                 da.free(blk)?;
+                min_freed_blk = min_freed_blk.min(blk);
             }
+        }
+        if min_freed_blk < guard.free_block_hint {
+            guard.free_block_hint = min_freed_blk;
         }
 
         // Free Inode
@@ -1213,14 +1328,16 @@ impl DiskManager {
             let mut ia = SimpleBlockAllocator::new(slice, 0);
             ia.free(target_inode_id)?;
         }
+        if target_inode_id < guard.free_inode_hint {
+            guard.free_inode_hint = target_inode_id;
+        }
 
         // Update Parent Mtime
         let mut parent_inode = parent_inode;
         parent_inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         Self::write_inode_internal(&mut guard, parent_inode_id, &parent_inode)?;
 
-        // Explicit sync
-        guard.mmap.flush()?;
+        let _ = guard.mmap.flush_async();
         Ok(())
     }
 
@@ -1249,32 +1366,74 @@ impl DiskManager {
         let mut largest_free_run = 0;
         let mut total_gap_size = 0;
         
-        // Scan bitmap to collect statistics
+        // Fast 64-bit word scanning
         let mut in_free_run = false;
-        for i in 0..total_blocks {
-            let is_free = !bitmap.get(i); // get() returns bool, true = used, false = free
-            
-            if is_free {
+        let num_words = total_blocks / 64;
+        let rem_bits = total_blocks % 64;
+        let chunks = bitmap_slice.chunks_exact(8);
+
+        for chunk in chunks.take(num_words) {
+            let word = u64::from_le_bytes(chunk.try_into().unwrap());
+            if word == 0 {
+                // All 64 blocks are free
                 if !in_free_run {
-                    // Start of new free run
                     free_runs += 1;
                     in_free_run = true;
-                    current_run_len = 1;
-                } else {
-                    current_run_len += 1;
                 }
-            } else {
-                used_blocks += 1;
+                current_run_len += 64;
+            } else if word == u64::MAX {
+                // All 64 blocks are used
+                used_blocks += 64;
                 if in_free_run {
-                    // End of free run
                     total_gap_size += current_run_len;
                     largest_free_run = largest_free_run.max(current_run_len);
                     in_free_run = false;
                     current_run_len = 0;
                 }
+            } else {
+                // Mixed bits: inspect bit by bit
+                used_blocks += word.count_ones() as usize;
+                for bit in 0..64 {
+                    let is_free = (word & (1u64 << bit)) == 0;
+                    if is_free {
+                        if !in_free_run {
+                            free_runs += 1;
+                            in_free_run = true;
+                        }
+                        current_run_len += 1;
+                    } else if in_free_run {
+                        total_gap_size += current_run_len;
+                        largest_free_run = largest_free_run.max(current_run_len);
+                        in_free_run = false;
+                        current_run_len = 0;
+                    }
+                }
             }
         }
-        
+
+        // Remainder bits if total_blocks % 64 != 0
+        if rem_bits > 0 {
+            let base_idx = num_words * 64;
+            for i in base_idx..total_blocks {
+                let is_free = !bitmap.get(i);
+                if is_free {
+                    if !in_free_run {
+                        free_runs += 1;
+                        in_free_run = true;
+                    }
+                    current_run_len += 1;
+                } else {
+                    used_blocks += 1;
+                    if in_free_run {
+                        total_gap_size += current_run_len;
+                        largest_free_run = largest_free_run.max(current_run_len);
+                        in_free_run = false;
+                        current_run_len = 0;
+                    }
+                }
+            }
+        }
+
         // Handle final free run if exists
         if in_free_run {
             total_gap_size += current_run_len;
@@ -1353,11 +1512,9 @@ impl DiskManager {
             let ib_blk = guard.superblock.inode_bitmap_block;
             if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, ib_blk) {
                 let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
-                for i in 0..sb.inode_count as usize {
-                    if bitmap.get(i) {
-                        allocated_inodes.push(i as u64);
-                    }
-                }
+                bitmap.for_each_set_bit(sb.inode_count as usize, |idx| {
+                    allocated_inodes.push(idx as u64);
+                });
             }
         }
 
@@ -1486,11 +1643,9 @@ impl DiskManager {
         let ib_blk = sb.inode_bitmap_block;
         if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, ib_blk) {
             let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
-            for i in 0..sb.inode_count as usize {
-                if bitmap.get(i) {
-                    allocated_inodes.insert(i as u64);
-                }
-            }
+            bitmap.for_each_set_bit(sb.inode_count as usize, |idx| {
+                allocated_inodes.insert(idx as u64);
+            });
         }
 
         // 2. Collect all allocated Data Blocks from Data Bitmap
@@ -1499,12 +1654,10 @@ impl DiskManager {
         let db_start = sb.data_block_start;
         if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, db_blk) {
             let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
-            let max_data_blocks = sb.block_count.saturating_sub(db_start);
-            for i in 0..max_data_blocks as usize {
-                if bitmap.get(i) {
-                    allocated_data_blocks.insert(db_start + i as u64);
-                }
-            }
+            let max_data_blocks = sb.block_count.saturating_sub(db_start) as usize;
+            bitmap.for_each_set_bit(max_data_blocks, |idx| {
+                allocated_data_blocks.insert(db_start + idx as u64);
+            });
         }
 
         // 3. Traversal tracking sets

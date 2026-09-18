@@ -6,8 +6,9 @@ use std::hint::black_box;
 use std::io::Cursor;
 use std::time::Instant;
 
+use oifs::bitmap::{Bitmap, BitmapRef};
 use oifs::directory::{find_entry_in_block, find_insert_offset_in_block, DirectoryEntry};
-use oifs::filters::{apply_filters_cow, FilterConfig};
+use oifs::filters::{apply_filters_cow, bitshuffle_encode, shuffle_encode, FilterConfig};
 
 // =========================================================================
 // Benchmark 1: Bitmap find_first_free
@@ -109,6 +110,100 @@ fn old_write_path_filter(data: &[u8]) -> Vec<u8> {
 
 fn new_write_path_filter<'a>(data: &'a [u8], cfg: &FilterConfig) -> std::borrow::Cow<'a, [u8]> {
     apply_filters_cow(data, cfg)
+}
+
+// =========================================================================
+// Benchmark 5: Sequential Block Allocation (Hint vs No Hint)
+// =========================================================================
+
+fn old_sequential_allocate(data: &mut [u8], count: usize) {
+    for _ in 0..count {
+        if let Some(bit) = old_find_first_free(data) {
+            data[bit / 8] |= 1 << (bit % 8);
+        }
+    }
+}
+
+fn new_sequential_allocate(data: &mut [u8], count: usize) {
+    let mut bm = Bitmap::new(data);
+    let mut hint = 0;
+    for _ in 0..count {
+        if let Some(bit) = bm.find_next_free_wrapped(hint) {
+            bm.set(bit);
+            hint = bit + 1;
+        }
+    }
+}
+
+// =========================================================================
+// Benchmark 6: Fsck Integrity Scan (64-bit word skipping vs bit-by-bit)
+// =========================================================================
+
+fn old_fsck_bitmap_scan(data: &[u8], total_bits: usize) -> usize {
+    let mut count = 0;
+    for i in 0..total_bits {
+        let byte = data[i / 8];
+        let bit = i % 8;
+        if (byte & (1 << bit)) != 0 {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn new_fsck_bitmap_scan(data: &[u8], total_bits: usize) -> usize {
+    let bm_ref = BitmapRef::new(data);
+    let mut count = 0;
+    bm_ref.for_each_set_bit(total_bits, |_| {
+        count += 1;
+    });
+    count
+}
+
+// =========================================================================
+// Benchmark 7: Byte Shuffle (Unrolled 4-byte vs byte-by-byte)
+// =========================================================================
+
+fn old_shuffle_encode(src: &[u8], typesize: usize) -> Vec<u8> {
+    let mut dest = vec![0u8; src.len()];
+    let num_elements = src.len() / typesize;
+    for elem_idx in 0..num_elements {
+        for byte_idx in 0..typesize {
+            let src_idx = elem_idx * typesize + byte_idx;
+            let dest_idx = byte_idx * num_elements + elem_idx;
+            dest[dest_idx] = src[src_idx];
+        }
+    }
+    let remainder_start = num_elements * typesize;
+    if remainder_start < src.len() {
+        dest[remainder_start..].copy_from_slice(&src[remainder_start..]);
+    }
+    dest
+}
+
+fn old_bitshuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
+    if data.is_empty() || typesize == 0 {
+        return data.to_vec();
+    }
+    let byte_shuffled = shuffle_encode(data, typesize);
+    let mut out = vec![0u8; data.len()];
+    let n_bytes = data.len();
+    let n_blocks = n_bytes / 8;
+    for b in 0..n_blocks {
+        let block_offset = b * 8;
+        for i in 0..8 {
+            let byte_val = byte_shuffled[block_offset + i];
+            for j in 0..8 {
+                let bit = (byte_val >> j) & 1;
+                out[block_offset + j] |= bit << i;
+            }
+        }
+    }
+    let rem_start = n_blocks * 8;
+    if rem_start < n_bytes {
+        out[rem_start..].copy_from_slice(&byte_shuffled[rem_start..]);
+    }
+    out
 }
 
 // =========================================================================
@@ -296,6 +391,152 @@ fn bench_comprehensive_performance_proof() {
         );
         println!("    --> SPEEDUP: \x1b[1;32m{:.1}x FASTER\x1b[0m", speedup);
     }
+
+    // -------------------------------------------------------------------------
+    // CASE 5: Sequential Multi-Block Allocation (Hint vs No Hint)
+    // -------------------------------------------------------------------------
+    println!("\n--- [CASE 5] Multi-Block Sequential Allocation (2,000 blocks in 32,768-block bitmap) ---");
+    let alloc_count = 2000;
+    let alloc_iters = 100;
+
+    let start = Instant::now();
+    for _ in 0..alloc_iters {
+        let mut buf = vec![0u8; 4096];
+        black_box(old_sequential_allocate(&mut buf, alloc_count));
+    }
+    let old_time = start.elapsed();
+
+    let start = Instant::now();
+    for _ in 0..alloc_iters {
+        let mut buf = vec![0u8; 4096];
+        black_box(new_sequential_allocate(&mut buf, alloc_count));
+    }
+    let new_time = start.elapsed();
+
+    let speedup = old_time.as_nanos() as f64 / new_time.as_nanos() as f64;
+    println!(
+        "  Old (O(N^2) scan from bit 0 each time)   : {:>8.2?} ({:.2} µs/alloc-batch)",
+        old_time,
+        (old_time.as_micros() as f64) / alloc_iters as f64
+    );
+    println!(
+        "  New (O(1) search from free_block_hint)   : {:>8.2?} ({:.2} µs/alloc-batch)",
+        new_time,
+        (new_time.as_micros() as f64) / alloc_iters as f64
+    );
+    println!("  --> SPEEDUP: \x1b[1;32m{:.2}x FASTER\x1b[0m", speedup);
+
+    // -------------------------------------------------------------------------
+    // CASE 6: Fsck Integrity Scan (64-bit word skipping vs bit-by-bit check)
+    // -------------------------------------------------------------------------
+    println!("\n--- [CASE 6] Fsck Bitmap Integrity Scan (32,768 blocks, ~20% occupied) ---");
+    let total_bits = 32_768;
+    let mut fsck_buf = vec![0u8; 4096];
+    // Fill first 20%
+    for byte in fsck_buf.iter_mut().take(800) {
+        *byte = 0xAA;
+    }
+
+    assert_eq!(old_fsck_bitmap_scan(&fsck_buf, total_bits), new_fsck_bitmap_scan(&fsck_buf, total_bits));
+
+    let fsck_iters = 50_000;
+    let start = Instant::now();
+    for _ in 0..fsck_iters {
+        black_box(old_fsck_bitmap_scan(&fsck_buf, total_bits));
+    }
+    let old_time = start.elapsed();
+
+    let start = Instant::now();
+    for _ in 0..fsck_iters {
+        black_box(new_fsck_bitmap_scan(&fsck_buf, total_bits));
+    }
+    let new_time = start.elapsed();
+
+    let speedup = old_time.as_nanos() as f64 / new_time.as_nanos() as f64;
+    println!(
+        "  Old (bit-by-bit 32,768 iterations)       : {:>8.2?} ({:.1} ns/fsck-scan)",
+        old_time,
+        old_time.as_nanos() as f64 / fsck_iters as f64
+    );
+    println!(
+        "  New (64-bit word skipping + tzcnt)       : {:>8.2?} ({:.1} ns/fsck-scan)",
+        new_time,
+        new_time.as_nanos() as f64 / fsck_iters as f64
+    );
+    println!("  --> SPEEDUP: \x1b[1;32m{:.2}x FASTER\x1b[0m", speedup);
+
+    // -------------------------------------------------------------------------
+    // CASE 7: Filter Byte-Shuffle (Unrolled 4-byte Float/Int Array)
+    // -------------------------------------------------------------------------
+    println!("\n--- [CASE 7] Byte Shuffle (64 KB array of 32-bit floats/integers) ---");
+    let shuffle_data: Vec<u8> = (0..64 * 1024).map(|i| (i * 37 % 256) as u8).collect();
+    let shuffle_iters = 10_000;
+
+    let start = Instant::now();
+    for _ in 0..shuffle_iters {
+        black_box(old_shuffle_encode(&shuffle_data, 4));
+    }
+    let old_time = start.elapsed();
+
+    let start = Instant::now();
+    for _ in 0..shuffle_iters {
+        black_box(shuffle_encode(&shuffle_data, 4));
+    }
+    let new_time = start.elapsed();
+
+    let speedup = old_time.as_nanos() as f64 / new_time.as_nanos() as f64;
+    let throughput_old = (64.0 * shuffle_iters as f64 / 1024.0) / old_time.as_secs_f64();
+    let throughput_new = (64.0 * shuffle_iters as f64 / 1024.0) / new_time.as_secs_f64();
+    println!(
+        "  Old (Generic byte-by-byte indexing)      : {:>8.2?} (throughput: {:.1} MB/s)",
+        old_time, throughput_old
+    );
+    println!(
+        "  New (Unrolled 4-byte specialization)     : {:>8.2?} (throughput: {:.1} MB/s)",
+        new_time, throughput_new
+    );
+    println!("  --> SPEEDUP: \x1b[1;32m{:.2}x FASTER\x1b[0m", speedup);
+
+    // -------------------------------------------------------------------------
+    // CASE 8: BitShuffle Matrix Transpose (Sparse / Low-Entropy Blocks)
+    // -------------------------------------------------------------------------
+    println!("\n--- [CASE 8] BitShuffle Matrix Transpose (64 KB Sparse Data Block) ---");
+    let mut sparse_block = vec![0u8; 64 * 1024];
+    // Put non-zero values every 512 bytes (simulating sparse floating point records)
+    for i in (0..sparse_block.len()).step_by(512) {
+        sparse_block[i] = 0x42;
+    }
+
+    assert_eq!(
+        old_bitshuffle_encode(&sparse_block, 4),
+        bitshuffle_encode(&sparse_block, 4)
+    );
+
+    let bitshuffle_iters = 2_000;
+    let start = Instant::now();
+    for _ in 0..bitshuffle_iters {
+        black_box(old_bitshuffle_encode(&sparse_block, 4));
+    }
+    let old_time = start.elapsed();
+
+    let start = Instant::now();
+    for _ in 0..bitshuffle_iters {
+        black_box(bitshuffle_encode(&sparse_block, 4));
+    }
+    let new_time = start.elapsed();
+
+    let speedup = old_time.as_nanos() as f64 / new_time.as_nanos() as f64;
+    let throughput_old = (64.0 * bitshuffle_iters as f64 / 1024.0) / old_time.as_secs_f64();
+    let throughput_new = (64.0 * bitshuffle_iters as f64 / 1024.0) / new_time.as_secs_f64();
+    println!(
+        "  Old (Full 64-bit transpose on zero bytes) : {:>8.2?} (throughput: {:.1} MB/s)",
+        old_time, throughput_old
+    );
+    println!(
+        "  New (Zero-byte block bypass)              : {:>8.2?} (throughput: {:.1} MB/s)",
+        new_time, throughput_new
+    );
+    println!("  --> SPEEDUP: \x1b[1;32m{:.2}x FASTER\x1b[0m", speedup);
 
     println!("\n================================================================================");
 }

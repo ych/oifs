@@ -5,7 +5,7 @@ description: How OIFS allocates and tracks data blocks and inodes with 64-bit bi
 tags: [allocation, bitmap, indirect-blocks, hint, performance]
 verified:
   - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
+    at: 2026-09-29T18:26:58.313Z
 sources:
   - id: openwiki-source-57692e9ab78d05d0aeba3e7c
     resource: repo://src/allocator.rs

@@ -3,13 +3,13 @@ type: operations
 title: CLI Reference
 description: Comprehensive reference for the oifs command-line interface, detailing global flags, password precedence rules, JSON pipelines, multi-process network coordination, and command specifications.
 tags: [cli, commands, clap, json-mode, network-mode, password-precedence, fsck, defrag]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## Overview

@@ -3,9 +3,6 @@ type: architecture
 title: Concurrency, Sessions, and IPC
 description: How OIFS allows multiple processes to share one image through a Master-Proxy design — a single Master holds the mmap and a DiskManager mutex while Proxies forward framed requests over UDS or TCP — coordinated by the OifsSession registry with self-healing master-failover.
 tags: [ipc, master-proxy, session, concurrency, uds, tcp, failover]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
@@ -14,6 +11,9 @@ sources:
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## Responsibility and ownership

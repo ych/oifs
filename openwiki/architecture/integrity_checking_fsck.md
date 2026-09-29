@@ -3,13 +3,13 @@ type: architecture
 title: Filesystem Integrity Checking (fsck)
 description: How the OIFS fsck structural consistency scanner performs set-theoretic verification between bitmap allocation states and directory reachability to detect orphan inodes, leaked blocks, missing blocks, and cross-linked blocks.
 tags: [fsck, integrity, consistency, bitmaps, verification, orphan-inodes, leaked-blocks, cross-linked-blocks]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## Responsibility and ownership

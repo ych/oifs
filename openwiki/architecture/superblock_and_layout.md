@@ -3,13 +3,13 @@ type: architecture
 title: SuperBlock and On-Disk Layout
 description: How OIFS defines its fixed on-disk physical geometry, SuperBlock magic validation, inode table sizing rules, backward compatibility guarantees, and Kani formal layout verification.
 tags: [superblock, layout, on-disk, geometry, magic, backward-compatibility, kani-verified]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## Responsibility and ownership

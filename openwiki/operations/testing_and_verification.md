@@ -3,9 +3,6 @@ type: operations
 title: Testing and Formal Verification
 description: Detailed overview of the OIFS multi-tier quality assurance strategy, spanning unit and integration test suites, Shuttle randomized concurrency exploration, and mathematical formal verification using the AWS Kani Rust Verifier.
 tags: [testing, verification, kani, shuttle, concurrency, bijectivity, formal-proofs, model-checking]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-69dc9c7ca45b38a30db2f06f
     resource: repo://src/bitmap.rs
@@ -20,6 +17,9 @@ sources:
   - id: openwiki-source-5b30823597738f668b07d33c
     resource: repo://tests/shuttle_concurrency_test.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## Overview

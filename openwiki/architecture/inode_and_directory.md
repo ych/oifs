@@ -3,15 +3,15 @@ type: architecture
 title: Inode and Directory Entries
 description: How OIFS defines the 256-byte Inode metadata layout, the dual FileType model, variable-length directory records, streaming directory iteration, and zero-allocation block lookup.
 tags: [inode, directory, directory-entry, zero-allocation, block-pointers, filetype, kani-verified]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-577ab4c8720ea065ae15ce27
     resource: repo://src/directory.rs
   - id: openwiki-source-bc305a37042018e1ebd6d860
     resource: repo://src/inode.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## Responsibility and ownership

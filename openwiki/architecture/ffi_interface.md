@@ -3,13 +3,13 @@ type: architecture
 title: C FFI Interface
 description: How OIFS exposes its storage engine as a standard C shared library (liboifs.so) through an opaque handle model, callback-driven directory iteration, zero-copy offset reads, and thread-safe error reporting.
 tags: [ffi, c-api, shared-library, handles, callbacks, abi, no-mangle]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-c9e5b32aad7cafdb095c81a4
     resource: repo://src/ffi.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## Responsibility and ownership

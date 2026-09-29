@@ -3,15 +3,15 @@ type: architecture
 title: Compression and Pre-compression Filters
 description: How OIFS combines zstd compression (with multi-frame EOF append and read-modify-recompress fallback) with Blosc2-style pre-compression filters (Delta, ByteShuffle, BitShuffle, TruncPrecision) that run before compression, plus the entropy-based filter recommendation tool.
 tags: [compression, zstd, filters, blosc2, entropy, cow, zero-copy]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
   - id: openwiki-source-388414179b3b4a07da1a42a4
     resource: repo://src/filters.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## Responsibility and ownership

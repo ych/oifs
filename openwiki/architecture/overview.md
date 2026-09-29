@@ -3,9 +3,6 @@ type: architecture
 title: OIFS Architecture Overview
 description: High-level architectural overview of OIFS (O's Inode File System), detailing its single-file on-disk image model, module layout, multi-target crate compilation, and subsystem interactions across CLI, C FFI, and MCP entry points.
 tags: [architecture, overview, modules, crate-type, mcp-feature, subsystems, block-size]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -14,6 +11,9 @@ sources:
   - id: openwiki-source-ed8bf05e307c6278442542c2
     resource: repo://src/lib.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## What is OIFS?

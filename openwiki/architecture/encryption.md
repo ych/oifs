@@ -3,13 +3,13 @@ type: architecture
 title: Encryption Subsystem
 description: How OIFS provides authenticated at-rest data confidentiality and deterministic directory privacy using XChaCha20-Poly1305 AEAD, Argon2id key derivation, Zeroize key hygiene, and Blake2b-tweak SIV filename encryption.
 tags: [encryption, security, aead, xchacha20-poly1305, argon2id, siv, zeroize]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-88657ea41344918d5e874716
     resource: repo://src/encryption.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## Responsibility and ownership

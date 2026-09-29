@@ -3,13 +3,13 @@ type: architecture
 title: Online Defragmentation
 description: How OIFS analyzes filesystem fragmentation using 64-bit bitmap scanning and performs safe defragmentation via an out-of-place rebuild with preserved compression, filters, and a transactional 3-step atomic rename with rollback.
 tags: [defragmentation, fragmentation, atomic-rename, contiguous-allocation, filters, safe-mode]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-09-29T16:14:34.721Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-09-29T18:26:58.313Z
 ---
 
 ## Responsibility and ownership

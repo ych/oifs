@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:56da161ce185a826c495b55ed74a86ffb7aee8b5a72c1c690d67a6355d8e8776",
+  "claims": [
+    {
+      "id": "claim_ccf982a2acb94220b5a4016b54d25dda",
+      "statement": "OifsSession is a two-variant enum: Direct (Master) holds a DiskManager plus a background IpcServer with zero IPC overhead for its own calls, while Remote (Proxy) forwards every method through send_request.",
+      "evidence": [
+        {
+          "resource": "repo://src/ipc.rs#L332-L477",
+          "version": "repo-lines-v1:sha256:fe1b6af87f9d3938783701c2d648894daef1d14d38b8d3313aef2c69dc0f0d5a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNDU1MDliYjI4NDFiM2Y5NjRmYTlkYzc5NjVlNzljM2ViM2VlMjAxNmIwZmE5ZTBmY2M0OWVjNzJjYmYyNDFkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NzdlZjMxMDFmNDYxMzJmMmVmYzQxOWVkMzExZTU2MjhmMjJiNDExYjcxNGM5YzY5ODA3MWM4MjU4MzRjMDdmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkZjk4OTg2MjhmYjExNDhlMThjMjYwZmQ0N2MwOWY4ZjFkZDlmOTEzM2JhZTcwZjA3NzJlYTg0NDMyNGU1OGVlIn0"
+        },
+        {
+          "resource": "repo://src/session.rs#L59-L78",
+          "version": "repo-lines-v1:sha256:98833293276e14e6aa6b6e233c7d7998a19dbe4a8f89343e410b6b1a76fe0223:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmNTc3NWQxOGZhZTJlZjU1ODhiZTEwYjQwMDJiYTIyNzhlZWMxM2Q5Njk1Y2U3OGJkNTE5ZTQ1OTBiOWJiNmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliM2ZlMjJiYzJmOWZjYzZlNzI2MTNlOWI3ZGJkMmE1Y2NkNjY5MzlkMDI2YWY4Mzk2MDFhN2Q1NzRkZjFlNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4ZTJmN2Y2ODM2MDE1Nzg0YWU2M2M4NzkzZTQ5Y2QwYTQyMDE0YzhhODljYjllMWI5ZjkzOGZmODBjYTcxZjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cf462adec3a8434b9e2540d008e147f3",
+      "statement": "A process-wide SESSION_REGISTRY keyed by the canonicalized image path returns a shared, Arc-cloned OifsSession so threads reference one Master with natural reference counting.",
+      "evidence": [
+        {
+          "resource": "repo://src/session.rs#L195-L215",
+          "version": "repo-lines-v1:sha256:32b6ff6ce6bc5915f2d2d59aca11063c41331b3cc76f49f77f49ba0245da028c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyYTJlYzRhNDgwMDEwOTc1MmQ4YzY3MDQxYjFiMDlkMzk3YjE2NzMxOGJjZTBiMGNlMDY0ZWM0YjYwZmQxYTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1NzAxMmRkZWEwMjNjZWQ1MGI0MDI4MjYxMTYzNmFlZDNhYWJjMDMxZWVhMTFiYTljNjEyYzY5NjQxNWI5NTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdkNDNiMWM0YmNkMjMzMzRlOTQ3Mjc1NTRmYzBjZGE1YWEyZWMzMGJlODQyMDkzYWE4YWVmZDA4ZjdlMzlmZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1YWMzYmExMzRlZWQzYWU3ZTA0NWRmMjczMjM5YzQ5ZDg2ZGRlZTZmZDM1NzQ3ZDlhZGJlN2UzZTI4YjcwMjcifQ"
+        },
+        {
+          "resource": "repo://src/session.rs#L77-L100",
+          "version": "repo-lines-v1:sha256:19db786140fd1b30dae2d03fb69e56b5c034cf09134122ddaadc6ea18744d4d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1ODU5MWI5NWFlNmQ1ZGVlOTk4YTlmYWMwZWMxOTRlZTU4ODQyMTRmODc2OTJjYWYxZGE2MDFmZDVkNzQyZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExNmNkZjdlZTEyYjk3YjkyMjM0NDk0Zjc2MzU0ZWIxMDkxNTY3NjFlZjZiYWE3YmM0YzEyN2Y4ODg0NjQxOGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NmE1NDRjYzAyM2VkNDA1ZTNiOThiOGEzNTQwOTBmYWQxNmU5ZTE4ZDVlZTlmN2JhNmMzZTcwMDUzMDA5ZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3ODhiMGNkMmQzZDI5ZWQ3NTY3MjkzNzdmOTI2ODAxYjE0ZmMyNWJhMzNmNWNkY2Q4YjUwNThiZjM0M2RjZTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a1b800bfe4ab4ffea386db099584a3e2",
+      "statement": "Master election is transport-specific: Local mode uses a deterministic /tmp Unix socket, Network mode uses an atomic create_new rendezvous .master file plus a clock-free active Ping/Pong probe to detect a dead master.",
+      "evidence": [
+        {
+          "resource": "repo://src/ipc.rs#L114-L135",
+          "version": "repo-lines-v1:sha256:1f5facb4cea890ebe29a7ee4d0e488a6e9277100f369349613779944a4ef5fcb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0ZmRkNWQxZmQ3ZmJjODQ0ZjE4NzlhMGY5NWVhYzA4Y2VhNGJlZjEyMTFmYmM2YWYyZTBkYzM2Yjk2ZTZhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc4NmY3YWRjOTY3NGQ3MDlhM2Q4ZjQwMzJhYzI5NGUyNmFhMmI2MzY3MmJlMWVmNjgyNDVjNDVkYmI2MTBiMjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgzMDlkNWNmNTEzOTkxMDRhMjQ2MDcwZjg0ODcwNmNmN2IzNDQxYzY2MmY1YzlhOTU4MzRjODk5MDcwMWRmOTkifQ"
+        },
+        {
+          "resource": "repo://src/ipc.rs#L150-L170",
+          "version": "repo-lines-v1:sha256:ea448ee9fa5dbd84dafabe1cca4fc63e50aef7ebc4acb254d7ffea1f2c9e6de5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4NDVkNGZkMjZlYzlkMDhmZTJjMGZiNjQxMzQyMmE0MDdlMmUxYmQ3NTc1YjkxOWI4NGZiZWQ5ODA4MmRmZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhYTM3MjU2ODQ2NWQzMGQ1ZjllMTQ2OWY3ZmI2NDBkNTZhOWVkODgwYTk2NDRlMTk3MzM4YjcxNmI1MjEyYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZDUzNTNmNTA3ZDJkM2U5NzA3OGZiNTgwNDE1Nzk3YWRlMzhhY2YyMmQxNzI1ZGRiNjNjMjg2YmY1N2NiN2IifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_958a3fc1275e4dd4a9230b2beecd3e20",
+      "statement": "IPC messages are length-prefixed Bincode frames (128MB cap); IpcServer::handle_request is the single dispatcher mapping each IpcRequest to a DiskManager call, with one poll-based worker thread per peer.",
+      "evidence": [
+        {
+          "resource": "repo://src/ipc.rs#L281-L300",
+          "version": "repo-lines-v1:sha256:065a56b36902e532c6736ca93d2cb8bd57bc7a042f1eeed5993a5a30a8525d4d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyZjI4MGUxMjAwMWUwNGMxODg3YmVjNzc5NjI1MTJhNzdlZGJiN2MyNDAwZjVhNzU1YjJiZjhlNzcyNzc0YTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjNTEzODFjM2VkMTdlYmQ3MzViYzgzYWQxYmQzMGRhNWYwZmJhMzFhNWJiMzc1ODQzY2FmZDJlNWUyNGRkOWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVmZjQ1MzBmMmE4MzcxN2ZhODE2N2I2ZjVhYTlmNGFlOTJjMTYyZjgwZTNmNjY1ZjExMzliZDVmZDlmMDljMDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFkMjdlMjA1MDM3YjM4ZTc3YTcwMGJhNGE3Y2JhNmU2NzEwZWYzYmIyZjA4ZjUzYWJlMGM3ZjQzMmEwMDhhZDQifQ"
+        },
+        {
+          "resource": "repo://src/ipc.rs#L648-L720",
+          "version": "repo-lines-v1:sha256:637518d3a3376a5eb54875b5df550f16e13d5188d49e5b3116fbe0208095fd68:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjMDc4MGY5Zjg5MjFkYmE2ZjA3YjM5OGZhYzFmNTQ4NmEzOTVhZTcwZDQ0MzU4NWYwODU3NzUwZTQyNmRkODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiZjJkNzZjMjJlYjg3OTEzYjM4OTZmOWFkNzFhYjM1NDAwOTllM2E2ZjVlMTM1ZjBkOGE0ODAyNmFhZjYyNzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU1NTAwZGExZTZkNTNkNDZlZDdlYWI0ZGE5NTRhNGM1MGNkMDJmZmI3MWMyZDA2MzBmM2UyMTJkMTdhZmU5Y2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjExZDc5YzFkNWYzNjVkYzAyYjViNDFiOGU5M2IzYmYzODUwYmE4NjMzODIzZjExN2Q3NmFhYzNkZjc2NzFjYzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_247a458ae45943e9859ebd43d1748f83",
+      "statement": "Remote sessions self-heal: on a connection error they re-run master election up to five times and, if they become the new Master, pin a local DiskManager as dm_fallback to keep serving locally.",
+      "evidence": [
+        {
+          "resource": "repo://src/session.rs#L424-L490",
+          "version": "repo-lines-v1:sha256:c4af489f05b57914219ebe2fda0f1f971fa5099564fee4d1e4b09ce20eaa28ba:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDg5ZjY0YzFiYWNhNjRkYmY0Mzk2NDU5OWFlOWI5NGU4MTg4NzIxZGZjZWI0NzhiMDY3NDZmM2M5ZjBiOTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0Nzc5ZmMzZDk2OTM1MzNlMGM4NWZkMjkyZmU3Yjg5YWI3MTI2ODRmZWE3OGIwZDc2YjEyYTRmZjEzOGFkMTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1M2Y5NWQ0NmY1YjA0NjBhOTg5OTg2ZGE1NzQ2MjAwOWE4MzJkNDg3NTExOGExM2VhYzk4ODk3MzgxZGY1NDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVjMTUwZTUyYzY4YjkwMmRhNDg3MDI0NGRiYTcwMGUwZDZhNzExMzM2NGJmYThiYzNmZWNiOTY0NWJmNzJjMmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4b1b5a6d4e824c179cf3c7a923958575",
+      "statement": "The block-level merge policy is enforced by the Master's single DiskManagerInner mutex rather than per-block locks: disjoint byte offsets merge in place, overlapping offsets are last-writer-wins, and compressed writes use multi-frame append or read-modify-recompress.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L130-L150",
+          "version": "repo-lines-v1:sha256:0fd8c8705cca481ebd1d2fb6adae8d3a85828b95f9b3d83107c10f030df6680c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmODY3Yzc3Zjg4NmVlMTg3MDkwMzQwYjFkMzJlNjVkMWU1Yzk3NWYxM2IxN2JkMWIxOWU1YWUzYTE0NjM3YmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzNmVkMzdmNzlhYTliYmViMDRlODRlOGM1MTI2NjdiZDllMzRmZjNkZjA0NTJjMGQ1YWIzYzcxYmZmYzE3MzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUxYTNjMDFhNTViMjY2NWExMzJhYTBiZWQ1ODg4ZjIxNzJhYTVjYThlMTcwNGViMzJmY2IwMWUxN2QwYTk0NDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUifQ"
+        },
+        {
+          "resource": "repo://src/session.rs#L59-L78",
+          "version": "repo-lines-v1:sha256:98833293276e14e6aa6b6e233c7d7998a19dbe4a8f89343e410b6b1a76fe0223:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmNTc3NWQxOGZhZTJlZjU1ODhiZTEwYjQwMDJiYTIyNzhlZWMxM2Q5Njk1Y2U3OGJkNTE5ZTQ1OTBiOWJiNmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliM2ZlMjJiYzJmOWZjYzZlNzI2MTNlOWI3ZGJkMmE1Y2NkNjY5MzlkMDI2YWY4Mzk2MDFhN2Q1NzRkZjFlNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4ZTJmN2Y2ODM2MDE1Nzg0YWU2M2M4NzkzZTQ5Y2QwYTQyMDE0YzhhODljYjllMWI5ZjkzOGZmODBjYTcxZjMifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-09-29T16:14:34.721Z"
+  }
+}

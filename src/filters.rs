@@ -186,12 +186,59 @@ impl FilterConfig {
 }
 
 /// In-place first-order delta encoding with zero allocations
+#[inline]
 pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
     let n = data.len() / typesize;
     if n <= 1 {
         return;
     }
 
+    #[cfg(target_endian = "little")]
+    {
+        // On Little-Endian architectures (x86_64, AArch64 / Apple Silicon), the in-memory
+        // byte representation matches on-disk format. If properly aligned, operating directly
+        // on typed slices eliminates bounds checks and allows auto-vectorization (AVX2/NEON).
+        let ptr = data.as_mut_ptr();
+        match typesize {
+            1 => {
+                for i in (1..n).rev() {
+                    data[i] = data[i].wrapping_sub(data[i - 1]);
+                }
+                return;
+            }
+            2 => {
+                if ptr as usize % std::mem::align_of::<u16>() == 0 {
+                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u16, n) };
+                    for i in (1..n).rev() {
+                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
+                    }
+                    return;
+                }
+            }
+            4 => {
+                if ptr as usize % std::mem::align_of::<u32>() == 0 {
+                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
+                    for i in (1..n).rev() {
+                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
+                    }
+                    return;
+                }
+            }
+            8 => {
+                if ptr as usize % std::mem::align_of::<u64>() == 0 {
+                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u64, n) };
+                    for i in (1..n).rev() {
+                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
+                    }
+                    return;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Portable / unaligned / Big-Endian fallback:
+    // Explicitly uses from_le_bytes and to_le_bytes to guarantee uniform on-disk byte format.
     match typesize {
         1 => {
             for i in (1..n).rev() {
@@ -200,27 +247,16 @@ pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
         }
         2 => {
             for i in (1..n).rev() {
-                let curr = u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]);
-                let prev = u16::from_le_bytes([data[(i - 1) * 2], data[(i - 1) * 2 + 1]]);
+                let curr = u16::from_le_bytes(data[i * 2..i * 2 + 2].try_into().unwrap());
+                let prev = u16::from_le_bytes(data[(i - 1) * 2..i * 2].try_into().unwrap());
                 let diff = curr.wrapping_sub(prev).to_le_bytes();
-                data[i * 2] = diff[0];
-                data[i * 2 + 1] = diff[1];
+                data[i * 2..i * 2 + 2].copy_from_slice(&diff);
             }
         }
         4 => {
             for i in (1..n).rev() {
-                let curr = u32::from_le_bytes([
-                    data[i * 4],
-                    data[i * 4 + 1],
-                    data[i * 4 + 2],
-                    data[i * 4 + 3],
-                ]);
-                let prev = u32::from_le_bytes([
-                    data[(i - 1) * 4],
-                    data[(i - 1) * 4 + 1],
-                    data[(i - 1) * 4 + 2],
-                    data[(i - 1) * 4 + 3],
-                ]);
+                let curr = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
+                let prev = u32::from_le_bytes(data[(i - 1) * 4..i * 4].try_into().unwrap());
                 let diff = curr.wrapping_sub(prev).to_le_bytes();
                 data[i * 4..i * 4 + 4].copy_from_slice(&diff);
             }
@@ -238,12 +274,55 @@ pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
 }
 
 /// In-place first-order delta decoding with zero allocations
+#[inline]
 pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
     let n = data.len() / typesize;
     if n <= 1 {
         return;
     }
 
+    #[cfg(target_endian = "little")]
+    {
+        let ptr = data.as_mut_ptr();
+        match typesize {
+            1 => {
+                for i in 1..n {
+                    data[i] = data[i - 1].wrapping_add(data[i]);
+                }
+                return;
+            }
+            2 => {
+                if ptr as usize % std::mem::align_of::<u16>() == 0 {
+                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u16, n) };
+                    for i in 1..n {
+                        slice[i] = slice[i - 1].wrapping_add(slice[i]);
+                    }
+                    return;
+                }
+            }
+            4 => {
+                if ptr as usize % std::mem::align_of::<u32>() == 0 {
+                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
+                    for i in 1..n {
+                        slice[i] = slice[i - 1].wrapping_add(slice[i]);
+                    }
+                    return;
+                }
+            }
+            8 => {
+                if ptr as usize % std::mem::align_of::<u64>() == 0 {
+                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u64, n) };
+                    for i in 1..n {
+                        slice[i] = slice[i - 1].wrapping_add(slice[i]);
+                    }
+                    return;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Portable / unaligned / Big-Endian fallback:
     match typesize {
         1 => {
             for i in 1..n {
@@ -252,27 +331,16 @@ pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
         }
         2 => {
             for i in 1..n {
-                let prev = u16::from_le_bytes([data[(i - 1) * 2], data[(i - 1) * 2 + 1]]);
-                let curr = u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]);
+                let prev = u16::from_le_bytes(data[(i - 1) * 2..i * 2].try_into().unwrap());
+                let curr = u16::from_le_bytes(data[i * 2..i * 2 + 2].try_into().unwrap());
                 let sum = prev.wrapping_add(curr).to_le_bytes();
-                data[i * 2] = sum[0];
-                data[i * 2 + 1] = sum[1];
+                data[i * 2..i * 2 + 2].copy_from_slice(&sum);
             }
         }
         4 => {
             for i in 1..n {
-                let prev = u32::from_le_bytes([
-                    data[(i - 1) * 4],
-                    data[(i - 1) * 4 + 1],
-                    data[(i - 1) * 4 + 2],
-                    data[(i - 1) * 4 + 3],
-                ]);
-                let curr = u32::from_le_bytes([
-                    data[i * 4],
-                    data[i * 4 + 1],
-                    data[i * 4 + 2],
-                    data[i * 4 + 3],
-                ]);
+                let prev = u32::from_le_bytes(data[(i - 1) * 4..i * 4].try_into().unwrap());
+                let curr = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
                 let sum = prev.wrapping_add(curr).to_le_bytes();
                 data[i * 4..i * 4 + 4].copy_from_slice(&sum);
             }
@@ -403,6 +471,33 @@ pub fn shuffle_decode(data: &[u8], typesize: usize) -> Vec<u8> {
     out
 }
 
+/// Transposes an 8x8 bit matrix stored in a 64-bit integer using the Delta-Swap algorithm.
+///
+/// Portability & Architecture Notes:
+/// - x86_64: Compiles down to branchless single-cycle bitwise instructions (xor, shr, and, shl).
+///   Avoids complex AVX2/BMI2 table setup and works uniformly on all x86_64 microarchitectures.
+/// - AArch64 (ARM64): Compiles to ~15 fast native A64 ALU instructions (eor, lsr, lsl, and).
+/// - Involution property: Transposing twice returns the original word (T(T(x)) == x),
+///   so both encoding and decoding share this exact symmetric primitive.
+#[inline]
+pub fn transpose_8x8_u64(mut x: u64) -> u64 {
+    // Fast path: all zeros or all ones are invariant under transposition
+    if x == 0 || x == u64::MAX {
+        return x;
+    }
+    let mut t;
+    // Step 1: Swap bit-plane 0 and bit-plane 3 (delta = 7)
+    t = (x ^ (x >> 7)) & 0x00AA00AA00AA00AA;
+    x = x ^ t ^ (t << 7);
+    // Step 2: Swap bit-plane 1 and bit-plane 4 (delta = 14)
+    t = (x ^ (x >> 14)) & 0x0000CCCC0000CCCC;
+    x = x ^ t ^ (t << 14);
+    // Step 3: Swap bit-plane 2 and bit-plane 5 (delta = 28)
+    t = (x ^ (x >> 28)) & 0x00000000F0F0F0F0;
+    x = x ^ t ^ (t << 28);
+    x
+}
+
 /// Bit-level matrix transposition (BitShuffle)
 pub fn bitshuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
     if data.is_empty() || typesize == 0 {
@@ -414,26 +509,26 @@ pub fn bitshuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
     let n_bytes = data.len();
     let n_blocks = n_bytes / 8;
 
-    // Step 2: Transpose 8x8 bit blocks
-    for b in 0..n_blocks {
-        let block_offset = b * 8;
-        for i in 0..8 {
-            let byte_val = byte_shuffled[block_offset + i];
-            if byte_val == 0 {
-                continue;
-            }
-            if byte_val == 0xFF {
-                for j in 0..8 {
-                    out[block_offset + j] |= 1 << i;
-                }
-                continue;
-            }
-            for j in 0..8 {
-                let bit = (byte_val >> j) & 1;
-                out[block_offset + j] |= bit << i;
-            }
-        }
+    // Step 2: Transpose 8x8 bit blocks using 64-bit word delta swap
+    // Unroll 2x (16 bytes) to maximize instruction-level parallelism across superscalar ALU pipes
+    let mut in_chunks_16 = byte_shuffled[..n_blocks * 8].chunks_exact(16);
+    let mut out_chunks_16 = out[..n_blocks * 8].chunks_exact_mut(16);
+    for (src, dst) in in_chunks_16.by_ref().zip(out_chunks_16.by_ref()) {
+        let w0 = u64::from_le_bytes(src[0..8].try_into().unwrap());
+        let w1 = u64::from_le_bytes(src[8..16].try_into().unwrap());
+        let t0 = transpose_8x8_u64(w0);
+        let t1 = transpose_8x8_u64(w1);
+        dst[0..8].copy_from_slice(&t0.to_le_bytes());
+        dst[8..16].copy_from_slice(&t1.to_le_bytes());
     }
+    let rem_src_16 = in_chunks_16.remainder();
+    let rem_dst_16 = out_chunks_16.into_remainder();
+    if rem_src_16.len() == 8 {
+        let w = u64::from_le_bytes(rem_src_16.try_into().unwrap());
+        let t = transpose_8x8_u64(w);
+        rem_dst_16.copy_from_slice(&t.to_le_bytes());
+    }
+
     let rem_start = n_blocks * 8;
     if rem_start < n_bytes {
         out[rem_start..].copy_from_slice(&byte_shuffled[rem_start..]);
@@ -450,26 +545,26 @@ pub fn bitshuffle_decode(data: &[u8], typesize: usize) -> Vec<u8> {
     let n_bytes = data.len();
     let n_blocks = n_bytes / 8;
 
-    // Transpose 8x8 bit blocks (symmetric operation)
-    for b in 0..n_blocks {
-        let block_offset = b * 8;
-        for j in 0..8 {
-            let byte_val = data[block_offset + j];
-            if byte_val == 0 {
-                continue;
-            }
-            if byte_val == 0xFF {
-                for i in 0..8 {
-                    unbit[block_offset + i] |= 1 << j;
-                }
-                continue;
-            }
-            for i in 0..8 {
-                let bit = (byte_val >> i) & 1;
-                unbit[block_offset + i] |= bit << j;
-            }
-        }
+    // Transpose 8x8 bit blocks (symmetric operation) using 64-bit word delta swap
+    // Unroll 2x (16 bytes) to maximize instruction-level parallelism across superscalar ALU pipes
+    let mut in_chunks_16 = data[..n_blocks * 8].chunks_exact(16);
+    let mut out_chunks_16 = unbit[..n_blocks * 8].chunks_exact_mut(16);
+    for (src, dst) in in_chunks_16.by_ref().zip(out_chunks_16.by_ref()) {
+        let w0 = u64::from_le_bytes(src[0..8].try_into().unwrap());
+        let w1 = u64::from_le_bytes(src[8..16].try_into().unwrap());
+        let t0 = transpose_8x8_u64(w0);
+        let t1 = transpose_8x8_u64(w1);
+        dst[0..8].copy_from_slice(&t0.to_le_bytes());
+        dst[8..16].copy_from_slice(&t1.to_le_bytes());
     }
+    let rem_src_16 = in_chunks_16.remainder();
+    let rem_dst_16 = out_chunks_16.into_remainder();
+    if rem_src_16.len() == 8 {
+        let w = u64::from_le_bytes(rem_src_16.try_into().unwrap());
+        let t = transpose_8x8_u64(w);
+        rem_dst_16.copy_from_slice(&t.to_le_bytes());
+    }
+
     let rem_start = n_blocks * 8;
     if rem_start < n_bytes {
         unbit[rem_start..].copy_from_slice(&data[rem_start..]);
@@ -491,6 +586,17 @@ pub fn trunc_precision_encode_inplace(data: &mut [u8], typesize: usize, prec_bit
             if bits_to_zero > 0 {
                 let mask = !((1u32 << bits_to_zero) - 1);
                 let n = data.len() / 4;
+                #[cfg(target_endian = "little")]
+                {
+                    let ptr = data.as_mut_ptr();
+                    if ptr as usize % std::mem::align_of::<u32>() == 0 {
+                        let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
+                        for val in slice.iter_mut() {
+                            *val &= mask;
+                        }
+                        return;
+                    }
+                }
                 for i in 0..n {
                     let val = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
                     data[i * 4..i * 4 + 4].copy_from_slice(&(val & mask).to_le_bytes());
@@ -504,6 +610,17 @@ pub fn trunc_precision_encode_inplace(data: &mut [u8], typesize: usize, prec_bit
             if bits_to_zero > 0 {
                 let mask = !((1u64 << bits_to_zero) - 1);
                 let n = data.len() / 8;
+                #[cfg(target_endian = "little")]
+                {
+                    let ptr = data.as_mut_ptr();
+                    if ptr as usize % std::mem::align_of::<u64>() == 0 {
+                        let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u64, n) };
+                        for val in slice.iter_mut() {
+                            *val &= mask;
+                        }
+                        return;
+                    }
+                }
                 for i in 0..n {
                     let val = u64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().unwrap());
                     data[i * 8..i * 8 + 8].copy_from_slice(&(val & mask).to_le_bytes());
@@ -619,19 +736,58 @@ pub fn recommend_filters(data: &[u8]) -> FilterRecommendation {
 
     let candidates_to_test = [
         (FilterConfig::none(), "None (Raw Zstd)".to_string()),
-        (FilterConfig::delta_only(1), "Delta (typesize=1, u8)".to_string()),
-        (FilterConfig::delta_only(2), "Delta (typesize=2, u16)".to_string()),
-        (FilterConfig::delta_only(4), "Delta (typesize=4, u32/f32)".to_string()),
-        (FilterConfig::delta_only(8), "Delta (typesize=8, u64/f64)".to_string()),
-        (FilterConfig::shuffle_only(2), "Shuffle (typesize=2, u16)".to_string()),
-        (FilterConfig::shuffle_only(4), "Shuffle (typesize=4, u32/f32)".to_string()),
-        (FilterConfig::shuffle_only(8), "Shuffle (typesize=8, u64/f64)".to_string()),
-        (FilterConfig::bitshuffle_only(2), "BitShuffle (typesize=2, u16)".to_string()),
-        (FilterConfig::bitshuffle_only(4), "BitShuffle (typesize=4, u32/f32)".to_string()),
-        (FilterConfig::bitshuffle_only(8), "BitShuffle (typesize=8, u64/f64)".to_string()),
-        (FilterConfig::numeric(2), "Delta+Shuffle (typesize=2, u16)".to_string()),
-        (FilterConfig::numeric(4), "Delta+Shuffle (typesize=4, u32/f32)".to_string()),
-        (FilterConfig::numeric(8), "Delta+Shuffle (typesize=8, u64/f64)".to_string()),
+        (
+            FilterConfig::delta_only(1),
+            "Delta (typesize=1, u8)".to_string(),
+        ),
+        (
+            FilterConfig::delta_only(2),
+            "Delta (typesize=2, u16)".to_string(),
+        ),
+        (
+            FilterConfig::delta_only(4),
+            "Delta (typesize=4, u32/f32)".to_string(),
+        ),
+        (
+            FilterConfig::delta_only(8),
+            "Delta (typesize=8, u64/f64)".to_string(),
+        ),
+        (
+            FilterConfig::shuffle_only(2),
+            "Shuffle (typesize=2, u16)".to_string(),
+        ),
+        (
+            FilterConfig::shuffle_only(4),
+            "Shuffle (typesize=4, u32/f32)".to_string(),
+        ),
+        (
+            FilterConfig::shuffle_only(8),
+            "Shuffle (typesize=8, u64/f64)".to_string(),
+        ),
+        (
+            FilterConfig::bitshuffle_only(2),
+            "BitShuffle (typesize=2, u16)".to_string(),
+        ),
+        (
+            FilterConfig::bitshuffle_only(4),
+            "BitShuffle (typesize=4, u32/f32)".to_string(),
+        ),
+        (
+            FilterConfig::bitshuffle_only(8),
+            "BitShuffle (typesize=8, u64/f64)".to_string(),
+        ),
+        (
+            FilterConfig::numeric(2),
+            "Delta+Shuffle (typesize=2, u16)".to_string(),
+        ),
+        (
+            FilterConfig::numeric(4),
+            "Delta+Shuffle (typesize=4, u32/f32)".to_string(),
+        ),
+        (
+            FilterConfig::numeric(8),
+            "Delta+Shuffle (typesize=8, u64/f64)".to_string(),
+        ),
     ];
 
     let mut reports = Vec::with_capacity(candidates_to_test.len());
@@ -645,7 +801,11 @@ pub fn recommend_filters(data: &[u8]) -> FilterRecommendation {
             .map(|v| v.len())
             .unwrap_or(filtered.len());
 
-        let ratio = if comp_size > 0 { original_size as f64 / comp_size as f64 } else { 1.0 };
+        let ratio = if comp_size > 0 {
+            original_size as f64 / comp_size as f64
+        } else {
+            1.0
+        };
         let savings = if original_size > 0 {
             (1.0 - (comp_size as f64 / original_size as f64)) * 100.0
         } else {
@@ -815,4 +975,55 @@ mod kani_proofs {
         let decoded = pipeline.unapply(&encoded);
         assert_eq!(data, decoded.as_slice());
     }
+
+    /// Prove that transpose_8x8_u64 is a strict mathematical involution: T(T(x)) == x
+    /// for all 2^64 possible 64-bit inputs.
+    #[kani::proof]
+    fn proof_transpose_8x8_u64_involution() {
+        let x: u64 = kani::any();
+        let t = transpose_8x8_u64(x);
+        let tt = transpose_8x8_u64(t);
+        assert_eq!(x, tt, "transpose_8x8_u64 must be an involution");
+    }
+
+    /// Prove delta encode and decode roundtrip on u16 elements across arbitrary symbolic bytes.
+    #[kani::proof]
+    fn proof_delta_roundtrip_u16() {
+        let mut data = [0u8; 8];
+        for i in 0..8 {
+            data[i] = kani::any();
+        }
+        let mut encoded = data;
+        delta_encode_inplace(&mut encoded, 2);
+        let mut decoded = encoded;
+        delta_decode_inplace(&mut decoded, 2);
+        assert_eq!(data, decoded);
+    }
+
+    /// Prove delta encode and decode roundtrip on u64 elements across arbitrary symbolic bytes.
+    #[kani::proof]
+    fn proof_delta_roundtrip_u64() {
+        let mut data = [0u8; 16];
+        for i in 0..16 {
+            data[i] = kani::any();
+        }
+        let mut encoded = data;
+        delta_encode_inplace(&mut encoded, 8);
+        let mut decoded = encoded;
+        delta_decode_inplace(&mut decoded, 8);
+        assert_eq!(data, decoded);
+    }
+
+    /// Prove that truncating 0 bits is an exact mathematical identity.
+    #[kani::proof]
+    fn proof_trunc_precision_zero_bits_identity() {
+        let mut data = [0u8; 8];
+        for i in 0..8 {
+            data[i] = kani::any();
+        }
+        let mut copy = data;
+        trunc_precision_encode_inplace(&mut copy, 4, 0);
+        assert_eq!(data, copy);
+    }
 }
+

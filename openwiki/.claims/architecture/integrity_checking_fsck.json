@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:40c9ae30341c2b9af54af957dc5a06a86f8ba920a083296bdbce4368a5a3bae8",
+  "claims": [
+    {
+      "id": "claim_d7ca918549b14cc1b21b3120633470f4",
+      "statement": "DiskManager::verify_integrity harvests allocated inodes and data blocks from bitmaps using BitmapRef, then traverses the directory tree to collect the inodes and blocks that are actually reachable.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L1762-L1820",
+          "version": "repo-lines-v1:sha256:e37a0d4aa70700643c5edd22de616075b40f2830b0e52e0d14460b35977aa57f:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5NDFhNTg3ZTAxOWY2ZjM2OTY2ZTE4MWQ0YTUyY2Q5NTdiYTk3ZGEyNWU1ZmNlMzhjYmJkMjlhMzlkM2ZiZDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkMDJlMjcxNTExNjdjZmI5ZTFjMGY2YTE5MWI4M2EyODk0YjRhMThlMTAzYjY5ZjI5ZTBjZDliMjVjYzNmNzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxZGFlY2ZiNTk5ZmNjOGQ3NTY3YTY2NzRlODEzM2U5MTY2NmYxMDZjZGY5M2JjOTc3YzJmMGMzODU2MTg4NTMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_caa18cef63d145e481b9530f7839e889",
+      "statement": "The fsck scanner resolves physical block pointers for every reachable inode across direct, single-indirect, double-indirect, and triple-indirect tiers, tracking blocks referenced by more than one inode.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L1822-L1833",
+          "version": "repo-lines-v1:sha256:7d13ab30026d9d01e10ddf83145d5a9216d0606499959ddc952a5abd6c554b85:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwMTBhOWU1ZjhlOGRlNjRkODM4YzRmODU2M2Y5ZDc2NGVlZWFkMzBjNDA4ZTI0ZTJmZGIxMGYyZGM5YWI4ZDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzODI3ODA5ZjgyZDQwNDJmYzU5NmUyNDJlNGMxMmUyYzk2NGRlNmQ1YmRiYjIyYzFkODhkNzgxNWIzMGYyMzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMjJmOGQ3OTRiOGUxOWM2NmMxYTk0ZGJhZGY4OTQ2YjliZjMzMzVmMzNmMDZjNjZiMGRhYWM5MGVhMDNlZDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_272ee60da04743bbab167a2e7089df50",
+      "statement": "Integrity checking computes set-theoretic differences between bitmap allocations and directory reachability to detect orphan inodes, leaked blocks, missing blocks, and cross-linked blocks.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L1835-L1868",
+          "version": "repo-lines-v1:sha256:bb13190157a8187f0aa380c68caf3dcc9c851b39e7da7c1327ed11169716446e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3NGFiYzgzMjdjMzBhMjJhOTVmNjgxMTc5N2IwNmI2ZTMwMzJmNTNlY2EzZDgwMGY3YjFjMWJlOTk2MDQzNTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzYmY3YTI2NWQ1OGUxNWQwMzE0OWY3ZGUyNGI3NTZjN2U4OGViM2Q0OGQ2ZDUyYTE4YTQwMzQzODkwMjBkOWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRhOWY4NmQyOGU3ODRmOWZkMzFmYjcyZDE1ZjYwY2JjZWFhZmRkNjY5Y2JkNWI2ZGE3ODg4YTAyMzMyMWViYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBhNmZjZmYyNGEwOTk1NTA4NGU4NzM3ZmY4MjVkZTQxMTZiNDM5MWI3Mzk2NDc4MWMxMzBjNGRmMGY5OTRjMzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b3730651dd7a42929fd15fc124b60775",
+      "statement": "FsckReport records structural consistency via an is_clean flag alongside sorted identifier lists of orphan inodes, leaked blocks, missing blocks, and cross-linked blocks.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L115-L126",
+          "version": "repo-lines-v1:sha256:ffd817362d35f6dfa1e3a10690e04a3ecb41db2259ecd457dd345e09687d962b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNjc4NjY2ZGY4ZGI4N2MxNDM1OThjZmEwMWI5YmZiM2U3NmE5NmEyMzI3N2ZhNzhkN2UyNGE0OTA1N2QwMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjNjAzMTE2ODdlMTBmOWZjNWU4MWE1YWUwNGJmODQ2MjhlNDYyNjc2YjY0YWMzOTQ1ZDEyZWJmOGY0MmRmOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxYTNjMDFhNTViMjY2NWExMzJhYTBiZWQ1ODg4ZjIxNzJhYTVjYThlMTcwNGViMzJmY2IwMWUxN2QwYTk0NDcifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L1870-L1877",
+          "version": "repo-lines-v1:sha256:66cf73b1cc2cbef09e0447543901cb6017b84337e6a8bae8a55302d0d3c5bd52:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTc5NzZmN2RhNjFmNmNhM2ViMTRlYzY2Y2U0Y2VkZTIyMDczNzNkODc4OTkzNzg0ODNiNGUyMjI5ODAxODA3ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWIxNTczYTdlZjA1NGMyZWQ2MGQ3YzM0NDIxOTdhOTkwZWZhMzYxODJkYTdhYTUzNmIxZmY0OTExOGY4MTkxMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjEsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-09-29T16:14:34.721Z"
+  }
+}

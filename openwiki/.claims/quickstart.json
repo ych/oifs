@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:fba789ecfb1ec43369eb7c6710afe2e28aae4abb609102e6783a6b9a98bbec09",
+  "claims": [
+    {
+      "id": "claim_ca87b04153364f858e7d747421cc8f79",
+      "statement": "The oifs CLI exposes a Commands enum (create, put, get, append, mkdir, list, defrag, fsck, filter-analyze) covering every operation the quickstart exercises end to end.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs.rs#L36-L111",
+          "version": "repo-lines-v1:sha256:be7d495f39135b4b0479d50e11ea8151c331870bdc9c950df37891d0404390bb:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwOGI1NTMxM2ZkMzBkNWY2NmQxYzMyYWU3YTQwZGJkNmUzNDhjYzQ5YWYyYWJkYjg1NGFmOTM1MWNhN2U2NGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIzMDM0ZDMxNjAyOWRmYzkyOWM2ZTg2NTQ2OTBkYmQ5OTFjNGMxODVjNGQzOTA1MjMwYjA4YTgzOTAzZjVhNzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJiZDcyNGQzODRlMzE5YWFlZjQ1M2QwNTVmZjQ1NDY4N2VjY2IxMGQ1ZDEwMGEwYTFhYzk2Nzk0ZjA0M2NmM2MifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d264adde63fc433699c175561d80fdd2",
+      "statement": "OIFS builds a CLI binary and a C shared library (cdylib) by default, while the optional mcp feature flag additionally compiles the oifs_mcp Model Context Protocol server binary.",
+      "evidence": [
+        {
+          "resource": "repo://Cargo.toml#L10-L12",
+          "version": "repo-lines-v1:sha256:159af002c7ce0873a2e01c7f9cf087ba2953252ff114b3e6f0bf1f11af676e28:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg0MzVlZjU5NGYzMzcwNzMwN2MxZmU1OWIwMTdmMjExZTllZThhMTVjODJkZDVlYWIxOWI3NjdhNmY3NGJlOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjg1MTI2Nzc4YTgwODM0OTRmMWRmZDJjYjI5ZDc4NDM5MTQwOTViNjUyZjcwZGIxNDBjNDUxM2I0ZmQzNzFiMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQ3NmIxM2EwMjBmNjAyNDhhN2VjODFhOTNlZDA1NDJiZTgyMzQyNmQyYzAyNmFmYjg4YjY0M2RjMDEwYjMyYiJ9"
+        },
+        {
+          "resource": "repo://Cargo.toml#L43-L55",
+          "version": "repo-lines-v1:sha256:e94c9c829d9a07694b6ab3f9f8d9ab3d71fb2b424b50078f6e06225a3bc533aa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ZjZjMWM3M2U0Njg1YjZmNTU3OTJhZTUzOTI1NTNmZjc5ZDNjYzA2N2IwYjc0ZTA2ODY5OGY2YjJjNzZiODIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkZTlhMmQyZDQ2NWU0MmZjMjBlNzg0NmZkMjVlYzU3Y2MwOGNjZDFhZGQzMWQ0OWQ4YTljY2RlZTE4M2I4ZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIwY2Q3Y2UwOWIxMjA5MTJhNDQ5NDYwOGVmYWFiZWY2ZWI2OWU4ZWM0ZmFhZWUzOTIwNWI3ZjE5NjZkNTI0ZjkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2616d3e276d94ffb91918d1bbf9c63d2",
+      "statement": "Encrypted images are created with the --encrypt flag and interactive password confirmation, then later accessed via a masked prompt or the OIFS_PASSWORD environment variable / --password argument.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs.rs#L149-L183",
+          "version": "repo-lines-v1:sha256:a6386b0c9ac41530257783168e20fcda130c0e42cc0c85a0ef90f3b4218d8964:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYTNiYzMzNmM3NmUxZmJhZjFjZGMwNTdlZmZjN2YxOGNkYzA0YmIyNzVmMTI0ZTc1YzVhMTEwN2IwZjAwYWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyZTdmZDk0ODEyMDJjOTE2MjQxYjUzMjk3NDU3ZTJjMDU5YTk5YzY5YWU5M2FjN2JiY2YzYjRlMzNhMTQwNDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMjI2MWQ1Mzg4MjliZTAxYmI2ZGRhNGFlMmZlNzRhMWU2N2Q5MTdiNWMxNDVjYzM5NDZiZjFiNmQ2ZGU1OTEifQ"
+        },
+        {
+          "resource": "repo://src/bin/oifs.rs#L284-L310",
+          "version": "repo-lines-v1:sha256:3cbddd80cc964d978afbb584b04af3113b0b436288db9f0bd8b78671667f5229:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyOTI2MThjOTk1YTEzMTEwYzkzOTZjYzdlYTY1NDNmZGY3YTZmNzU1YTdiYTExOTBlNjJhMzg3NmFmZDEzNjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNjQ3OWNjMjMwNDQwZmQ0MWU4MjI0MjE4Njc5Njk4NTU5ZDI4OTNiZDY3YjQzODBhZmFiODExYjM4YTU1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZjM2FkNjM2NzE4NzFhNGViNTcyNWYyYThmNmY1MDc3ZTIyM2JiODk5NzJjMTI5NDQ2NTliMmVjY2YyMTk5ZTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlkNmQ0MTk5YTMwMmRlYjZhZTQzNTIwMzFlYjdlZWU3OWZkZTc0YmJkYzdiNjJiYjM1YjRjOWYyN2I1OTI5ODUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bebdabd1da0844a0b01484a30b128bc0",
+      "statement": "README.md documents the step-by-step build, image creation, file import/export, and encrypted workflows that the quickstart summarizes for new users.",
+      "evidence": [
+        {
+          "resource": "repo://README.md#L56-L100",
+          "version": "repo-lines-v1:sha256:031af7cf164d3896592425b1249a905c0adcb05f8e10e00809237fc333f5410b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0YjJjZjgzMWY3YmNhZGE3NDlkYzAxNGE2Yzc1Y2IzN2NhZjllOWZkZDRkZTJlYjY4Nzg5NzJmM2RlZGIyODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAwMWYyZWMxNzU5M2MxMDU0ZWI0NjM2N2Q4NDUzZWYyNGExNzNjZTk2YjcxMTdkOTFmOWE2OGQ0NGZlZjhiMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5MWI3ZWMxZmU0ZGEzOWFkMjE1MzlmOWRhZGRjN2Y2NzMyMTNkM2UyNmM4NjgzZjdkNDhhMmRmNzQ0Mzk0YjcifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-09-29T16:14:34.721Z"
+  }
+}

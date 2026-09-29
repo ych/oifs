@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:a61fd9e4cf8c237b332b7f359cafbfff8b51739f4f25f3c80111125ecf770e12",
+  "claims": [
+    {
+      "id": "claim_eee6149ed80a41e688eb92aa53776a94",
+      "statement": "The 256-byte Inode struct encodes file type, logical and compressed sizes, Unix timestamps, 12 direct/indirect block pointers plus a triple-indirect pointer addressing up to 513GB.",
+      "evidence": [
+        {
+          "resource": "repo://src/inode.rs#L31-L101",
+          "version": "repo-lines-v1:sha256:c9aeb0245245dcc837ba3d1b1bd8236f3536b9b5593de6fa7c67c1b7112279e0:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkNjhmY2JkYTU4ZWYwN2U2YmM2ZDA0OGY4YThlOWY5MjU4NTM5ZDBjODI5OGE4NGIxYmM5NDNjNzYxZDcxNTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQwMjc3MzcyOTNjNjBjMzFmMDRmOWRmNjFjY2VkOWViNTA1ODljZDkyMGI0NzNlYjY4M2ZhNzc0NDY2YzNhYmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlMTExZGUwOTQ3MjIzMDEyNTJmOGNjMjMyMDI3NjVkZWJmY2EzNmJlYjMyY2Y4MDU4ZjVjNDEzN2RhM2Q5MzgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_98e6fda5c5344541a128ad07c504092b",
+      "statement": "Formal verification proofs using Kani prove that Inode::new produces zero-initialized sizes, default-disabled filter flags, and correct FileType for both File and Directory cases.",
+      "evidence": [
+        {
+          "resource": "repo://src/inode.rs#L103-L149",
+          "version": "repo-lines-v1:sha256:909645e6c30bb0a864d786bb2f0ca50f0261602198cff14c0a1e991d5f22b81b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5YTE5MjEwZDI4NmI0Yjk3ZDBkM2Q4NTg2Y2MzM2ZiMmNhNzZiYjU1MGI5NTc4OTQ4NTI4Y2U2YTNjMTk3MjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6d2d41d8e749485485bff25502f35257",
+      "statement": "DirectoryEntry records are serialized as an 18-byte fixed header (8-byte inode, 8-byte hash, 2-byte length) followed by variable-length UTF-8 filenames.",
+      "evidence": [
+        {
+          "resource": "repo://src/directory.rs#L5-L79",
+          "version": "repo-lines-v1:sha256:ab4bbfe5b86120a29d63a2c9188a3f442a46569e2f6ad1834dbf05412d420a4a:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5NTg4ODE5OTEyZWJkZjlkZmJlNzBkNDg4NTYxZTA1Y2FjZDQ2NDZjOTMyODkxMGViYzJmZmIyMzk2ZDM1Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY2OGJkMGVmMTNhMDZmNzgyN2EwMTkxNTZjMTg3ZjY5ZTAzY2VhMzMxODcwMGM5ZWFjZjRmMWNiOTFjMzg3OTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhkODY1MDNjMmI1M2ZmNGYwZGJlNjI0MzA2MTE0ZjBlZTE0ZWZmMDA1MzYwMjBmNWNjNWM3MDViMTU1OTA4NTkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_636ff2d0981b4756b0518aa84e8ec8a1",
+      "statement": "find_entry_in_block and find_insert_offset_in_block parse raw directory block slices with zero heap allocations, matching names byte-for-byte and locating append offsets.",
+      "evidence": [
+        {
+          "resource": "repo://src/directory.rs#L110-L151",
+          "version": "repo-lines-v1:sha256:cf5ecd3d02896f561a42390688cb5a55e612cea52602891ca6e3919aeb2c7513:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ODFmNmZkY2Q1NDZkZGU1ZjEwMDM3MTk2MjBmZTAwZGVkMDQ1Y2VhMDk0YmNkNTRhNTU1MzhiZWViZjhlY2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3a4eacf1945549f7a8b33bfcc006b6be",
+      "statement": "DirectoryIterator implements the Rust Iterator trait over a borrowed byte slice, streaming deserialization of directory entries without intermediate allocation.",
+      "evidence": [
+        {
+          "resource": "repo://src/directory.rs#L81-L108",
+          "version": "repo-lines-v1:sha256:0ac94e3c1c57b3ab54cf78b5e1e92b6212d23cdf6cb890696196b5b0f28ee71e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlMmQ3NGQ5YmIxOGM4MDdjMTNkMTI1OTJiNTkzMjVkY2UwMjdkN2ZkNDAzYTBlNDZkYzE0N2JiYzI3ZDE3MGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRkMzBlNmFkN2I0NjJiZjVlMGNjZjdkYWE2ZDBiYTM2ZTI2NGVkYTBhNGM5MGM5OTQxYmI5NzBlMGMwOTRkMWIifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-09-29T16:14:34.721Z"
+  }
+}

@@ -12,7 +12,7 @@ use crate::superblock::SuperBlock;
 use crate::BLOCK_SIZE;
 use crate::allocator::{SimpleBlockAllocator, BlockAllocator, AllocatorError};
 use crate::inode::Inode;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -153,22 +153,16 @@ impl Drop for DiskManagerInner {
 
 /// Main disk manager interface for the OIFS file system
 ///
-/// Provides thread-safe access to the file system through an Arc<Mutex<>> wrapper.
+/// Provides thread-safe access to the file system through an Arc<RwLock<>> wrapper.
 /// Supports:
 /// - File and directory creation/deletion
 /// - File reading/writing with optional zstd compression
 /// - Path resolution and directory listing
-/// - Concurrent access from multiple threads
+/// - High-concurrency parallel reads across multiple threads
 #[derive(Clone)]
 pub struct DiskManager {
-    inner: Arc<Mutex<DiskManagerInner>>,
+    inner: Arc<RwLock<DiskManagerInner>>,
 }
-
-// Ensure Send + Sync (Mutex provides this if contents are Send)
-// File is Send+Sync. SuperBlock is Send+Sync. MmapMut is Send+Sync on linux (usually). 
-// Actually MmapMut is Send but !Sync.
-// Mutex<T> is Sync if T is Send. MmapMut is Send. So Mutex<MmapMut> is Sync.
-// So Arc<Mutex<DiskManagerInner>> is Send + Sync. Correct.
 
 impl DiskManager {
     /// Open an existing OIFS image or create a new one if it doesn't exist.
@@ -275,11 +269,11 @@ impl DiskManager {
         };
 
         let dm = Self {
-            inner: Arc::new(Mutex::new(inner)),
+            inner: Arc::new(RwLock::new(inner)),
         };
 
         if is_new {
-            let mut guard = dm.inner.lock().unwrap();
+            let mut guard = dm.inner.write().unwrap();
             let inode_bitmap_block = guard.superblock.inode_bitmap_block;
             let bitmap_slice = Self::get_block_mut_from_map(&mut guard.mmap, inode_bitmap_block)
                 .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("Failed to get inode bitmap")))?;
@@ -307,7 +301,7 @@ impl DiskManager {
 
     // Accessor for SuperBlock (Copy)
     pub fn superblock(&self) -> SuperBlock {
-        self.inner.lock().unwrap().superblock
+        self.inner.read().unwrap().superblock
     }
 
     // Private helper for Inner
@@ -316,29 +310,16 @@ impl DiskManager {
         let end = start + BLOCK_SIZE;
         if end > mmap.len() { None } else { Some(&mut mmap[start..end]) }
     }
-    
-    // We can't expose MmapMut directly.
-    // We can't expose Allocator that holds ref to mmap directly outside of a closure or short life.
-    // The previous design `dm.inode_allocator()` returned a struct borrowing `dm`. 
-    // Now `dm` is `Arc<Mutex<>>`. `inode_allocator` would need to lock it.
-    // `SimpleBlockAllocator` borrows slice. Slice borrows `MutexGuard`?
-    // `SimpleBlockAllocator<'a>` where 'a is lifetime of Guard.
-    
-    // So:
-    // pub fn with_inode_allocator<F>(&self, f: F) -> Result<(), Error> where F: FnOnce(&mut Allocator)
-    // Or just keep internal logic hidden.
-    
-    // Let's implement high level ops directly on DiskManager using internal locking.
 
     /// Reads an inode from the inode table
     pub fn read_inode(&self, inode_id: u64) -> Result<Inode, DiskManagerError> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         Self::read_inode_internal(&guard, inode_id)
     }
 
     /// Writes an inode to the inode table
     pub fn write_inode(&self, inode_id: u64, inode: &Inode) -> Result<(), DiskManagerError> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.write().unwrap();
         Self::write_inode_internal(&mut guard, inode_id, inode)
     }
 
@@ -495,7 +476,7 @@ impl DiskManager {
         name: &str,
         file_type: crate::inode::FileType,
     ) -> Result<u64, DiskManagerError> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.write().unwrap();
 
         // 1. Read Parent
         let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
@@ -582,7 +563,7 @@ impl DiskManager {
 
     /// Looks up a file/directory by name within a parent directory
     pub fn lookup(&self, parent_inode_id: u64, name: &str) -> Result<u64, DiskManagerError> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
             return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
@@ -617,8 +598,61 @@ impl DiskManager {
     /// # Compression Handling
     /// - If `compressed_size > 0`: Read compressed data and decompress using zstd
     /// - If `compressed_size == 0`: Read and return raw data
+    /// Resolves a single logical block index to its physical block ID (read-only, does not allocate).
+    pub(crate) fn resolve_logical_block_id(mmap: &MmapMut, inode: &Inode, blk_idx: usize) -> u64 {
+        // 1. Direct blocks (0..10)
+        if blk_idx < 10 {
+            return inode.blocks[blk_idx];
+        }
+
+        // 2. Single Indirect blocks (10..522)
+        if blk_idx < 10 + 512 {
+            let sib = inode.blocks[10];
+            if sib == 0 {
+                return 0;
+            }
+            return Self::read_block_ptr(mmap, sib, blk_idx - 10);
+        }
+
+        // 3. Double Indirect blocks (522..262666)
+        if blk_idx < 10 + 512 + 512 * 512 {
+            let dib = inode.blocks[11];
+            if dib == 0 {
+                return 0;
+            }
+            let idx = blk_idx - (10 + 512);
+            let sib = Self::read_block_ptr(mmap, dib, idx / 512);
+            if sib == 0 {
+                return 0;
+            }
+            return Self::read_block_ptr(mmap, sib, idx % 512);
+        }
+
+        // 4. Triple Indirect blocks (262666 .. 134480394)
+        let max_blocks = 10 + 512 + 512 * 512 + 512 * 512 * 512;
+        if blk_idx < max_blocks {
+            let tib = inode.triple_indirect;
+            if tib == 0 {
+                return 0;
+            }
+            let idx = blk_idx - (10 + 512 + 512 * 512);
+            let dib = Self::read_block_ptr(mmap, tib, idx / (512 * 512));
+            if dib == 0 {
+                return 0;
+            }
+            let rem = idx % (512 * 512);
+            let sib = Self::read_block_ptr(mmap, dib, rem / 512);
+            if sib == 0 {
+                return 0;
+            }
+            return Self::read_block_ptr(mmap, sib, rem % 512);
+        }
+
+        0
+    }
+
     #[allow(clippy::collapsible_if)]
-    fn read_data_internal(guard: &mut DiskManagerInner, inode: &Inode) -> Result<Vec<u8>, DiskManagerError> {
+    fn read_data_internal(guard: &DiskManagerInner, inode: &Inode) -> Result<Vec<u8>, DiskManagerError> {
         let physical_size = if inode.compressed_size > 0 { inode.compressed_size } else { inode.size };
         if physical_size == 0 {
             return Ok(Vec::new());
@@ -645,30 +679,45 @@ impl DiskManager {
                 continue;
             }
 
-            // 2. Single indirect blocks (10..522)
+            // 2. Single indirect blocks (10..522) - Batch resolution
             if blk_idx < 10 + 512 {
-                if inode.blocks[10] == 0 {
+                let sib_id = inode.blocks[10];
+                if sib_id == 0 {
                     let remaining_blocks = (10 + 512) - blk_idx;
                     let skip_bytes = (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
                     read += skip_bytes;
                     blk_idx = 10 + 512;
                     continue;
                 }
-                let idx = blk_idx - 10;
-                let blk = Self::read_block_ptr(&guard.mmap, inode.blocks[10], idx);
-                if blk != 0 {
-                    if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                        raw_data[read as usize..read as usize + to_read].copy_from_slice(&slice[..to_read]);
+                if let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
+                    let start_entry = blk_idx - 10;
+                    let num_entries = ((10 + 512) - blk_idx).min(512 - start_entry);
+                    let ptr_chunks = &sib_slice[start_entry * 8..(start_entry + num_entries) * 8];
+                    for chunk in ptr_chunks.chunks_exact(8) {
+                        if read >= physical_size {
+                            break;
+                        }
+                        let to_read_curr = std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
+                        let blk = u64::from_le_bytes(chunk.try_into().unwrap());
+                        if blk != 0 {
+                            if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
+                                raw_data[read as usize..read as usize + to_read_curr].copy_from_slice(&slice[..to_read_curr]);
+                            }
+                        }
+                        read += to_read_curr as u64;
+                        blk_idx += 1;
                     }
+                } else {
+                    read += to_read as u64;
+                    blk_idx += 1;
                 }
-                read += to_read as u64;
-                blk_idx += 1;
                 continue;
             }
 
-            // 3. Double indirect blocks (522..262666)
+            // 3. Double indirect blocks (522..262666) - Batch resolution per single indirect block
             if blk_idx < 10 + 512 + 512 * 512 {
-                if inode.blocks[11] == 0 {
+                let dib_id = inode.blocks[11];
+                if dib_id == 0 {
                     let remaining_blocks = (10 + 512 + 512 * 512) - blk_idx;
                     let skip_bytes = (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
                     read += skip_bytes;
@@ -679,7 +728,7 @@ impl DiskManager {
                 let s_idx = idx / 512;
                 let d_idx = idx % 512;
 
-                let sib_id = Self::read_block_ptr(&guard.mmap, inode.blocks[11], s_idx);
+                let sib_id = Self::read_block_ptr(&guard.mmap, dib_id, s_idx);
                 if sib_id == 0 {
                     let skip_blocks = 512 - d_idx;
                     let skip_bytes = (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
@@ -688,21 +737,35 @@ impl DiskManager {
                     continue;
                 }
 
-                let blk = Self::read_block_ptr(&guard.mmap, sib_id, d_idx);
-                if blk != 0 {
-                    if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                        raw_data[read as usize..read as usize + to_read].copy_from_slice(&slice[..to_read]);
+                if let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
+                    let num_entries = 512 - d_idx;
+                    let ptr_chunks = &sib_slice[d_idx * 8..(d_idx + num_entries) * 8];
+                    for chunk in ptr_chunks.chunks_exact(8) {
+                        if read >= physical_size {
+                            break;
+                        }
+                        let to_read_curr = std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
+                        let blk = u64::from_le_bytes(chunk.try_into().unwrap());
+                        if blk != 0 {
+                            if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
+                                raw_data[read as usize..read as usize + to_read_curr].copy_from_slice(&slice[..to_read_curr]);
+                            }
+                        }
+                        read += to_read_curr as u64;
+                        blk_idx += 1;
                     }
+                } else {
+                    read += to_read as u64;
+                    blk_idx += 1;
                 }
-                read += to_read as u64;
-                blk_idx += 1;
                 continue;
             }
 
             // 4. Triple indirect blocks (262666 .. 134480394)
             let max_blocks = 10 + 512 + 512 * 512 + 512 * 512 * 512;
             if blk_idx < max_blocks {
-                if inode.triple_indirect == 0 {
+                let tib_id = inode.triple_indirect;
+                if tib_id == 0 {
                     let remaining_blocks = max_blocks - blk_idx;
                     let skip_bytes = (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
                     read += skip_bytes;
@@ -715,7 +778,7 @@ impl DiskManager {
                 let d_idx = rem_idx / 512;
                 let s_idx = rem_idx % 512;
 
-                let dib_id = Self::read_block_ptr(&guard.mmap, inode.triple_indirect, t_idx);
+                let dib_id = Self::read_block_ptr(&guard.mmap, tib_id, t_idx);
                 if dib_id == 0 {
                     let skip_blocks = (512 * 512) - rem_idx;
                     let skip_bytes = (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
@@ -781,7 +844,7 @@ impl DiskManager {
         Ok(result)
     }
 
-    /// Reads data from a file
+    /// Reads data from a file (high-concurrency read-lock)
     ///
     /// # Arguments
     /// * `inode_id` - The inode ID of the file to read
@@ -790,9 +853,71 @@ impl DiskManager {
     /// The file's data as a Vec<u8>. If the file is compressed, it will be
     /// automatically decompressed before returning.
     pub fn read_data(&self, inode_id: u64) -> Result<Vec<u8>, DiskManagerError> {
-        let mut guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         let inode = Self::read_inode_internal(&guard, inode_id)?;
-        Self::read_data_internal(&mut guard, &inode)
+        Self::read_data_internal(&guard, &inode)
+    }
+
+    /// Reads up to `buf.len()` bytes starting at `file_offset` from a file.
+    ///
+    /// # Performance
+    /// For uncompressed, unencrypted files, this directly copies the requested
+    /// byte slice from the memory-mapped blocks into `buf` with **ZERO intermediate
+    /// memory allocations**.
+    ///
+    /// Returns the number of bytes read (0 if at or beyond EOF).
+    pub fn read_at(&self, inode_id: u64, file_offset: u64, buf: &mut [u8]) -> Result<usize, DiskManagerError> {
+        let guard = self.inner.read().unwrap();
+        let inode = Self::read_inode_internal(&guard, inode_id)?;
+
+        if inode.mode != crate::inode::FileType::File {
+            return Err(DiskManagerError::Io(std::io::Error::other("Cannot read non-file inode")));
+        }
+
+        if file_offset >= inode.size || buf.is_empty() {
+            return Ok(0);
+        }
+
+        let available = (inode.size - file_offset) as usize;
+        let to_read_total = std::cmp::min(buf.len(), available);
+
+        // Fallback for compressed or encrypted files: decompress/decrypt and slice
+        if inode.compressed_size > 0 || inode.encrypted {
+            let full_data = Self::read_data_internal(&guard, &inode)?;
+            let start = file_offset as usize;
+            let end = (start + to_read_total).min(full_data.len());
+            let actual = end.saturating_sub(start);
+            buf[..actual].copy_from_slice(&full_data[start..end]);
+            return Ok(actual);
+        }
+
+        // Fast path for raw uncompressed files: Zero-allocation direct copy from mmap blocks
+        let mut bytes_read = 0;
+        let mut curr_offset = file_offset;
+
+        while bytes_read < to_read_total {
+            let blk_idx = (curr_offset / BLOCK_SIZE as u64) as usize;
+            let in_blk_offset = (curr_offset % BLOCK_SIZE as u64) as usize;
+            let rem_in_blk = BLOCK_SIZE - in_blk_offset;
+            let chunk_len = std::cmp::min(to_read_total - bytes_read, rem_in_blk);
+
+            let blk_id = Self::resolve_logical_block_id(&guard.mmap, &inode, blk_idx);
+            if blk_id != 0 {
+                if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk_id) {
+                    buf[bytes_read..bytes_read + chunk_len]
+                        .copy_from_slice(&slice[in_blk_offset..in_blk_offset + chunk_len]);
+                } else {
+                    buf[bytes_read..bytes_read + chunk_len].fill(0);
+                }
+            } else {
+                buf[bytes_read..bytes_read + chunk_len].fill(0);
+            }
+
+            bytes_read += chunk_len;
+            curr_offset += chunk_len as u64;
+        }
+
+        Ok(bytes_read)
     }
 
     /// Writes data to a file (default: no pre-compression filters)
@@ -927,7 +1052,7 @@ impl DiskManager {
     ///     writes, or files with active filters, decompresses existing data, splices in the change,
     ///     and re-writes contiguously from offset 0.
     pub fn write_data_with_filters(&self, inode_id: u64, file_offset: u64, data: &[u8], compression_mode: CompressionMode, filter_config: crate::filters::FilterConfig) -> Result<(), DiskManagerError> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.write().unwrap();
         let mut inode = Self::read_inode_internal(&guard, inode_id)?;
 
         if inode.mode != crate::inode::FileType::File {
@@ -967,7 +1092,7 @@ impl DiskManager {
             // Fallback: Read-Modify-Recompress
             // For encrypted files, middle-offset random writes, or files with active filters,
             // transparently decompress the existing payload, splice in the new data, and re-write from offset 0.
-            let mut full_data = Self::read_data_internal(&mut guard, &inode)?;
+            let mut full_data = Self::read_data_internal(&guard, &inode)?;
             let end_offset = (file_offset as usize) + data.len();
             if full_data.len() < file_offset as usize {
                 full_data.resize(file_offset as usize, 0);
@@ -1211,18 +1336,18 @@ impl DiskManager {
     // Path resolution API (public) - wraps lookup
     pub fn resolve_path(&self, path: &str) -> Result<u64, DiskManagerError> {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         Self::resolve_path_internal(&guard, &parts)
     }
 
     pub fn get_block_copy(&self, block_id: u64) -> Option<Vec<u8>> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         Self::get_block_from_map(&guard.mmap, block_id).map(|s| s.to_vec())
     }
 
     /// Lists all entries in a directory
     pub fn list_dir(&self, dir_inode_id: u64) -> Result<Vec<crate::directory::DirectoryEntry>, DiskManagerError> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         let inode = Self::read_inode_internal(&guard, dir_inode_id)?;
         if inode.mode != crate::inode::FileType::Directory {
             return Err(DiskManagerError::Io(std::io::Error::other("Not a directory")));
@@ -1250,7 +1375,7 @@ impl DiskManager {
         let name = parts.last().unwrap().to_string();
         let parent_parts = &parts[..parts.len() - 1];
 
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         let parent_id = if parent_parts.is_empty() {
             guard.superblock.root_inode
         } else {
@@ -1260,12 +1385,12 @@ impl DiskManager {
     }
 
     pub fn flush(&self) -> Result<(), DiskManagerError> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.write().unwrap();
         guard.mmap.flush().map_err(DiskManagerError::Io)
     }
 
     pub fn delete_file(&self, parent_inode_id: u64, name: &str) -> Result<(), DiskManagerError> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.write().unwrap();
 
         let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
@@ -1348,7 +1473,7 @@ impl DiskManager {
     /// # Returns
     /// `FragmentationStats` containing detailed fragmentation information
     pub fn analyze_fragmentation(&self) -> Result<FragmentationStats, DiskManagerError> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         let sb = &guard.superblock;
         
         // Get data bitmap block
@@ -1508,7 +1633,7 @@ impl DiskManager {
 
         let mut allocated_inodes = Vec::new();
         {
-            let guard = temp_dm.inner.lock().unwrap();
+            let guard = temp_dm.inner.read().unwrap();
             let ib_blk = guard.superblock.inode_bitmap_block;
             if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, ib_blk) {
                 let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
@@ -1521,7 +1646,7 @@ impl DiskManager {
         for inode_id in allocated_inodes {
             if let Ok(inode) = temp_dm.read_inode(inode_id) {
                 if inode.mode == crate::inode::FileType::Directory {
-                    let guard = temp_dm.inner.lock().unwrap();
+                    let guard = temp_dm.inner.read().unwrap();
                     let dir_blks = Self::collect_inode_blocks(&guard.mmap, &inode);
                     directory_blocks.extend(dir_blks);
                 } else if inode.mode == crate::inode::FileType::File && inode.size > 0 {
@@ -1549,7 +1674,7 @@ impl DiskManager {
 
         // Step 3: Clear data bitmap and preserve directory blocks
         {
-            let mut guard = temp_dm.inner.lock().unwrap();
+            let mut guard = temp_dm.inner.write().unwrap();
             let data_bitmap_block = guard.superblock.data_bitmap_block;
             let data_start = guard.superblock.data_block_start;
             if let Some(bitmap_slice) = Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap_block) {
@@ -1635,7 +1760,7 @@ impl DiskManager {
 
     /// Structural consistency check (fsck) for OIFS filesystem
     pub fn verify_integrity(&self) -> Result<FsckReport, DiskManagerError> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         let sb = guard.superblock;
 
         // 1. Collect all allocated Inode IDs from Inode Bitmap

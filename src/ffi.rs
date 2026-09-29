@@ -248,9 +248,10 @@ pub extern "C" fn oifs_delete_file(handle: *mut OIFSHandle, path: *const c_char)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn oifs_read_file(
+pub extern "C" fn oifs_read_at(
     handle: *mut OIFSHandle,
     filename: *const c_char,
+    offset: u64,
     buf: *mut u8,
     buf_size: u64,
 ) -> i64 {
@@ -276,12 +277,9 @@ pub extern "C" fn oifs_read_file(
     let dm = &handle_ref.dm;
     match (|| -> Result<i64, Box<dyn std::error::Error>> {
         let inode_id = dm.resolve_path(filename_str)?;
-        let data = dm.read_data(inode_id)?;
-        let to_copy = std::cmp::min(data.len() as u64, buf_size) as usize;
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), buf, to_copy);
-        }
-        Ok(to_copy as i64)
+        let out_slice = unsafe { std::slice::from_raw_parts_mut(buf, buf_size as usize) };
+        let bytes_read = dm.read_at(inode_id, offset, out_slice)?;
+        Ok(bytes_read as i64)
     })() {
         Ok(bytes) => {
             handle_ref.last_error = None;
@@ -292,6 +290,16 @@ pub extern "C" fn oifs_read_file(
             -1
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_read_file(
+    handle: *mut OIFSHandle,
+    filename: *const c_char,
+    buf: *mut u8,
+    buf_size: u64,
+) -> i64 {
+    oifs_read_at(handle, filename, 0, buf, buf_size)
 }
 
 #[unsafe(no_mangle)]

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:23113a9216d2077c55ef81978379a083fa0a8af41f8eba47b96f9cd70497031e",
+  "claims": [
+    {
+      "id": "claim_9973979c3dfb48d4a130186fe2d11d8f",
+      "statement": "EncryptionKey derives ZeroizeOnDrop to erase 256-bit key material on drop and redacts key bytes in Debug formatting, while derive_key derives keys from passphrases and a 16-byte random salt using Argon2id.",
+      "evidence": [
+        {
+          "resource": "repo://src/encryption.rs#L13-L69",
+          "version": "repo-lines-v1:sha256:45d51771d679af99daca47755c7383a89352bbb9f20a5911bad85fb57d13973d:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhYmU0MTYxNDg1N2NlNGIwNzQxMDMzY2M3ZTM1YTJiYTlhNzQxZTgxNjVhYzlmN2I2MDZmOGMyODNjYWFjNmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMxNjJkMTY4MDZhOGU3MTA4NGQ3NTUxOThmOTBiNGZkMjA4ZGZkYTZmNmUxNDcxMTJhZmUwNTcyMDYwZjU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIyYTVlMmEwZDczOGFkMmU1NjhhODA5YjRlZGM4MzIwM2U5MGQ0OTE2NTAyMmFlY2QzOTI2OGRhNzQ1ODFjZWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c222c5dd4aef453cb7c484f45707eeca",
+      "statement": "File data encryption uses XChaCha20-Poly1305 AEAD with a unique 192-bit (24-byte) random nonce per file generated via OsRng and an appended 16-byte Poly1305 authentication tag.",
+      "evidence": [
+        {
+          "resource": "repo://src/encryption.rs#L71-L125",
+          "version": "repo-lines-v1:sha256:5bbac197a45a4b96556b153c8220e5e2b98b7d2b0275a7a97048b386dcbea3e2:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2OTdkMGU5ODkxYzVmYWJlMGNjYTBiNWQ4M2NjOWVmMjg0MjI5YmEzNDg5OGVhM2I5YjBjMTBkNDVhMzBmODgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMyODA1MTM1MWYyOGU3NGI5MTg4MDc3ZmY3ZjNiYzAxNzEwMjg1NmQ4NTZjMWNkNjY0ZjJmOWRhNjdiNWE5MmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjllYzBhZTdkODdjMGQzNGY3NzQyZGNlYzI4ZWJhZDYxODBiMmE5YzRhNDY3ZTczZDVmOTMyZmM0MDVkNGQ5NjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2b67dd35bb6b45ccbf03bd62461c8ccd",
+      "statement": "Deterministic filename encryption uses a Synthetic IV (SIV) construction combining a Blake2b-512 PRF tweaked with the parent inode ID, ChaCha20-Poly1305 authenticated encryption, and unpadded Base64URL formatting with an '_e_' prefix.",
+      "evidence": [
+        {
+          "resource": "repo://src/encryption.rs#L136-L232",
+          "version": "repo-lines-v1:sha256:4c79691f98f1e782664f35610c71cff3c9591f5b9d97f4532095b0c4d4e8bdce:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2Njg1MjI2Nzc5YjQ2ZDZmNWZkZjYzY2FiMGE0ZjU1NjM3MzUwN2E5N2I4MTc1N2YzNTQwOGUxMmQ5ZDk2ZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc1N2IxYmM5YzhjY2Y0NjRiMzMzYjUzMTRjY2E3M2FjNGUzYTViNWM2MWVhODc3NzAzNjAxNzNkYzc2ZDQ2NWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhNjdhNjcyMmUyOTc5Y2MwN2UwYjcyODIyZjVlNGJkZmZjMjNmODQ3YTYwNmM2MjA1NDc4NzI4MTYxMjUxOTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3b2ad0186a8e423e905b3e17455ad0c6",
+      "statement": "EncryptionError distinguishes key derivation failure, invalid keys, encryption failure, and authentication/decryption failure resulting from incorrect passwords or corrupted ciphertext.",
+      "evidence": [
+        {
+          "resource": "repo://src/encryption.rs#L235-L248",
+          "version": "repo-lines-v1:sha256:3feaca55c291fffb1bd21ae3b946d7f8580c0022b6c65a9a16f3bdac105ac7ef:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1Nzg4ODZlOTFiMmI5NGNmZDhlOGU5YzVmYTQxMzUzNDcyMTRlNWM0ZWRmZDRmMjM1ZWMyMzc3NzJjNGM0MjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzODIxMjNmYmY2OTcyMjQxN2RhMjgwMGE0NWVjM2VlOWI5ZGFmOTFjYmU2M2M4ODEyOWNhYTk1MGIwMWI2ZTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-09-29T16:14:34.721Z"
+  }
+}

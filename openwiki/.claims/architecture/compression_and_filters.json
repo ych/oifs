@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:95227762afd52af4cc627b6db1ba96fc399071df60b0c3362f4aba87549d55e9",
+  "claims": [
+    {
+      "id": "claim_31b0af0cf2cc4a1680772dfb6be911b1",
+      "statement": "The write pipeline stages data in a fixed order — pre-compression filter, zstd compression, then encryption — and records logical size, physical compressed size, and per-filter flags on the inode so the read path can reverse them.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L953-L1040",
+          "version": "repo-lines-v1:sha256:41ccb3564a080fa4d471870d876f511ca0149bbfef77e37e7fc5bc92779b5db5:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwODkzYWM3MGVhN2ZmODUxNDIwNDE2NWM3NmY2ZTY0YjlmMzA5MTk2OTU5ZTkwODI5MTg0NWEyYTY0YmNkOTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3MjA4MWM3YmMzYTVjNWY2ZDM0MTdkMDA0NGQzYjY5YzQ4MWE3YWRhMmRjMmFjNGQyOGI4NGQ3NGNlMWExNDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFlMDZiNTZkZGY4NGEyNzczNzdiZThiMzI0ZGJiMzI3MGE4NzJiMGRjM2VhY2FkMzZiYTZlMDBhOGEzNGRiZGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM3MGNmNTcwYTY2MTNlN2Y0OTIzNGYyZDJmNzNlZGE3MjU3NzMwNmFhYTM4OTk5NTdhMDllMjgzZjJkODNmZjQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cc9e013bdbb442eba71ff6791efe3f4f",
+      "statement": "CompressionMode selects Always/Never/Auto; Auto (default) compresses only filtered data of 8KB or more and keeps the compressed result only when it is smaller than the input.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L56-L56",
+          "version": "repo-lines-v1:sha256:3296165f17d85278d72786004bd4929a0b6e4e2414bff2780f1c9d48960ee135:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzI5NjE2NWYxN2Q4NTI3OGQ3Mjc4NjAwNGJkNDkyOWEwYjZlNGUyNDE0YmZmMjc4MGYxYzlkNDg5NjBlZTEzNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzI5NjE2NWYxN2Q4NTI3OGQ3Mjc4NjAwNGJkNDkyOWEwYjZlNGUyNDE0YmZmMjc4MGYxYzlkNDg5NjBlZTEzNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODRiNjI4ZTgxMjRlNTA2NzRkZDdjYzU5NTQ5YTNmZTViNGFiMTJkNmI3ODlhNGUwMmVlYmIzNTkzMGZmNGE0MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWYzZjg4ZmY5MTY0YTNmYWMwOWM2NThkYTQxZmMwOGUyOGI2NDQyZmYwMTUxODRlZjdlNjc5YmJiOWYyZDE3MyJ9"
+        },
+        {
+          "resource": "repo://src/disk.rs#L968-L990",
+          "version": "repo-lines-v1:sha256:c01f00e0cce9d44078cdf501542585e30111c253a184961022449a2a19a47a9c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjNjA5NzM3YjkyNmUzOGFiMDUwZGU0ODE5YjRjMWJhYzJiYTgwZjExNmUzODRmYmVmMDA1Nzk3ZGExNDUzYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNjQ3OWNjMjMwNDQwZmQ0MWU4MjI0MjE4Njc5Njk4NTU5ZDI4OTNiZDY3YjQzODBhZmFiODExYjM4YTU1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNhODVkNmQzMTMzOTY3NDZjNDg5MGM4NGFmNzI2ZDA4MzExZGQzNjFlYjI3ZjczZDNlZDBhYmEwNjczMGFhNmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgxMDY1ZjUwNmEwMjg4ZTM3OGM3MzZiZjYzZTRhYmM4ZGJkODczMDYxMWZmZDhlYzQzOTNmNjM3YWY5MTE1YTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a66b06bb2405482898c31f1887cf4a45",
+      "statement": "apply_filters_cow returns Cow::Borrowed (zero allocation) when the filter is inactive or the typesize is not in {1,2,4,8}, removing all intermediate buffer copies on the common write path.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L958-L960",
+          "version": "repo-lines-v1:sha256:f33f777555c3c80c1b0dbef0a99342256a779c2e9d67a4d6a8e7222e6b29ac52:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTYyNDE1MzI5MWMxZWIxNGMyZGVmNTI2ZjFhNDRiYmRjMzEyM2QxMjExMjlmMmI2MTYwYjA2MjI4ZGZlYmM1NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTk5ZDc5N2U1MjdjMjI0NzQ1YTBjMjY4OWUyNGFmZTI1ZjgxYTQ0ZGVkMzUwNmFmODM0YmIyMWY5Mjg3YjcwMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOGMyNjgwNTQ5M2E5YTE3ZmUxMzk0MzI2Zjg5ODhmZDRkZDdmMzhmMjg1YjcwNGQ0ZWY4MjQ4ZjA3YTQ0MzQxYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2M0MzYzNzE5ZmZhOWI2MWY0ZDk5ZDU0ZDJlNjIwY2JhYWYzNGUyMzRhYTdlNDRjY2EzZWViODUwNmQwMGQ4NSJ9"
+        },
+        {
+          "resource": "repo://src/filters.rs#L642-L655",
+          "version": "repo-lines-v1:sha256:c02f1df41fb308858838c20a3eb2b83efc292448b0b4cca7d6a3b15e9e78bb3e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmYzdjNmE1MWY2Yjg3ZjQzNjMxMjM4ZTU0NjQ0ZTBiMTNmOTI4ZTQ5NGJlMjQxN2E4OTdlZGI5MTFjYzRkODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4NzIzZWI4OTU3YjNhOTY2OTBmZDk3ZWM5Yjg5ODg0MzEwY2Q3NTY4ODhlZmJmOTI2MGM4MTBlZTU0ZmQ5ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE4Njg3NTM2ZWJmZjJiMTkzZGIxMjgxYTE0OTM4OTRhNmU5N2U0YTBjOTk3N2MyODI4NTMwYWEwOWQxNjgxMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlNmRjNzExZGMzYWNjYTE0MWFjNzc0NzQyYjA1ZWVkMDQ5Y2I2OGEzNjVmYjc1ZmVlMDYxNDdkYjMwZjJkZGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9e807769b59744e09b0c9d060dbbf8b4",
+      "statement": "Appending at EOF to an unencrypted file with no active filters uses a Zstd multi-frame append that writes a new independent frame without decompressing existing data; encrypted, random-offset, or filtered writes fall back to read-modify-recompress from offset 0.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L1054-L1160",
+          "version": "repo-lines-v1:sha256:e3b14a8d7f3bef9ac18b68a3210240f12e58d3c18c3e1fb1fb5e9e3a4d025c34:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0NjhiZTc4NGI5Yjc0MmZhMDM0MWY4ZTZlZDYxZmVmMDcxNjZiYTE1NGZhOGJmNzlhZGJlZTQyNWJjNTkzODIzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NjM1MWY0MzA1NmQyNTM3NjQyMDNkOTQ4MDlkMGJhOTM0YTQyZTJiOTc3YjUxYzI1NmExYmIyMjIzY2Y1N2UzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjMTkwNjYwZGU4YWZmMmQwMzliNThhYTczM2MwOGMzZmU0OWQwMGU2NWZlMGE4OThhNDI5ZmY4MWQ2NDM1ZDNlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMDcxNzFkNTVkYjAwNzcwZTM4NGI3YzZlOTdkYjAwZTg2YzJkNjQ4ODcyYjU2ZDc4NDA1ZTAwMzdmOWRiOTE3In0"
+        },
+        {
+          "resource": "repo://src/disk.rs#L1069-L1091",
+          "version": "repo-lines-v1:sha256:5b72e52370595dc628534dc126b2ae3ee58d41405753df6f294fdd06378d564d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkNzljNjE4YzgxMzAwNGVmMzE1MDlkNDY0ODUxMTU0ZWRlNGUxMThiM2ExMjY3ZWQ5ZGNiZmQ3YzA1NjkxNDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ1MDcyZGFjMGU3MzI1MWMyOWI2ODIxNTQ2NjI5MzdlNmQwODQ2MGQ4N2I2OGNmMDUzMWJjMTlmNWNmZDMzYTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJiYjBlYTIzYjkzYmI1ZTc5NTExMWE2MjY0NWY1MmIyMjNmZmQ2NWY5MjU3NjIyZjE5NTE0MjU3OGE0M2VjY2QifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_66b474db38554e0d9508a0bbe1297694",
+      "statement": "Blosc2-style pre-compression filters — Delta, ByteShuffle, BitShuffle, and lossy TruncPrecision — are composed by FilterPipeline (apply forward, unapply reverse) and configured compactly by FilterConfig, which the CLI --filter / --typesize and put --filter auto select.",
+      "evidence": [
+        {
+          "resource": "repo://src/filters.rs#L6-L70",
+          "version": "repo-lines-v1:sha256:5877b14c1e106b7d910e48f076ded2fa46f8ddb7bba9f34c7289155673525141:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxYmFkYjgyMWIzODc1OGU1MDQyYjA2MTcyMGQ5MDdlNTAyOTgyYTdlNDU4YjI4MjNlYmIzYmZlMTUxZGNkZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzZDA1MWYxY2FmMWYzZmQ4ZmMwZDczNjc0Yjk0NDhhMzU1YTMyMDA4ODMzNmMyOWIyZjU0YmQ5NzYwYjE0Y2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ1OGQ5NjVkYmQxZWRkMzhjMTc1NWU0OGY2M2U3ZDkxYTdkMzMzNGI0MDIwOGU1OTdiOWYwMTA4ZmQwNTJiYmYifQ"
+        },
+        {
+          "resource": "repo://src/filters.rs#L99-L200",
+          "version": "repo-lines-v1:sha256:7a7232a2b78dc1fef6360a913e233f2140679b4c6c9a391e7db8a4e46e2cb963:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkOGNkMTE2ZDc2YWQyMmI4NjZiNTM0NzZiZWEwZWFlMDA4MGU2NDIxYmZjOGUwYjg1OTIxNzQ2YmM0YWNiNzhjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjNmU2NzVkMDM1MDg0ZGM3NGVhODdmMjIyOTQ2NmQxNWU0ZjM4YzE0MmY4ZDYyYmRjN2E2NzcyOWNkOWNjYjcxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5ZGJjZjNmY2U2NTUyOWI4NGM0MTQ2MTgzZDQzMDYzOTYyNDIyODgxOTMwZmY4ZDE5N2ZkZjAwY2Y1YjU5MjliIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0MTIyN2VlZDQ2MWRmZWVhMDYwZDM1OGY4Zjc3MTJiNzAyNDU2NmUwZjhlOWYxMjg4OTE4ZWViY2E2NGIzNzM4In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_035da3c97e36420491a0c7b384d97714",
+      "statement": "recommend_filters evaluates candidate pipelines using Shannon entropy and zstd size to pick the smallest result, backing the filter-analyze CLI command, and the whole filter family is validated by Kani bijectivity proofs.",
+      "evidence": [
+        {
+          "resource": "repo://src/filters.rs#L6-L200",
+          "version": "repo-lines-v1:sha256:dc202482cecabb3c5dff57aee7a12331ad7032046be54a0835e2d00cafc1c2a4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmMWJhZGI4MjFiMzg3NThlNTA0MmIwNjE3MjBkOTA3ZTUwMjk4MmE3ZTQ1OGIyODIzZWJiM2JmZTE1MWRjZGRiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjNmU2NzVkMDM1MDg0ZGM3NGVhODdmMjIyOTQ2NmQxNWU0ZjM4YzE0MmY4ZDYyYmRjN2E2NzcyOWNkOWNjYjcxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzM2QwNTFmMWNhZjFmM2ZkOGZjMGQ3MzY3NGI5NDQ4YTM1NWEzMjAwODgzMzZjMjliMmY1NGJkOTc2MGIxNGNkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0MTIyN2VlZDQ2MWRmZWVhMDYwZDM1OGY4Zjc3MTJiNzAyNDU2NmUwZjhlOWYxMjg4OTE4ZWViY2E2NGIzNzM4In0"
+        },
+        {
+          "resource": "repo://src/filters.rs#L668-L780",
+          "version": "repo-lines-v1:sha256:9a440a1e3652dec8ccc8403e6b2a2065b7f7e860f09747a532be1bd98dc5c039:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkNDUzOTJmMDc0NjY5ZDIxMzgzMTczMTRlOWEyMTNiZGI0NDBkOTU0ZDA2NjkzZTE4ZDBkNGY1YWU4NDkzN2FhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1YjE2NmUzOGNlMzBjYTk0ZGJkYTJhZDlhMjAzMzkzZGVlOTQ1N2Y4MmZmZmEzOTEzNjc2YjMwZmVhZGUyZTUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWZiNjliM2E0OWYyOTk4Y2QxMzVlNzE4YjU4M2FkODYzMGRkOTdhM2UwN2E4OGI1MWNkY2JhMjA5ZGI5ZWIwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2MzIwMmQ0ZDk0ODBhOTVjMDYwNDNlZTg1YzZmYmEyMzBjMjc3YjhhYmJmMjRiZDlmY2NkMzVlMTE4MzczZTI5In0"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-09-29T16:14:34.721Z"
+  }
+}

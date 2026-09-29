@@ -235,3 +235,72 @@ mod tests {
         assert!(matches!(err, DirectoryError::Utf8Error(_)));
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove that find_entry_in_block strictly finds a serialized entry with matching name.
+    #[kani::proof]
+    fn proof_find_entry_in_block_soundness() {
+        let inode: u64 = kani::any();
+        let hash: u64 = kani::any();
+        let name_len: u16 = 4;
+        let name_bytes: [u8; 4] = [b't', b'e', b's', b't'];
+
+        let mut block = [0u8; 64];
+        block[0..8].copy_from_slice(&inode.to_le_bytes());
+        block[8..16].copy_from_slice(&hash.to_le_bytes());
+        block[16..18].copy_from_slice(&name_len.to_le_bytes());
+        block[18..22].copy_from_slice(&name_bytes);
+        // Sentinel 0 at 22..24
+        block[22..24].copy_from_slice(&0u16.to_le_bytes());
+
+        let res = find_entry_in_block(&block, "test");
+        assert_eq!(res, Some(inode));
+    }
+
+    /// Prove that find_entry_in_block returns None on mismatched name.
+    #[kani::proof]
+    fn proof_find_entry_in_block_mismatch() {
+        let inode: u64 = kani::any();
+        let hash: u64 = kani::any();
+        let name_len: u16 = 4;
+        let name_bytes: [u8; 4] = [b't', b'e', b's', b't'];
+
+        let mut block = [0u8; 64];
+        block[0..8].copy_from_slice(&inode.to_le_bytes());
+        block[8..16].copy_from_slice(&hash.to_le_bytes());
+        block[16..18].copy_from_slice(&name_len.to_le_bytes());
+        block[18..22].copy_from_slice(&name_bytes);
+        block[22..24].copy_from_slice(&0u16.to_le_bytes());
+
+        let res = find_entry_in_block(&block, "diff");
+        assert_eq!(res, None);
+    }
+
+    /// Prove that find_insert_offset_in_block correctly identifies the offset following an entry.
+    #[kani::proof]
+    fn proof_find_insert_offset_in_block() {
+        let mut block = [0u8; 64];
+        let name_len: u16 = 4;
+        block[16..18].copy_from_slice(&name_len.to_le_bytes());
+        // Sentinel 0 at 18 + 4 = 22
+        block[22..24].copy_from_slice(&0u16.to_le_bytes());
+
+        let offset = find_insert_offset_in_block(&block);
+        assert_eq!(offset, 22);
+    }
+
+    /// Prove that find_insert_offset_in_block never exceeds slice bounds.
+    #[kani::proof]
+    fn proof_find_insert_offset_bounds() {
+        let mut block = [0u8; 32];
+        for i in 0..32 {
+            block[i] = kani::any();
+        }
+        let offset = find_insert_offset_in_block(&block);
+        assert!(offset <= block.len());
+    }
+}
+

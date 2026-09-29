@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:b34a356127a88fdcba3bd74561936f90ea0614cb24c8e2504dce1be94cbb8161",
+  "claims": [
+    {
+      "id": "claim_24ccddb574a5445b9214d61443534bd2",
+      "statement": "tests/shuttle_concurrency_test.rs uses Shuttle's controlled randomized scheduler to explore thread interleavings, verifying directory/inode allocation and lookup consistency under concurrent access to detect race conditions and deadlocks.",
+      "evidence": [
+        {
+          "resource": "repo://tests/shuttle_concurrency_test.rs#L1-L106",
+          "version": "repo-lines-v1:sha256:7d6d2b1619fa4a7d4b9371a2c8a2f01001cf5e28cde51ef50cd0caa2ccdcdbd5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmNWRiMzVjZmNjZWI3ODIwMjJjMTk2MzEzYWYzMDllN2MwYjYxNzJiNjhmMzkwMDhhOTRmOTdkODI1ZmNjNmFmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYjkzMTkzZTY0MzA4YjEyM2NkNmI5MmUzNjc1N2Y4NWU4ZWY1ZWNmNzA2MWIxNmRlMTFjMGNjODU0NDkxMmZiIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_ac2a0ac6cf5b45eeb0c1238e597662cd",
+      "statement": "Kani formal proofs in src/filters.rs prove roundtrip bijectivity for the Delta, ByteShuffle, and BitShuffle pre-compression filters across element sizes, ensuring apply/unapply reverses exactly.",
+      "evidence": [
+        {
+          "resource": "repo://src/filters.rs#L840-L965",
+          "version": "repo-lines-v1:sha256:5b8ff5e1a55b9a5d68778aa9ecff5ebbaa273e527de55776b6ecde2828e80c0b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyODZiNDI2MTk1MWU2YWExZmQ3NmU4NmU3NGNlMzY5MDkyYTY0OTE0NjljZGI5NzE5MGUwYWMxZGMxZGEyNzU5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YTU5NGYwM2ZjZTdiYmQxNjAwZjdhNTE4MWVlNTZhMDllNDgwMzQ0YmQzZDMwMzViNDI4OTBjZTY3MTE3MWVhIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_142850909cdd40cb9a6e29dd0382c552",
+      "statement": "Kani formal verification in src/bitmap.rs proves set-clear idempotency, bit-modification isolation, and out-of-bounds access safety of the bit operations used for block and inode allocation.",
+      "evidence": [
+        {
+          "resource": "repo://src/bitmap.rs#L261-L335",
+          "version": "repo-lines-v1:sha256:5ea50804fbc24dfcea406ec7f696bd27d5691b8d80747069350e0d181e1e6267:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5YTE5MjEwZDI4NmI0Yjk3ZDBkM2Q4NTg2Y2MzM2ZiMmNhNzZiYjU1MGI5NTc4OTQ4NTI4Y2U2YTNjMTk3MjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhYmU5ZmUwYzg4ZmUzYmUwOTdmZTFjZDJjNjc5N2QxNjdiZGI3OTc3ZTQ4ZDM2YWQ0MmQ1ZjI0MDE1NjdhM2IifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_54716458a8744ca4bb35ff5958a98084",
+      "statement": "Kani formal verification in src/superblock.rs proves that SuperBlock layout calculation preserves strictly ordered, non-overlapping regions and that the data region never overruns the image.",
+      "evidence": [
+        {
+          "resource": "repo://src/superblock.rs#L117-L170",
+          "version": "repo-lines-v1:sha256:e20ea56bf68981acad618aad0397d26bba74b8851d4d79dc1384ee4942f66265:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5YTE5MjEwZDI4NmI0Yjk3ZDBkM2Q4NTg2Y2MzM2ZiMmNhNzZiYjU1MGI5NTc4OTQ4NTI4Y2U2YTNjMTk3MjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_973a6ce0b54f4927907c347c9cd0ddb5",
+      "statement": "The test suite comprises roughly 30 integration, CLI, FFI, encryption, fsck, defragmentation, and concurrency test modules under tests/ that complement the probabilistic Shuttle runs and exhaustive Kano proofs.",
+      "evidence": [
+        {
+          "resource": "repo://tests/ffi_test.rs#L1-L1",
+          "version": "repo-lines-v1:sha256:29ecc10f0977aefe915429722932115098139629af8ef0a786317a0c2c301d16:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjllY2MxMGYwOTc3YWVmZTkxNTQyOTcyMjkzMjExNTA5ODEzOTYyOWFmOGVmMGE3ODYzMTdhMGMyYzMwMWQxNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjllY2MxMGYwOTc3YWVmZTkxNTQyOTcyMjkzMjExNTA5ODEzOTYyOWFmOGVmMGE3ODYzMTdhMGMyYzMwMWQxNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzRlZjUxOTg0MTRjNDgyODI3ZjczNmQxMTRjMTU4MTc2ZDcwMTdmYjBiZDE4MDI0MGEwMzE3NjVlYjZjNTMzZCJ9"
+        },
+        {
+          "resource": "repo://tests/integration_test.rs#L1-L1",
+          "version": "repo-lines-v1:sha256:6263fac754b15a09bf216440aa4ceaa888893ab4a25a76ffcffc1f1729b11c58:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjI2M2ZhYzc1NGIxNWEwOWJmMjE2NDQwYWE0Y2VhYTg4ODg5M2FiNGEyNWE3NmZmY2ZmYzFmMTcyOWIxMWM1OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjI2M2ZhYzc1NGIxNWEwOWJmMjE2NDQwYWE0Y2VhYTg4ODg5M2FiNGEyNWE3NmZmY2ZmYzFmMTcyOWIxMWM1OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTRhOGYzMzI0MDI5OTQzYTkwZjU5N2FiNTY3OTg1OTliOTE4NjZkYzVmZjM3MWFlMmZmNjMxYTZlN2RjYzhlMyJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-09-29T16:14:34.721Z"
+  }
+}

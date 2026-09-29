@@ -8,6 +8,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -508,48 +509,61 @@ impl IpcServer {
         let server_thread = thread::spawn(move || {
             let mut client_threads: Vec<JoinHandle<()>> = Vec::new();
 
+            #[inline]
+            fn wait_for_fd_readable(fd: RawFd, timeout_ms: i32) -> bool {
+                let mut pfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ret = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+                ret > 0 && (pfd.revents & libc::POLLIN) != 0
+            }
+
             match listener {
                 IpcListener::Unix { listener, .. } => {
                     let _ = listener.set_nonblocking(true);
+                    let raw_fd = listener.as_raw_fd();
                     while !shutdown_clone.load(Ordering::Relaxed) {
                         client_threads.retain(|h| !h.is_finished());
-                        match listener.accept() {
-                            Ok((stream, _)) => {
-                                Self::spawn_client_worker(
-                                    IpcStream::Unix(stream),
-                                    &dm,
-                                    &event_tx,
-                                    &peer_counter_clone,
-                                    &active_peers_clone,
-                                    &mut client_threads,
-                                );
+                        if wait_for_fd_readable(raw_fd, 50) {
+                            match listener.accept() {
+                                Ok((stream, _)) => {
+                                    Self::spawn_client_worker(
+                                        IpcStream::Unix(stream),
+                                        &dm,
+                                        &event_tx,
+                                        &peer_counter_clone,
+                                        &active_peers_clone,
+                                        &mut client_threads,
+                                    );
+                                }
+                                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                                Err(_) => break,
                             }
-                            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                thread::sleep(Duration::from_millis(2));
-                            }
-                            Err(_) => break,
                         }
                     }
                 }
                 IpcListener::Tcp { listener, .. } => {
                     let _ = listener.set_nonblocking(true);
+                    let raw_fd = listener.as_raw_fd();
                     while !shutdown_clone.load(Ordering::Relaxed) {
                         client_threads.retain(|h| !h.is_finished());
-                        match listener.accept() {
-                            Ok((stream, _)) => {
-                                Self::spawn_client_worker(
-                                    IpcStream::Tcp(stream),
-                                    &dm,
-                                    &event_tx,
-                                    &peer_counter_clone,
-                                    &active_peers_clone,
-                                    &mut client_threads,
-                                );
+                        if wait_for_fd_readable(raw_fd, 50) {
+                            match listener.accept() {
+                                Ok((stream, _)) => {
+                                    Self::spawn_client_worker(
+                                        IpcStream::Tcp(stream),
+                                        &dm,
+                                        &event_tx,
+                                        &peer_counter_clone,
+                                        &active_peers_clone,
+                                        &mut client_threads,
+                                    );
+                                }
+                                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                                Err(_) => break,
                             }
-                            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                thread::sleep(Duration::from_millis(2));
-                            }
-                            Err(_) => break,
                         }
                     }
                 }

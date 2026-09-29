@@ -1026,4 +1026,3 @@ mod kani_proofs {
         assert_eq!(data, copy);
     }
 }
-

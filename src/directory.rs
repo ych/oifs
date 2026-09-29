@@ -24,18 +24,21 @@ impl DirectoryEntry {
 
     pub fn serialize_into<W: Write>(&self, writer: &mut W) -> Result<(), DirectoryError> {
         if self.name.contains('/') {
-            return Err(DirectoryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Filename cannot contain '/'")));
+            return Err(DirectoryError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Filename cannot contain '/'",
+            )));
         }
         let name_bytes = self.name.as_bytes();
         if name_bytes.len() > Self::MAX_FILENAME_LEN {
             return Err(DirectoryError::EntryTooLarge);
         }
-        
+
         writer.write_all(&self.inode.to_le_bytes())?;
         writer.write_all(&self.hash.to_le_bytes())?;
         writer.write_all(&(name_bytes.len() as u16).to_le_bytes())?;
         writer.write_all(name_bytes)?;
-        
+
         Ok(())
     }
 
@@ -45,13 +48,17 @@ impl DirectoryEntry {
             return Ok(None);
         }
         let inode = u64::from_le_bytes(inode_buf);
-        
+
         let mut hash_buf = [0u8; 8];
-        if reader.read_exact(&mut hash_buf).is_err() { return Ok(None); }
+        if reader.read_exact(&mut hash_buf).is_err() {
+            return Ok(None);
+        }
         let hash = u64::from_le_bytes(hash_buf);
 
         let mut len_buf = [0u8; 2];
-        if reader.read_exact(&mut len_buf).is_err() { return Ok(None); }
+        if reader.read_exact(&mut len_buf).is_err() {
+            return Ok(None);
+        }
         let len = u16::from_le_bytes(len_buf) as usize;
 
         if len == 0 {
@@ -63,18 +70,14 @@ impl DirectoryEntry {
         reader.read_exact(&mut name_buf)?;
         let name = String::from_utf8(name_buf)?;
         // If len == 0 -> End.
-        
+
         // Wait, I cannot read `name` before `len`.
         // So correct flow:
         // read inode, hash, len.
         // if len == 0 -> return None (End).
         // else read name.
-        
-        Ok(Some(Self {
-            inode,
-            hash,
-            name,
-        }))
+
+        Ok(Some(Self { inode, hash, name }))
     }
 }
 
@@ -203,9 +206,21 @@ mod tests {
     #[test]
     fn test_directory_iterator_multiple_entries() {
         let entries = vec![
-            DirectoryEntry { inode: 1, hash: 0, name: "file1.txt".to_string() },
-            DirectoryEntry { inode: 2, hash: 0, name: "file2.txt".to_string() },
-            DirectoryEntry { inode: 3, hash: 0, name: "dir1".to_string() },
+            DirectoryEntry {
+                inode: 1,
+                hash: 0,
+                name: "file1.txt".to_string(),
+            },
+            DirectoryEntry {
+                inode: 2,
+                hash: 0,
+                name: "file2.txt".to_string(),
+            },
+            DirectoryEntry {
+                inode: 3,
+                hash: 0,
+                name: "dir1".to_string(),
+            },
         ];
 
         let mut buf = vec![0u8; 4096];
@@ -303,4 +318,3 @@ mod kani_proofs {
         assert!(offset <= block.len());
     }
 }
-

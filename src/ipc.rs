@@ -129,6 +129,7 @@ pub fn get_socket_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
     let safe_name: String = file_name
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .take(12)
         .collect();
 
     std::env::temp_dir().join(format!("oifs_{}_{:016x}.sock", safe_name, hash))

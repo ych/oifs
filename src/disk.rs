@@ -13,6 +13,7 @@ use crate::BLOCK_SIZE;
 use crate::allocator::{SimpleBlockAllocator, BlockAllocator, AllocatorError};
 use crate::inode::Inode;
 use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -142,6 +143,8 @@ struct DiskManagerInner {
     pub free_block_hint: u64,
     /// Search hint for sequential O(1) inode allocation
     pub free_inode_hint: u64,
+    /// Inode cache for zero-copy metadata access (P2.2)
+    pub inode_cache: RwLock<HashMap<u64, Inode>>,
 }
 
 impl Drop for DiskManagerInner {
@@ -266,6 +269,7 @@ impl DiskManager {
             encryption_key,
             free_block_hint,
             free_inode_hint: 0,
+            inode_cache: RwLock::new(HashMap::with_capacity(1024)),
         };
 
         let dm = Self {
@@ -1149,11 +1153,23 @@ impl DiskManager {
     
     // Internal Helpers working on guards
     fn read_inode_internal(guard: &DiskManagerInner, inode_id: u64) -> Result<Inode, DiskManagerError> {
+        // Fast path: check in-memory inode cache (P2.2)
+        if let Some(cached) = guard.inode_cache.read().unwrap().get(&inode_id) {
+            return Ok(*cached);
+        }
+
         let inode_size = 256u64;
         let offset = guard.superblock.inode_table_block * BLOCK_SIZE as u64 + inode_id * inode_size;
         if offset + inode_size > guard.mmap.len() as u64 { return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Bounds"))); }
         let slice = &guard.mmap[offset as usize .. (offset+inode_size) as usize];
-        Ok(bincode::deserialize(slice)?)
+        let inode: Inode = bincode::deserialize(slice)?;
+
+        let mut cache = guard.inode_cache.write().unwrap();
+        if cache.len() >= 2048 {
+            cache.clear();
+        }
+        cache.insert(inode_id, inode);
+        Ok(inode)
     }
     
     fn write_inode_internal(guard: &mut DiskManagerInner, inode_id: u64, inode: &Inode) -> Result<(), DiskManagerError> {
@@ -1163,6 +1179,9 @@ impl DiskManager {
         let bytes = bincode::serialize(inode)?;
         if bytes.len() > inode_size { return Err(DiskManagerError::Serialization(Box::new(bincode::ErrorKind::SizeLimit))); }
         slice[..bytes.len()].copy_from_slice(&bytes);
+
+        // Update in-memory inode cache (P2.2)
+        guard.inode_cache.write().unwrap().insert(inode_id, *inode);
         Ok(())
     }
 
@@ -1456,6 +1475,7 @@ impl DiskManager {
         if target_inode_id < guard.free_inode_hint {
             guard.free_inode_hint = target_inode_id;
         }
+        guard.inode_cache.write().unwrap().remove(&target_inode_id);
 
         // Update Parent Mtime
         let mut parent_inode = parent_inode;

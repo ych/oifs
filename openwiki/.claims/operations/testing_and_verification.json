@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a50861c17ef52e2042ef21333bf349d50557c3d9957bbf98a05b3bcdeea23847",
+  "pageVersion": "sha256:e53a33aa726aa6e090e89d9009c8c326655fde097aa8b0bc4fb6d5b36a0f4229",
   "claims": [
     {
       "id": "claim_24ccddb574a5445b9214d61443534bd2",
@@ -17,7 +17,7 @@
       "statement": "Kani formal proofs in src/filters.rs prove roundtrip bijectivity for the Delta, ByteShuffle, and BitShuffle pre-compression filters across element sizes, ensuring apply/unapply reverses exactly.",
       "evidence": [
         {
-          "resource": "repo://src/filters.rs#L840-L965",
+          "resource": "repo://src/filters.rs#L885-L1010",
           "version": "repo-lines-v1:sha256:5b8ff5e1a55b9a5d68778aa9ecff5ebbaa273e527de55776b6ecde2828e80c0b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyODZiNDI2MTk1MWU2YWExZmQ3NmU4NmU3NGNlMzY5MDkyYTY0OTE0NjljZGI5NzE5MGUwYWMxZGMxZGEyNzU5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YTU5NGYwM2ZjZTdiYmQxNjAwZjdhNTE4MWVlNTZhMDllNDgwMzQ0YmQzZDMwMzViNDI4OTBjZTY3MTE3MWVhIn0"
         }
       ]
@@ -59,6 +59,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-09-29T18:26:58.313Z"
+    "at": "2026-09-30T20:17:56.754Z"
   }
 }

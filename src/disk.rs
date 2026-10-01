@@ -4,16 +4,16 @@
 //! including creating/reading files and directories, managing inodes,
 //! and handling file compression.
 
+use crate::BLOCK_SIZE;
+use crate::allocator::{AllocatorError, BlockAllocator, SimpleBlockAllocator};
+use crate::inode::Inode;
+use crate::superblock::SuperBlock;
+use memmap2::{MmapMut, MmapOptions};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
-use memmap2::{MmapMut, MmapOptions};
-use thiserror::Error;
-use crate::superblock::SuperBlock;
-use crate::BLOCK_SIZE;
-use crate::allocator::{SimpleBlockAllocator, BlockAllocator, AllocatorError};
-use crate::inode::Inode;
 use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
+use thiserror::Error;
 
 use serde::{Deserialize, Serialize};
 
@@ -52,8 +52,7 @@ pub enum DiskManagerError {
 /// Compression mode for write operations
 ///
 /// Controls when files should be compressed using zstd.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum CompressionMode {
     /// Always compress, regardless of file size
     Always,
@@ -63,7 +62,6 @@ pub enum CompressionMode {
     #[default]
     Auto,
 }
-
 
 /// Statistics about disk fragmentation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,8 +83,7 @@ pub struct FragmentationStats {
 }
 
 /// Defragmentation mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DefragMode {
     /// Safe mode: create new image and replace original after success
     #[default]
@@ -94,7 +91,6 @@ pub enum DefragMode {
     /// In-place mode: directly modify original image (faster but risky)
     InPlace,
 }
-
 
 /// Statistics from defragmentation operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,7 +211,7 @@ impl DiskManager {
         lock.l_start = 0;
         lock.l_len = 0; // Whole file
 
-        use nix::fcntl::{fcntl, FcntlArg};
+        use nix::fcntl::{FcntlArg, fcntl};
         fcntl(&file, FcntlArg::F_SETLK(&lock)).map_err(DiskManagerError::Locking)?;
 
         let is_new = !exists || create_encrypted;
@@ -280,17 +276,23 @@ impl DiskManager {
             let mut guard = dm.inner.write().unwrap();
             let inode_bitmap_block = guard.superblock.inode_bitmap_block;
             let bitmap_slice = Self::get_block_mut_from_map(&mut guard.mmap, inode_bitmap_block)
-                .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("Failed to get inode bitmap")))?;
+                .ok_or_else(|| {
+                    DiskManagerError::Io(std::io::Error::other("Failed to get inode bitmap"))
+                })?;
             let mut ia = SimpleBlockAllocator::new(bitmap_slice, 0);
             let root_id = ia.allocate()?;
             if root_id != 0 {
-                return Err(DiskManagerError::Io(std::io::Error::other("Failed init root inode")));
+                return Err(DiskManagerError::Io(std::io::Error::other(
+                    "Failed init root inode",
+                )));
             }
 
             let data_bitmap_block = guard.superblock.data_bitmap_block;
             let data_start = guard.superblock.data_block_start;
             let data_slice = Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap_block)
-                .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("Failed to get data bitmap")))?;
+                .ok_or_else(|| {
+                    DiskManagerError::Io(std::io::Error::other("Failed to get data bitmap"))
+                })?;
             let mut da = SimpleBlockAllocator::new(data_slice, data_start);
             let root_data = da.allocate()?;
 
@@ -312,7 +314,11 @@ impl DiskManager {
     fn get_block_mut_from_map(mmap: &mut MmapMut, block_id: u64) -> Option<&mut [u8]> {
         let start = block_id as usize * BLOCK_SIZE;
         let end = start + BLOCK_SIZE;
-        if end > mmap.len() { None } else { Some(&mut mmap[start..end]) }
+        if end > mmap.len() {
+            None
+        } else {
+            Some(&mut mmap[start..end])
+        }
     }
 
     /// Reads an inode from the inode table
@@ -327,19 +333,31 @@ impl DiskManager {
         Self::write_inode_internal(&mut guard, inode_id, inode)
     }
 
-    fn find_dir_entry_in_block(mmap: &MmapMut, block_id: u64, name: &str) -> Result<Option<u64>, DiskManagerError> {
+    fn find_dir_entry_in_block(
+        mmap: &MmapMut,
+        block_id: u64,
+        name: &str,
+    ) -> Result<Option<u64>, DiskManagerError> {
         if let Some(slice) = Self::get_block_from_map(mmap, block_id) {
             return Ok(crate::directory::find_entry_in_block(slice, name));
         }
         Ok(None)
     }
 
-    fn read_dir_entries_from_block(mmap: &MmapMut, block_id: u64) -> Result<Vec<crate::directory::DirectoryEntry>, DiskManagerError> {
+    fn read_dir_entries_from_block(
+        mmap: &MmapMut,
+        block_id: u64,
+    ) -> Result<Vec<crate::directory::DirectoryEntry>, DiskManagerError> {
         if let Some(slice) = Self::get_block_from_map(mmap, block_id) {
             let iter = crate::directory::DirectoryIterator::new(slice);
             let mut entries = Vec::new();
             for entry in iter {
-                entries.push(entry.map_err(|e| DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?);
+                entries.push(entry.map_err(|e| {
+                    DiskManagerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e.to_string(),
+                    ))
+                })?);
             }
             Ok(entries)
         } else {
@@ -347,29 +365,45 @@ impl DiskManager {
         }
     }
 
-    fn append_dir_entry_to_block(mmap: &mut MmapMut, block_id: u64, entry: &crate::directory::DirectoryEntry) -> Result<(), DiskManagerError> {
-        let block_slice = Self::get_block_mut_from_map(mmap, block_id)
-            .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("Directory block not found")))?;
+    fn append_dir_entry_to_block(
+        mmap: &mut MmapMut,
+        block_id: u64,
+        entry: &crate::directory::DirectoryEntry,
+    ) -> Result<(), DiskManagerError> {
+        let block_slice = Self::get_block_mut_from_map(mmap, block_id).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::other("Directory block not found"))
+        })?;
 
         let insert_offset = crate::directory::find_insert_offset_in_block(block_slice);
 
         if insert_offset + 20 + entry.name.len() > BLOCK_SIZE {
-            return Err(DiskManagerError::Io(std::io::Error::other("Directory block is full")));
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Directory block is full",
+            )));
         }
 
         let mut cursor = std::io::Cursor::new(block_slice);
         cursor.set_position(insert_offset as u64);
-        entry.serialize_into(&mut cursor).map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
+        entry
+            .serialize_into(&mut cursor)
+            .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
         Ok(())
     }
 
-    fn rewrite_dir_entries_in_block(mmap: &mut MmapMut, block_id: u64, entries: &[crate::directory::DirectoryEntry]) -> Result<(), DiskManagerError> {
-        let block_slice = Self::get_block_mut_from_map(mmap, block_id)
-            .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("Directory block not found")))?;
+    fn rewrite_dir_entries_in_block(
+        mmap: &mut MmapMut,
+        block_id: u64,
+        entries: &[crate::directory::DirectoryEntry],
+    ) -> Result<(), DiskManagerError> {
+        let block_slice = Self::get_block_mut_from_map(mmap, block_id).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::other("Directory block not found"))
+        })?;
         block_slice.fill(0);
         let mut cursor = std::io::Cursor::new(block_slice);
         for entry in entries {
-            entry.serialize_into(&mut cursor).map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
+            entry
+                .serialize_into(&mut cursor)
+                .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
         }
         Ok(())
     }
@@ -403,7 +437,11 @@ impl DiskManager {
         let dib_id = inode.blocks[11];
         if dib_id != 0 {
             blks.push(dib_id);
-            let physical_size = if inode.compressed_size > 0 { inode.compressed_size } else { inode.size };
+            let physical_size = if inode.compressed_size > 0 {
+                inode.compressed_size
+            } else {
+                inode.size
+            };
             let total_logical_blocks = physical_size.div_ceil(BLOCK_SIZE as u64);
             let max_s_entries = if total_logical_blocks > 522 {
                 let diff = total_logical_blocks - 522;
@@ -435,7 +473,11 @@ impl DiskManager {
         let tib_id = inode.triple_indirect;
         if tib_id != 0 {
             blks.push(tib_id);
-            let physical_size = if inode.compressed_size > 0 { inode.compressed_size } else { inode.size };
+            let physical_size = if inode.compressed_size > 0 {
+                inode.compressed_size
+            } else {
+                inode.size
+            };
             let total_logical_blocks = physical_size.div_ceil(BLOCK_SIZE as u64);
             let max_t_entries = if total_logical_blocks > 262666 {
                 let diff = total_logical_blocks - 262666;
@@ -457,7 +499,8 @@ impl DiskManager {
                                     blks.push(sib);
                                     if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
                                         for blk_chunk in s_slice.chunks_exact(8) {
-                                            let blk = u64::from_le_bytes(blk_chunk.try_into().unwrap());
+                                            let blk =
+                                                u64::from_le_bytes(blk_chunk.try_into().unwrap());
                                             if blk != 0 {
                                                 blks.push(blk);
                                             }
@@ -495,7 +538,8 @@ impl DiskManager {
 
         // Check if file or directory already exists
         let stored_name = if let Some(key) = &guard.encryption_key {
-            crate::encryption::encrypt_filename(key, parent_inode_id, name).unwrap_or_else(|_| name.to_string())
+            crate::encryption::encrypt_filename(key, parent_inode_id, name)
+                .unwrap_or_else(|_| name.to_string())
         } else {
             name.to_string()
         };
@@ -508,7 +552,11 @@ impl DiskManager {
         };
 
         if already_exists {
-            let type_str = if file_type == crate::inode::FileType::Directory { "Directory" } else { "File" };
+            let type_str = if file_type == crate::inode::FileType::Directory {
+                "Directory"
+            } else {
+                "File"
+            };
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!("{} '{}' already exists", type_str, name),
@@ -526,7 +574,10 @@ impl DiskManager {
         guard.free_inode_hint = new_inode_id + 1;
 
         // 3. Init Inode with proper timestamps
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let mut new_inode = Inode::new(file_type);
         new_inode.created_at = now;
         new_inode.modified_at = now;
@@ -561,7 +612,11 @@ impl DiskManager {
     }
 
     /// Creates a new directory in a parent directory
-    pub fn create_directory(&self, parent_inode_id: u64, name: &str) -> Result<u64, DiskManagerError> {
+    pub fn create_directory(
+        &self,
+        parent_inode_id: u64,
+        name: &str,
+    ) -> Result<u64, DiskManagerError> {
         self.create_entry_internal(parent_inode_id, name, crate::inode::FileType::Directory)
     }
 
@@ -575,19 +630,28 @@ impl DiskManager {
 
         let dir_block_id = parent_inode.blocks[0];
         if dir_block_id == 0 {
-            return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found")));
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Not found",
+            )));
         }
 
         if let Some(key) = &guard.encryption_key {
             let enc_name = crate::encryption::encrypt_filename(key, parent_inode_id, name)
                 .unwrap_or_else(|_| name.to_string());
-            if let Some(inode) = Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &enc_name)? {
+            if let Some(inode) =
+                Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &enc_name)?
+            {
                 return Ok(inode);
             }
         }
 
-        Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?
-            .ok_or_else(|| DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found")))
+        Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Not found",
+            ))
+        })
     }
 
     /// Reads data from a file
@@ -656,8 +720,15 @@ impl DiskManager {
     }
 
     #[allow(clippy::collapsible_if)]
-    fn read_data_internal(guard: &DiskManagerInner, inode: &Inode) -> Result<Vec<u8>, DiskManagerError> {
-        let physical_size = if inode.compressed_size > 0 { inode.compressed_size } else { inode.size };
+    fn read_data_internal(
+        guard: &DiskManagerInner,
+        inode: &Inode,
+    ) -> Result<Vec<u8>, DiskManagerError> {
+        let physical_size = if inode.compressed_size > 0 {
+            inode.compressed_size
+        } else {
+            inode.size
+        };
         if physical_size == 0 {
             return Ok(Vec::new());
         }
@@ -675,7 +746,8 @@ impl DiskManager {
                 let blk = inode.blocks[blk_idx];
                 if blk != 0 {
                     if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                        raw_data[read as usize..read as usize + to_read].copy_from_slice(&slice[..to_read]);
+                        raw_data[read as usize..read as usize + to_read]
+                            .copy_from_slice(&slice[..to_read]);
                     }
                 }
                 read += to_read as u64;
@@ -688,7 +760,8 @@ impl DiskManager {
                 let sib_id = inode.blocks[10];
                 if sib_id == 0 {
                     let remaining_blocks = (10 + 512) - blk_idx;
-                    let skip_bytes = (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    let skip_bytes =
+                        (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
                     read += skip_bytes;
                     blk_idx = 10 + 512;
                     continue;
@@ -701,11 +774,13 @@ impl DiskManager {
                         if read >= physical_size {
                             break;
                         }
-                        let to_read_curr = std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
+                        let to_read_curr =
+                            std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
                         let blk = u64::from_le_bytes(chunk.try_into().unwrap());
                         if blk != 0 {
                             if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                                raw_data[read as usize..read as usize + to_read_curr].copy_from_slice(&slice[..to_read_curr]);
+                                raw_data[read as usize..read as usize + to_read_curr]
+                                    .copy_from_slice(&slice[..to_read_curr]);
                             }
                         }
                         read += to_read_curr as u64;
@@ -723,7 +798,8 @@ impl DiskManager {
                 let dib_id = inode.blocks[11];
                 if dib_id == 0 {
                     let remaining_blocks = (10 + 512 + 512 * 512) - blk_idx;
-                    let skip_bytes = (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    let skip_bytes =
+                        (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
                     read += skip_bytes;
                     blk_idx = 10 + 512 + 512 * 512;
                     continue;
@@ -735,7 +811,8 @@ impl DiskManager {
                 let sib_id = Self::read_block_ptr(&guard.mmap, dib_id, s_idx);
                 if sib_id == 0 {
                     let skip_blocks = 512 - d_idx;
-                    let skip_bytes = (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    let skip_bytes =
+                        (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
                     read += skip_bytes;
                     blk_idx += skip_blocks;
                     continue;
@@ -748,11 +825,13 @@ impl DiskManager {
                         if read >= physical_size {
                             break;
                         }
-                        let to_read_curr = std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
+                        let to_read_curr =
+                            std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
                         let blk = u64::from_le_bytes(chunk.try_into().unwrap());
                         if blk != 0 {
                             if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                                raw_data[read as usize..read as usize + to_read_curr].copy_from_slice(&slice[..to_read_curr]);
+                                raw_data[read as usize..read as usize + to_read_curr]
+                                    .copy_from_slice(&slice[..to_read_curr]);
                             }
                         }
                         read += to_read_curr as u64;
@@ -771,7 +850,8 @@ impl DiskManager {
                 let tib_id = inode.triple_indirect;
                 if tib_id == 0 {
                     let remaining_blocks = max_blocks - blk_idx;
-                    let skip_bytes = (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    let skip_bytes =
+                        (remaining_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
                     read += skip_bytes;
                     blk_idx = max_blocks;
                     continue;
@@ -785,7 +865,8 @@ impl DiskManager {
                 let dib_id = Self::read_block_ptr(&guard.mmap, tib_id, t_idx);
                 if dib_id == 0 {
                     let skip_blocks = (512 * 512) - rem_idx;
-                    let skip_bytes = (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    let skip_bytes =
+                        (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
                     read += skip_bytes;
                     blk_idx += skip_blocks;
                     continue;
@@ -794,7 +875,8 @@ impl DiskManager {
                 let sib_id = Self::read_block_ptr(&guard.mmap, dib_id, d_idx);
                 if sib_id == 0 {
                     let skip_blocks = 512 - s_idx;
-                    let skip_bytes = (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
+                    let skip_bytes =
+                        (skip_blocks as u64 * BLOCK_SIZE as u64).min(physical_size - read);
                     read += skip_bytes;
                     blk_idx += skip_blocks;
                     continue;
@@ -803,7 +885,8 @@ impl DiskManager {
                 let blk = Self::read_block_ptr(&guard.mmap, sib_id, s_idx);
                 if blk != 0 {
                     if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                        raw_data[read as usize..read as usize + to_read].copy_from_slice(&slice[..to_read]);
+                        raw_data[read as usize..read as usize + to_read]
+                            .copy_from_slice(&slice[..to_read]);
                     }
                 }
                 read += to_read as u64;
@@ -813,25 +896,28 @@ impl DiskManager {
 
             break;
         }
-        
+
         // === DECRYPTION STEP ===
         let mut decrypted_data = raw_data;
         if inode.encrypted {
-            let encryption_key = guard.encryption_key.as_ref()
+            let encryption_key = guard
+                .encryption_key
+                .as_ref()
                 .ok_or(DiskManagerError::PasswordRequired)?;
-            
+
             decrypted_data = crate::encryption::decrypt_data(
                 &decrypted_data,
                 encryption_key,
-                &inode.encryption_nonce
-            ).map_err(|_| DiskManagerError::DecryptionFailed)?;
+                &inode.encryption_nonce,
+            )
+            .map_err(|_| DiskManagerError::DecryptionFailed)?;
         }
-        
+
         // Decompress if this is a compressed file (natively decompresses concatenated multi-frame Zstd streams)
         if inode.mode == crate::inode::FileType::File && inode.compressed_size > 0 {
-             let decoded = zstd::stream::decode_all(std::io::Cursor::new(&decrypted_data))
-                 .map_err(DiskManagerError::Io)?;
-             decrypted_data = decoded;
+            let decoded = zstd::stream::decode_all(std::io::Cursor::new(&decrypted_data))
+                .map_err(DiskManagerError::Io)?;
+            decrypted_data = decoded;
         }
 
         // === POST-DECOMPRESSION FILTER STEP ===
@@ -870,12 +956,19 @@ impl DiskManager {
     /// memory allocations**.
     ///
     /// Returns the number of bytes read (0 if at or beyond EOF).
-    pub fn read_at(&self, inode_id: u64, file_offset: u64, buf: &mut [u8]) -> Result<usize, DiskManagerError> {
+    pub fn read_at(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, DiskManagerError> {
         let guard = self.inner.read().unwrap();
         let inode = Self::read_inode_internal(&guard, inode_id)?;
 
         if inode.mode != crate::inode::FileType::File {
-            return Err(DiskManagerError::Io(std::io::Error::other("Cannot read non-file inode")));
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Cannot read non-file inode",
+            )));
         }
 
         if file_offset >= inode.size || buf.is_empty() {
@@ -927,8 +1020,20 @@ impl DiskManager {
     /// Writes data to a file (default: no pre-compression filters)
     ///
     /// For custom filter pipeline (Delta / Shuffle / typesize), use [`write_data_with_filters`].
-    pub fn write_data(&self, inode_id: u64, file_offset: u64, data: &[u8], compression_mode: CompressionMode) -> Result<(), DiskManagerError> {
-        self.write_data_with_filters(inode_id, file_offset, data, compression_mode, crate::filters::FilterConfig::none())
+    pub fn write_data(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        data: &[u8],
+        compression_mode: CompressionMode,
+    ) -> Result<(), DiskManagerError> {
+        self.write_data_with_filters(
+            inode_id,
+            file_offset,
+            data,
+            compression_mode,
+            crate::filters::FilterConfig::none(),
+        )
     }
 
     fn write_buffer_at_offset(
@@ -946,7 +1051,8 @@ impl DiskManager {
             let to_write = std::cmp::min(data.len() - written, BLOCK_SIZE - in_blk_off);
 
             if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk_id) {
-                slice[in_blk_off..in_blk_off + to_write].copy_from_slice(&data[written..written + to_write]);
+                slice[in_blk_off..in_blk_off + to_write]
+                    .copy_from_slice(&data[written..written + to_write]);
             }
             written += to_write;
             current_offset += to_write as u64;
@@ -1004,11 +1110,8 @@ impl DiskManager {
         let final_encrypted: Vec<u8>;
         let write_buffer: &[u8] = if let Some(encryption_key) = &guard.encryption_key {
             let nonce = crate::encryption::generate_nonce();
-            final_encrypted = crate::encryption::encrypt_data(
-                final_data.as_ref(),
-                encryption_key,
-                &nonce
-            )?;
+            final_encrypted =
+                crate::encryption::encrypt_data(final_data.as_ref(), encryption_key, &nonce)?;
             inode.encrypted = true;
             inode.encryption_nonce = nonce;
             &final_encrypted
@@ -1031,7 +1134,10 @@ impl DiskManager {
         inode.filter_shuffle = filter_config.shuffle;
         inode.filter_bitshuffle = filter_config.bitshuffle;
 
-        inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        inode.modified_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         Self::write_inode_internal(guard, inode_id, inode)?;
         let _ = guard.mmap.flush_async();
         Ok(())
@@ -1055,17 +1161,33 @@ impl DiskManager {
     ///   - **Transparent Fallback (Read-Modify-Recompress)**: For encrypted files, random-offset
     ///     writes, or files with active filters, decompresses existing data, splices in the change,
     ///     and re-writes contiguously from offset 0.
-    pub fn write_data_with_filters(&self, inode_id: u64, file_offset: u64, data: &[u8], compression_mode: CompressionMode, filter_config: crate::filters::FilterConfig) -> Result<(), DiskManagerError> {
+    pub fn write_data_with_filters(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        data: &[u8],
+        compression_mode: CompressionMode,
+        filter_config: crate::filters::FilterConfig,
+    ) -> Result<(), DiskManagerError> {
         let mut guard = self.inner.write().unwrap();
         let mut inode = Self::read_inode_internal(&guard, inode_id)?;
 
         if inode.mode != crate::inode::FileType::File {
-            return Err(DiskManagerError::Io(std::io::Error::other("Cannot write data to non-file inode")));
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Cannot write data to non-file inode",
+            )));
         }
 
         // Case 1: Writing from offset 0 (initial write or complete overwrite)
         if file_offset == 0 {
-            return Self::write_data_from_start_internal(&mut guard, inode_id, &mut inode, data, compression_mode, filter_config);
+            return Self::write_data_from_start_internal(
+                &mut guard,
+                inode_id,
+                &mut inode,
+                data,
+                compression_mode,
+                filter_config,
+            );
         }
 
         // Case 2: Append or random write to an already-compressed file
@@ -1075,7 +1197,11 @@ impl DiskManager {
             // we directly compress `data` as a new independent Zstd Frame and append it to the physical
             // compressed stream. Zstd decoders (such as zstd::stream::decode_all) naturally decompress concatenated
             // multi-frame streams seamlessly without needing to decompress previous blocks.
-            if file_offset == inode.size && !inode.encrypted && !filter_config.is_active() && inode.filter_typesize == 0 {
+            if file_offset == inode.size
+                && !inode.encrypted
+                && !filter_config.is_active()
+                && inode.filter_typesize == 0
+            {
                 if data.is_empty() {
                     return Ok(());
                 }
@@ -1087,7 +1213,10 @@ impl DiskManager {
 
                 inode.size += data.len() as u64;
                 inode.compressed_size += new_frame.len() as u64;
-                inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                inode.modified_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
                 Self::write_inode_internal(&mut guard, inode_id, &inode)?;
                 let _ = guard.mmap.flush_async();
                 return Ok(());
@@ -1139,20 +1268,33 @@ impl DiskManager {
                 }
             };
 
-            return Self::write_data_from_start_internal(&mut guard, inode_id, &mut inode, &full_data, compression_mode, effective_filter);
+            return Self::write_data_from_start_internal(
+                &mut guard,
+                inode_id,
+                &mut inode,
+                &full_data,
+                compression_mode,
+                effective_filter,
+            );
         }
 
         // Case 3: Raw (uncompressed) file append or random write
         let final_offset = Self::write_buffer_at_offset(&mut guard, &mut inode, file_offset, data)?;
         inode.size = std::cmp::max(inode.size, final_offset);
-        inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        inode.modified_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         Self::write_inode_internal(&mut guard, inode_id, &inode)?;
         let _ = guard.mmap.flush_async();
         Ok(())
     }
-    
+
     // Internal Helpers working on guards
-    fn read_inode_internal(guard: &DiskManagerInner, inode_id: u64) -> Result<Inode, DiskManagerError> {
+    fn read_inode_internal(
+        guard: &DiskManagerInner,
+        inode_id: u64,
+    ) -> Result<Inode, DiskManagerError> {
         // Fast path: check in-memory inode cache (P2.2)
         if let Some(cached) = guard.inode_cache.read().unwrap().get(&inode_id) {
             return Ok(*cached);
@@ -1160,8 +1302,13 @@ impl DiskManager {
 
         let inode_size = 256u64;
         let offset = guard.superblock.inode_table_block * BLOCK_SIZE as u64 + inode_id * inode_size;
-        if offset + inode_size > guard.mmap.len() as u64 { return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Bounds"))); }
-        let slice = &guard.mmap[offset as usize .. (offset+inode_size) as usize];
+        if offset + inode_size > guard.mmap.len() as u64 {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Bounds",
+            )));
+        }
+        let slice = &guard.mmap[offset as usize..(offset + inode_size) as usize];
         let inode: Inode = bincode::deserialize(slice)?;
 
         let mut cache = guard.inode_cache.write().unwrap();
@@ -1171,13 +1318,22 @@ impl DiskManager {
         cache.insert(inode_id, inode);
         Ok(inode)
     }
-    
-    fn write_inode_internal(guard: &mut DiskManagerInner, inode_id: u64, inode: &Inode) -> Result<(), DiskManagerError> {
+
+    fn write_inode_internal(
+        guard: &mut DiskManagerInner,
+        inode_id: u64,
+        inode: &Inode,
+    ) -> Result<(), DiskManagerError> {
         let inode_size = 256usize;
-        let offset = guard.superblock.inode_table_block * BLOCK_SIZE as u64 + inode_id * inode_size as u64;
-        let slice = &mut guard.mmap[offset as usize .. (offset+inode_size as u64) as usize];
+        let offset =
+            guard.superblock.inode_table_block * BLOCK_SIZE as u64 + inode_id * inode_size as u64;
+        let slice = &mut guard.mmap[offset as usize..(offset + inode_size as u64) as usize];
         let bytes = bincode::serialize(inode)?;
-        if bytes.len() > inode_size { return Err(DiskManagerError::Serialization(Box::new(bincode::ErrorKind::SizeLimit))); }
+        if bytes.len() > inode_size {
+            return Err(DiskManagerError::Serialization(Box::new(
+                bincode::ErrorKind::SizeLimit,
+            )));
+        }
         slice[..bytes.len()].copy_from_slice(&bytes);
 
         // Update in-memory inode cache (P2.2)
@@ -1192,7 +1348,8 @@ impl DiskManager {
         let blk = {
             let slice = Self::get_block_mut_from_map(&mut guard.mmap, db_blk).unwrap();
             let mut da = SimpleBlockAllocator::new(slice, db_start);
-            da.allocate_with_hint(Some(hint)).map_err(DiskManagerError::Allocator)?
+            da.allocate_with_hint(Some(hint))
+                .map_err(DiskManagerError::Allocator)?
         };
         guard.free_block_hint = blk + 1;
         Ok(blk)
@@ -1264,10 +1421,18 @@ impl DiskManager {
         if logical_block_idx < 10 + 512 {
             let idx = logical_block_idx - 10;
             if inode.blocks[10] == 0 {
-                if !allocate { return Ok(0); }
+                if !allocate {
+                    return Ok(0);
+                }
                 inode.blocks[10] = Self::alloc_and_zero_block(guard)?;
             }
-            return Self::get_or_alloc_indirect_child(guard, inode.blocks[10], idx, allocate, false);
+            return Self::get_or_alloc_indirect_child(
+                guard,
+                inode.blocks[10],
+                idx,
+                allocate,
+                false,
+            );
         }
 
         // Double Indirect block case (indices 522..262666)
@@ -1277,10 +1442,13 @@ impl DiskManager {
             let d_idx = idx % 512;
 
             if inode.blocks[11] == 0 {
-                if !allocate { return Ok(0); }
+                if !allocate {
+                    return Ok(0);
+                }
                 inode.blocks[11] = Self::alloc_and_zero_block(guard)?;
             }
-            let sib_id = Self::get_or_alloc_indirect_child(guard, inode.blocks[11], s_idx, allocate, true)?;
+            let sib_id =
+                Self::get_or_alloc_indirect_child(guard, inode.blocks[11], s_idx, allocate, true)?;
             if sib_id == 0 {
                 return Ok(0);
             }
@@ -1297,10 +1465,18 @@ impl DiskManager {
             let s_idx = rem % 512;
 
             if inode.triple_indirect == 0 {
-                if !allocate { return Ok(0); }
+                if !allocate {
+                    return Ok(0);
+                }
                 inode.triple_indirect = Self::alloc_and_zero_block(guard)?;
             }
-            let dib_id = Self::get_or_alloc_indirect_child(guard, inode.triple_indirect, t_idx, allocate, true)?;
+            let dib_id = Self::get_or_alloc_indirect_child(
+                guard,
+                inode.triple_indirect,
+                t_idx,
+                allocate,
+                true,
+            )?;
             if dib_id == 0 {
                 return Ok(0);
             }
@@ -1312,16 +1488,26 @@ impl DiskManager {
         }
 
         // Limit exceeded
-        Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::FileTooLarge, "File too large (max 513GB)")))
+        Err(DiskManagerError::Io(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            "File too large (max 513GB)",
+        )))
     }
-    
+
     fn get_block_from_map(mmap: &MmapMut, block_id: u64) -> Option<&[u8]> {
         let start = block_id as usize * BLOCK_SIZE;
         let end = start + BLOCK_SIZE;
-        if end > mmap.len() { None } else { Some(&mmap[start..end]) }
+        if end > mmap.len() {
+            None
+        } else {
+            Some(&mmap[start..end])
+        }
     }
-    
-    fn resolve_path_internal(guard: &DiskManagerInner, parts: &[&str]) -> Result<u64, DiskManagerError> {
+
+    fn resolve_path_internal(
+        guard: &DiskManagerInner,
+        parts: &[&str],
+    ) -> Result<u64, DiskManagerError> {
         let mut curr = guard.superblock.root_inode;
         for &part in parts {
             let parent = Self::read_inode_internal(guard, curr)?;
@@ -1330,14 +1516,18 @@ impl DiskManager {
             }
             let blk = parent.blocks[0];
             if blk == 0 {
-                return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found")));
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Not found",
+                )));
             }
 
             if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
                 if let Some(key) = &guard.encryption_key {
                     let enc_name = crate::encryption::encrypt_filename(key, curr, part)
                         .unwrap_or_else(|_| part.to_string());
-                    if let Some(inode_id) = crate::directory::find_entry_in_block(slice, &enc_name) {
+                    if let Some(inode_id) = crate::directory::find_entry_in_block(slice, &enc_name)
+                    {
                         curr = inode_id;
                         continue;
                     }
@@ -1347,14 +1537,20 @@ impl DiskManager {
                     continue;
                 }
             }
-            return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found")));
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Not found",
+            )));
         }
         Ok(curr)
     }
 
     // Path resolution API (public) - wraps lookup
     pub fn resolve_path(&self, path: &str) -> Result<u64, DiskManagerError> {
-        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+        let parts: Vec<&str> = path
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .collect();
         let guard = self.inner.read().unwrap();
         Self::resolve_path_internal(&guard, &parts)
     }
@@ -1365,11 +1561,16 @@ impl DiskManager {
     }
 
     /// Lists all entries in a directory
-    pub fn list_dir(&self, dir_inode_id: u64) -> Result<Vec<crate::directory::DirectoryEntry>, DiskManagerError> {
+    pub fn list_dir(
+        &self,
+        dir_inode_id: u64,
+    ) -> Result<Vec<crate::directory::DirectoryEntry>, DiskManagerError> {
         let guard = self.inner.read().unwrap();
         let inode = Self::read_inode_internal(&guard, dir_inode_id)?;
         if inode.mode != crate::inode::FileType::Directory {
-            return Err(DiskManagerError::Io(std::io::Error::other("Not a directory")));
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Not a directory",
+            )));
         }
         let block_id = inode.blocks[0];
         if block_id == 0 {
@@ -1378,7 +1579,9 @@ impl DiskManager {
         let mut entries = Self::read_dir_entries_from_block(&guard.mmap, block_id)?;
         if let Some(key) = &guard.encryption_key {
             for entry in &mut entries {
-                if let Ok(decrypted) = crate::encryption::decrypt_filename(key, dir_inode_id, &entry.name) {
+                if let Ok(decrypted) =
+                    crate::encryption::decrypt_filename(key, dir_inode_id, &entry.name)
+                {
                     entry.name = decrypted;
                 }
             }
@@ -1387,9 +1590,15 @@ impl DiskManager {
     }
 
     pub fn resolve_parent(&self, path: &str) -> Result<(u64, String), DiskManagerError> {
-        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+        let parts: Vec<&str> = path
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .collect();
         if parts.is_empty() {
-            return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Empty")));
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Empty",
+            )));
         }
         let name = parts.last().unwrap().to_string();
         let parent_parts = &parts[..parts.len() - 1];
@@ -1413,12 +1622,17 @@ impl DiskManager {
 
         let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
-            return Err(DiskManagerError::Io(std::io::Error::other("Not a directory")));
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Not a directory",
+            )));
         }
 
         let dir_block_id = parent_inode.blocks[0];
         if dir_block_id == 0 {
-            return Err(DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "File not found")));
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "File not found",
+            )));
         }
 
         let entries = Self::read_dir_entries_from_block(&guard.mmap, dir_block_id)?;
@@ -1439,8 +1653,12 @@ impl DiskManager {
             }
         }
 
-        let target_inode_id = target_inode
-            .ok_or_else(|| DiskManagerError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "File not found")))?;
+        let target_inode_id = target_inode.ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "File not found",
+            ))
+        })?;
 
         // 2. Rewrite Directory Block
         Self::rewrite_dir_entries_in_block(&mut guard.mmap, dir_block_id, &remaining_entries)?;
@@ -1479,7 +1697,10 @@ impl DiskManager {
 
         // Update Parent Mtime
         let mut parent_inode = parent_inode;
-        parent_inode.modified_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        parent_inode.modified_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         Self::write_inode_internal(&mut guard, parent_inode_id, &parent_inode)?;
 
         let _ = guard.mmap.flush_async();
@@ -1495,22 +1716,22 @@ impl DiskManager {
     pub fn analyze_fragmentation(&self) -> Result<FragmentationStats, DiskManagerError> {
         let guard = self.inner.read().unwrap();
         let sb = &guard.superblock;
-        
+
         // Get data bitmap block
         let bitmap_block = sb.data_bitmap_block;
         let bitmap_slice = Self::get_block_from_map(&guard.mmap, bitmap_block)
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("Bitmap not found")))?;
-        
+
         // Zero-allocation BitmapRef analysis
         let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
         let total_blocks = (sb.block_count - sb.data_block_start) as usize;
-        
+
         let mut used_blocks = 0;
         let mut free_runs = 0;
         let mut current_run_len = 0;
         let mut largest_free_run = 0;
         let mut total_gap_size = 0;
-        
+
         // Fast 64-bit word scanning
         let mut in_free_run = false;
         let num_words = total_blocks / 64;
@@ -1584,14 +1805,14 @@ impl DiskManager {
             total_gap_size += current_run_len;
             largest_free_run = largest_free_run.max(current_run_len);
         }
-        
+
         let free_blocks = total_blocks - used_blocks;
         let avg_gap_size = if free_runs > 0 {
             total_gap_size as f64 / free_runs as f64
         } else {
             0.0
         };
-        
+
         // Calculate fragmentation ratio
         // Ideal: all free space in one contiguous run (free_runs = 1 or 0)
         // Worst: each free block is separate (free_runs = free_blocks)
@@ -1600,7 +1821,7 @@ impl DiskManager {
         } else {
             0.0
         };
-        
+
         Ok(FragmentationStats {
             total_blocks,
             used_blocks,
@@ -1621,7 +1842,12 @@ impl DiskManager {
     ///
     /// # Returns
     /// Statistics about the defragmentation operation
-    pub fn defragment(&self, source_path: &str, mode: DefragMode, output_path: Option<&str>) -> Result<DefragStats, DiskManagerError> {
+    pub fn defragment(
+        &self,
+        source_path: &str,
+        mode: DefragMode,
+        output_path: Option<&str>,
+    ) -> Result<DefragStats, DiskManagerError> {
         match mode {
             DefragMode::Safe => self.defragment_safe(source_path, output_path),
             DefragMode::InPlace => self.defragment_inplace(),
@@ -1629,20 +1855,24 @@ impl DiskManager {
     }
 
     /// Safe defragmentation: creates new image with defragmented layout
-    fn defragment_safe(&self, source_path: &str, output_path: Option<&str>) -> Result<DefragStats, DiskManagerError> {
+    fn defragment_safe(
+        &self,
+        source_path: &str,
+        output_path: Option<&str>,
+    ) -> Result<DefragStats, DiskManagerError> {
         // Get fragmentation before
         let stats_before = self.analyze_fragmentation()?;
-        
+
         // Determine temp path
         let temp_path = if let Some(out) = output_path {
             out.to_string()
         } else {
             format!("{}.defrag.tmp", source_path)
         };
-        
+
         // Step 1: Copy the entire image file first (safer than creating new)
         std::fs::copy(source_path, &temp_path)?;
-        
+
         // Step 2: Open the copy and perform actual defragmentation
         let temp_dm = DiskManager::open(&temp_path, 0)?;
 
@@ -1697,7 +1927,9 @@ impl DiskManager {
             let mut guard = temp_dm.inner.write().unwrap();
             let data_bitmap_block = guard.superblock.data_bitmap_block;
             let data_start = guard.superblock.data_block_start;
-            if let Some(bitmap_slice) = Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap_block) {
+            if let Some(bitmap_slice) =
+                Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap_block)
+            {
                 bitmap_slice.fill(0);
                 let mut bitmap = crate::bitmap::Bitmap::new(bitmap_slice);
                 for &dir_blk in &directory_blocks {
@@ -1724,17 +1956,17 @@ impl DiskManager {
             files_processed += 1;
             bytes_moved += data.len() as u64;
         }
-        
+
         // Step 5: Flush all changes
         temp_dm.flush()?;
         drop(temp_dm);
-        
+
         // Step 6: Safe replacement using 3-step rename
         let backup_path = format!("{}.old", source_path);
-        
+
         // 6a: Rename original to backup
         std::fs::rename(source_path, &backup_path)?;
-        
+
         // 6b: Rename new defragged to original
         match std::fs::rename(&temp_path, source_path) {
             Ok(_) => {
@@ -1743,14 +1975,16 @@ impl DiskManager {
                 match DiskManager::open(source_path, 0) {
                     Ok(final_dm) => {
                         let stats_after = final_dm.analyze_fragmentation()?;
-                        
+
                         // Everything OK, delete backup
                         let _ = std::fs::remove_file(&backup_path);
-                        
+
                         Ok(DefragStats {
                             files_processed,
                             bytes_moved,
-                            blocks_freed: stats_before.free_runs.saturating_sub(stats_after.free_runs),
+                            blocks_freed: stats_before
+                                .free_runs
+                                .saturating_sub(stats_after.free_runs),
                             frag_before: stats_before.fragmentation_ratio,
                             frag_after: stats_after.fragmentation_ratio,
                         })
@@ -1774,7 +2008,7 @@ impl DiskManager {
     fn defragment_inplace(&self) -> Result<DefragStats, DiskManagerError> {
         // TODO: Implement in-place defrag
         Err(DiskManagerError::Io(std::io::Error::other(
-            "In-place defragmentation not yet implemented"
+            "In-place defragmentation not yet implemented",
         )))
     }
 
@@ -1807,7 +2041,8 @@ impl DiskManager {
 
         // 3. Traversal tracking sets
         let mut referenced_inodes = std::collections::HashSet::new();
-        let mut referenced_data_blocks: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+        let mut referenced_data_blocks: std::collections::HashMap<u64, Vec<u64>> =
+            std::collections::HashMap::new();
         let mut cross_linked_blocks = std::collections::HashSet::new();
 
         // Always reference root inode
@@ -1818,22 +2053,29 @@ impl DiskManager {
         let mut visited = std::collections::HashSet::new();
 
         while let Some(dir_id) = queue.pop() {
-            if !visited.insert(dir_id) { continue; }
+            if !visited.insert(dir_id) {
+                continue;
+            }
 
             let dir_inode = Self::read_inode_internal(&guard, dir_id)?;
-            if dir_inode.mode != crate::inode::FileType::Directory { continue; }
+            if dir_inode.mode != crate::inode::FileType::Directory {
+                continue;
+            }
 
             let block_id = dir_inode.blocks[0];
-            if block_id == 0 { continue; }
+            if block_id == 0 {
+                continue;
+            }
 
             if let Some(block_data) = Self::get_block_from_map(&guard.mmap, block_id) {
                 for entry in crate::directory::DirectoryIterator::new(block_data).flatten() {
                     referenced_inodes.insert(entry.inode);
 
                     if let Ok(child_inode) = Self::read_inode_internal(&guard, entry.inode)
-                        && child_inode.mode == crate::inode::FileType::Directory {
-                            queue.push(entry.inode);
-                        }
+                        && child_inode.mode == crate::inode::FileType::Directory
+                    {
+                        queue.push(entry.inode);
+                    }
                 }
             }
         }

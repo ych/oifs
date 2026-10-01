@@ -1,7 +1,7 @@
 {
-  "updatedAt": "2026-09-29T19:05:03.102Z",
+  "updatedAt": "2026-09-30T20:36:42.258Z",
   "command": "update",
-  "gitHead": "601440df981642cd9bbdd00c65950e23fa82dea7",
+  "gitHead": "441401fdcf459eece4d4aff8bb5b823cc0004092",
   "model": "host-agent/pi",
   "status": "complete",
   "language": "en"

@@ -17,12 +17,12 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::directory::DirectoryEntry;
 use crate::disk::{
-    CompressionMode, DefragMode, DefragStats, DiskManager, DiskManagerError,
-    FragmentationStats, FsckReport,
+    CompressionMode, DefragMode, DefragStats, DiskManager, DiskManagerError, FragmentationStats,
+    FsckReport,
 };
 use crate::inode::Inode;
 use crate::superblock::SuperBlock;
@@ -250,7 +250,6 @@ impl IpcRequest {
     }
 }
 
-
 /// Data returned on successful IPC request execution
 #[derive(Debug, Serialize, Deserialize)]
 pub enum IpcResponseData {
@@ -258,10 +257,7 @@ pub enum IpcResponseData {
     InodeId(u64),
     Data(Vec<u8>),
     Unit,
-    ResolveParent {
-        parent_id: u64,
-        name: String,
-    },
+    ResolveParent { parent_id: u64, name: String },
     Inode(Inode),
     DirectoryEntries(Vec<DirectoryEntry>),
     Superblock(SuperBlock),
@@ -323,9 +319,10 @@ fn is_addr_in_use(err: &io::Error) -> bool {
         return true;
     }
     if let Some(code) = err.raw_os_error()
-        && (code == libc::EADDRINUSE || code == libc::EEXIST) {
-            return true;
-        }
+        && (code == libc::EADDRINUSE || code == libc::EEXIST)
+    {
+        return true;
+    }
     false
 }
 
@@ -423,9 +420,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                 .open(&master_path)
             {
                 Ok(mut file) => {
-                    let bind_target = bind_addr
-                        .as_deref()
-                        .unwrap_or("127.0.0.1:0");
+                    let bind_target = bind_addr.as_deref().unwrap_or("127.0.0.1:0");
                     let listener = TcpListener::bind(bind_target)?;
                     let local_addr = listener.local_addr()?;
 
@@ -433,9 +428,8 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                         addr: local_addr.to_string(),
                         pid: std::process::id(),
                     };
-                    let json = serde_json::to_string(&info).map_err(|e| {
-                        io::Error::new(io::ErrorKind::InvalidData, e.to_string())
-                    })?;
+                    let json = serde_json::to_string(&info)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
                     file.write_all(json.as_bytes())?;
                     file.flush()?;
 
@@ -461,9 +455,8 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                         }
                     }
                     let content = fs::read_to_string(&master_path)?;
-                    let info: MasterInfo = serde_json::from_str(&content).map_err(|e| {
-                        io::Error::new(io::ErrorKind::InvalidData, e.to_string())
-                    })?;
+                    let info: MasterInfo = serde_json::from_str(&content)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
                     let stream = TcpStream::connect(&info.addr)?;
                     Ok(MasterOrClient::Client {
                         stream: IpcStream::Tcp(stream),
@@ -684,7 +677,13 @@ impl IpcServer {
                 compression_mode,
                 filter_config,
             } => {
-                dm.write_data_with_filters(inode_id, file_offset, &data, compression_mode, filter_config)?;
+                dm.write_data_with_filters(
+                    inode_id,
+                    file_offset,
+                    &data,
+                    compression_mode,
+                    filter_config,
+                )?;
                 Ok(IpcResponseData::Unit)
             }
             IpcRequest::DeleteFile {

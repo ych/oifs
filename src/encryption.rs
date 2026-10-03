@@ -1,18 +1,18 @@
-use chacha20poly1305::{
-    aead::{Aead, KeyInit, OsRng},
-    ChaCha20Poly1305, Nonce, XChaCha20Poly1305, XNonce,
-};
-use argon2::{Argon2, PasswordHasher};
 use argon2::password_hash::SaltString;
-use zeroize::{Zeroize, ZeroizeOnDrop};
-use blake2::{Blake2b512, Digest};
+use argon2::{Argon2, PasswordHasher};
 use base64ct::{Base64UrlUnpadded, Encoding};
+use blake2::{Blake2b512, Digest};
+use chacha20poly1305::{
+    ChaCha20Poly1305, Nonce, XChaCha20Poly1305, XNonce,
+    aead::{Aead, KeyInit, OsRng},
+};
 use std::fmt;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Encryption key with automatic zeroization on drop
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct EncryptionKey {
-    key: [u8; 32],  // 256-bit key for XChaCha20-Poly1305
+    key: [u8; 32], // 256-bit key for XChaCha20-Poly1305
 }
 
 impl EncryptionKey {
@@ -43,28 +43,29 @@ impl fmt::Debug for EncryptionKey {
 /// 256-bit encryption key suitable for XChaCha20-Poly1305
 pub fn derive_key(password: &str, salt: &[u8; 16]) -> Result<EncryptionKey, EncryptionError> {
     let argon2 = Argon2::default();
-    
+
     // Convert salt to SaltString format
-    let salt_string = SaltString::encode_b64(salt)
-        .map_err(|_| EncryptionError::KeyDerivationFailed)?;
-    
+    let salt_string =
+        SaltString::encode_b64(salt).map_err(|_| EncryptionError::KeyDerivationFailed)?;
+
     // Derive key using Argon2id
     let password_hash = argon2
         .hash_password(password.as_bytes(), &salt_string)
         .map_err(|_| EncryptionError::KeyDerivationFailed)?;
-    
+
     // Extract the hash output as our encryption key
-    let hash = password_hash.hash
+    let hash = password_hash
+        .hash
         .ok_or(EncryptionError::KeyDerivationFailed)?;
-    
+
     let hash_bytes = hash.as_bytes();
     if hash_bytes.len() < 32 {
         return Err(EncryptionError::KeyDerivationFailed);
     }
-    
+
     let mut key = [0u8; 32];
     key.copy_from_slice(&hash_bytes[..32]);
-    
+
     Ok(EncryptionKey::from_bytes(key))
 }
 
@@ -84,9 +85,9 @@ pub fn encrypt_data(
 ) -> Result<Vec<u8>, EncryptionError> {
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
         .map_err(|_| EncryptionError::InvalidKey)?;
-    
+
     let xnonce = XNonce::from_slice(nonce);
-    
+
     cipher
         .encrypt(xnonce, plaintext)
         .map_err(|_| EncryptionError::EncryptionFailed)
@@ -108,9 +109,9 @@ pub fn decrypt_data(
 ) -> Result<Vec<u8>, EncryptionError> {
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
         .map_err(|_| EncryptionError::InvalidKey)?;
-    
+
     let xnonce = XNonce::from_slice(nonce);
-    
+
     cipher
         .decrypt(xnonce, ciphertext)
         .map_err(|_| EncryptionError::DecryptionFailed)
@@ -236,13 +237,13 @@ pub fn decrypt_filename(
 pub enum EncryptionError {
     #[error("Key derivation failed")]
     KeyDerivationFailed,
-    
+
     #[error("Invalid encryption key")]
     InvalidKey,
-    
+
     #[error("Encryption operation failed")]
     EncryptionFailed,
-    
+
     #[error("Decryption failed - wrong password or corrupted data")]
     DecryptionFailed,
 }
@@ -255,10 +256,10 @@ mod tests {
     fn test_key_derivation_deterministic() {
         let password = "test_password_123";
         let salt = [42u8; 16];
-        
+
         let key1 = derive_key(password, &salt).unwrap();
         let key2 = derive_key(password, &salt).unwrap();
-        
+
         // Same password + salt should derive same key
         assert_eq!(key1.key, key2.key);
     }
@@ -268,10 +269,10 @@ mod tests {
         let password = "test_password_123";
         let salt1 = [42u8; 16];
         let salt2 = [43u8; 16];
-        
+
         let key1 = derive_key(password, &salt1).unwrap();
         let key2 = derive_key(password, &salt2).unwrap();
-        
+
         // Different salts should derive different keys
         assert_ne!(key1.key, key2.key);
     }
@@ -281,10 +282,10 @@ mod tests {
         let key = EncryptionKey::from_bytes([1u8; 32]);
         let nonce = [2u8; 24];
         let plaintext = b"Hello, encryption!";
-        
+
         let ciphertext = encrypt_data(plaintext, &key, &nonce).unwrap();
-        assert_ne!(ciphertext.as_slice(), plaintext);  // Should be encrypted
-        
+        assert_ne!(ciphertext.as_slice(), plaintext); // Should be encrypted
+
         let decrypted = decrypt_data(&ciphertext, &key, &nonce).unwrap();
         assert_eq!(decrypted.as_slice(), plaintext);
     }
@@ -295,9 +296,9 @@ mod tests {
         let key2 = EncryptionKey::from_bytes([2u8; 32]);
         let nonce = [3u8; 24];
         let plaintext = b"Secret data";
-        
+
         let ciphertext = encrypt_data(plaintext, &key1, &nonce).unwrap();
-        
+
         // Decryption with wrong key should fail
         let result = decrypt_data(&ciphertext, &key2, &nonce);
         assert!(result.is_err());
@@ -307,7 +308,7 @@ mod tests {
     fn test_nonce_generation_unique() {
         let nonce1 = generate_nonce();
         let nonce2 = generate_nonce();
-        
+
         // Very unlikely to generate same nonce twice
         assert_ne!(nonce1, nonce2);
     }
@@ -345,4 +346,3 @@ mod tests {
         assert_eq!(decrypt_filename(&key, parent_inode, plain).unwrap(), plain);
     }
 }
-

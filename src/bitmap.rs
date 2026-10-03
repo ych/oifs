@@ -195,7 +195,6 @@ impl<'a> Bitmap<'a> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,7 +205,7 @@ mod tests {
         let mut bitmap = Bitmap::new(&mut data);
 
         assert_eq!(bitmap.find_first_free(), Some(0));
-        
+
         bitmap.set(0);
         assert!(bitmap.get(0));
         assert_eq!(bitmap.find_first_free(), Some(1));
@@ -214,7 +213,7 @@ mod tests {
         bitmap.set(1);
         assert!(bitmap.get(1));
         assert_eq!(bitmap.find_first_free(), Some(2));
-        
+
         bitmap.clear(0);
         assert!(!bitmap.get(0));
         assert_eq!(bitmap.find_first_free(), Some(0));
@@ -313,14 +312,16 @@ mod kani_proofs {
             assert!(!bitmap.get(idx), "find_first_free must return a free bit");
             // All earlier indices must be set (i.e., it's truly the *first* free)
             for i in 0..idx {
-                assert!(bitmap.get(i), "All bits before find_first_free result must be set");
+                assert!(
+                    bitmap.get(i),
+                    "All bits before find_first_free result must be set"
+                );
             }
         } else {
             // No free bit: byte must be all ones
             assert_eq!(b0, 0xFF);
         }
     }
-
 
     /// Prove that out-of-bounds get() always returns false (no panic).
     #[kani::proof]
@@ -330,6 +331,9 @@ mod kani_proofs {
         kani::assume(index >= 16 && index < 64);
 
         let bitmap = Bitmap::new(&mut data);
-        assert!(!bitmap.get(index), "Out-of-bounds get() should return false");
+        assert!(
+            !bitmap.get(index),
+            "Out-of-bounds get() should return false"
+        );
     }
 }

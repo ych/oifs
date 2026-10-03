@@ -42,7 +42,7 @@ blosc2 = "0.2.3"
 rayon = "1.12.0"
 
 [features]
-default = []
+default = ["mcp"]
 mcp = ["dep:rmcp", "dep:tokio", "dep:anyhow", "dep:schemars"]
 
 [[bin]]

@@ -12,19 +12,19 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use thiserror::Error;
 
 use crate::directory::DirectoryEntry;
 use crate::disk::{
-    CompressionMode, DefragMode, DefragStats, DiskManager, DiskManagerError,
-    FragmentationStats, FsckReport,
+    CompressionMode, DefragMode, DefragStats, DiskManager, DiskManagerError, FragmentationStats,
+    FsckReport,
 };
 use crate::inode::Inode;
 use crate::ipc::{
-    bind_or_connect, IpcClient, IpcRequest, IpcResponseData, IpcServer, MasterOrClient,
-    SessionEvent, SessionMode,
+    IpcClient, IpcRequest, IpcResponseData, IpcServer, MasterOrClient, SessionEvent, SessionMode,
+    bind_or_connect,
 };
 use crate::superblock::SuperBlock;
 
@@ -207,7 +207,8 @@ impl OifsSession {
             return Ok(session.clone());
         }
 
-        let session = Self::open_with_mode(&canon_key, total_size, mode, password, create_encrypted)?;
+        let session =
+            Self::open_with_mode(&canon_key, total_size, mode, password, create_encrypted)?;
         guard.insert(canon_key, session.clone());
         Ok(session)
     }
@@ -305,7 +306,14 @@ impl OifsSession {
         password: Option<&str>,
         create_encrypted: bool,
     ) -> Result<Self, SessionError> {
-        Self::open_with_mode_retry(path.as_ref(), total_size, mode, password, create_encrypted, 0)
+        Self::open_with_mode_retry(
+            path.as_ref(),
+            total_size,
+            mode,
+            password,
+            create_encrypted,
+            0,
+        )
     }
 
     fn open_with_mode_retry(
@@ -319,8 +327,17 @@ impl OifsSession {
         let master_or_client = match bind_or_connect(path_ref, &mode) {
             Ok(res) => res,
             Err(_e) if retry_count < 5 => {
-                std::thread::sleep(std::time::Duration::from_millis(20 * (retry_count + 1) as u64));
-                return Self::open_with_mode_retry(path_ref, total_size, mode, password, create_encrypted, retry_count + 1);
+                std::thread::sleep(std::time::Duration::from_millis(
+                    20 * (retry_count + 1) as u64,
+                ));
+                return Self::open_with_mode_retry(
+                    path_ref,
+                    total_size,
+                    mode,
+                    password,
+                    create_encrypted,
+                    retry_count + 1,
+                );
             }
             Err(e) => return Err(e.into()),
         };
@@ -344,8 +361,17 @@ impl OifsSession {
                     Err(DiskManagerError::Locking(errno)) => {
                         drop(listener);
                         if retry_count < 5 {
-                            std::thread::sleep(std::time::Duration::from_millis(25 * (retry_count + 1) as u64));
-                            return Self::open_with_mode_retry(path_ref, total_size, mode, password, create_encrypted, retry_count + 1);
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                25 * (retry_count + 1) as u64,
+                            ));
+                            return Self::open_with_mode_retry(
+                                path_ref,
+                                total_size,
+                                mode,
+                                password,
+                                create_encrypted,
+                                retry_count + 1,
+                            );
                         } else {
                             return Err(DiskManagerError::Locking(errno).into());
                         }
@@ -471,8 +497,7 @@ impl OifsSession {
                                         .map_err(SessionError::DiskManager);
                                 }
                                 OifsSession::Remote {
-                                    client: new_client,
-                                    ..
+                                    client: new_client, ..
                                 } => {
                                     current_client = new_client;
                                 }
@@ -602,9 +627,13 @@ impl OifsSession {
         filter_config: crate::filters::FilterConfig,
     ) -> Result<(), SessionError> {
         match self {
-            OifsSession::Direct { dm, .. } => {
-                Ok(dm.write_data_with_filters(inode_id, file_offset, data, compression_mode, filter_config)?)
-            }
+            OifsSession::Direct { dm, .. } => Ok(dm.write_data_with_filters(
+                inode_id,
+                file_offset,
+                data,
+                compression_mode,
+                filter_config,
+            )?),
             OifsSession::Remote { .. } => {
                 let resp = self.send_request(IpcRequest::WriteData {
                     inode_id,

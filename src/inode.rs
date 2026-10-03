@@ -187,7 +187,9 @@ fn check_block_path_roundtrip(idx: usize) {
             assert!(path.slots_in_bounds(), "slot index out of bounds");
             assert_eq!(path.to_logical(), idx, "decomposition must be invertible");
         }
-        None => assert!(idx >= MAX_LOGICAL_BLOCKS),
+        None => {
+            assert!(idx >= MAX_LOGICAL_BLOCKS);
+        }
     }
 }
 

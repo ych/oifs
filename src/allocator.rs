@@ -23,7 +23,7 @@ pub trait BlockAllocator {
     /// # Errors
     /// Returns `AllocatorError::NoSpace` if no free blocks are available
     fn allocate(&mut self) -> Result<u64, AllocatorError>;
-    
+
     /// Frees a previously allocated block
     ///
     /// # Arguments
@@ -64,7 +64,10 @@ impl<'a> SimpleBlockAllocator<'a> {
     /// Allocates a free block starting from an optional hint block ID.
     ///
     /// Avoids O(N^2) search overhead when sequentially allocating multiple blocks.
-    pub fn allocate_with_hint(&mut self, hint_block_id: Option<u64>) -> Result<u64, AllocatorError> {
+    pub fn allocate_with_hint(
+        &mut self,
+        hint_block_id: Option<u64>,
+    ) -> Result<u64, AllocatorError> {
         let hint_bit = hint_block_id
             .and_then(|id| id.checked_sub(self.start_block_offset))
             .map(|bit| bit as usize)
@@ -92,14 +95,14 @@ impl<'a> BlockAllocator for SimpleBlockAllocator<'a> {
             // Invalid block ID, but don't fail - just ignore
             return Ok(());
         }
-        
+
         // Convert block ID back to bit index
         let bit_index = (block_id - self.start_block_offset) as usize;
-        
+
         // Clear the bit to mark block as free
         let mut bitmap = Bitmap::new(self.bitmap_data);
         bitmap.clear(bit_index);
-        
+
         Ok(())
     }
 }
@@ -118,7 +121,10 @@ mod kani_proofs {
         let mut alloc = SimpleBlockAllocator::new(&mut data, offset);
         if let Ok(block_id) = alloc.allocate() {
             assert!(block_id >= offset, "Block ID must be >= start_block_offset");
-            assert!(block_id < offset + 16, "Block ID must be within bitmap range");
+            assert!(
+                block_id < offset + 16,
+                "Block ID must be within bitmap range"
+            );
         }
     }
 

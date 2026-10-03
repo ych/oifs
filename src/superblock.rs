@@ -37,7 +37,7 @@ pub struct SuperBlock {
     pub data_block_start: u64,
     /// Inode ID of the root directory (typically 0)
     pub root_inode: u64,
-    
+
     // Encryption fields
     /// Is this filesystem encrypted?
     pub encrypted: bool,
@@ -156,7 +156,11 @@ mod kani_proofs {
         kani::assume(total_blocks >= 1028 && total_blocks <= 1_000_000);
 
         let sb = SuperBlock::new(total_blocks);
-        assert_eq!(sb.inode_count, 4096 * 8, "Large FS must have full 32,768 inodes");
+        assert_eq!(
+            sb.inode_count,
+            4096 * 8,
+            "Large FS must have full 32,768 inodes"
+        );
     }
 
     /// Prove that new SuperBlock defaults to unencrypted.
@@ -204,4 +208,3 @@ mod tests {
         assert_eq!(deserialized, sb);
     }
 }
-

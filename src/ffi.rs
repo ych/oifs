@@ -1,7 +1,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use crate::disk::DiskManager;
 use crate::directory::DirectoryIterator;
+use crate::disk::DiskManager;
 use crate::inode::FileType;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
@@ -26,7 +26,10 @@ pub extern "C" fn oifs_open(path: *const c_char, size: u64) -> *mut OIFSHandle {
 
     match DiskManager::open(path_str, size) {
         Ok(dm) => {
-            let handle = Box::new(OIFSHandle { dm, last_error: None });
+            let handle = Box::new(OIFSHandle {
+                dm,
+                last_error: None,
+            });
             Box::into_raw(handle)
         }
         Err(_) => ptr::null_mut(),
@@ -59,7 +62,10 @@ pub extern "C" fn oifs_open_with_password(
 
     match DiskManager::open_with_password(path_str, size, pwd_str) {
         Ok(dm) => {
-            let handle = Box::new(OIFSHandle { dm, last_error: None });
+            let handle = Box::new(OIFSHandle {
+                dm,
+                last_error: None,
+            });
             Box::into_raw(handle)
         }
         Err(_) => ptr::null_mut(),
@@ -138,7 +144,11 @@ pub extern "C" fn oifs_close(handle: *mut OIFSHandle) {
 pub type ListCallback = extern "C" fn(*const c_char, u64, u64, *mut c_void);
 
 #[unsafe(no_mangle)]
-pub extern "C" fn oifs_ls(handle: *mut OIFSHandle, cb: ListCallback, user_data: *mut c_void) -> i32 {
+pub extern "C" fn oifs_ls(
+    handle: *mut OIFSHandle,
+    cb: ListCallback,
+    user_data: *mut c_void,
+) -> i32 {
     let handle_ref = unsafe {
         if handle.is_null() {
             return -1;
@@ -152,26 +162,27 @@ pub extern "C" fn oifs_ls(handle: *mut OIFSHandle, cb: ListCallback, user_data: 
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let root_inode = dm.read_inode(root_inode_id)?;
         if root_inode.mode != FileType::Directory {
-             return Ok(());
+            return Ok(());
         }
 
         let block_id = root_inode.blocks[0];
         if block_id == 0 {
-             return Ok(());
+            return Ok(());
         }
 
         if let Some(block_data) = dm.get_block_copy(block_id) {
             let iter = DirectoryIterator::new(&block_data);
             for entry_res in iter {
                 if let Ok(entry) = entry_res
-                    && let Ok(inode) = dm.read_inode(entry.inode) {
-                        let c_name = CString::new(entry.name).unwrap_or_default();
-                        cb(c_name.as_ptr(), inode.size, inode.modified_at, user_data);
-                    }
+                    && let Ok(inode) = dm.read_inode(entry.inode)
+                {
+                    let c_name = CString::new(entry.name).unwrap_or_default();
+                    cb(c_name.as_ptr(), inode.size, inode.modified_at, user_data);
+                }
             }
         }
-         Ok(())
-     })();
+        Ok(())
+    })();
 
     match result {
         Ok(_) => {
@@ -188,10 +199,12 @@ pub extern "C" fn oifs_ls(handle: *mut OIFSHandle, cb: ListCallback, user_data: 
 #[unsafe(no_mangle)]
 pub extern "C" fn oifs_create_file(handle: *mut OIFSHandle, path: *const c_char) -> i32 {
     let handle_ref = unsafe {
-        if handle.is_null() { return -1; }
+        if handle.is_null() {
+            return -1;
+        }
         &mut (*handle)
     };
-    
+
     let c_str = unsafe { CStr::from_ptr(path) };
     let filename = match c_str.to_str() {
         Ok(s) => s,
@@ -219,7 +232,9 @@ pub extern "C" fn oifs_create_file(handle: *mut OIFSHandle, path: *const c_char)
 #[unsafe(no_mangle)]
 pub extern "C" fn oifs_delete_file(handle: *mut OIFSHandle, path: *const c_char) -> i32 {
     let handle_ref = unsafe {
-        if handle.is_null() { return -1; }
+        if handle.is_null() {
+            return -1;
+        }
         &mut (*handle)
     };
 
@@ -256,7 +271,9 @@ pub extern "C" fn oifs_read_at(
     buf_size: u64,
 ) -> i64 {
     let handle_ref = unsafe {
-        if handle.is_null() { return -1; }
+        if handle.is_null() {
+            return -1;
+        }
         &mut (*handle)
     };
 
@@ -310,7 +327,9 @@ pub extern "C" fn oifs_write_file(
     buf_size: u64,
 ) -> i32 {
     let handle_ref = unsafe {
-        if handle.is_null() { return -1; }
+        if handle.is_null() {
+            return -1;
+        }
         &mut (*handle)
     };
 
@@ -351,12 +370,11 @@ pub extern "C" fn oifs_write_file(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn oifs_mkdir(
-    handle: *mut OIFSHandle,
-    path: *const c_char,
-) -> i32 {
+pub extern "C" fn oifs_mkdir(handle: *mut OIFSHandle, path: *const c_char) -> i32 {
     let handle_ref = unsafe {
-        if handle.is_null() { return -1; }
+        if handle.is_null() {
+            return -1;
+        }
         &mut (*handle)
     };
 
@@ -392,16 +410,14 @@ pub extern "C" fn oifs_mkdir(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn oifs_last_error(
-    handle: *mut OIFSHandle,
-    buf: *mut c_char,
-    buf_size: u32,
-) -> i32 {
+pub extern "C" fn oifs_last_error(handle: *mut OIFSHandle, buf: *mut c_char, buf_size: u32) -> i32 {
     let handle_ref = unsafe {
-        if handle.is_null() { return -1; }
+        if handle.is_null() {
+            return -1;
+        }
         &mut (*handle)
     };
-    
+
     if buf.is_null() || buf_size == 0 {
         return -1;
     }

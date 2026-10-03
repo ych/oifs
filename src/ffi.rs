@@ -3,6 +3,7 @@
 use crate::directory::DirectoryIterator;
 use crate::disk::DiskManager;
 use crate::inode::FileType;
+use crate::io_engine::IoBackend;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
@@ -441,4 +442,28 @@ pub extern "C" fn oifs_last_error(handle: *mut OIFSHandle, buf: *mut c_char, buf
         }
     }
     0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_set_io_backend(handle: *mut OIFSHandle, backend: u8) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &mut (*handle)
+    };
+    let b = IoBackend::from_u8(backend);
+    let effective = handle_ref.dm.set_io_backend(b);
+    effective as i32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_get_io_backend(handle: *mut OIFSHandle) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &mut (*handle)
+    };
+    handle_ref.dm.io_backend() as i32
 }

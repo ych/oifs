@@ -94,7 +94,27 @@ This document records the implemented optimizations (P0 & P1) and the planned fu
 
 ---
 
-### P3.2: io_uring Asynchronous I/O Engine (Linux)
-- **Problem**: Synchronous mmap page faults block threads when data is not cached in RAM.
-- **Proposed Solution**: Optional `io_uring` backend on modern Linux kernels for batched asynchronous disk submission.
+### P3.2: Pluggable Asynchronous I/O Engine & io_uring Batching (Completed)
+- **File**: `src/io_engine.rs`, `src/disk.rs`, `src/lib.rs`, `src/ffi.rs`, `include/oifs.h`, `tests/io_engine_test.rs`
+- **Mechanism**:
+  - Decouples hot metadata (superblock, bitmaps, inodes, indirect pointer tables, directory indexes) which remain on the shared mmap, from payload data block reads which can cause synchronous blocking page faults when cold.
+  - Pluggable I/O Engine ([`IoBackend`](file:///Users/ych/oifs/src/io_engine.rs)) supporting 3 backends:
+    1. `Mmap` (Default): Zero-copy direct slice copy from shared mmap blocks. Zero intermediate allocations for uncompressed raw reads.
+    2. `Pread`: Positional `pread(2)` per contiguous extent. Portable Unix implementation that transforms scattered page faults into coalesced kernel sequential reads.
+    3. `IoUring`: Linux `io_uring` asynchronous submission engine with pooled `IoUring` rings. All payload extents of a file read — or across an entire multi-file batch ([`DiskManager::read_at_batch`]) — are submitted in a single ring submission and processed concurrently by hardware storage queues (queue depth > 1).
+  - **Extent Coalescing**: [`ExtentList`](file:///Users/ych/oifs/src/io_engine.rs) automatically merges contiguous on-disk and in-buffer block runs into single unified transfers, collapsing sequential files into a single `pread` / SQE.
+  - **Ring Pooling & Thread-Safe Concurrency**: Ring instances are managed via a thread-safe checkout pool, enabling concurrent reader threads under shared `RwLock` without ring contention.
+  - **Safe Lifetime & In-Flight Invariant**: The submission runner never returns while SQEs are in flight, ensuring kernel buffer references remain strictly valid even under transient error recovery.
+  - **Graceful Fallback & Portability**: If `IoUring` is requested on platforms or kernels without `io_uring` support (macOS/BSD/Windows, older Linux kernels, seccomp filters), it gracefully falls back to `Pread` without errors.
+  - **Page-Cache Coherence**: Reads share the same OS page cache as `MAP_SHARED`, ensuring un-msynced writes in `DurabilityMode::Lazy` are immediately visible to `Pread` and `IoUring` backends.
+  - **Batched Multi-File API**: [`DiskManager::read_at_batch`] evaluates multiple file requests under a single shared read lock and issues them in a unified engine submission.
+  - **Configuration**:
+    - Environment variable: `OIFS_IO_BACKEND=mmap|pread|io_uring`
+    - Runtime API: `dm.io_backend()`, `dm.requested_io_backend()`, `dm.set_io_backend(backend)`, builder `dm.with_io_backend(backend)`
+  - **Kernel Version Gating & RHEL 9 Backport Recognition**: Automatically detects the host kernel version via `libc::uname` and enforces Linux $\ge 5.15$ for production stability and security, with first-class recognition of the RHEL 9 lifecycle:
+    - **RHEL 9.0 ~ 9.2** (`build < 362`): Default `CONFIG_IO_URING=n` upstream; automatically safely rejected and falls back to `Pread`.
+    - **RHEL 9.3** (`build = 362`, `5.14.0-362.8.1.el9_3`): Official Technology Preview backport with updated SELinux support; automatically recognized and allowed through.
+    - **RHEL 9.4+** (`build >= 427`): Adds sysctl `kernel.io_uring_disabled` (0=all, 1=privileged, 2=disabled); if restricted, `IoEngine` gracefully falls back to `Pread` without application crashes.
+    - Manual override available via `OIFS_ALLOW_PRE_5_15=1`.
+  - **Formal Verification**: Verified with Kani formal proofs (`proof_extent_push_preserves_coverage`, `proof_io_backend_from_u8_soundness`).
 

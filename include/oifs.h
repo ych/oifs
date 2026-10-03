@@ -103,6 +103,21 @@ int32_t oifs_write_file(OIFSHandle *handle, const char *filename, const uint8_t 
  */
 int32_t oifs_last_error(OIFSHandle *handle, char *buf, uint32_t buf_size);
 
+/*
+ * I/O Engine Backend Configuration (P3.2)
+ *
+ * Backend constants:
+ * 0 = Mmap (default)
+ * 1 = Pread
+ * 2 = IoUring (Linux only, falls back to Pread if unsupported)
+ */
+#define OIFS_IO_BACKEND_MMAP     0
+#define OIFS_IO_BACKEND_PREAD    1
+#define OIFS_IO_BACKEND_IO_URING 2
+
+int32_t oifs_set_io_backend(OIFSHandle *handle, uint8_t backend);
+int32_t oifs_get_io_backend(OIFSHandle *handle);
+
 #ifdef __cplusplus
 }
 #endif

@@ -7,6 +7,7 @@
 use crate::BLOCK_SIZE;
 use crate::allocator::{AllocatorError, BlockAllocator, SimpleBlockAllocator};
 use crate::inode::Inode;
+use crate::io_engine::{ExtentList, IoBackend, IoEngine, ReadTarget};
 use crate::superblock::SuperBlock;
 use memmap2::{MmapMut, MmapOptions};
 use std::collections::HashMap;
@@ -172,12 +173,24 @@ pub struct FsckReport {
     pub cross_linked_blocks: Vec<u64>,
 }
 
+/// One positional read in a [`DiskManager::read_at_batch`] call (P3.2).
+#[derive(Debug)]
+pub struct ReadRequest<'a> {
+    /// Inode of the regular file to read
+    pub inode_id: u64,
+    /// Byte offset within the (logical, uncompressed) file
+    pub offset: u64,
+    /// Destination; up to `buf.len()` bytes are read
+    pub buf: &'a mut [u8],
+}
+
 /// Internal disk manager state
 ///
 /// Contains the file handle, memory-mapped region, and superblock.
 /// Protected by a Mutex for thread-safe concurrent access.
 struct DiskManagerInner {
-    #[allow(dead_code)]
+    /// Image file handle; payload reads use it directly under the `Pread` / `IoUring`
+    /// backends (P3.2).
     file: File,
     /// Memory-mapped view of the file system image
     mmap: MmapMut,
@@ -195,6 +208,8 @@ struct DiskManagerInner {
     pub dir_cache: RwLock<HashMap<u64, DirIndex>>,
     /// Durability policy governing mmap msync behavior on mutations (P3.3)
     pub durability_mode: std::sync::atomic::AtomicU8,
+    /// Payload-block read engine (P3.2)
+    io_engine: IoEngine,
 }
 
 impl DiskManagerInner {
@@ -415,6 +430,7 @@ impl DiskManager {
             inode_cache: RwLock::new(HashMap::with_capacity(1024)),
             dir_cache: RwLock::new(HashMap::new()),
             durability_mode: std::sync::atomic::AtomicU8::new(DurabilityMode::Lazy as u8),
+            io_engine: IoEngine::new(IoBackend::from_env().unwrap_or_default()),
         };
 
         let dm = Self {
@@ -498,6 +514,37 @@ impl DiskManager {
     /// Builder pattern helper to set durability mode upon initialization.
     pub fn with_durability_mode(self, mode: DurabilityMode) -> Self {
         self.set_durability_mode(mode);
+        self
+    }
+
+    /// Returns the payload-read backend actually in use (P3.2).
+    ///
+    /// May differ from [`Self::requested_io_backend`] when `IoUring` was requested on a
+    /// platform or kernel without `io_uring` support (falls back to `Pread`).
+    pub fn io_backend(&self) -> IoBackend {
+        self.inner.read().unwrap().io_engine.effective()
+    }
+
+    /// Returns the payload-read backend that was requested (P3.2).
+    pub fn requested_io_backend(&self) -> IoBackend {
+        self.inner.read().unwrap().io_engine.requested()
+    }
+
+    /// Switches the payload-read backend and returns the effective one (P3.2).
+    ///
+    /// Waits for in-progress operations (takes the write lock), so no read straddles
+    /// two engines. Metadata and all writes always go through the shared mmap
+    /// regardless of the backend.
+    pub fn set_io_backend(&self, backend: IoBackend) -> IoBackend {
+        let engine = IoEngine::new(backend);
+        let effective = engine.effective();
+        self.inner.write().unwrap().io_engine = engine;
+        effective
+    }
+
+    /// Builder pattern helper to set the payload-read backend upon initialization.
+    pub fn with_io_backend(self, backend: IoBackend) -> Self {
+        self.set_io_backend(backend);
         self
     }
 
@@ -1014,21 +1061,18 @@ impl DiskManager {
         }
     }
 
-    #[allow(clippy::collapsible_if)]
-    fn read_data_internal(
-        guard: &DiskManagerInner,
+    /// Walks the first `physical_size` bytes of `inode`'s on-disk payload in logical order,
+    /// calling `emit(physical_block, payload_offset, len)` for every allocated block.
+    /// Sparse holes (zero pointers at any indirection level) are skipped without a call.
+    ///
+    /// Indirect pointer blocks are resolved in batches straight from the mmap (metadata
+    /// always stays on the mmap); only the payload transfer itself is delegated to `emit`.
+    fn walk_payload_blocks(
+        mmap: &MmapMut,
         inode: &Inode,
-    ) -> Result<Vec<u8>, DiskManagerError> {
-        let physical_size = if inode.compressed_size > 0 {
-            inode.compressed_size
-        } else {
-            inode.size
-        };
-        if physical_size == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut raw_data = vec![0u8; physical_size as usize];
+        physical_size: u64,
+        mut emit: impl FnMut(u64, usize, usize),
+    ) {
         let mut read = 0;
         let mut blk_idx = 0;
 
@@ -1040,10 +1084,7 @@ impl DiskManager {
             if blk_idx < 10 {
                 let blk = inode.blocks[blk_idx];
                 if blk != 0 {
-                    if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                        raw_data[read as usize..read as usize + to_read]
-                            .copy_from_slice(&slice[..to_read]);
-                    }
+                    emit(blk, read as usize, to_read);
                 }
                 read += to_read as u64;
                 blk_idx += 1;
@@ -1061,7 +1102,7 @@ impl DiskManager {
                     blk_idx = 10 + 512;
                     continue;
                 }
-                if let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
+                if let Some(sib_slice) = Self::get_block_from_map(mmap, sib_id) {
                     let start_entry = blk_idx - 10;
                     let num_entries = ((10 + 512) - blk_idx).min(512 - start_entry);
                     let ptr_chunks = &sib_slice[start_entry * 8..(start_entry + num_entries) * 8];
@@ -1073,10 +1114,7 @@ impl DiskManager {
                             std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
                         let blk = u64::from_le_bytes(*chunk);
                         if blk != 0 {
-                            if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                                raw_data[read as usize..read as usize + to_read_curr]
-                                    .copy_from_slice(&slice[..to_read_curr]);
-                            }
+                            emit(blk, read as usize, to_read_curr);
                         }
                         read += to_read_curr as u64;
                         blk_idx += 1;
@@ -1103,7 +1141,7 @@ impl DiskManager {
                 let s_idx = idx / 512;
                 let d_idx = idx % 512;
 
-                let sib_id = Self::read_block_ptr(&guard.mmap, dib_id, s_idx);
+                let sib_id = Self::read_block_ptr(mmap, dib_id, s_idx);
                 if sib_id == 0 {
                     let skip_blocks = 512 - d_idx;
                     let skip_bytes =
@@ -1113,7 +1151,7 @@ impl DiskManager {
                     continue;
                 }
 
-                if let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
+                if let Some(sib_slice) = Self::get_block_from_map(mmap, sib_id) {
                     let num_entries = 512 - d_idx;
                     let ptr_chunks = &sib_slice[d_idx * 8..(d_idx + num_entries) * 8];
                     for chunk in ptr_chunks.as_chunks::<8>().0 {
@@ -1124,10 +1162,7 @@ impl DiskManager {
                             std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
                         let blk = u64::from_le_bytes(*chunk);
                         if blk != 0 {
-                            if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                                raw_data[read as usize..read as usize + to_read_curr]
-                                    .copy_from_slice(&slice[..to_read_curr]);
-                            }
+                            emit(blk, read as usize, to_read_curr);
                         }
                         read += to_read_curr as u64;
                         blk_idx += 1;
@@ -1157,7 +1192,7 @@ impl DiskManager {
                 let d_idx = rem_idx / 512;
                 let s_idx = rem_idx % 512;
 
-                let dib_id = Self::read_block_ptr(&guard.mmap, tib_id, t_idx);
+                let dib_id = Self::read_block_ptr(mmap, tib_id, t_idx);
                 if dib_id == 0 {
                     let skip_blocks = (512 * 512) - rem_idx;
                     let skip_bytes =
@@ -1167,7 +1202,7 @@ impl DiskManager {
                     continue;
                 }
 
-                let sib_id = Self::read_block_ptr(&guard.mmap, dib_id, d_idx);
+                let sib_id = Self::read_block_ptr(mmap, dib_id, d_idx);
                 if sib_id == 0 {
                     let skip_blocks = 512 - s_idx;
                     let skip_bytes =
@@ -1177,12 +1212,9 @@ impl DiskManager {
                     continue;
                 }
 
-                let blk = Self::read_block_ptr(&guard.mmap, sib_id, s_idx);
+                let blk = Self::read_block_ptr(mmap, sib_id, s_idx);
                 if blk != 0 {
-                    if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                        raw_data[read as usize..read as usize + to_read]
-                            .copy_from_slice(&slice[..to_read]);
-                    }
+                    emit(blk, read as usize, to_read);
                 }
                 read += to_read as u64;
                 blk_idx += 1;
@@ -1190,6 +1222,47 @@ impl DiskManager {
             }
 
             break;
+        }
+    }
+
+    #[allow(clippy::collapsible_if)]
+    fn read_data_internal(
+        guard: &DiskManagerInner,
+        inode: &Inode,
+    ) -> Result<Vec<u8>, DiskManagerError> {
+        let physical_size = if inode.compressed_size > 0 {
+            inode.compressed_size
+        } else {
+            inode.size
+        };
+        if physical_size == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut raw_data = vec![0u8; physical_size as usize];
+        if guard.io_engine.effective() == IoBackend::Mmap {
+            // Zero-copy path: memcpy each allocated block straight out of the mapping.
+            Self::walk_payload_blocks(&guard.mmap, inode, physical_size, |blk, off, len| {
+                if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
+                    raw_data[off..off + len].copy_from_slice(&slice[..len]);
+                }
+            });
+        } else {
+            // P3.2: gather coalesced extents, then hand them to the engine in one submission.
+            let mut extents = ExtentList::new();
+            Self::walk_payload_blocks(&guard.mmap, inode, physical_size, |blk, off, len| {
+                if Self::get_block_from_map(&guard.mmap, blk).is_some() {
+                    extents.push(blk * BLOCK_SIZE as u64, off, len);
+                }
+            });
+            guard.io_engine.read(
+                &guard.file,
+                &guard.mmap,
+                &mut [ReadTarget {
+                    buf: &mut raw_data,
+                    extents: extents.as_slice(),
+                }],
+            )?;
         }
 
         // === DECRYPTION STEP ===
@@ -1246,9 +1319,11 @@ impl DiskManager {
     /// Reads up to `buf.len()` bytes starting at `file_offset` from a file.
     ///
     /// # Performance
-    /// For uncompressed, unencrypted files, this directly copies the requested
-    /// byte slice from the memory-mapped blocks into `buf` with **ZERO intermediate
-    /// memory allocations**.
+    /// For uncompressed, unencrypted files under the default [`IoBackend::Mmap`]
+    /// backend, this directly copies the requested byte slice from the memory-mapped
+    /// blocks into `buf` with **ZERO intermediate memory allocations**. Under
+    /// [`IoBackend::Pread`] / [`IoBackend::IoUring`] the physically contiguous block runs
+    /// are coalesced and read with one syscall / one ring submission (P3.2).
     ///
     /// Returns the number of bytes read (0 if at or beyond EOF).
     pub fn read_at(
@@ -1258,7 +1333,95 @@ impl DiskManager {
         buf: &mut [u8],
     ) -> Result<usize, DiskManagerError> {
         let guard = self.inner.read().unwrap();
-        let inode = Self::read_inode_internal(&guard, inode_id)?;
+        if guard.io_engine.effective() == IoBackend::Mmap {
+            return Self::read_at_prepare(&guard, inode_id, file_offset, buf, None);
+        }
+        let mut extents = ExtentList::new();
+        let n = Self::read_at_prepare(&guard, inode_id, file_offset, buf, Some(&mut extents))?;
+        if !extents.is_empty() {
+            guard.io_engine.read(
+                &guard.file,
+                &guard.mmap,
+                &mut [ReadTarget {
+                    buf,
+                    extents: extents.as_slice(),
+                }],
+            )?;
+        }
+        Ok(n)
+    }
+
+    /// Performs many positional reads under a single read lock and, for raw files, a
+    /// single engine submission (P3.2).
+    ///
+    /// With [`IoBackend::IoUring`] every extent of every request is in flight at once,
+    /// so cold reads scattered across many files are serviced concurrently by the
+    /// device instead of one blocking page fault at a time. Compressed or encrypted
+    /// files are decoded individually, as in [`Self::read_at`].
+    ///
+    /// Returns one result per request, in order: the number of bytes read into that
+    /// request's buffer, or the error for that request. If the batched submission
+    /// itself fails, every request that depended on it reports the I/O error.
+    pub fn read_at_batch(
+        &self,
+        requests: &mut [ReadRequest<'_>],
+    ) -> Vec<Result<usize, DiskManagerError>> {
+        let guard = self.inner.read().unwrap();
+        let direct = guard.io_engine.effective() == IoBackend::Mmap;
+
+        let mut results = Vec::with_capacity(requests.len());
+        let mut plans: Vec<ExtentList> = Vec::with_capacity(requests.len());
+        for req in requests.iter_mut() {
+            let mut extents = ExtentList::new();
+            let sink = if direct { None } else { Some(&mut extents) };
+            let res = Self::read_at_prepare(&guard, req.inode_id, req.offset, req.buf, sink);
+            if res.is_err() {
+                extents.clear();
+            }
+            results.push(res);
+            plans.push(extents);
+        }
+
+        let mut targets: Vec<ReadTarget<'_>> = requests
+            .iter_mut()
+            .zip(plans.iter())
+            .filter(|(_, plan)| !plan.is_empty())
+            .map(|(req, plan)| ReadTarget {
+                buf: &mut *req.buf,
+                extents: plan.as_slice(),
+            })
+            .collect();
+        if targets.is_empty() {
+            return results;
+        }
+        if let Err(e) = guard.io_engine.read(&guard.file, &guard.mmap, &mut targets) {
+            drop(targets);
+            for (res, plan) in results.iter_mut().zip(plans.iter()) {
+                if !plan.is_empty() {
+                    *res = Err(DiskManagerError::Io(std::io::Error::new(
+                        e.kind(),
+                        e.to_string(),
+                    )));
+                }
+            }
+        }
+        results
+    }
+
+    /// Validates a positional read and plans its transfer.
+    ///
+    /// Returns the number of bytes that `buf` will hold once planned extents are read.
+    /// Compressed/encrypted files, EOF, and (when `extents` is `None`) raw files are
+    /// fully served here by copying from the mmap. When `extents` is `Some`, raw payload
+    /// ranges are appended to it instead and sparse holes are zero-filled immediately.
+    fn read_at_prepare(
+        guard: &DiskManagerInner,
+        inode_id: u64,
+        file_offset: u64,
+        buf: &mut [u8],
+        mut extents: Option<&mut ExtentList>,
+    ) -> Result<usize, DiskManagerError> {
+        let inode = Self::read_inode_internal(guard, inode_id)?;
 
         if inode.mode != crate::inode::FileType::File {
             return Err(DiskManagerError::Io(std::io::Error::other(
@@ -1275,7 +1438,7 @@ impl DiskManager {
 
         // Fallback for compressed or encrypted files: decompress/decrypt and slice
         if inode.compressed_size > 0 || inode.encrypted {
-            let full_data = Self::read_data_internal(&guard, &inode)?;
+            let full_data = Self::read_data_internal(guard, &inode)?;
             let start = file_offset as usize;
             let end = (start + to_read_total).min(full_data.len());
             let actual = end.saturating_sub(start);
@@ -1294,15 +1457,17 @@ impl DiskManager {
             let chunk_len = std::cmp::min(to_read_total - bytes_read, rem_in_blk);
 
             let blk_id = Self::resolve_logical_block_id(&guard.mmap, &inode, blk_idx);
-            if blk_id != 0 {
-                if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk_id) {
-                    buf[bytes_read..bytes_read + chunk_len]
-                        .copy_from_slice(&slice[in_blk_offset..in_blk_offset + chunk_len]);
-                } else {
-                    buf[bytes_read..bytes_read + chunk_len].fill(0);
-                }
-            } else {
-                buf[bytes_read..bytes_read + chunk_len].fill(0);
+            let dst = &mut buf[bytes_read..bytes_read + chunk_len];
+            match Self::get_block_from_map(&guard.mmap, blk_id).filter(|_| blk_id != 0) {
+                Some(slice) => match extents.as_deref_mut() {
+                    None => dst.copy_from_slice(&slice[in_blk_offset..in_blk_offset + chunk_len]),
+                    Some(list) => list.push(
+                        blk_id * BLOCK_SIZE as u64 + in_blk_offset as u64,
+                        bytes_read,
+                        chunk_len,
+                    ),
+                },
+                None => dst.fill(0),
             }
 
             bytes_read += chunk_len;

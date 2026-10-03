@@ -41,9 +41,15 @@ schemars = { version = "1", optional = true }
 blosc2 = "0.2.3"
 rayon = "1.12.0"
 
+# Optional: io_uring payload-read backend (P3.2). Linux-only; on other targets the
+# `io_uring` feature compiles to nothing and the engine falls back to `pread`.
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { version = "0.7.15", optional = true }
+
 [features]
-default = ["mcp"]
+default = ["mcp", "io_uring"]
 mcp = ["dep:rmcp", "dep:tokio", "dep:anyhow", "dep:schemars"]
+io_uring = ["dep:io-uring"]
 
 [[bin]]
 name = "oifs"

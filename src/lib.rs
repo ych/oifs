@@ -6,12 +6,14 @@ pub mod encryption;
 pub mod ffi;
 pub mod filters;
 pub mod inode;
+pub mod io_engine;
 pub mod ipc;
 pub mod session;
 pub mod superblock;
 
-pub use disk::{DiskManager, DiskManagerError, DurabilityMode};
+pub use disk::{DiskManager, DiskManagerError, DurabilityMode, ReadRequest};
 pub use filters::{FilterConfig, FilterPipeline, FilterType};
+pub use io_engine::IoBackend;
 pub use ipc::{MasterInfo, SessionEvent, SessionMode};
 pub use session::{OifsSession, SessionError};
 

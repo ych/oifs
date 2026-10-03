@@ -19,7 +19,7 @@ sources:
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-09-30T20:17:56.754Z
+    at: 2026-10-03T08:18:49.684Z
 ---
 
 ## Overview
@@ -74,7 +74,6 @@ cargo test
 
 ## Controlled concurrency testing with Shuttle
 
-<!-- openwiki: broken internal link [tests/shuttle_concurrency_test.rs] file "tests/shuttle_concurrency_test.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Standard multi-threaded tests rely on the host OS scheduler, which exhibits nondeterministic timing and rarely triggers low-probability race conditions. OIFS integrates **Shuttle** ([`tests/shuttle_concurrency_test.rs`](tests/shuttle_concurrency_test.rs)), a tool for randomized concurrency testing.
 
 Shuttle intercepts thread creation, synchronization primitives (`Mutex`, `RwLock`), and context switches, systematically injecting random scheduling points (`shuttle::check_random(..., iterations)`):
@@ -99,7 +98,6 @@ While empirical testing verifies specific concrete inputs, formal verification m
 
 Pre-compression filters must be strictly bijective: any payload transformed by an encoding pipeline must be bit-for-bit restored by its inverse decoder without loss:
 
-<!-- openwiki: broken internal link [src/filters.rs#L844-L855] file "src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Delta Filter Bijectivity** ([`proof_delta_roundtrip_u32`](src/filters.rs#L844-L855)):
   ```rust
   #[kani::proof]
@@ -112,39 +110,30 @@ Pre-compression filters must be strictly bijective: any payload transformed by a
   }
   ```
   Proves that for *all* $2^{128}$ possible 16-byte arrays, `delta_decode(delta_encode(x, 4), 4) == x`.
-<!-- openwiki: broken internal link [src/filters.rs#L857-L868] file "src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/filters.rs#L954-L964] file "src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Shuffle & BitShuffle Inverses** ([`proof_shuffle_roundtrip`](src/filters.rs#L857-L868), [`proof_bitshuffle_roundtrip`](src/filters.rs#L954-L964)):
   Proves that matrix and byte transposition algorithms reconstruct exact original bit layouts across arbitrary symbolic arrays.
-<!-- openwiki: broken internal link [src/filters.rs#L883-L895] file "src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Composite Pipeline Invariance** ([`proof_full_pipeline_roundtrip`](src/filters.rs#L883-L895)):
   Proves that chained multistage filters (`Delta -> Shuffle -> BitShuffle`) unapply cleanly in reverse.
 
 ### 2. Arithmetic overflow safety (`src/filters.rs`)
 
 Delta filters compute differences using modular subtraction:
-<!-- openwiki: broken internal link [src/filters.rs#L896-L916] file "src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`proof_delta_wrapping_extremes`](src/filters.rs#L896-L916):
   Symbolically verifies that boundary extremes (e.g. `0.wrapping_sub(255) = 1` and `255.wrapping_add(1) = 0`) never trigger integer overflow panics in release or debug modes, guaranteeing deterministic two's-complement wrapping.
 
 ### 3. Allocation correctness and bit isolation (`src/bitmap.rs`)
 
-<!-- openwiki: broken internal link [src/bitmap.rs#L266-L281] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`proof_set_clear_roundtrip`](src/bitmap.rs#L266-L281):
   Proves that `bitmap.set(i)` followed by `bitmap.clear(i)` strictly restores the original bit state.
-<!-- openwiki: broken internal link [src/bitmap.rs#L284-L304] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`proof_set_isolation`](src/bitmap.rs#L284-L304):
   Proves that setting bit $i$ modifies *only* bit $i$, leaving all other bits in the word strictly unchanged.
-<!-- openwiki: broken internal link [src/bitmap.rs#L307-L326] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`proof_find_first_free_correctness`](src/bitmap.rs#L307-L326):
   Proves that `find_first_free` is guaranteed to return an index whose bit is physically unset (`0`).
-<!-- openwiki: broken internal link [src/bitmap.rs#L330-L335] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`proof_get_oob_returns_false`](src/bitmap.rs#L330-L335):
   Proves that accessing an out-of-bounds bit index safely returns `false` without panicking or triggering undefined memory reads.
 
 ### 4. Superblock layout ordering (`src/superblock.rs`)
 
-<!-- openwiki: broken internal link [src/superblock.rs#L122-L149] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`proof_superblock_layout_ordering`](src/superblock.rs#L122-L149):
   Symbolically assumes an arbitrary total block count between 5 and 1,000,000 blocks and proves:
   1. No metadata regions overlap:
@@ -153,7 +142,6 @@ Delta filters compute differences using modular subtraction:
 
 ### 5. Inode memory initialization (`src/inode.rs`)
 
-<!-- openwiki: broken internal link [src/inode.rs#L138-L149] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`proof_inode_no_dangling_blocks`](src/inode.rs#L138-L149):
   Proves that initializing an inode with `Inode::new` guarantees all direct, single indirect, double indirect, and triple indirect pointers evaluate strictly to `0`, ensuring newly allocated files never inherit dangling physical blocks.
 

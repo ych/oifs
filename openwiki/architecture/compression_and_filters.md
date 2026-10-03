@@ -11,15 +11,13 @@ sources:
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-09-30T20:17:56.754Z
+    at: 2026-10-03T08:18:49.684Z
 ---
 
 ## Responsibility and ownership
 
-<!-- openwiki: broken internal link [`src/disk.rs#L953-L1040`] file "`src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The write, read, and filter pipeline live across two modules. [`DiskManager::write_data_from_start_internal`](`src/disk.rs#L953-L1040`) orchestrates the
 full staging sequence — pre-compression filter → zstd compression → encryption —
-<!-- openwiki: broken internal link [`src/filters.rs`] file "`src/filters.rs`" does not exist. Fix the href or restore the target, then delete this comment. -->
 while [`filters.rs`](`src/filters.rs`) provides the filter primitives, the
 config stored on the inode, the native C-Blosc2 wrapper, and entropy analysis.
 
@@ -33,7 +31,6 @@ fixed, ordered staging pipeline. The reverse order is used on read
 1. **Pre-compression filter** — `apply_filters_cow` transforms the raw payload
    into a more compressible form. This runs *before* compression so filters can
    collapse Shannon entropy that a generic LZ77 compressor cannot reuse.
-<!-- openwiki: broken internal link [`src/disk.rs#L56-L56`] file "`src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 2. **Compression** — governed by [`CompressionMode`](`src/disk.rs#L56-L56`):
    - `Always`: always zstd (level 0).
    - `Never`: never compress.
@@ -52,7 +49,6 @@ read (`src/disk.rs#L1016-L1024`).
 
 ## Zero-copy filter staging
 
-<!-- openwiki: broken internal link [`src/filters.rs#L642-L655`] file "`src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`apply_filters_cow`](`src/filters.rs#L642-L655`) returns a `Cow<[u8]>`:
 `Cow::Borrowed(data)` (zero allocation) when the filter is inactive or the
 typesize is not one of {1, 2, 4, 8}, and `Cow::Owned` only when a pipeline
@@ -93,10 +89,8 @@ TruncPrecision:
 - **TruncPrecision** — zeroes least-significant mantissa bits of f32/f64
   (`trunc_precision_encode_inplace`); it is lossy, so its inverse is identity.
 
-<!-- openwiki: broken internal link [`src/filters.rs#L19-L70`] file "`src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 These are orchestrated by [`FilterPipeline`](`src/filters.rs#L19-L70`), whose
 `apply` runs filters in order and `unapply` runs them in reverse. The compact
-<!-- openwiki: broken internal link [`src/filters.rs#L99-L186`] file "`src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`FilterConfig`](`src/filters.rs#L99-L186`) stored on the inode exposes factory
 helpers (`numeric`, `delta_only`, `shuffle_only`, `bitshuffle_only`, `custom`)
 and `to_pipeline`. Native C-Blosc2 integration is available via
@@ -105,9 +99,7 @@ and `to_pipeline`. Native C-Blosc2 integration is available via
 
 ## Entropy analysis and recommendation
 
-<!-- openwiki: broken internal link [`src/filters.rs#L668-L685`] file "`src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`calculate_entropy`](`src/filters.rs#L668-L685`) computes Shannon entropy in
-<!-- openwiki: broken internal link [`src/filters.rs#L710-L770`] file "`src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 bits/byte, and [`recommend_filters`](`src/filters.rs#L710-L770`) evaluates 14
 candidate pipelines (raw Delta/Shuffle/BitShuffle at typesizes 1/2/4/8 plus the
 Delta+Shuffle `numeric` combos at 2/4/8), compresses each, and selects the

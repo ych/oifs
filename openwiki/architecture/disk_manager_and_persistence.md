@@ -9,30 +9,22 @@ sources:
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-09-30T20:17:56.754Z
+    at: 2026-10-03T08:18:49.684Z
 ---
 
 ## Responsibility and ownership
 
-<!-- openwiki: broken internal link [src/disk.rs#L163-L166] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`DiskManager`](src/disk.rs#L163-L166) is the central coordinator of the OIFS storage engine. It provides the single authoritative interface between raw on-disk bytes and high-level filesystem operations (file/directory creation, reads, writes, deletion, path resolution, integrity checks, and defragmentation).
 
-<!-- openwiki: broken internal link [src/disk.rs#L132-L145] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Internally, state is maintained by [`DiskManagerInner`](src/disk.rs#L132-L145), protected by an `Arc<RwLock<DiskManagerInner>>`:
 - `file`: The underlying host image file handle with POSIX advisory write lock (`F_SETLK`).
-<!-- openwiki: broken internal link [src/disk.rs#L136] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - `mmap`: The mutable memory-mapped view ([`MmapMut`](src/disk.rs#L136)) spanning the entire filesystem image.
-<!-- openwiki: broken internal link [src/superblock.rs] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - `superblock`: In-memory cached copy of the deserialized [`SuperBlock`](src/superblock.rs).
 - `encryption_key`: Derived cryptographic key (`Option<EncryptionKey>`) used for authenticated data and filename encryption.
 - `free_block_hint` and `free_inode_hint`: Allocation watermarks that convert bitmap scans into amortized $O(1)$ operations.
 
 ## Lifecycle, mmap mapping, and initialization
 
-<!-- openwiki: broken internal link [src/disk.rs#L170] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L175] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L184] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L192-L274] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 DiskManager instances are constructed via [`DiskManager::open`](src/disk.rs#L170), [`open_with_password`](src/disk.rs#L175), or [`create_encrypted`](src/disk.rs#L184), all delegating to the unified [`init_or_open`](src/disk.rs#L192-L274) routine:
 
 1. **File Opening and Locking**: Opens the image with read/write permissions. Immediately attempts an exclusive whole-file advisory lock using `libc::F_SETLK` (`src/disk.rs#L208-L217`). This prevents multiple independent host processes from concurrently writing to the same raw image without going through the Master-Proxy IPC protocol.
@@ -46,38 +38,20 @@ DiskManager instances are constructed via [`DiskManager::open`](src/disk.rs#L170
 
 OIFS enforces a sync-on-write durability guarantee across all mutating operations while minimizing I/O stalls:
 
-<!-- openwiki: broken internal link [src/disk.rs#L550] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1088, src/disk.rs#L1146] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1435] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Asynchronous Pipeline Flushes**: Every mutating operation — [`create_entry_internal`](src/disk.rs#L550), [`write_data_with_filters`](src/disk.rs#L1088, src/disk.rs#L1146), and [`delete_file`](src/disk.rs#L1435) — concludes with `guard.mmap.flush_async()`. This notifies the operating system page cache to immediately queue dirty memory-mapped pages for background writeback without blocking the caller.
-<!-- openwiki: broken internal link [src/disk.rs#L1387-L1390] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Explicit Synchronization**: The public [`DiskManager::flush`](src/disk.rs#L1387-L1390) method acquires an exclusive write lock and invokes synchronous `guard.mmap.flush()`, blocking until all dirty pages are durably committed to physical media (equivalent to `msync(MS_SYNC)`).
-<!-- openwiki: broken internal link [src/disk.rs#L147-L152] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Graceful Destruction**: The [`Drop` implementation for `DiskManagerInner`](src/disk.rs#L147-L152) automatically executes `self.mmap.flush()`. When the last `Arc` reference drops or a process exits cleanly, all pending changes are guaranteed to be flushed to disk before the file descriptor closes.
 
 ## Concurrency model: reader-writer lock
 
 `DiskManager` wraps its inner state in `Arc<RwLock<DiskManagerInner>>` (`src/disk.rs#L164`). This enables high-concurrency workloads:
-<!-- openwiki: broken internal link [src/disk.rs#L855] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L869] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L565] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1349] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1337] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1475] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1762] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Parallel Read Path**: All read-only methods ([`read_data`](src/disk.rs#L855), [`read_at`](src/disk.rs#L869), [`lookup`](src/disk.rs#L565), [`list_dir`](src/disk.rs#L1349), [`resolve_path`](src/disk.rs#L1337), [`analyze_fragmentation`](src/disk.rs#L1475), and [`verify_integrity`](src/disk.rs#L1762)) acquire shared `.read()` locks. Arbitrary numbers of threads can read files and traverse directories concurrently without thread contention.
-<!-- openwiki: broken internal link [src/disk.rs#L1054] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L555] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L560] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1392] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1387] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Exclusive Write Path**: Mutating methods ([`write_data_with_filters`](src/disk.rs#L1054), [`create_file`](src/disk.rs#L555), [`create_directory`](src/disk.rs#L560), [`delete_file`](src/disk.rs#L1392), and [`flush`](src/disk.rs#L1387)) acquire exclusive `.write()` locks, ensuring ACID isolation for block allocation, inode updates, and directory modifications.
 
 ## The read pipeline and zero-copy `read_at`
 
 ### Complete file read (`read_data_internal`)
 
-<!-- openwiki: broken internal link [src/disk.rs#L655-L845] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Reading an entire file via [`read_data_internal`](src/disk.rs#L655-L845) executes in two phases: physical assembly followed by pipeline reversal:
 
 1. **Physical Block Assembly** (`src/disk.rs#L665-L810`):
@@ -92,14 +66,12 @@ Reading an entire file via [`read_data_internal`](src/disk.rs#L655-L845) execute
 
 ### Zero-copy slice reads (`read_at`)
 
-<!-- openwiki: broken internal link [src/disk.rs#L869-L950] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 For high-throughput random read patterns, [`DiskManager::read_at`](src/disk.rs#L869-L950) provides zero-copy chunk reads:
 - For raw (uncompressed and unencrypted) files, it bypasses heap allocation entirely.
 - It translates `file_offset` into starting logical block index and in-block offset, resolves the physical block through direct or indirect pointers, and directly executes `buf[...].copy_from_slice(&slice[...])` from memory-mapped blocks into the user-provided destination buffer.
 
 ## The write pipeline (`write_data_with_filters`)
 
-<!-- openwiki: broken internal link [src/disk.rs#L1054-L1148] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 File mutation via [`write_data_with_filters`](src/disk.rs#L1054-L1148) supports three distinct operational cases:
 
 ```
@@ -130,10 +102,6 @@ write_data_with_filters(inode, offset, data)
 
 Path navigation and directory lookups map human-readable hierarchy to physical inodes:
 
-<!-- openwiki: broken internal link [src/disk.rs#L1337-L1341] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1370-L1385] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L565-L587] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Path Resolution**: [`resolve_path`](src/disk.rs#L1337-L1341) and [`resolve_parent`](src/disk.rs#L1370-L1385) split paths by `/`, filtering out empty segments and `.`. Traversal starts from `superblock.root_inode` (inode 0) and repeatedly calls [`lookup`](src/disk.rs#L565-L587).
 - **Encrypted Filename Support**: When encryption is active, `lookup` and `list_dir` automatically encrypt lookup keys or decrypt directory entries using deterministic directory-tweak SIV encryption (`src/disk.rs#L577-L583`, `src/disk.rs#L1360-L1366`).
-<!-- openwiki: broken internal link [src/disk.rs#L1392-L1450] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **File Deletion**: [`delete_file`](src/disk.rs#L1392-L1450) locates the entry in the parent directory block, rewrites remaining entries via `rewrite_dir_entries_in_block`, collects and frees all direct, indirect, and double-indirect blocks in the data bitmap, updates `free_block_hint`, and frees the inode in the inode bitmap.

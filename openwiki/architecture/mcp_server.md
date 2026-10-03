@@ -9,19 +9,17 @@ sources:
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-09-30T20:17:56.754Z
+    at: 2026-10-03T08:18:49.684Z
 ---
 
 ## Responsibility and ownership
 
-<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The [`oifs_mcp`](src/bin/oifs_mcp.rs) binary exposes the OIFS filesystem engine to AI agents (such as Claude Desktop, Cursor, and autonomous agent loops) via the **Model Context Protocol (MCP)**.
 
 Rather than giving AI agents unrestricted access to the host operating system filesystem, `oifs_mcp` provisions a self-contained, sandboxed `.img` container. All file operations, directory hierarchies, append logs, and storage metrics are fully confined within this single file image.
 
 ## Architecture and framework (rmcp)
 
-<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L10-L13] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 `oifs_mcp` is built on top of [`rmcp`](src/bin/oifs_mcp.rs#L10-L13) (the Rust MCP SDK), implementing an asynchronous JSON-RPC protocol over standard input/output (`stdio`):
 
 ```
@@ -50,7 +48,6 @@ Rather than giving AI agents unrestricted access to the host operating system fi
 
 ### The OifsMcpServer structure
 
-<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L27-L32] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Server state is encapsulated by [`OifsMcpServer`](src/bin/oifs_mcp.rs#L27-L32):
 
 ```rust
@@ -63,13 +60,11 @@ struct OifsMcpServer {
 ```
 
 - **Thread and Async Safety**: Because `rmcp` operates in an asynchronous Tokio runtime while `DiskManager` performs synchronous mmap I/O, `DiskManager` is wrapped in `Arc<TokioMutex<DiskManager>>`. Each incoming MCP tool invocation acquires this mutex to ensure sequential transaction isolation.
-<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L35-L47] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Bootstrapping**: Constructed via [`OifsMcpServer::new`](src/bin/oifs_mcp.rs#L35-L47). If the target image file does not yet exist and an `OIFS_PASSWORD` environment variable is detected, it automatically initializes an encrypted image via `DiskManager::create_encrypted`; otherwise, it calls `DiskManager::open_with_password`.
 - **Defaults**: Defaults to `agent_memory.img` with a default size of 10 MB (`src/bin/oifs_mcp.rs#L23-L24`), configurable via `--size <MB>` and positional CLI arguments.
 
 ## Server capabilities and initialization
 
-<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L259-L272] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The server implements [`ServerHandler`](src/bin/oifs_mcp.rs#L259-L272) to announce capabilities during the MCP handshake:
 
 ```rust
@@ -93,8 +88,6 @@ By enabling `.enable_tools()`, the server advertises its available tool registry
 
 ## Available MCP tools
 
-<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L134-L255] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L14] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The server registers 7 specialized tools via the `#[tool_router]` macro ([`src/bin/oifs_mcp.rs#L134-L255`](src/bin/oifs_mcp.rs#L134-L255)). Input parameters derive [`schemars::JsonSchema`](src/bin/oifs_mcp.rs#L14) to emit standard OpenAPI/JSON-Schema definitions.
 
 ### 1. `write_file`
@@ -116,7 +109,6 @@ The server registers 7 specialized tools via the `#[tool_router]` macro ([`src/b
 - **Description**: `"List files and directories at a given path inside the OIFS sandbox image. Returns one JSON object per line (JSONL)."`
 - **Parameters**:
   - `path: String` (e.g. `"."` or `"notes"`)
-<!-- openwiki: broken internal link [src/directory.rs] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Engine Call**: Resolves target directory inode, reads block data via `dm.get_block_copy`, and iterates entries via [`DirectoryIterator`](src/directory.rs).
 - **Response**: Formatted as newline-delimited JSON (JSONL):
   ```json

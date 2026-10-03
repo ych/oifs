@@ -11,26 +11,17 @@ sources:
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-09-30T20:17:56.754Z
+    at: 2026-10-03T08:18:49.684Z
 ---
 
 ## Responsibility and ownership
 
 The inode and directory subsystem defines the structural foundation of the OIFS filesystem across two modules:
-<!-- openwiki: broken internal link [src/inode.rs] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/inode.rs#L31-L66] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/inode.rs#L9-L15] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`src/inode.rs`](src/inode.rs): Defines the 256-byte fixed-size [`Inode`](src/inode.rs#L31-L66) struct, the [`FileType`](src/inode.rs#L9-L15) discrimination model, block pointer tiers, encryption nonces, and filter flags.
-<!-- openwiki: broken internal link [src/directory.rs] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/directory.rs#L5-L10] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/directory.rs#L81-L108] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/directory.rs#L113-L133] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/directory.rs#L137-L151] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`src/directory.rs`](src/directory.rs): Defines the on-disk variable-length [`DirectoryEntry`](src/directory.rs#L5-L10) record format, streaming [`DirectoryIterator`](src/directory.rs#L81-L108), and zero-allocation lookup algorithms ([`find_entry_in_block`](src/directory.rs#L113-L133) and [`find_insert_offset_in_block`](src/directory.rs#L137-L151)).
 
 ## The 256-byte Inode structure
 
-<!-- openwiki: broken internal link [src/inode.rs#L31-L66] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Every file and directory in OIFS is represented by an [`Inode`](src/inode.rs#L31-L66) stored within the contiguous Inode Table starting at `superblock.inode_table_block`.
 
 To ensure consistent on-disk packing and cache alignment, the struct is marked with `#[repr(C)]` and serialized into a 256-byte block slot:
@@ -84,14 +75,12 @@ The 4KB block pointer architecture supports files ranging from small configurati
 
 ### Formal verification with Kani
 
-<!-- openwiki: broken internal link [src/inode.rs#L103-L149] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 `src/inode.rs` includes automated formal proofs ([`kani_proofs`](src/inode.rs#L103-L149)):
 - `proof_inode_new_file` and `proof_inode_new_directory`: Formally verifies that `Inode::new` creates zero-initialized sizes, disabled filters, unencrypted states, and valid modes across all execution branches.
 - `proof_inode_no_dangling_blocks`: Proves that all 12 direct/indirect block pointers and the triple-indirect pointer are strictly `0` upon initialization, guaranteeing that newly created inodes never reference uninitialized or dangling physical storage blocks.
 
 ## FileType discrimination
 
-<!-- openwiki: broken internal link [src/inode.rs#L9-L15] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`FileType`](src/inode.rs#L9-L15) classifies storage entities:
 
 ```rust
@@ -102,14 +91,12 @@ pub enum FileType {
 }
 ```
 
-<!-- openwiki: broken internal link [src/disk.rs] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 In [`DiskManager`](src/disk.rs), `inode.mode` gates operations:
 - Attempting to write payload data via `write_data_with_filters` to an inode with `mode == FileType::Directory` returns `DiskManagerError::Io("Cannot write data to non-file inode")` (`src/disk.rs#L1059`).
 - Attempting directory operations (`lookup`, `list_dir`, `delete_file`) on an inode with `mode == FileType::File` returns `DiskManagerError::Io("Not a directory")` (`src/disk.rs#L569, L1353, L1397`).
 
 ## Directory entry format and wire layout
 
-<!-- openwiki: broken internal link [src/directory.rs#L5-L10] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Directories in OIFS are stored within ordinary 4KB data blocks pointed to by `inode.blocks[0]`. A directory block contains packed, variable-length [`DirectoryEntry`](src/directory.rs#L5-L10) records:
 
 ```rust
@@ -123,7 +110,6 @@ pub struct DirectoryEntry {
 
 ### On-disk wire layout
 
-<!-- openwiki: broken internal link [src/directory.rs#L25-L40] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Each entry is serialized sequentially ([`serialize_into`](src/directory.rs#L25-L40)):
 
 ```
@@ -149,7 +135,6 @@ Traditional directory lookups allocate intermediate strings and vectors for ever
 
 ### Zero-allocation lookup (`find_entry_in_block`)
 
-<!-- openwiki: broken internal link [src/directory.rs#L110-L133] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`find_entry_in_block`](src/directory.rs#L110-L133) searches a raw directory memory slice without a single heap allocation:
 
 ```rust
@@ -179,16 +164,13 @@ pub fn find_entry_in_block(slice: &[u8], target_name: &str) -> Option<u64> {
 
 ### Fast append offset (`find_insert_offset_in_block`)
 
-<!-- openwiki: broken internal link [src/directory.rs#L135-L151] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 When linking a new file into a directory, [`find_insert_offset_in_block`](src/directory.rs#L135-L151) steps through existing entries using the 18-byte header and length field until encountering `len == 0`. It returns the exact byte offset where the new record should be written, eliminating full block rewrites.
 
 ## Streaming directory iteration
 
-<!-- openwiki: broken internal link [src/directory.rs#L81-L108] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 To enumerate directory contents for tools like `ls`, [`DirectoryIterator`](src/directory.rs#L81-L108) implements the standard Rust `Iterator` trait over a borrowed slice `&'a [u8]`:
 
 - Wraps `std::io::Cursor<&'a [u8]>`.
-<!-- openwiki: broken internal link [src/directory.rs#L42-L78] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - Successively calls [`DirectoryEntry::deserialize_from`](src/directory.rs#L42-L78).
 - Automatically halts when reaching the end of the memory buffer or encountering a zero-length name sentinel.
 - Propagates I/O and UTF-8 errors via `Result<DirectoryEntry, DirectoryError>`.

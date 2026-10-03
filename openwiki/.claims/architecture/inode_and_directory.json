@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:afdd1f5f3f5adcc8f2819aff578b7486b4b0159a41f089d56a31710bc6dd880d",
+  "pageVersion": "sha256:80dce34410ecc8144d861df00dcb81a32287bce448006b6f1a0d5cfd5182ec0e",
   "claims": [
     {
       "id": "claim_eee6149ed80a41e688eb92aa53776a94",
       "statement": "The 256-byte Inode struct encodes file type, logical and compressed sizes, Unix timestamps, 12 direct/indirect block pointers plus a triple-indirect pointer addressing up to 513GB.",
       "evidence": [
         {
-          "resource": "repo://src/inode.rs#L31-L101",
-          "version": "repo-lines-v1:sha256:c9aeb0245245dcc837ba3d1b1bd8236f3536b9b5593de6fa7c67c1b7112279e0:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkNjhmY2JkYTU4ZWYwN2U2YmM2ZDA0OGY4YThlOWY5MjU4NTM5ZDBjODI5OGE4NGIxYmM5NDNjNzYxZDcxNTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQwMjc3MzcyOTNjNjBjMzFmMDRmOWRmNjFjY2VkOWViNTA1ODljZDkyMGI0NzNlYjY4M2ZhNzc0NDY2YzNhYmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlMTExZGUwOTQ3MjIzMDEyNTJmOGNjMjMyMDI3NjVkZWJmY2EzNmJlYjMyY2Y4MDU4ZjVjNDEzN2RhM2Q5MzgifQ"
+          "resource": "repo://src/inode.rs#L33-L109",
+          "version": "repo-lines-v1:sha256:a06b3e5eec3bf93ecbf94673658101ae1bb500ccf7f14272afe497c76b866711:eyJzZWxlY3RlZExpbmVDb3VudCI6NzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5OTAxZjYzNWUzZGU5ZjkyNmI5YjJiNjAzY2FjOGEzYWU1YjM1ZDJkNDcyNjFhMTVkZGJjNDllOTQ3NGIxMTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViOWRjYzdjMmZmOTAwYjI0N2EwNjg0OWRiOGUzMjIzYTkxYmM0YjgyMjlhNTMzNmJmYWQ5YzFjYmI1NjlmNTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2NWE3MzYzNzAxZmY2ZWJjMzJkNjA3NTJiNmVlNjI5YzRkYTUwZGQ1Mzc0NTU2OTU3YTNlYmEwMTg1OGE2NDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczYzJkNTlmZTMwZjBjMTgyYjZmMWU5ZjUwOWIyODI2ODQ0NTU3OWYyZWU1ZmRiMTUxNGIyMWViMzQ4ZGNmYmEifQ"
         }
       ]
     },
@@ -17,8 +17,8 @@
       "statement": "Formal verification proofs using Kani prove that Inode::new produces zero-initialized sizes, default-disabled filter flags, and correct FileType for both File and Directory cases.",
       "evidence": [
         {
-          "resource": "repo://src/inode.rs#L103-L149",
-          "version": "repo-lines-v1:sha256:909645e6c30bb0a864d786bb2f0ca50f0261602198cff14c0a1e991d5f22b81b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5YTE5MjEwZDI4NmI0Yjk3ZDBkM2Q4NTg2Y2MzM2ZiMmNhNzZiYjU1MGI5NTc4OTQ4NTI4Y2U2YTNjMTk3MjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
+          "resource": "repo://src/inode.rs#L197-L283",
+          "version": "repo-lines-v1:sha256:50e646224d67a0ff95920722e24a0efa58535961a84cadcbd7636242051c1442:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZTZkMTBjMTFkNmJiM2M4NGY1YzRiMjVmZjcxNTI5ODk4NzA2ZDk1MWEzZWMzMzFmNjdhMDMzZjBlN2E4NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzMjU4NmExYmQzYWU3YzVjZTU0NjBiMjMxNjk3NTRjY2ZmY2Q4MDgxODQyMmEwYjg1YmQwMzM1NGFhZjA0NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
         }
       ]
     },
@@ -37,7 +37,7 @@
       "statement": "find_entry_in_block and find_insert_offset_in_block parse raw directory block slices with zero heap allocations, matching names byte-for-byte and locating append offsets.",
       "evidence": [
         {
-          "resource": "repo://src/directory.rs#L113-L154",
+          "resource": "repo://src/directory.rs#L208-L249",
           "version": "repo-lines-v1:sha256:cf5ecd3d02896f561a42390688cb5a55e612cea52602891ca6e3919aeb2c7513:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ODFmNmZkY2Q1NDZkZGU1ZjEwMDM3MTk2MjBmZTAwZGVkMDQ1Y2VhMDk0YmNkNTRhNTU1MzhiZWViZjhlY2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
         }
       ]
@@ -55,6 +55,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-09-30T20:17:56.754Z"
+    "at": "2026-10-03T08:18:49.684Z"
   }
 }

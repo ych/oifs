@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e53a33aa726aa6e090e89d9009c8c326655fde097aa8b0bc4fb6d5b36a0f4229",
+  "pageVersion": "sha256:55f7da1323208aec2f9d4a63a67209335fd2eb46bc1c48ab6df5055667e98372",
   "claims": [
     {
       "id": "claim_24ccddb574a5445b9214d61443534bd2",
@@ -17,7 +17,7 @@
       "statement": "Kani formal proofs in src/filters.rs prove roundtrip bijectivity for the Delta, ByteShuffle, and BitShuffle pre-compression filters across element sizes, ensuring apply/unapply reverses exactly.",
       "evidence": [
         {
-          "resource": "repo://src/filters.rs#L885-L1010",
+          "resource": "repo://src/filters.rs#L869-L994",
           "version": "repo-lines-v1:sha256:5b8ff5e1a55b9a5d68778aa9ecff5ebbaa273e527de55776b6ecde2828e80c0b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyODZiNDI2MTk1MWU2YWExZmQ3NmU4NmU3NGNlMzY5MDkyYTY0OTE0NjljZGI5NzE5MGUwYWMxZGMxZGEyNzU5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YTU5NGYwM2ZjZTdiYmQxNjAwZjdhNTE4MWVlNTZhMDllNDgwMzQ0YmQzZDMwMzViNDI4OTBjZTY3MTE3MWVhIn0"
         }
       ]
@@ -27,8 +27,8 @@
       "statement": "Kani formal verification in src/bitmap.rs proves set-clear idempotency, bit-modification isolation, and out-of-bounds access safety of the bit operations used for block and inode allocation.",
       "evidence": [
         {
-          "resource": "repo://src/bitmap.rs#L261-L335",
-          "version": "repo-lines-v1:sha256:5ea50804fbc24dfcea406ec7f696bd27d5691b8d80747069350e0d181e1e6267:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5YTE5MjEwZDI4NmI0Yjk3ZDBkM2Q4NTg2Y2MzM2ZiMmNhNzZiYjU1MGI5NTc4OTQ4NTI4Y2U2YTNjMTk3MjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhYmU5ZmUwYzg4ZmUzYmUwOTdmZTFjZDJjNjc5N2QxNjdiZGI3OTc3ZTQ4ZDM2YWQ0MmQ1ZjI0MDE1NjdhM2IifQ"
+          "resource": "repo://src/bitmap.rs#L257-L339",
+          "version": "repo-lines-v1:sha256:c874f691455a9044d645d5be8966afa4e79885a0e54483256ac53cc3d0875dc6:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZTZkMTBjMTFkNmJiM2M4NGY1YzRiMjVmZjcxNTI5ODk4NzA2ZDk1MWEzZWMzMzFmNjdhMDMzZjBlN2E4NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzMjU4NmExYmQzYWU3YzVjZTU0NjBiMjMxNjk3NTRjY2ZmY2Q4MDgxODQyMmEwYjg1YmQwMzM1NGFhZjA0NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
     },
@@ -37,8 +37,8 @@
       "statement": "Kani formal verification in src/superblock.rs proves that SuperBlock layout calculation preserves strictly ordered, non-overlapping regions and that the data region never overruns the image.",
       "evidence": [
         {
-          "resource": "repo://src/superblock.rs#L117-L170",
-          "version": "repo-lines-v1:sha256:e20ea56bf68981acad618aad0397d26bba74b8851d4d79dc1384ee4942f66265:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5YTE5MjEwZDI4NmI0Yjk3ZDBkM2Q4NTg2Y2MzM2ZiMmNhNzZiYjU1MGI5NTc4OTQ4NTI4Y2U2YTNjMTk3MjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
+          "resource": "repo://src/superblock.rs#L118-L148",
+          "version": "repo-lines-v1:sha256:a9419f833497fc4cf3f387925c70f1ff190bedee598878807bd5e7ef34654ee8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZTZkMTBjMTFkNmJiM2M4NGY1YzRiMjVmZjcxNTI5ODk4NzA2ZDk1MWEzZWMzMzFmNjdhMDMzZjBlN2E4NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3NjI4Y2FhZDg0OWZjYmE0MDAzNTkwZDhhM2MyYjYwNzg4ZjVmOGUyMzgwZDc1MjY5ZDg1ZmUxNjMyMGVmMDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzMjU4NmExYmQzYWU3YzVjZTU0NjBiMjMxNjk3NTRjY2ZmY2Q4MDgxODQyMmEwYjg1YmQwMzM1NGFhZjA0NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4NTI0NTBjODYxMjQwZTQ0M2ExOTQ2YTMwMGU3OTdmNTMyNmY0ZWE2NjVkN2NhZWE2NWI5YzU5YWFmZTBmNzIifQ"
         }
       ]
     },
@@ -59,6 +59,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-09-30T20:17:56.754Z"
+    "at": "2026-10-03T08:18:49.684Z"
   }
 }

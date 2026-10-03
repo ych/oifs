@@ -5,7 +5,7 @@ description: How OIFS allocates and tracks data blocks and inodes with 64-bit bi
 tags: [allocation, bitmap, indirect-blocks, hint, performance]
 verified:
   - by: openwiki/0.6.1
-    at: 2026-09-30T20:17:56.754Z
+    at: 2026-10-03T08:18:49.684Z
 sources:
   - id: openwiki-source-57692e9ab78d05d0aeba3e7c
     resource: repo://src/allocator.rs
@@ -15,14 +15,14 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-bc305a37042018e1ebd6d860
     resource: repo://src/inode.rs
-generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+generated: { by: "pi", at: "2026-10-03T08:18:49.684Z" }
 ---
 
 ## Responsibility and ownership
 
 Block allocation is the responsibility of the bitmap subsystem
-(`src/bitmap.rs`) combined with the [`SimpleBlockAllocator`]
-(`src/allocator.rs#L36-L88`). The [`DiskManager`]
+(`src/bitmap.rs`) combined with the 
+(`src/allocator.rs#L36-L88`). The 
 (`src/disk.rs`) owns the actual bitmap slices in the image and drives
 allocation through cached search hints stored in
 `DiskManagerInner` (`free_block_hint`, `free_inode_hint`). Every allocation,
@@ -40,11 +40,9 @@ blocks starting at `data_block_start`).
 
 Two views wrap the raw bytes:
 
-<!-- openwiki: broken internal link [`src/bitmap.rs#L2-L111`] file "`src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [`BitmapRef`](`src/bitmap.rs#L2-L111`) — read-only view used for analysis,
+- [`BitmapRef`](src/bitmap.rs#L2-L111) — read-only view used for analysis,
   scanning, and fsck.
-<!-- openwiki: broken internal link [`src/bitmap.rs#L186-L245`] file "`src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [`Bitmap`](`src/bitmap.rs#L186-L245`) — mutable view that forwards `set` /
+- [`Bitmap`](src/bitmap.rs#L186-L245) — mutable view that forwards `set` /
   `clear` and delegates search helpers to a `BitmapRef`.
 
 ## 64-bit word scanning and hardware population
@@ -69,7 +67,7 @@ scans and a ~7.4x fsck speedup over bit-by-bit scanning.
 ## Allocation hints for amortized O(1) sequential allocation
 
 Before the hint feature, allocating many blocks sequentially re-scanned the
-bitmap from bit 0 every time, producing $O(N^2)$ behavior. [`SimpleBlockAllocator::allocate_with_hint`]
+bitmap from bit 0 every time, producing $O(N^2)$ behavior. 
 (`src/allocator.rs#L48-L70`) accepts an optional hint block ID and translates it
 to a bit index (`hint - start_block_offset`) before calling
 `find_next_free_wrapped`.
@@ -90,8 +88,7 @@ keeping sequential allocation compact.
 
 ## Indirect block addressing scheme
 
-<!-- openwiki: broken internal link [`src/disk.rs`] file "`src/disk.rs`" does not exist. Fix the href or restore the target, then delete this comment. -->
-[`DiskManager`](`src/disk.rs`) maps logical file blocks to physical blocks using
+[`DiskManager`](src/disk.rs) maps logical file blocks to physical blocks using
 a hybrid direct + indirect index tree. Each block pointer entry is an 8-byte
 little-endian `u64`, so a 4KB block holds 512 pointers. The layout
 (`src/disk.rs#L197-L325` for allocation, `collect_inode_blocks` for collection):
@@ -122,8 +119,7 @@ under concurrent access serialized by the DiskManager mutex.
 
 ## Extension seams
 
-<!-- openwiki: broken internal link [`src/allocator.rs#L13-L26`] file "`src/allocator.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-Allocation is centralized behind the [`BlockAllocator`](`src/allocator.rs#L13-L26`)
+Allocation is centralized behind the [`BlockAllocator`](src/allocator.rs#L13-L26)
 trait (`allocate`/`free`), so alternative allocation strategies could be added
 without touching the write path. The hint machinery, bitmap word scanning, and
 the indirect addressing tree are independent seams — each was optimized without

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e37a7e00f02f61209c46116ad25fab4be792040e074f67f623773a1c4a229c1f",
+  "pageVersion": "sha256:8ac6adc70c7ec731c4d70bc08a8b292a251a68796f0c72b713d68c2527cc0a38",
   "claims": [
     {
       "id": "claim_ccf982a2acb94220b5a4016b54d25dda",
@@ -22,11 +22,11 @@
       "evidence": [
         {
           "resource": "repo://src/session.rs#L195-L215",
-          "version": "repo-lines-v1:sha256:32b6ff6ce6bc5915f2d2d59aca11063c41331b3cc76f49f77f49ba0245da028c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyYTJlYzRhNDgwMDEwOTc1MmQ4YzY3MDQxYjFiMDlkMzk3YjE2NzMxOGJjZTBiMGNlMDY0ZWM0YjYwZmQxYTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1NzAxMmRkZWEwMjNjZWQ1MGI0MDI4MjYxMTYzNmFlZDNhYWJjMDMxZWVhMTFiYTljNjEyYzY5NjQxNWI5NTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdkNDNiMWM0YmNkMjMzMzRlOTQ3Mjc1NTRmYzBjZGE1YWEyZWMzMGJlODQyMDkzYWE4YWVmZDA4ZjdlMzlmZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1YWMzYmExMzRlZWQzYWU3ZTA0NWRmMjczMjM5YzQ5ZDg2ZGRlZTZmZDM1NzQ3ZDlhZGJlN2UzZTI4YjcwMjcifQ"
+          "version": "repo-lines-v1:sha256:f4f780dbff3ff09ffbd0a87e409b4c767d7cfa9a1ebdc4dab11a7af00fbb5ee8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyYTJlYzRhNDgwMDEwOTc1MmQ4YzY3MDQxYjFiMDlkMzk3YjE2NzMxOGJjZTBiMGNlMDY0ZWM0YjYwZmQxYTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdkNDNiMWM0YmNkMjMzMzRlOTQ3Mjc1NTRmYzBjZGE1YWEyZWMzMGJlODQyMDkzYWE4YWVmZDA4ZjdlMzlmZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxMzIzYzA0ODVkMGUyMjFmNmQ1MDI2NTk2ZTY3NjI1YTY0ZjFjYjMzODE4MjU3YWM1N2NmMzQ2ZDQxOTYzYzIifQ"
         },
         {
-          "resource": "repo://src/session.rs#L77-L100",
-          "version": "repo-lines-v1:sha256:19db786140fd1b30dae2d03fb69e56b5c034cf09134122ddaadc6ea18744d4d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1ODU5MWI5NWFlNmQ1ZGVlOTk4YTlmYWMwZWMxOTRlZTU4ODQyMTRmODc2OTJjYWYxZGE2MDFmZDVkNzQyZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExNmNkZjdlZTEyYjk3YjkyMjM0NDk0Zjc2MzU0ZWIxMDkxNTY3NjFlZjZiYWE3YmM0YzEyN2Y4ODg0NjQxOGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NmE1NDRjYzAyM2VkNDA1ZTNiOThiOGEzNTQwOTBmYWQxNmU5ZTE4ZDVlZTlmN2JhNmMzZTcwMDUzMDA5ZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3ODhiMGNkMmQzZDI5ZWQ3NTY3MjkzNzdmOTI2ODAxYjE0ZmMyNWJhMzNmNWNkY2Q4YjUwNThiZjM0M2RjZTYifQ"
+          "resource": "repo://src/session.rs#L77-L131",
+          "version": "repo-lines-v1:sha256:d8a606177c467b743e95d00fc722823c5862b8464ebb2d5e90ed499980bfb122:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1ODU5MWI5NWFlNmQ1ZGVlOTk4YTlmYWMwZWMxOTRlZTU4ODQyMTRmODc2OTJjYWYxZGE2MDFmZDVkNzQyZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NmE1NDRjYzAyM2VkNDA1ZTNiOThiOGEzNTQwOTBmYWQxNmU5ZTE4ZDVlZTlmN2JhNmMzZTcwMDUzMDA5ZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA0NDgwYTU0YzRkMmI5ZTY2MWU3MWM4MzA2YTBlNGMzOGJjNjYwOTM5ZjNmMjNlMGFmNDlhMDc1OWVmYTRkMmQifQ"
         }
       ]
     },
@@ -67,8 +67,12 @@
       "statement": "Remote sessions self-heal: on a connection error they re-run master election up to five times and, if they become the new Master, pin a local DiskManager as dm_fallback to keep serving locally.",
       "evidence": [
         {
-          "resource": "repo://src/session.rs#L424-L490",
-          "version": "repo-lines-v1:sha256:c4af489f05b57914219ebe2fda0f1f971fa5099564fee4d1e4b09ce20eaa28ba:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDg5ZjY0YzFiYWNhNjRkYmY0Mzk2NDU5OWFlOWI5NGU4MTg4NzIxZGZjZWI0NzhiMDY3NDZmM2M5ZjBiOTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0Nzc5ZmMzZDk2OTM1MzNlMGM4NWZkMjkyZmU3Yjg5YWI3MTI2ODRmZWE3OGIwZDc2YjEyYTRmZjEzOGFkMTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1M2Y5NWQ0NmY1YjA0NjBhOTg5OTg2ZGE1NzQ2MjAwOWE4MzJkNDg3NTExOGExM2VhYzk4ODk3MzgxZGY1NDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVjMTUwZTUyYzY4YjkwMmRhNDg3MDI0NGRiYTcwMGUwZDZhNzExMzM2NGJmYThiYzNmZWNiOTY0NWJmNzJjMmMifQ"
+          "resource": "repo://src/session.rs#L449-L513",
+          "version": "repo-lines-v1:sha256:f505ec41e60eaadd0261220e420d50710062492a702b8017bd36584c051ce627:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxYzFkNzEyZWUwNGFjMTg4M2E4NTIzYjQxODBhOThjMjU3NTc0NWE1OTgxYzcyMDIxZWFiNTU4ZTgxMzY2ODciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjNDQ0ZDk5MDYxYzFkMzhiMTYwMWU1YzUwOTdmM2QyOGQ5NDVhYTI5OGI3MGY4OTJhNmM0ZTUzZTRjNDYyODAifQ"
+        },
+        {
+          "resource": "repo://src/session.rs#L515-L534",
+          "version": "repo-lines-v1:sha256:b875e289696d0cc59bac3a003d49410bbca54420154c7191c52e6948f5a8e7fb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0Nzc5ZmMzZDk2OTM1MzNlMGM4NWZkMjkyZmU3Yjg5YWI3MTI2ODRmZWE3OGIwZDc2YjEyYTRmZjEzOGFkMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0OGFkMWFhNmIxMmQxM2JlZjliMGY5YTM5MjMyZjA1YjZjYWIwN2ZkM2UyMzQ4NGYyYjc1ZjZlOGQzZDdiMzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBjZjE5ZDU4NDBjYzg2NjhhM2IwNjM3ZDUwZWM0NjMxMzNlYWNmZDI0NGY1YjNjYjNjN2M4YTlkMTNmZmY0YzcifQ"
         }
       ]
     },
@@ -77,7 +81,7 @@
       "statement": "The block-level merge policy is enforced by the Master's single DiskManagerInner mutex rather than per-block locks: disjoint byte offsets merge in place, overlapping offsets are last-writer-wins, and compressed writes use multi-frame append or read-modify-recompress.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L162-L165",
+          "resource": "repo://src/disk.rs#L309-L312",
           "version": "repo-lines-v1:sha256:201bb15d0df0846116311ca63d215599f7f27bc61577f144fe05d77702cd6d49:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTlmZDQ0MmYwZDkxMTQ2MmU2OGMyODgzZDJmNTMyNDI4Mjc1MWZiNmMzN2E4M2QxYWUwYjc0YjJlZGQ1NGQwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjkxOTA3YTk4M2MzYmE0ZTVlZjRmMzUwMGM0MGQ1NWE4ZTUyMWI3YjZjOWU1MDI0ZDRiNjcxZGI0NWY1MzIyOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODRhMTJmYTZmZDNlZDkwMmZiNjY1NzkyYTYwMmZiZjEzZDA1ZDA5MzFkYmFmZGMwMmYxZTdlMTQxZWRlYzZhMCJ9"
         },
         {
@@ -85,10 +89,30 @@
           "version": "repo-lines-v1:sha256:98833293276e14e6aa6b6e233c7d7998a19dbe4a8f89343e410b6b1a76fe0223:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmNTc3NWQxOGZhZTJlZjU1ODhiZTEwYjQwMDJiYTIyNzhlZWMxM2Q5Njk1Y2U3OGJkNTE5ZTQ1OTBiOWJiNmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliM2ZlMjJiYzJmOWZjYzZlNzI2MTNlOWI3ZGJkMmE1Y2NkNjY5MzlkMDI2YWY4Mzk2MDFhN2Q1NzRkZjFlNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4ZTJmN2Y2ODM2MDE1Nzg0YWU2M2M4NzkzZTQ5Y2QwYTQyMDE0YzhhODljYjllMWI5ZjkzOGZmODBjYTcxZjMifQ"
         }
       ]
+    },
+    {
+      "id": "claim_abd2acc47e284609888bda30b3e701e2",
+      "statement": "canonicalize_path follows up to 32 symbolic link hops even for files not yet created on disk, ensuring concurrent threads opening distinct symlinks targeting the same image resolve to identical canonical registry keys without split-brain.",
+      "evidence": [
+        {
+          "resource": "repo://src/session.rs#L83-L131",
+          "version": "repo-lines-v1:sha256:cd016dd999fcfa2dd2e8ae35825462c630366e0a182db47f3ca2938050ab0d4b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiMDM4ZmQ0YmU2NmI0YzdiODYwM2Q4NmFlNDE4MzY3ZGYxYWI4YjRlZjAwNzAyOWEyZTBiYTZlYWUwNDYzNGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2NGE5ZjgxZjY3ZWU1NTQ5YjQ0NjVhMjU4MjhmMWU3YTJmMGQxM2Q1YmFjOWYwMzY3YmY0MzU0NTdiNGY2ZjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA0NDgwYTU0YzRkMmI5ZTY2MWU3MWM4MzA2YTBlNGMzOGJjNjYwOTM5ZjNmMjNlMGFmNDlhMDc1OWVmYTRkMmQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2067d31485e24163b3aff564f5a04b41",
+      "statement": "open_with_mode_retry implements a 5-attempt progressive backoff loop for socket binding and flock acquisition, preventing startup race failures when multiple processes concurrently attempt master promotion.",
+      "evidence": [
+        {
+          "resource": "repo://src/session.rs#L319-L378",
+          "version": "repo-lines-v1:sha256:28353ca68c7bd61ca6d98909145ca33beb9df0a82410b98539780ac5a1bb0b5d:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4ODFhOTU0Y2NjNjE3OGFlZWZkNjYzNjY4ZjVmMGQ1ZmNiYmZkMDYxN2IxYTE3NTRlZjAzZDVlMzNlYTA2YzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkYjMzOWMxN2Q0Y2M1NGU3MGM0ZmNmZWNiNjExYmI5ZTdkMzYzZjI1YjE4ZTA5MjNhMWQzMDZjYzk1OTI0ZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZmMGQ3NTk1MGRmMGZmOWEzZWU5NjYzOWRjYzhmZjVlYWVkYjQwZDY4MmJlYTkyNjIyYjUyMGRkODg3ZDkzZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5OWNhNzUyZGYwODRjZGE2OWUxMGRiYzYzMTdjZDVkM2ZlNjgzMmRjNDRmMjExMDc2MTM5ODNmMGU5MGE4Y2IifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-09-30T20:17:56.754Z"
+    "at": "2026-10-03T08:18:49.684Z"
   }
 }

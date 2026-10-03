@@ -13,7 +13,7 @@ sources:
 generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-09-30T20:17:56.754Z
+    at: 2026-10-03T08:18:49.684Z
 ---
 
 ## Introduction
@@ -231,13 +231,8 @@ Cross-linked Blocks: 0
 
 ## Next steps & documentation links
 
-<!-- openwiki: broken internal link [openwiki/architecture/overview.md] file "openwiki/architecture/overview.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [OIFS Architecture Overview](openwiki/architecture/overview.md) — Subsystem layout, memory-mapped storage engine, and block allocation.
-<!-- openwiki: broken internal link [openwiki/architecture/compression_and_filters.md] file "openwiki/architecture/compression_and_filters.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [Compression and Filters](openwiki/architecture/compression_and_filters.md) — Deep dive into Blosc2 filters, Delta encoding, and Zstd multi-frame streams.
-<!-- openwiki: broken internal link [openwiki/architecture/encryption.md] file "openwiki/architecture/encryption.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [Encryption Subsystem](openwiki/architecture/encryption.md) — Cryptographic design, 192-bit nonces, and deterministic SIV filename privacy.
-<!-- openwiki: broken internal link [openwiki/operations/cli_reference.md] file "openwiki/operations/cli_reference.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [CLI Reference](openwiki/operations/cli_reference.md) — Complete manual for all subcommands, options, and JSON pipelines.
-<!-- openwiki: broken internal link [openwiki/operations/testing_and_verification.md] file "openwiki/operations/testing_and_verification.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [Testing and Formal Verification](openwiki/operations/testing_and_verification.md) — Guide to running integration tests, Shuttle concurrency permutations, and Kani proofs.

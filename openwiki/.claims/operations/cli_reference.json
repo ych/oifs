@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:dde98581f5fc3df72fa585708b3178eb440524da2e2b7a0be7d12f74f8ccbe1d",
+  "pageVersion": "sha256:107c943a58c1f2600e288effe8c52532fce488acdf5ec09c113a9bf592befa3b",
   "claims": [
     {
       "id": "claim_a8093693f6464b828a109f1806432183",
       "statement": "The oifs CLI defines subcommands (create, put, get, append, mkdir, ls, analyze, defrag, fsck, filter-analyze) and global flags for image path, password, network mode, and JSON output.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L10-L111",
-          "version": "repo-lines-v1:sha256:b5b9a5d28da7eacc1d598cb4ae37b71f3d55966138baca76c60d33b1b42e810b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5OTliOTNjYjg1ZGQ2MGY5OTU3MjlmNjYxOWI5N2Y5N2YwYzM0MzUwMDljZTc1MzkwNTcwYmRkNTgzZjAwYWVhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjN2E2OGZiNWQzM2JmYTlkMzRlMmY1MWExOWM5MDFiMDQ2ZGQ0NTAzMWRlZTQ0OWRiZjVjMDY2YzYyMDI2ODZjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYmQ3MjRkMzg0ZTMxOWFhZWY0NTNkMDU1ZmY0NTQ2ODdlY2NiMTBkNWQxMDBhMGExYWM5Njc5NGYwNDNjZjNjIn0"
+          "resource": "repo://src/bin/oifs.rs#L12-L111",
+          "version": "repo-lines-v1:sha256:d6ebd77388b30145a1e6eb689d1d924655df6b745e4b2757ddb321b72e35a433:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3YzExNjllNjIxMTA3ZWNkNDg0YWRjZGU3ODM2NjQxZmFiOTAxMjExYjNiM2JkYWJjNmE5YjVlZTY1M2MyZWM2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyYzY4ODU4MTc3OGFlZjgxMjQwMDk1N2FhZDFlMGFlZGViZTAxZDlkZmQxMWVhOGYzZmNjYjI5ZTY3NjRhODMyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYmQ3MjRkMzg0ZTMxOWFhZWY0NTNkMDU1ZmY0NTQ2ODdlY2NiMTBkNWQxMDBhMGExYWM5Njc5NGYwNDNjZjNjIn0"
         }
       ]
     },
@@ -17,8 +17,8 @@
       "statement": "Password resolution follows a 3-tier hierarchy: --password flag takes highest precedence, followed by the OIFS_PASSWORD environment variable, then an interactive masked prompt that is suppressed in --json mode.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L113-L183",
-          "version": "repo-lines-v1:sha256:5095757693a5d6e4d9bf5ca6f9b5302ba315d82cf1cf05db1fe9962fe019e7ca:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjYzM2YmVjYzA2MDcxYjM0YmRhYTM5OGUyOTdkNWU3MmJmODA0YTgzZjUxY2MzMDU4ZWVkYTM2YThmOTY5ODEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFjNGZhOTk2ZGE1OWNlOGY4NTllODY2ZmI4MWRjNGM0MWFkZTA5YWJlMDEzM2I4YzI5NjdiODEyMzAyOWM0MmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMjI2MWQ1Mzg4MjliZTAxYmI2ZGRhNGFlMmZlNzRhMWU2N2Q5MTdiNWMxNDVjYzM5NDZiZjFiNmQ2ZGU1OTEifQ"
+          "resource": "repo://src/bin/oifs.rs#L153-L196",
+          "version": "repo-lines-v1:sha256:4d0a8ee39b8455deea1046be6a09e3398bc3c1f380bea658418ec15ee2da16d3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlMDYzM2Q3YTcyOGZlMTI3YmJmZTBmN2NiYThiMmExNmQzZTc0YjU4MmM2OGNmNjVjZjQwOWY0ZWEyNjlkY2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmMGRhNjI1ZDNhMDVkZDU4NGRkMTljZDc2YWRlNWVmYzZiOTkyYjM2MDMxMmRmYjA4OTI5ZmI2YmI3ODRlZDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNkOWNjYmUwN2UyZGFlZDBkNWQyZjU0NDUwM2JhNjVkMTE2NTljNmEzYWJlMTEyZDczOTYxMTBmNDdkY2YyMDIifQ"
         }
       ]
     },
@@ -27,8 +27,8 @@
       "statement": "Creating an encrypted image requires password confirmation in interactive mode and warns when the passphrase is shorter than 8 characters.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L284-L310",
-          "version": "repo-lines-v1:sha256:3cbddd80cc964d978afbb584b04af3113b0b436288db9f0bd8b78671667f5229:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyOTI2MThjOTk1YTEzMTEwYzkzOTZjYzdlYTY1NDNmZGY3YTZmNzU1YTdiYTExOTBlNjJhMzg3NmFmZDEzNjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNjQ3OWNjMjMwNDQwZmQ0MWU4MjI0MjE4Njc5Njk4NTU5ZDI4OTNiZDY3YjQzODBhZmFiODExYjM4YTU1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZjM2FkNjM2NzE4NzFhNGViNTcyNWYyYThmNmY1MDc3ZTIyM2JiODk5NzJjMTI5NDQ2NTliMmVjY2YyMTk5ZTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlkNmQ0MTk5YTMwMmRlYjZhZTQzNTIwMzFlYjdlZWU3OWZkZTc0YmJkYzdiNjJiYjM1YjRjOWYyN2I1OTI5ODUifQ"
+          "resource": "repo://src/bin/oifs.rs#L296-L302",
+          "version": "repo-lines-v1:sha256:5b587aa7e6bfa825e11cfaad5c73e88b201dbb0a19ed389b72c248c6ef5714a1:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjQ4ZWY3NWFhMTA5MmM2ODUxNjlmNWZlZDc0OWY5YWM0ODJiNDhiYzdlNzRiMDI5MTU0MjRlNmJiYTllNTdlOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2U5NzI5ODJlN2UyNjNmY2ZhOGY4M2U1NDRhNmE0ZTllZGE3YzQyMGVhMzNmOTBmZWMyMGRhOGVkMDJlODJiZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzU3MGY1N2U0YThmYTk4ODhlODM5NWIxOGI5ZWQ5ZjNmZjZkY2Y5MDNiODlhNjVkOTA4OTk1NzA0NjdjMTBjNyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmViMTRiN2MyN2EwNDAwZWEzNjU4NjdjYzYzMmRlYmI5MjliYmE4ODIzY2ZlZjI0MjQ3YWVmYzIyMWYzODc3ZCJ9"
         }
       ]
     },
@@ -37,12 +37,8 @@
       "statement": "The --network and --bind options configure SessionMode::Network, allowing multiple host processes to coordinate over NFS or a multi-node cluster via the master-proxy session.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L20-L26",
-          "version": "repo-lines-v1:sha256:77791947224217a61eec7f781a4524aa134f401a2db4baa348beda5f088a213c:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDFlY2NlYTBlMTI4NDM3YmEzOGE0M2U0MTM4Mzk3OWNkOGVhOTQzMWJmN2ZkYWIyMjFlYmEwNmNjNmFmZmQxNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWQxMTJjMjdkYzNjNjViYzIxODc4MTA2ZDY5ODRiYWI1ZGFiMTA2YThiZWZmMDMxYTZlNzY0OGQwNGUzNGM5OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzcwMDU2ZTQ1YTI3ZWZkNjU0ZDBhZTZmMjIwODBjMzY2NjE4Mjk4ODdiYTNlZDQwNTAyODc0NjA3Yjc5NDRkNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2ExYTk4MWE5N2VkMmJlZGFlYjEwYjNkNmQwNGVmNWFmMmQ5Yjg5MmQ4ZGZlYmM2ZmU3Y2M5OTk5NDIwNGZlMCJ9"
-        },
-        {
-          "resource": "repo://src/bin/oifs.rs#L208-L214",
-          "version": "repo-lines-v1:sha256:dba21f38fbf9603db1227134f72411a7046a98f2208aa192cda4ce28b2b7df58:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjIxY2FmMGIyMTEzOTAwMjQ1ZjYwZTAxY2MyNjJiZTIwMjFkMTQ3NzgwN2UwZjMyMzg0YjNkNTQzZjgxYWNhYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5ZTEyNTQ2NDI1NTc2ZDNkZWFlOGM5YjlkYmYxMjhkNWQ2ZGRhZjVkN2ZlODU3OTM0OTI3ZGVmZmEzYjlkZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODc1MmY1MDI4YjEzMGEwZDc0NmIzNTZlYTYyZjU5MjgzMGU4NDUxYTdhNWQxMmFlZDYxNDMwYTU1NTZkNjJjOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWNjZDg4MWEzYTYyYzFhY2QyYzkyY2I5ZDczOTIyZGE1NGVjN2FhZTQ3OTM4MGY4NDI2Y2NkNWRiMDg5MGNjZSJ9"
+          "resource": "repo://src/bin/oifs.rs#L209-L209",
+          "version": "repo-lines-v1:sha256:ed668208db02704ffde8b4d923093d001421cb2b81691728c67ea1848f7ed85b:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWQ2NjgyMDhkYjAyNzA0ZmZkZThiNGQ5MjMwOTNkMDAxNDIxY2IyYjgxNjkxNzI4YzY3ZWExODQ4ZjdlZDg1YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZWQ2NjgyMDhkYjAyNzA0ZmZkZThiNGQ5MjMwOTNkMDAxNDIxY2IyYjgxNjkxNzI4YzY3ZWExODQ4ZjdlZDg1YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjE3ZGYyYmUxYjY3YzYzZGI3NmMyMDE5N2VhMTE0YWNjN2RjZTJiZTkxNmZkZmMwYWEwZGRkZmUyNzliOTcyOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDBjMmUwOGRkNDhjM2M3M2U4MTgzZjE0ODc2YmNiYjIzZDFlYzg2NGRmNWJmNjE1MjRiMGNiN2MxMGM0NTllOCJ9"
         }
       ]
     },
@@ -51,18 +47,14 @@
       "statement": "The filter-analyze subcommand operates directly on host files without an image, measuring Shannon entropy across candidate blosc2-style filter pipelines to recommend the best compression configuration.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L216-L272",
-          "version": "repo-lines-v1:sha256:16e44e0f29426339c5a98c78fcfe83d7e622f5c3fb7a717f6039207a08c60ef7:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjNmM4YmQ1OGNlYjM1NTY5ZWRkM2ZmOTA3YWQzNGU3NGU2NGE4YjE1ZDgwOTk5Y2JmYWIzYzQ1NTI2MTJlYzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY5Yzg0ODk0OTM3MTU2ODkxMjI5NzFkOTQ3NjIyMDQ5OWZhZmI3YjBlZGEwNTY4ZjA2YmRiNmI1ODIyZjg1ZjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ3ODM1MTRlYzM5ZTRmYjdkMTY5YmM0YmUyYmU2NTk4NDQ3ODZlNzA3NzU5ZWM3NTg5ODE2YmMxOGM0YTdhYzQifQ"
-        },
-        {
-          "resource": "repo://src/bin/oifs.rs#L74-L78",
-          "version": "repo-lines-v1:sha256:68e1d4e2acf17224717e374bae19624c885f8eed7ab063c80dfd7e27ce2ba353:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmE0ODE4NDI0YjMyOTM2MDc4ZjRiZWQ2ZTRlNzY5ZGY4OTMxZmNmZTZkNDRkZjNiZjExM2IzNmYxNTNiZDljMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWYwY2RiOTcyYTdiZmI3ZWQyNDZmOWZmNjcyMzg1ZTU1ZjQ5NjhmYzExMDQzZGM1YjY4NGQ1MWRmYTMxZGJjYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjAwZjBhOTQ5YWY0NjNlNmNmMmU4YjgzNGVmMDhiNWI0MWNkZWY5OGU0MzY1ZDJjNDJhYjhmNzc2ZGI4NjdiYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjc2MWQ3ZGQ4MWQ4ZTMzNTE4OTEyZWYwNzI5YzY0ZDE0OTQyNWEwZjE4ZTFjOTU1ZjczMmI2YmExNDk2NmYwYiJ9"
+          "resource": "repo://src/bin/oifs.rs#L221-L221",
+          "version": "repo-lines-v1:sha256:16a8b309d810d565470d8fbbedc6bf4d55095a72c3730ed43d95027c83f7e3f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZhOGIzMDlkODEwZDU2NTQ3MGQ4ZmJiZWRjNmJmNGQ1NTA5NWE3MmMzNzMwZWQ0M2Q5NTAyN2M4M2Y3ZTNmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZhOGIzMDlkODEwZDU2NTQ3MGQ4ZmJiZWRjNmJmNGQ1NTA5NWE3MmMzNzMwZWQ0M2Q5NTAyN2M4M2Y3ZTNmMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGYwNTZiZjM5MTYyZjliZTI2NzI1NGM2YjcxMjFjNWM1ZWZkMjY1YTA2NjlhNGQxZGNiNDE0ODNmOTc3NDJlMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTQzYTU5NDBhM2VjODRjZjAxZGVlMDkyOWI1YTUxYjdiMmRmZWQyNWE2ZWEwMjkxNWZjMjFkNjRhN2ViMGMxNiJ9"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-09-30T20:17:56.754Z"
+    "at": "2026-10-03T08:18:49.684Z"
   }
 }

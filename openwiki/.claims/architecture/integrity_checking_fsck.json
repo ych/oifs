@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:ae705b23a10f19e302ade308e550a626ccd9fed417b28d319a608d00617fcf6c",
+  "pageVersion": "sha256:b3ee2889d214f2074581e43313a7da9cda2d1b9bfa00fd7932793671a2e8ab32",
   "claims": [
     {
       "id": "claim_d7ca918549b14cc1b21b3120633470f4",
       "statement": "DiskManager::verify_integrity harvests allocated inodes and data blocks from bitmaps using BitmapRef, then traverses the directory tree to collect the inodes and blocks that are actually reachable.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2016-L2139",
-          "version": "repo-lines-v1:sha256:67da5b5883c546c36bd76b7f9ada3eeef4101b2e1f79793885903d17c2af464b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlOTQxYTU4N2UwMTlmNmYzNjk2NmUxODFkNGE1MmNkOTU3YmE5N2RhMjVlNWZjZTM4Y2JiZDI5YTM5ZDNmYmQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhZDAyZTI3MTUxMTY3Y2ZiOWUxYzBmNmExOTFiODNhMjg5NGI0YTE4ZTEwM2I2OWYyOWUwY2Q5YjI1Y2MzZjc4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIn0"
+          "resource": "repo://src/disk.rs#L2348-L2467",
+          "version": "repo-lines-v1:sha256:dc4b7097171d8f5e2bbfd4f0ce49a8858475f43ca32f808d765eefb89f4408ef:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlOTQxYTU4N2UwMTlmNmYzNjk2NmUxODFkNGE1MmNkOTU3YmE5N2RhMjVlNWZjZTM4Y2JiZDI5YTM5ZDNmYmQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkZmEzMzc0M2U1NzYxOTBkYzAzNjg0MjIzYjk0YmJmZDIxMjBiZjhjYmNjNjdlNWFjOTc4OGUxMGZmNTZiMmY5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhZDAyZTI3MTUxMTY3Y2ZiOWUxYzBmNmExOTFiODNhMjg5NGI0YTE4ZTEwM2I2OWYyOWUwY2Q5YjI1Y2MzZjc4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlZmQ0ZDlkYjlmZmNmOGVmOGMyMTBmY2RmNjhiYWY5OGU3NmFlNTdhMTZlMjY1ZTliODJjMjhhYjdmZmI5MzE2In0"
         }
       ]
     },
@@ -17,7 +17,7 @@
       "statement": "The fsck scanner resolves physical block pointers for every reachable inode across direct, single-indirect, double-indirect, and triple-indirect tiers, tracking blocks referenced by more than one inode.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2084-L2095",
+          "resource": "repo://src/disk.rs#L2418-L2429",
           "version": "repo-lines-v1:sha256:7d13ab30026d9d01e10ddf83145d5a9216d0606499959ddc952a5abd6c554b85:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwMTBhOWU1ZjhlOGRlNjRkODM4YzRmODU2M2Y5ZDc2NGVlZWFkMzBjNDA4ZTI0ZTJmZGIxMGYyZGM5YWI4ZDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzODI3ODA5ZjgyZDQwNDJmYzU5NmUyNDJlNGMxMmUyYzk2NGRlNmQ1YmRiYjIyYzFkODhkNzgxNWIzMGYyMzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMjJmOGQ3OTRiOGUxOWM2NmMxYTk0ZGJhZGY4OTQ2YjliZjMzMzVmMzNmMDZjNjZiMGRhYWM5MGVhMDNlZDcifQ"
         }
       ]
@@ -27,7 +27,7 @@
       "statement": "Integrity checking computes set-theoretic differences between bitmap allocations and directory reachability to detect orphan inodes, leaked blocks, missing blocks, and cross-linked blocks.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2097-L2130",
+          "resource": "repo://src/disk.rs#L2431-L2464",
           "version": "repo-lines-v1:sha256:bb13190157a8187f0aa380c68caf3dcc9c851b39e7da7c1327ed11169716446e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3NGFiYzgzMjdjMzBhMjJhOTVmNjgxMTc5N2IwNmI2ZTMwMzJmNTNlY2EzZDgwMGY3YjFjMWJlOTk2MDQzNTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzYmY3YTI2NWQ1OGUxNWQwMzE0OWY3ZGUyNGI3NTZjN2U4OGViM2Q0OGQ2ZDUyYTE4YTQwMzQzODkwMjBkOWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRhOWY4NmQyOGU3ODRmOWZkMzFmYjcyZDE1ZjYwY2JjZWFhZmRkNjY5Y2JkNWI2ZGE3ODg4YTAyMzMyMWViYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBhNmZjZmYyNGEwOTk1NTA4NGU4NzM3ZmY4MjVkZTQxMTZiNDM5MWI3Mzk2NDc4MWMxMzBjNGRmMGY5OTRjMzQifQ"
         }
       ]
@@ -37,11 +37,11 @@
       "statement": "FsckReport records structural consistency via an is_clean flag alongside sorted identifier lists of orphan inodes, leaked blocks, missing blocks, and cross-linked blocks.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L112-L123",
+          "resource": "repo://src/disk.rs#L162-L173",
           "version": "repo-lines-v1:sha256:ffd817362d35f6dfa1e3a10690e04a3ecb41db2259ecd457dd345e09687d962b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNjc4NjY2ZGY4ZGI4N2MxNDM1OThjZmEwMWI5YmZiM2U3NmE5NmEyMzI3N2ZhNzhkN2UyNGE0OTA1N2QwMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjNjAzMTE2ODdlMTBmOWZjNWU4MWE1YWUwNGJmODQ2MjhlNDYyNjc2YjY0YWMzOTQ1ZDEyZWJmOGY0MmRmOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxYTNjMDFhNTViMjY2NWExMzJhYTBiZWQ1ODg4ZjIxNzJhYTVjYThlMTcwNGViMzJmY2IwMWUxN2QwYTk0NDcifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L2132-L2139",
+          "resource": "repo://src/disk.rs#L2466-L2473",
           "version": "repo-lines-v1:sha256:66cf73b1cc2cbef09e0447543901cb6017b84337e6a8bae8a55302d0d3c5bd52:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTc5NzZmN2RhNjFmNmNhM2ViMTRlYzY2Y2U0Y2VkZTIyMDczNzNkODc4OTkzNzg0ODNiNGUyMjI5ODAxODA3ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWIxNTczYTdlZjA1NGMyZWQ2MGQ3YzM0NDIxOTdhOTkwZWZhMzYxODJkYTdhYTUzNmIxZmY0OTExOGY4MTkxMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjEsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSJ9"
         }
       ]
@@ -49,6 +49,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-09-30T20:17:56.754Z"
+    "at": "2026-10-03T08:18:49.684Z"
   }
 }

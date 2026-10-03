@@ -44,7 +44,7 @@ pub struct Inode {
     /// Direct block pointers (12 blocks × 4KB = 48KB max file size)
     /// Block ID 0 indicates unallocated/empty block
     pub blocks: [u64; 12],
-    
+
     // Encryption fields
     /// Is this file encrypted?
     pub encrypted: bool,
@@ -99,10 +99,132 @@ impl Inode {
         }
     }
 }
+/// Number of direct block pointers in an inode (`blocks[0..10]`).
+pub const DIRECT_BLOCKS: usize = 10;
+/// Number of 8-byte block pointers that fit in one 4KB indirect block.
+pub const PTRS_PER_BLOCK: usize = 512;
+const SINGLE_END: usize = DIRECT_BLOCKS + PTRS_PER_BLOCK;
+const DOUBLE_END: usize = SINGLE_END + PTRS_PER_BLOCK * PTRS_PER_BLOCK;
+/// Total number of logical blocks addressable by one inode (~513GB at 4KB blocks).
+pub const MAX_LOGICAL_BLOCKS: usize = DOUBLE_END + PTRS_PER_BLOCK * PTRS_PER_BLOCK * PTRS_PER_BLOCK;
+
+/// Location of a logical file block inside the inode's pointer tree.
+///
+/// Every index stored in a variant is the slot index *within* the block at that level,
+/// so it is always `< PTRS_PER_BLOCK` (or `< DIRECT_BLOCKS` for `Direct`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockPath {
+    /// `inode.blocks[i]`
+    Direct(usize),
+    /// `inode.blocks[10]` -> slot `i`
+    Single(usize),
+    /// `inode.blocks[11]` -> slot `a` -> slot `b`
+    Double(usize, usize),
+    /// `inode.triple_indirect` -> slot `a` -> slot `b` -> slot `c`
+    Triple(usize, usize, usize),
+}
+
+impl BlockPath {
+    /// Decomposes a logical block index. Returns `None` past the addressable limit.
+    #[inline]
+    pub fn from_logical(idx: usize) -> Option<Self> {
+        if idx < DIRECT_BLOCKS {
+            Some(BlockPath::Direct(idx))
+        } else if idx < SINGLE_END {
+            Some(BlockPath::Single(idx - DIRECT_BLOCKS))
+        } else if idx < DOUBLE_END {
+            let rel = idx - SINGLE_END;
+            Some(BlockPath::Double(
+                rel / PTRS_PER_BLOCK,
+                rel % PTRS_PER_BLOCK,
+            ))
+        } else if idx < MAX_LOGICAL_BLOCKS {
+            let rel = idx - DOUBLE_END;
+            let rem = rel % (PTRS_PER_BLOCK * PTRS_PER_BLOCK);
+            Some(BlockPath::Triple(
+                rel / (PTRS_PER_BLOCK * PTRS_PER_BLOCK),
+                rem / PTRS_PER_BLOCK,
+                rem % PTRS_PER_BLOCK,
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Inverse of [`BlockPath::from_logical`].
+    #[inline]
+    pub fn to_logical(self) -> usize {
+        match self {
+            BlockPath::Direct(i) => i,
+            BlockPath::Single(i) => DIRECT_BLOCKS + i,
+            BlockPath::Double(a, b) => SINGLE_END + a * PTRS_PER_BLOCK + b,
+            BlockPath::Triple(a, b, c) => {
+                DOUBLE_END + a * PTRS_PER_BLOCK * PTRS_PER_BLOCK + b * PTRS_PER_BLOCK + c
+            }
+        }
+    }
+
+    /// True if every slot index is within the bounds of the block it indexes.
+    #[inline]
+    pub fn slots_in_bounds(self) -> bool {
+        match self {
+            BlockPath::Direct(i) => i < DIRECT_BLOCKS,
+            BlockPath::Single(i) => i < PTRS_PER_BLOCK,
+            BlockPath::Double(a, b) => a < PTRS_PER_BLOCK && b < PTRS_PER_BLOCK,
+            BlockPath::Triple(a, b, c) => {
+                a < PTRS_PER_BLOCK && b < PTRS_PER_BLOCK && c < PTRS_PER_BLOCK
+            }
+        }
+    }
+}
+
+/// Shared property checked by both the Kani harness (symbolic `idx`) and unit tests.
+#[cfg(any(test, kani))]
+fn check_block_path_roundtrip(idx: usize) {
+    match BlockPath::from_logical(idx) {
+        Some(path) => {
+            assert!(idx < MAX_LOGICAL_BLOCKS);
+            assert!(path.slots_in_bounds(), "slot index out of bounds");
+            assert_eq!(path.to_logical(), idx, "decomposition must be invertible");
+        }
+        None => assert!(idx >= MAX_LOGICAL_BLOCKS),
+    }
+}
 
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
+
+    /// Prove that, for EVERY possible logical block index, the pointer-tree decomposition
+    /// never produces an out-of-bounds slot and is exactly invertible (no two logical
+    /// blocks map to the same physical pointer slot, and none is skipped).
+    #[kani::proof]
+    fn proof_block_path_roundtrip_all_indices() {
+        let idx: usize = kani::any();
+        check_block_path_roundtrip(idx);
+    }
+
+    /// Prove that tier boundaries are exactly where the on-disk format expects them.
+    #[kani::proof]
+    fn proof_block_path_tier_boundaries() {
+        assert_eq!(BlockPath::from_logical(9), Some(BlockPath::Direct(9)));
+        assert_eq!(BlockPath::from_logical(10), Some(BlockPath::Single(0)));
+        assert_eq!(BlockPath::from_logical(521), Some(BlockPath::Single(511)));
+        assert_eq!(BlockPath::from_logical(522), Some(BlockPath::Double(0, 0)));
+        assert_eq!(
+            BlockPath::from_logical(262_665),
+            Some(BlockPath::Double(511, 511))
+        );
+        assert_eq!(
+            BlockPath::from_logical(262_666),
+            Some(BlockPath::Triple(0, 0, 0))
+        );
+        assert_eq!(
+            BlockPath::from_logical(MAX_LOGICAL_BLOCKS - 1),
+            Some(BlockPath::Triple(511, 511, 511))
+        );
+        assert_eq!(BlockPath::from_logical(MAX_LOGICAL_BLOCKS), None);
+    }
 
     /// Prove that Inode::new produces a zero-initialized inode with correct mode.
     #[kani::proof]
@@ -138,13 +260,23 @@ mod kani_proofs {
     #[kani::proof]
     fn proof_inode_no_dangling_blocks() {
         let mode_flag: bool = kani::any();
-        let mode = if mode_flag { FileType::File } else { FileType::Directory };
+        let mode = if mode_flag {
+            FileType::File
+        } else {
+            FileType::Directory
+        };
         let inode = Inode::new(mode);
 
         for i in 0..12 {
-            assert_eq!(inode.blocks[i], 0, "All block pointers must be zero in a new inode");
+            assert_eq!(
+                inode.blocks[i], 0,
+                "All block pointers must be zero in a new inode"
+            );
         }
-        assert_eq!(inode.triple_indirect, 0, "Triple indirect block pointer must be zero in a new inode");
+        assert_eq!(
+            inode.triple_indirect, 0,
+            "Triple indirect block pointer must be zero in a new inode"
+        );
     }
 }
 
@@ -193,5 +325,19 @@ mod tests {
         assert_eq!(deserialized.triple_indirect, 400);
         assert_eq!(deserialized.encryption_nonce, [9u8; 24]);
     }
-}
 
+    #[test]
+    fn test_block_path_roundtrip_boundaries_and_sweep() {
+        let boundaries = [0, DIRECT_BLOCKS, SINGLE_END, DOUBLE_END, MAX_LOGICAL_BLOCKS];
+        for &b in &boundaries {
+            for idx in b.saturating_sub(2)..=b + 2 {
+                check_block_path_roundtrip(idx);
+            }
+        }
+        // Dense sweep through direct/single/double tiers and the start of triple.
+        for idx in 0..DOUBLE_END + 3 * PTRS_PER_BLOCK * PTRS_PER_BLOCK {
+            check_block_path_roundtrip(idx);
+        }
+        check_block_path_roundtrip(usize::MAX);
+    }
+}

@@ -207,32 +207,26 @@ pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
                 }
                 return;
             }
-            2 => {
-                if ptr as usize % std::mem::align_of::<u16>() == 0 {
-                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u16, n) };
-                    for i in (1..n).rev() {
-                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
-                    }
-                    return;
+            2 if (ptr as usize).is_multiple_of(std::mem::align_of::<u16>()) => {
+                let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u16, n) };
+                for i in (1..n).rev() {
+                    slice[i] = slice[i].wrapping_sub(slice[i - 1]);
                 }
+                return;
             }
-            4 => {
-                if ptr as usize % std::mem::align_of::<u32>() == 0 {
-                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
-                    for i in (1..n).rev() {
-                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
-                    }
-                    return;
+            4 if (ptr as usize).is_multiple_of(std::mem::align_of::<u32>()) => {
+                let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
+                for i in (1..n).rev() {
+                    slice[i] = slice[i].wrapping_sub(slice[i - 1]);
                 }
+                return;
             }
-            8 => {
-                if ptr as usize % std::mem::align_of::<u64>() == 0 {
-                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u64, n) };
-                    for i in (1..n).rev() {
-                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
-                    }
-                    return;
+            8 if (ptr as usize).is_multiple_of(std::mem::align_of::<u64>()) => {
+                let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u64, n) };
+                for i in (1..n).rev() {
+                    slice[i] = slice[i].wrapping_sub(slice[i - 1]);
                 }
+                return;
             }
             _ => {}
         }
@@ -292,32 +286,26 @@ pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
                 }
                 return;
             }
-            2 => {
-                if ptr as usize % std::mem::align_of::<u16>() == 0 {
-                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u16, n) };
-                    for i in 1..n {
-                        slice[i] = slice[i - 1].wrapping_add(slice[i]);
-                    }
-                    return;
+            2 if (ptr as usize).is_multiple_of(std::mem::align_of::<u16>()) => {
+                let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u16, n) };
+                for i in 1..n {
+                    slice[i] = slice[i - 1].wrapping_add(slice[i]);
                 }
+                return;
             }
-            4 => {
-                if ptr as usize % std::mem::align_of::<u32>() == 0 {
-                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
-                    for i in 1..n {
-                        slice[i] = slice[i - 1].wrapping_add(slice[i]);
-                    }
-                    return;
+            4 if (ptr as usize).is_multiple_of(std::mem::align_of::<u32>()) => {
+                let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
+                for i in 1..n {
+                    slice[i] = slice[i - 1].wrapping_add(slice[i]);
                 }
+                return;
             }
-            8 => {
-                if ptr as usize % std::mem::align_of::<u64>() == 0 {
-                    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u64, n) };
-                    for i in 1..n {
-                        slice[i] = slice[i - 1].wrapping_add(slice[i]);
-                    }
-                    return;
+            8 if (ptr as usize).is_multiple_of(std::mem::align_of::<u64>()) => {
+                let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u64, n) };
+                for i in 1..n {
+                    slice[i] = slice[i - 1].wrapping_add(slice[i]);
                 }
+                return;
             }
             _ => {}
         }
@@ -512,9 +500,9 @@ pub fn bitshuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
 
     // Step 2: Transpose 8x8 bit blocks using 64-bit word delta swap
     // Unroll 2x (16 bytes) to maximize instruction-level parallelism across superscalar ALU pipes
-    let mut in_chunks_16 = byte_shuffled[..n_blocks * 8].chunks_exact(16);
-    let mut out_chunks_16 = out[..n_blocks * 8].chunks_exact_mut(16);
-    for (src, dst) in in_chunks_16.by_ref().zip(out_chunks_16.by_ref()) {
+    let (in_chunks_16, rem_src_16) = byte_shuffled[..n_blocks * 8].as_chunks::<16>();
+    let (out_chunks_16, rem_dst_16) = out[..n_blocks * 8].as_chunks_mut::<16>();
+    for (src, dst) in in_chunks_16.iter().zip(out_chunks_16.iter_mut()) {
         let w0 = u64::from_le_bytes(src[0..8].try_into().unwrap());
         let w1 = u64::from_le_bytes(src[8..16].try_into().unwrap());
         let t0 = transpose_8x8_u64(w0);
@@ -522,8 +510,6 @@ pub fn bitshuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
         dst[0..8].copy_from_slice(&t0.to_le_bytes());
         dst[8..16].copy_from_slice(&t1.to_le_bytes());
     }
-    let rem_src_16 = in_chunks_16.remainder();
-    let rem_dst_16 = out_chunks_16.into_remainder();
     if rem_src_16.len() == 8 {
         let w = u64::from_le_bytes(rem_src_16.try_into().unwrap());
         let t = transpose_8x8_u64(w);
@@ -548,9 +534,9 @@ pub fn bitshuffle_decode(data: &[u8], typesize: usize) -> Vec<u8> {
 
     // Transpose 8x8 bit blocks (symmetric operation) using 64-bit word delta swap
     // Unroll 2x (16 bytes) to maximize instruction-level parallelism across superscalar ALU pipes
-    let mut in_chunks_16 = data[..n_blocks * 8].chunks_exact(16);
-    let mut out_chunks_16 = unbit[..n_blocks * 8].chunks_exact_mut(16);
-    for (src, dst) in in_chunks_16.by_ref().zip(out_chunks_16.by_ref()) {
+    let (in_chunks_16, rem_src_16) = data[..n_blocks * 8].as_chunks::<16>();
+    let (out_chunks_16, rem_dst_16) = unbit[..n_blocks * 8].as_chunks_mut::<16>();
+    for (src, dst) in in_chunks_16.iter().zip(out_chunks_16.iter_mut()) {
         let w0 = u64::from_le_bytes(src[0..8].try_into().unwrap());
         let w1 = u64::from_le_bytes(src[8..16].try_into().unwrap());
         let t0 = transpose_8x8_u64(w0);
@@ -558,8 +544,6 @@ pub fn bitshuffle_decode(data: &[u8], typesize: usize) -> Vec<u8> {
         dst[0..8].copy_from_slice(&t0.to_le_bytes());
         dst[8..16].copy_from_slice(&t1.to_le_bytes());
     }
-    let rem_src_16 = in_chunks_16.remainder();
-    let rem_dst_16 = out_chunks_16.into_remainder();
     if rem_src_16.len() == 8 {
         let w = u64::from_le_bytes(rem_src_16.try_into().unwrap());
         let t = transpose_8x8_u64(w);
@@ -590,7 +574,7 @@ pub fn trunc_precision_encode_inplace(data: &mut [u8], typesize: usize, prec_bit
                 #[cfg(target_endian = "little")]
                 {
                     let ptr = data.as_mut_ptr();
-                    if ptr as usize % std::mem::align_of::<u32>() == 0 {
+                    if (ptr as usize).is_multiple_of(std::mem::align_of::<u32>()) {
                         let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
                         for val in slice.iter_mut() {
                             *val &= mask;
@@ -614,7 +598,7 @@ pub fn trunc_precision_encode_inplace(data: &mut [u8], typesize: usize, prec_bit
                 #[cfg(target_endian = "little")]
                 {
                     let ptr = data.as_mut_ptr();
-                    if ptr as usize % std::mem::align_of::<u64>() == 0 {
+                    if (ptr as usize).is_multiple_of(std::mem::align_of::<u64>()) {
                         let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u64, n) };
                         for val in slice.iter_mut() {
                             *val &= mask;
@@ -846,7 +830,7 @@ pub fn recommend_filters(data: &[u8]) -> FilterRecommendation {
             } else {
                 1.0
             };
-            let savings = if eval_data.len() > 0 {
+            let savings = if !eval_data.is_empty() {
                 (1.0 - (eval_comp_size as f64 / eval_data.len() as f64)) * 100.0
             } else {
                 0.0

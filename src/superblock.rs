@@ -87,7 +87,7 @@ impl SuperBlock {
         // If the filesystem has room for the standard 1024 inode table blocks (plus at least 1 data block),
         // allocate the standard 1024 blocks (32,768 inodes) for full capacity and backward compatibility.
         // For smaller filesystems (< 1028 blocks), dynamically size the table up to 25% of available space.
-        let inode_table_blocks = if total_blocks >= inode_table_block + inode_table_blocks_cap + 1 {
+        let inode_table_blocks = if total_blocks > inode_table_block + inode_table_blocks_cap {
             inode_table_blocks_cap // = 1024 blocks = 32,768 inodes
         } else {
             (available.saturating_sub(1) / 4).min(inode_table_blocks_cap)

@@ -35,16 +35,15 @@ impl<'a> BitmapRef<'a> {
         let start_chunk = start_bit / 64;
         let bit_in_chunk = start_bit % 64;
 
-        let chunks = self.data.chunks_exact(8);
-        let remainder = chunks.remainder();
+        let (chunks, remainder) = self.data.as_chunks::<8>();
         let chunk_count = chunks.len();
 
         if start_chunk < chunk_count {
-            let mut chunk_iter = chunks.enumerate().skip(start_chunk);
+            let mut chunk_iter = chunks.iter().enumerate().skip(start_chunk);
 
             // First chunk: mask out bits before start_bit
             if let Some((chunk_idx, chunk)) = chunk_iter.next() {
-                let raw_word = u64::from_le_bytes(chunk.try_into().unwrap());
+                let raw_word = u64::from_le_bytes(*chunk);
                 let mask = (1u64 << bit_in_chunk) - 1;
                 let masked_word = raw_word | mask;
                 if masked_word != u64::MAX {
@@ -55,7 +54,7 @@ impl<'a> BitmapRef<'a> {
 
             // Subsequent chunks
             for (chunk_idx, chunk) in chunk_iter {
-                let word = u64::from_le_bytes(chunk.try_into().unwrap());
+                let word = u64::from_le_bytes(*chunk);
                 if word != u64::MAX {
                     let bit = (!word).trailing_zeros() as usize;
                     return Some(chunk_idx * 64 + bit);
@@ -91,14 +90,12 @@ impl<'a> BitmapRef<'a> {
     /// Finds next free bit starting from `hint`. If not found after `hint`, wraps around to 0.
     pub fn find_next_free_wrapped(&self, hint: usize) -> Option<usize> {
         if let Some(idx) = self.find_first_free_from(hint) {
-            return Some(idx);
+            Some(idx)
+        } else if hint > 0 {
+            self.find_first_free_from(0).filter(|&idx| idx < hint)
+        } else {
+            None
         }
-        if hint > 0 {
-            if let Some(idx) = self.find_first_free_from(0).filter(|&idx| idx < hint) {
-                return Some(idx);
-            }
-        }
-        None
     }
 
     /// Fast 64-bit word iterator over all set bits up to `max_bits`.
@@ -106,12 +103,11 @@ impl<'a> BitmapRef<'a> {
     pub fn for_each_set_bit<F: FnMut(usize)>(&self, max_bits: usize, mut f: F) {
         let max_bytes = max_bits.div_ceil(8).min(self.data.len());
         let slice = &self.data[..max_bytes];
-        let chunks = slice.chunks_exact(8);
-        let remainder = chunks.remainder();
+        let (chunks, remainder) = slice.as_chunks::<8>();
         let chunk_count = chunks.len();
 
-        for (chunk_idx, chunk) in chunks.enumerate() {
-            let mut word = u64::from_le_bytes(chunk.try_into().unwrap());
+        for (chunk_idx, chunk) in chunks.iter().enumerate() {
+            let mut word = u64::from_le_bytes(*chunk);
             let base = chunk_idx * 64;
             while word != 0 {
                 let bit = word.trailing_zeros() as usize;

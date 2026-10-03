@@ -155,7 +155,7 @@ pub fn encrypt_filename(
     let mut hasher = Blake2b512::new();
     hasher.update(b"OIFS_SIV_FILENAME_V1");
     hasher.update(key.as_bytes());
-    hasher.update(&parent_inode.to_le_bytes());
+    hasher.update(parent_inode.to_le_bytes());
     hasher.update(name.as_bytes());
     let hash = hasher.finalize();
 
@@ -220,7 +220,7 @@ pub fn decrypt_filename(
     let mut hasher = Blake2b512::new();
     hasher.update(b"OIFS_SIV_FILENAME_V1");
     hasher.update(key.as_bytes());
-    hasher.update(&parent_inode.to_le_bytes());
+    hasher.update(parent_inode.to_le_bytes());
     hasher.update(plaintext.as_bytes());
     let hash = hasher.finalize();
 

@@ -42,16 +42,42 @@ This document records the implemented optimizations (P0 & P1) and the planned fu
 
 ---
 
-## 2. Planned Optimizations Status (P3)
+### P3 (Extreme Scale - In Progress)
+1. **Multi-Block Directories & Hashed Directory Index (P3.1 - Completed)**:
+   - **File**: `src/directory.rs`, `src/disk.rs`, `src/inode.rs`, `tests/multi_block_directory_test.rs`, `tests/dir_bench.rs`
+   - **Mechanism**:
+     - **Dynamic Block Expansion**: Directories grow across direct / single / double indirect blocks via `get_or_alloc_block`. Inserts try the last block first, so a growing directory appends in O(1) blocks; earlier blocks are only probed (to reuse space freed by deletes) when the last block is full.
+     - **On-disk 64-bit SipHash-2-4 per entry** (`hash_filename`): `find_entry_in_block_with_hash` skips records whose non-zero hash differs before comparing names. Legacy entries (`hash == 0`) always fall through to a name compare. On-disk scans are still linear in the number of blocks — there is no on-disk bucket placement (a `hash % num_blocks` scheme does not work because `num_blocks` changes as the directory grows).
+     - **Per-directory in-memory index** (`dir_cache: RwLock<HashMap<u64, DirIndex>>`): zero-allocation hits. The first negative lookup in a directory (already a full scan), or 8 cold scans, builds a *complete* index, after which hits, misses and create-time existence checks are O(1). Deleting a directory drops its index so a reused inode id can never resolve stale names.
+     - **Verified block addressing**: logical-block → pointer-path arithmetic lives in one pure function (`inode::BlockPath`) shared by the read path and the allocating write path, with a Kani proof over every `usize`.
+     - **Subsystem Integration**: FSCK (`verify_integrity`) and Defragmentation (`defragment_safe`) scan and preserve all multi-block directory trees.
+     - **Backward Compatibility**: Legacy v1 single-block directories (`inode.size == 0`) remain readable/writable and upgrade on first expansion.
+   - **Benchmark Result** (`cargo test --release --test dir_bench -- --ignored --nocapture`, 10,000 entries / 91 blocks, arm64 macOS):
+
+     | Operation (×10,000) | Before index | After index |
+     | :--- | ---: | ---: |
+     | Cold lookup (fresh `DiskManager`) | 79.2 ms | 1.05 ms |
+     | Negative lookup | 137.0 ms | 0.82 ms |
+     | Warm lookup | 0.69 ms | 0.71 ms |
+     | Create + 1-byte write | 991 ms | 874 ms |
+
+     Create is dominated by the whole-mapping `flush_async()` (msync) issued on every mutation; without it the same run takes ~19 ms (see open item below).
+
+
+---
+
+## 2. Planned Optimizations Status (P3 Future)
 
 ---
 
 ## 3. P3 Architectural Blueprints (Long-Term)
 
-### P3.1: Multi-Block Directories & Hash-Indexed Buckets
-- **Problem**: Currently, directories reside within a single 4KB block (`inode.blocks[0]`), limiting directories to a few hundred entries.
-- **Proposed Solution**: Support directory expansion across multiple blocks and introduce hash-bucket indexing (e.g. 64-bit SipHash) for $O(1) \sim O(\log N)$ lookups in directories containing 10,000+ files.
+### P3.3: Per-mutation msync policy (open decision)
+- **Finding**: `create_entry_internal`, `write_data_with_filters` and `delete_file` call `mmap.flush_async()` (MS_ASYNC) on the *entire* mapping after every mutation. In the 10k-create benchmark this costs ~855 of 874 ms (~19 ms without it).
+- **Note**: MS_ASYNC only schedules writeback and never waited for durability; data in the shared mapping already survives a process crash. Explicit `flush()` and `Drop` still `msync(MS_SYNC)`.
+- **Options**: (a) drop per-op `flush_async`, (b) flush only the touched byte ranges, (c) make it a configurable durability mode.
 
 ### P3.2: io_uring Asynchronous I/O Engine (Linux)
 - **Problem**: Synchronous mmap page faults block threads when data is not cached in RAM.
 - **Proposed Solution**: Optional `io_uring` backend on modern Linux kernels for batched asynchronous disk submission.
+

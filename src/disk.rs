@@ -141,7 +141,27 @@ struct DiskManagerInner {
     pub free_inode_hint: u64,
     /// Inode cache for zero-copy metadata access (P2.2)
     pub inode_cache: RwLock<HashMap<u64, Inode>>,
+    /// Per-directory name index: dir_inode_id -> DirIndex (P3.1)
+    pub dir_cache: RwLock<HashMap<u64, DirIndex>>,
 }
+
+/// In-memory index of one directory's entries.
+///
+/// Starts empty and caches positive lookups. Once a directory has had a negative lookup
+/// (which already costs a full scan) or `DIR_INDEX_BUILD_AFTER_SCANS` cold scans, the whole
+/// directory is indexed and `complete` is set, after which hits *and misses* are O(1).
+#[derive(Default)]
+struct DirIndex {
+    complete: bool,
+    cold_scans: u32,
+    /// On-disk stored name (ciphertext on encrypted filesystems) -> inode id.
+    stored: HashMap<String, u64>,
+    /// Plaintext name -> inode id. Only used on encrypted filesystems to skip re-encryption.
+    plain: HashMap<String, u64>,
+}
+
+/// Cold targeted scans tolerated on a directory before building its full index.
+const DIR_INDEX_BUILD_AFTER_SCANS: u32 = 8;
 
 impl Drop for DiskManagerInner {
     fn drop(&mut self) {
@@ -266,6 +286,7 @@ impl DiskManager {
             free_block_hint,
             free_inode_hint: 0,
             inode_cache: RwLock::new(HashMap::with_capacity(1024)),
+            dir_cache: RwLock::new(HashMap::new()),
         };
 
         let dm = Self {
@@ -298,6 +319,7 @@ impl DiskManager {
 
             let mut root_inode = Inode::new(crate::inode::FileType::Directory);
             root_inode.blocks[0] = root_data;
+            root_inode.size = BLOCK_SIZE as u64;
             Self::write_inode_internal(&mut guard, 0, &root_inode)?;
             guard.mmap.flush()?;
         }
@@ -333,6 +355,7 @@ impl DiskManager {
         Self::write_inode_internal(&mut guard, inode_id, inode)
     }
 
+    #[allow(dead_code)]
     fn find_dir_entry_in_block(
         mmap: &MmapMut,
         block_id: u64,
@@ -363,6 +386,183 @@ impl DiskManager {
         } else {
             Ok(Vec::new())
         }
+    }
+
+    /// Returns the number of physical data blocks allocated for this directory.
+    /// Handles backward-compatibility where legacy images have inode.size == 0 and inode.blocks[0] != 0.
+    #[inline]
+    pub fn dir_num_blocks(inode: &Inode) -> usize {
+        crate::directory::dir_block_count(inode.size, inode.blocks[0], BLOCK_SIZE as u64)
+    }
+
+    /// Scans a directory's blocks for `target_name`, using the stored 64-bit hash to skip
+    /// mismatching records without comparing names. Returns `(inode_id, physical_block)`.
+    fn locate_entry_in_dir(
+        mmap: &MmapMut,
+        inode: &Inode,
+        target_name: &str,
+        target_hash: u64,
+    ) -> Option<(u64, u64)> {
+        for blk_idx in 0..Self::dir_num_blocks(inode) {
+            let phys_blk = Self::resolve_logical_block_id(mmap, inode, blk_idx);
+            if phys_blk == 0 {
+                continue;
+            }
+            if let Some(slice) = Self::get_block_from_map(mmap, phys_blk)
+                && let Some(id) =
+                    crate::directory::find_entry_in_block_with_hash(slice, target_name, target_hash)
+            {
+                return Some((id, phys_blk));
+            }
+        }
+        None
+    }
+
+    /// Reads every entry of a directory into a stored-name -> inode map.
+    fn build_dir_index(
+        mmap: &MmapMut,
+        inode: &Inode,
+    ) -> Result<HashMap<String, u64>, DiskManagerError> {
+        let mut map = HashMap::new();
+        for blk_idx in 0..Self::dir_num_blocks(inode) {
+            let phys_blk = Self::resolve_logical_block_id(mmap, inode, blk_idx);
+            if phys_blk == 0 {
+                continue;
+            }
+            for entry in Self::read_dir_entries_from_block(mmap, phys_blk)? {
+                // Keep the first occurrence, matching on-disk scan order.
+                map.entry(entry.name).or_insert(entry.inode);
+            }
+        }
+        Ok(map)
+    }
+
+    /// Resolves `name` inside directory `parent_id` (`Ok(None)` = not found).
+    ///
+    /// Order: cached hit -> authoritative miss from a complete index -> targeted on-disk scan.
+    /// A negative scan (already a full pass) or repeated cold scans promote the directory to a
+    /// complete index so later hits, misses and create-time existence checks are O(1).
+    fn dir_lookup(
+        guard: &DiskManagerInner,
+        parent_id: u64,
+        name: &str,
+    ) -> Result<Option<u64>, DiskManagerError> {
+        let encrypted = guard.encryption_key.is_some();
+
+        // 1. Fast path: no allocation, no disk access.
+        if let Some(ix) = guard.dir_cache.read().unwrap().get(&parent_id) {
+            let hit = if encrypted {
+                ix.plain.get(name)
+            } else {
+                ix.stored.get(name)
+            };
+            if let Some(&id) = hit {
+                return Ok(Some(id));
+            }
+            if ix.complete && !encrypted {
+                return Ok(None);
+            }
+        }
+
+        let parent = Self::read_inode_internal(guard, parent_id)?;
+        if parent.mode != crate::inode::FileType::Directory {
+            return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
+        }
+
+        // Stored-name candidates in priority order: ciphertext name first, then the legacy
+        // plaintext name (entries written before encryption-aware naming).
+        let enc_name = guard.encryption_key.as_ref().map(|key| {
+            crate::encryption::encrypt_filename(key, parent_id, name)
+                .unwrap_or_else(|_| name.to_string())
+        });
+        let candidates = [enc_name.as_deref(), Some(name)];
+
+        // 2. Complete index (only reachable here on encrypted filesystems).
+        let indexed = guard
+            .dir_cache
+            .read()
+            .unwrap()
+            .get(&parent_id)
+            .filter(|ix| ix.complete)
+            .map(|ix| {
+                candidates
+                    .iter()
+                    .flatten()
+                    .find_map(|c| ix.stored.get(*c).copied())
+            });
+
+        let found = match indexed {
+            Some(found) => found,
+            // 3. Targeted on-disk scan.
+            None => candidates.iter().flatten().find_map(|c| {
+                Self::locate_entry_in_dir(
+                    &guard.mmap,
+                    &parent,
+                    c,
+                    crate::directory::hash_filename(c),
+                )
+                .map(|(id, _)| id)
+            }),
+        };
+
+        let mut cache = guard.dir_cache.write().unwrap();
+        let ix = cache.entry(parent_id).or_default();
+        if indexed.is_none() {
+            ix.cold_scans = ix.cold_scans.saturating_add(1);
+            if !ix.complete && (found.is_none() || ix.cold_scans >= DIR_INDEX_BUILD_AFTER_SCANS) {
+                ix.stored = Self::build_dir_index(&guard.mmap, &parent)?;
+                ix.complete = true;
+            }
+        }
+        if let Some(id) = found {
+            let map = if encrypted {
+                &mut ix.plain
+            } else {
+                &mut ix.stored
+            };
+            map.insert(name.to_string(), id);
+        }
+        Ok(found)
+    }
+
+    /// Appends a directory entry to a directory, allocating a new block if all existing blocks are full.
+    ///
+    /// The last block is tried first: in a growing directory every earlier block is full, so this
+    /// makes the common insert O(1) blocks; earlier blocks are only probed (to reuse space freed by
+    /// deletions) when the last block is full.
+    fn append_dir_entry_to_dir(
+        guard: &mut DiskManagerInner,
+        parent_inode: &mut Inode,
+        entry: &crate::directory::DirectoryEntry,
+    ) -> Result<(), DiskManagerError> {
+        let num_blocks = Self::dir_num_blocks(parent_inode);
+        let needed_space = 20 + entry.name.len();
+
+        if num_blocks > 0 {
+            let probe_order = std::iter::once(num_blocks - 1).chain(0..num_blocks - 1);
+            for blk_idx in probe_order {
+                let phys_blk = Self::resolve_logical_block_id(&guard.mmap, parent_inode, blk_idx);
+                if phys_blk == 0 {
+                    continue;
+                }
+                if let Some(slice) = Self::get_block_from_map(&guard.mmap, phys_blk) {
+                    let insert_offset = crate::directory::find_insert_offset_in_block(slice);
+                    if insert_offset + needed_space <= BLOCK_SIZE {
+                        return Self::append_dir_entry_to_block(&mut guard.mmap, phys_blk, entry);
+                    }
+                }
+            }
+        }
+
+        // All existing blocks are full (or the directory had none): grow by one block.
+        let new_blk_idx = num_blocks;
+        let new_phys_block = Self::get_or_alloc_block(guard, parent_inode, new_blk_idx, true)?;
+        if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, new_phys_block) {
+            slice.fill(0);
+        }
+        Self::append_dir_entry_to_block(&mut guard.mmap, new_phys_block, entry)?;
+        parent_inode.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
+        Ok(())
     }
 
     fn append_dir_entry_to_block(
@@ -424,8 +624,8 @@ impl DiskManager {
         if sib_id != 0 {
             blks.push(sib_id);
             if let Some(slice) = Self::get_block_from_map(mmap, sib_id) {
-                for chunk in slice.chunks_exact(8) {
-                    let blk = u64::from_le_bytes(chunk.try_into().unwrap());
+                for chunk in slice.as_chunks::<8>().0 {
+                    let blk = u64::from_le_bytes(*chunk);
                     if blk != 0 {
                         blks.push(blk);
                     }
@@ -452,13 +652,13 @@ impl DiskManager {
             };
 
             if let Some(slice) = Self::get_block_from_map(mmap, dib_id) {
-                for chunk in slice[..max_s_entries * 8].chunks_exact(8) {
-                    let sib = u64::from_le_bytes(chunk.try_into().unwrap());
+                for chunk in slice[..max_s_entries * 8].as_chunks::<8>().0 {
+                    let sib = u64::from_le_bytes(*chunk);
                     if sib != 0 {
                         blks.push(sib);
                         if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
-                            for d_chunk in s_slice.chunks_exact(8) {
-                                let blk = u64::from_le_bytes(d_chunk.try_into().unwrap());
+                            for d_chunk in s_slice.as_chunks::<8>().0 {
+                                let blk = u64::from_le_bytes(*d_chunk);
                                 if blk != 0 {
                                     blks.push(blk);
                                 }
@@ -488,19 +688,18 @@ impl DiskManager {
             };
 
             if let Some(slice) = Self::get_block_from_map(mmap, tib_id) {
-                for chunk in slice[..max_t_entries * 8].chunks_exact(8) {
-                    let dib = u64::from_le_bytes(chunk.try_into().unwrap());
+                for chunk in slice[..max_t_entries * 8].as_chunks::<8>().0 {
+                    let dib = u64::from_le_bytes(*chunk);
                     if dib != 0 {
                         blks.push(dib);
                         if let Some(d_slice) = Self::get_block_from_map(mmap, dib) {
-                            for s_chunk in d_slice.chunks_exact(8) {
-                                let sib = u64::from_le_bytes(s_chunk.try_into().unwrap());
+                            for s_chunk in d_slice.as_chunks::<8>().0 {
+                                let sib = u64::from_le_bytes(*s_chunk);
                                 if sib != 0 {
                                     blks.push(sib);
                                     if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
-                                        for blk_chunk in s_slice.chunks_exact(8) {
-                                            let blk =
-                                                u64::from_le_bytes(blk_chunk.try_into().unwrap());
+                                        for blk_chunk in s_slice.as_chunks::<8>().0 {
+                                            let blk = u64::from_le_bytes(*blk_chunk);
                                             if blk != 0 {
                                                 blks.push(blk);
                                             }
@@ -526,32 +725,21 @@ impl DiskManager {
         let mut guard = self.inner.write().unwrap();
 
         // 1. Read Parent
-        let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
+        let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
             return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
         }
 
-        let dir_block_id = parent_inode.blocks[0];
-        if dir_block_id == 0 {
-            return Err(DiskManagerError::Io(std::io::Error::other("No block")));
-        }
-
-        // Check if file or directory already exists
         let stored_name = if let Some(key) = &guard.encryption_key {
             crate::encryption::encrypt_filename(key, parent_inode_id, name)
                 .unwrap_or_else(|_| name.to_string())
         } else {
             name.to_string()
         };
+        let stored_hash = crate::directory::hash_filename(&stored_name);
 
-        let already_exists = if stored_name != name {
-            Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &stored_name)?.is_some()
-                || Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.is_some()
-        } else {
-            Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.is_some()
-        };
-
-        if already_exists {
+        // Check if file or directory already exists (checks ciphertext and legacy plaintext names).
+        if Self::dir_lookup(&guard, parent_inode_id, name)?.is_some() {
             let type_str = if file_type == crate::inode::FileType::Directory {
                 "Directory"
             } else {
@@ -585,6 +773,7 @@ impl DiskManager {
         if file_type == crate::inode::FileType::Directory {
             let dir_data_block = Self::alloc_and_zero_block(&mut guard)?;
             new_inode.blocks[0] = dir_data_block;
+            new_inode.size = BLOCK_SIZE as u64;
         }
 
         Self::write_inode_internal(&mut guard, new_inode_id, &new_inode)?;
@@ -592,15 +781,24 @@ impl DiskManager {
         // 4. Update Parent Dir
         let entry = crate::directory::DirectoryEntry {
             inode: new_inode_id,
-            hash: 0,
+            hash: stored_hash,
             name: stored_name,
         };
-        Self::append_dir_entry_to_block(&mut guard.mmap, dir_block_id, &entry)?;
+        Self::append_dir_entry_to_dir(&mut guard, &mut parent_inode, &entry)?;
 
         // 5. Update Parent Mtime
-        let mut parent_inode = parent_inode;
         parent_inode.modified_at = now;
         Self::write_inode_internal(&mut guard, parent_inode_id, &parent_inode)?;
+
+        // Keep the directory index consistent (only if one exists; otherwise nothing is stale).
+        let stored_name = entry.name;
+        let encrypted = guard.encryption_key.is_some();
+        if let Some(ix) = guard.dir_cache.write().unwrap().get_mut(&parent_inode_id) {
+            if encrypted {
+                ix.plain.insert(name.to_string(), new_inode_id);
+            }
+            ix.stored.insert(stored_name, new_inode_id);
+        }
 
         let _ = guard.mmap.flush_async();
         Ok(new_inode_id)
@@ -623,30 +821,7 @@ impl DiskManager {
     /// Looks up a file/directory by name within a parent directory
     pub fn lookup(&self, parent_inode_id: u64, name: &str) -> Result<u64, DiskManagerError> {
         let guard = self.inner.read().unwrap();
-        let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
-        if parent_inode.mode != crate::inode::FileType::Directory {
-            return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
-        }
-
-        let dir_block_id = parent_inode.blocks[0];
-        if dir_block_id == 0 {
-            return Err(DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Not found",
-            )));
-        }
-
-        if let Some(key) = &guard.encryption_key {
-            let enc_name = crate::encryption::encrypt_filename(key, parent_inode_id, name)
-                .unwrap_or_else(|_| name.to_string());
-            if let Some(inode) =
-                Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, &enc_name)?
-            {
-                return Ok(inode);
-            }
-        }
-
-        Self::find_dir_entry_in_block(&guard.mmap, dir_block_id, name)?.ok_or_else(|| {
+        Self::dir_lookup(&guard, parent_inode_id, name)?.ok_or_else(|| {
             DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Not found",
@@ -654,69 +829,26 @@ impl DiskManager {
         })
     }
 
-    /// Reads data from a file
-    ///
-    /// # Arguments
-    /// * `inode_id` - The inode ID of the file to read
-    ///
-    /// # Returns
-    /// The file's data as a Vec<u8>. If the file is compressed, it will be
-    /// automatically decompressed before returning.
-    ///
-    /// # Compression Handling
-    /// - If `compressed_size > 0`: Read compressed data and decompress using zstd
-    /// - If `compressed_size == 0`: Read and return raw data
     /// Resolves a single logical block index to its physical block ID (read-only, does not allocate).
     pub(crate) fn resolve_logical_block_id(mmap: &MmapMut, inode: &Inode, blk_idx: usize) -> u64 {
-        // 1. Direct blocks (0..10)
-        if blk_idx < 10 {
-            return inode.blocks[blk_idx];
+        use crate::inode::BlockPath;
+        // Follows one pointer level; a zero pointer means a sparse hole.
+        let follow = |parent: u64, slot: usize| -> u64 {
+            if parent == 0 {
+                0
+            } else {
+                Self::read_block_ptr(mmap, parent, slot)
+            }
+        };
+        match BlockPath::from_logical(blk_idx) {
+            Some(BlockPath::Direct(i)) => inode.blocks[i],
+            Some(BlockPath::Single(i)) => follow(inode.blocks[10], i),
+            Some(BlockPath::Double(a, b)) => follow(follow(inode.blocks[11], a), b),
+            Some(BlockPath::Triple(a, b, c)) => {
+                follow(follow(follow(inode.triple_indirect, a), b), c)
+            }
+            None => 0,
         }
-
-        // 2. Single Indirect blocks (10..522)
-        if blk_idx < 10 + 512 {
-            let sib = inode.blocks[10];
-            if sib == 0 {
-                return 0;
-            }
-            return Self::read_block_ptr(mmap, sib, blk_idx - 10);
-        }
-
-        // 3. Double Indirect blocks (522..262666)
-        if blk_idx < 10 + 512 + 512 * 512 {
-            let dib = inode.blocks[11];
-            if dib == 0 {
-                return 0;
-            }
-            let idx = blk_idx - (10 + 512);
-            let sib = Self::read_block_ptr(mmap, dib, idx / 512);
-            if sib == 0 {
-                return 0;
-            }
-            return Self::read_block_ptr(mmap, sib, idx % 512);
-        }
-
-        // 4. Triple Indirect blocks (262666 .. 134480394)
-        let max_blocks = 10 + 512 + 512 * 512 + 512 * 512 * 512;
-        if blk_idx < max_blocks {
-            let tib = inode.triple_indirect;
-            if tib == 0 {
-                return 0;
-            }
-            let idx = blk_idx - (10 + 512 + 512 * 512);
-            let dib = Self::read_block_ptr(mmap, tib, idx / (512 * 512));
-            if dib == 0 {
-                return 0;
-            }
-            let rem = idx % (512 * 512);
-            let sib = Self::read_block_ptr(mmap, dib, rem / 512);
-            if sib == 0 {
-                return 0;
-            }
-            return Self::read_block_ptr(mmap, sib, rem % 512);
-        }
-
-        0
     }
 
     #[allow(clippy::collapsible_if)]
@@ -770,13 +902,13 @@ impl DiskManager {
                     let start_entry = blk_idx - 10;
                     let num_entries = ((10 + 512) - blk_idx).min(512 - start_entry);
                     let ptr_chunks = &sib_slice[start_entry * 8..(start_entry + num_entries) * 8];
-                    for chunk in ptr_chunks.chunks_exact(8) {
+                    for chunk in ptr_chunks.as_chunks::<8>().0 {
                         if read >= physical_size {
                             break;
                         }
                         let to_read_curr =
                             std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
-                        let blk = u64::from_le_bytes(chunk.try_into().unwrap());
+                        let blk = u64::from_le_bytes(*chunk);
                         if blk != 0 {
                             if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
                                 raw_data[read as usize..read as usize + to_read_curr]
@@ -821,13 +953,13 @@ impl DiskManager {
                 if let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id) {
                     let num_entries = 512 - d_idx;
                     let ptr_chunks = &sib_slice[d_idx * 8..(d_idx + num_entries) * 8];
-                    for chunk in ptr_chunks.chunks_exact(8) {
+                    for chunk in ptr_chunks.as_chunks::<8>().0 {
                         if read >= physical_size {
                             break;
                         }
                         let to_read_curr =
                             std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
-                        let blk = u64::from_le_bytes(chunk.try_into().unwrap());
+                        let blk = u64::from_le_bytes(*chunk);
                         if blk != 0 {
                             if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
                                 raw_data[read as usize..read as usize + to_read_curr]
@@ -1407,91 +1539,65 @@ impl DiskManager {
         logical_block_idx: usize,
         allocate: bool,
     ) -> Result<u64, DiskManagerError> {
-        // Direct block case
-        if logical_block_idx < 10 {
-            let mut blk_id = inode.blocks[logical_block_idx];
-            if blk_id == 0 && allocate {
-                blk_id = Self::allocate_block(guard)?;
-                inode.blocks[logical_block_idx] = blk_id;
+        use crate::inode::BlockPath;
+
+        // Ensures a top-level indirect root pointer exists (allocating a zeroed block if asked).
+        fn ensure_root(
+            guard: &mut DiskManagerInner,
+            slot: &mut u64,
+            allocate: bool,
+        ) -> Result<u64, DiskManagerError> {
+            if *slot == 0 && allocate {
+                *slot = DiskManager::alloc_and_zero_block(guard)?;
             }
-            return Ok(blk_id);
+            Ok(*slot)
         }
 
-        // Single Indirect block case (indices 10..522)
-        if logical_block_idx < 10 + 512 {
-            let idx = logical_block_idx - 10;
-            if inode.blocks[10] == 0 {
-                if !allocate {
+        match BlockPath::from_logical(logical_block_idx) {
+            Some(BlockPath::Direct(i)) => {
+                if inode.blocks[i] == 0 && allocate {
+                    inode.blocks[i] = Self::allocate_block(guard)?;
+                }
+                Ok(inode.blocks[i])
+            }
+            Some(BlockPath::Single(i)) => {
+                let sib = ensure_root(guard, &mut inode.blocks[10], allocate)?;
+                if sib == 0 {
                     return Ok(0);
                 }
-                inode.blocks[10] = Self::alloc_and_zero_block(guard)?;
+                Self::get_or_alloc_indirect_child(guard, sib, i, allocate, false)
             }
-            return Self::get_or_alloc_indirect_child(
-                guard,
-                inode.blocks[10],
-                idx,
-                allocate,
-                false,
-            );
-        }
-
-        // Double Indirect block case (indices 522..262666)
-        if logical_block_idx < 10 + 512 + 512 * 512 {
-            let idx = logical_block_idx - (10 + 512);
-            let s_idx = idx / 512;
-            let d_idx = idx % 512;
-
-            if inode.blocks[11] == 0 {
-                if !allocate {
+            Some(BlockPath::Double(a, b)) => {
+                let dib = ensure_root(guard, &mut inode.blocks[11], allocate)?;
+                if dib == 0 {
                     return Ok(0);
                 }
-                inode.blocks[11] = Self::alloc_and_zero_block(guard)?;
-            }
-            let sib_id =
-                Self::get_or_alloc_indirect_child(guard, inode.blocks[11], s_idx, allocate, true)?;
-            if sib_id == 0 {
-                return Ok(0);
-            }
-            return Self::get_or_alloc_indirect_child(guard, sib_id, d_idx, allocate, false);
-        }
-
-        // Triple Indirect block case (indices 262666 .. 134480394, up to ~513GB)
-        let max_blocks = 10 + 512 + 512 * 512 + 512 * 512 * 512;
-        if logical_block_idx < max_blocks {
-            let idx = logical_block_idx - (10 + 512 + 512 * 512);
-            let t_idx = idx / (512 * 512);
-            let rem = idx % (512 * 512);
-            let d_idx = rem / 512;
-            let s_idx = rem % 512;
-
-            if inode.triple_indirect == 0 {
-                if !allocate {
+                let sib = Self::get_or_alloc_indirect_child(guard, dib, a, allocate, true)?;
+                if sib == 0 {
                     return Ok(0);
                 }
-                inode.triple_indirect = Self::alloc_and_zero_block(guard)?;
+                Self::get_or_alloc_indirect_child(guard, sib, b, allocate, false)
             }
-            let dib_id = Self::get_or_alloc_indirect_child(
-                guard,
-                inode.triple_indirect,
-                t_idx,
-                allocate,
-                true,
-            )?;
-            if dib_id == 0 {
-                return Ok(0);
+            Some(BlockPath::Triple(a, b, c)) => {
+                let tib = ensure_root(guard, &mut inode.triple_indirect, allocate)?;
+                if tib == 0 {
+                    return Ok(0);
+                }
+                let dib = Self::get_or_alloc_indirect_child(guard, tib, a, allocate, true)?;
+                if dib == 0 {
+                    return Ok(0);
+                }
+                let sib = Self::get_or_alloc_indirect_child(guard, dib, b, allocate, true)?;
+                if sib == 0 {
+                    return Ok(0);
+                }
+                Self::get_or_alloc_indirect_child(guard, sib, c, allocate, false)
             }
-            let sib_id = Self::get_or_alloc_indirect_child(guard, dib_id, d_idx, allocate, true)?;
-            if sib_id == 0 {
-                return Ok(0);
-            }
-            return Self::get_or_alloc_indirect_child(guard, sib_id, s_idx, allocate, false);
+            None => Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                "File too large (max 513GB)",
+            ))),
         }
-
-        // Limit exceeded
-        Err(DiskManagerError::Io(std::io::Error::new(
-            std::io::ErrorKind::FileTooLarge,
-            "File too large (max 513GB)",
-        )))
     }
 
     fn get_block_from_map(mmap: &MmapMut, block_id: u64) -> Option<&[u8]> {
@@ -1510,37 +1616,12 @@ impl DiskManager {
     ) -> Result<u64, DiskManagerError> {
         let mut curr = guard.superblock.root_inode;
         for &part in parts {
-            let parent = Self::read_inode_internal(guard, curr)?;
-            if parent.mode != crate::inode::FileType::Directory {
-                return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
-            }
-            let blk = parent.blocks[0];
-            if blk == 0 {
-                return Err(DiskManagerError::Io(std::io::Error::new(
+            curr = Self::dir_lookup(guard, curr, part)?.ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "Not found",
-                )));
-            }
-
-            if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                if let Some(key) = &guard.encryption_key {
-                    let enc_name = crate::encryption::encrypt_filename(key, curr, part)
-                        .unwrap_or_else(|_| part.to_string());
-                    if let Some(inode_id) = crate::directory::find_entry_in_block(slice, &enc_name)
-                    {
-                        curr = inode_id;
-                        continue;
-                    }
-                }
-                if let Some(inode_id) = crate::directory::find_entry_in_block(slice, part) {
-                    curr = inode_id;
-                    continue;
-                }
-            }
-            return Err(DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Not found",
-            )));
+                ))
+            })?;
         }
         Ok(curr)
     }
@@ -1572,11 +1653,15 @@ impl DiskManager {
                 "Not a directory",
             )));
         }
-        let block_id = inode.blocks[0];
-        if block_id == 0 {
-            return Ok(Vec::new());
+        let num_blocks = Self::dir_num_blocks(&inode);
+        let mut entries = Vec::new();
+        for blk_idx in 0..num_blocks {
+            let phys_blk = Self::resolve_logical_block_id(&guard.mmap, &inode, blk_idx);
+            if phys_blk == 0 {
+                continue;
+            }
+            entries.extend(Self::read_dir_entries_from_block(&guard.mmap, phys_blk)?);
         }
-        let mut entries = Self::read_dir_entries_from_block(&guard.mmap, block_id)?;
         if let Some(key) = &guard.encryption_key {
             for entry in &mut entries {
                 if let Ok(decrypted) =
@@ -1620,49 +1705,59 @@ impl DiskManager {
     pub fn delete_file(&self, parent_inode_id: u64, name: &str) -> Result<(), DiskManagerError> {
         let mut guard = self.inner.write().unwrap();
 
-        let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
+        let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
             return Err(DiskManagerError::Io(std::io::Error::other(
                 "Not a directory",
             )));
         }
 
-        let dir_block_id = parent_inode.blocks[0];
-        if dir_block_id == 0 {
-            return Err(DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "File not found",
-            )));
-        }
-
-        let entries = Self::read_dir_entries_from_block(&guard.mmap, dir_block_id)?;
-        let mut remaining_entries = Vec::new();
-        let mut target_inode = None;
-
         let enc_name = if let Some(key) = &guard.encryption_key {
             crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
         } else {
             None
         };
+        let candidates = [enc_name.as_deref(), Some(name)];
 
-        for entry in entries {
-            if entry.name == name || enc_name.as_deref() == Some(&entry.name) {
-                target_inode = Some(entry.inode);
-            } else {
-                remaining_entries.push(entry);
+        // Locate the entry (ciphertext name first, then legacy plaintext) without deserializing.
+        let (matched_name, target_inode_id, phys_blk) = candidates
+            .iter()
+            .flatten()
+            .find_map(|c| {
+                Self::locate_entry_in_dir(
+                    &guard.mmap,
+                    &parent_inode,
+                    c,
+                    crate::directory::hash_filename(c),
+                )
+                .map(|(id, blk)| (*c, id, blk))
+            })
+            .ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "File not found",
+                ))
+            })?;
+
+        // Rewrite only the block that holds the entry.
+        let remaining_entries: Vec<_> = Self::read_dir_entries_from_block(&guard.mmap, phys_blk)?
+            .into_iter()
+            .filter(|e| e.name != matched_name)
+            .collect();
+        Self::rewrite_dir_entries_in_block(&mut guard.mmap, phys_blk, &remaining_entries)?;
+
+        // Invalidate cached names in the parent, and drop the target's own index in case it was
+        // a directory: its inode id can be reused, and stale names must never resolve under it.
+        {
+            let mut cache = guard.dir_cache.write().unwrap();
+            if let Some(ix) = cache.get_mut(&parent_inode_id) {
+                ix.plain.remove(name);
+                ix.stored.remove(matched_name);
             }
+            cache.remove(&target_inode_id);
         }
 
-        let target_inode_id = target_inode.ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "File not found",
-            ))
-        })?;
-
-        // 2. Rewrite Directory Block
-        Self::rewrite_dir_entries_in_block(&mut guard.mmap, dir_block_id, &remaining_entries)?;
-        // 3. Free Inode & Blocks
+        // Free Inode & Blocks
         let file_inode = Self::read_inode_internal(&guard, target_inode_id)?;
         let blocks_to_free = Self::collect_inode_blocks(&guard.mmap, &file_inode);
 
@@ -1696,11 +1791,11 @@ impl DiskManager {
         guard.inode_cache.write().unwrap().remove(&target_inode_id);
 
         // Update Parent Mtime
-        let mut parent_inode = parent_inode;
-        parent_inode.modified_at = std::time::SystemTime::now()
+        let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
+        parent_inode.modified_at = now;
         Self::write_inode_internal(&mut guard, parent_inode_id, &parent_inode)?;
 
         let _ = guard.mmap.flush_async();
@@ -1736,10 +1831,10 @@ impl DiskManager {
         let mut in_free_run = false;
         let num_words = total_blocks / 64;
         let rem_bits = total_blocks % 64;
-        let chunks = bitmap_slice.chunks_exact(8);
+        let (chunks, _) = bitmap_slice.as_chunks::<8>();
 
-        for chunk in chunks.take(num_words) {
-            let word = u64::from_le_bytes(chunk.try_into().unwrap());
+        for chunk in chunks.iter().take(num_words) {
+            let word = u64::from_le_bytes(*chunk);
             if word == 0 {
                 // All 64 blocks are free
                 if !in_free_run {
@@ -2062,19 +2157,21 @@ impl DiskManager {
                 continue;
             }
 
-            let block_id = dir_inode.blocks[0];
-            if block_id == 0 {
-                continue;
-            }
+            let num_blocks = Self::dir_num_blocks(&dir_inode);
+            for blk_idx in 0..num_blocks {
+                let phys_blk = Self::resolve_logical_block_id(&guard.mmap, &dir_inode, blk_idx);
+                if phys_blk == 0 {
+                    continue;
+                }
+                if let Some(block_data) = Self::get_block_from_map(&guard.mmap, phys_blk) {
+                    for entry in crate::directory::DirectoryIterator::new(block_data).flatten() {
+                        referenced_inodes.insert(entry.inode);
 
-            if let Some(block_data) = Self::get_block_from_map(&guard.mmap, block_id) {
-                for entry in crate::directory::DirectoryIterator::new(block_data).flatten() {
-                    referenced_inodes.insert(entry.inode);
-
-                    if let Ok(child_inode) = Self::read_inode_internal(&guard, entry.inode)
-                        && child_inode.mode == crate::inode::FileType::Directory
-                    {
-                        queue.push(entry.inode);
+                        if let Ok(child_inode) = Self::read_inode_internal(&guard, entry.inode)
+                            && child_inode.mode == crate::inode::FileType::Directory
+                        {
+                            queue.push(entry.inode);
+                        }
                     }
                 }
             }

@@ -217,7 +217,7 @@ Standard dictionary compressors (Zstandard, LZ4) match repeating byte sequences.
 > Transform binary layouts losslessly before compression to collapse Shannon Entropy and group repeating bytes, unlocking 10x ~ 300x higher compression ratios.
 
 ### 2. Filter Principles
-*   **Delta**: Computes difference between adjacent elements: $\Delta[i] = x[i] \mathbin{\text{wrapping\_sub}} x[i-1]$. Continuous sequences collapse to constant streams of `1`s or small integers.
+*   **Delta**: Computes difference between adjacent elements: $\Delta[i] = x[i] \mathbin{-} x[i-1]$ (`wrapping_sub`). Continuous sequences collapse to constant streams of `1`s or small integers.
 *   **Byte Shuffle**: Transposes Array of Structures (AoS) into Structure of Arrays (SoA), clustering identical high-order bytes together into long zero-byte runs.
 *   **BitShuffle**: Performs an $8 \times 8$ bit matrix transposition, highly effective for sparse matrices and boolean masks.
 *   **TruncPrecision**: Zeros out lower mantissa noise bits in Float32/Float64 to boost compressibility while maintaining specified precision.
@@ -308,7 +308,7 @@ OIFS is backed by over 50 automated tests and formal verification harnesses:
 *   **Network Multi-Node Sync Tests**: Verifies multi-node TCP concurrent slice writes and synchronization on a single shared file.
 *   **MCP Server Tests**: Validates JSON-RPC tool invocations adhering to the Model Context Protocol.
 *   **Performance Microbenchmark**: Empirically proves zero-allocation and algorithmic speedup ratios.
-*   **Kani Formal Proofs**: 25 formal proofs verifying arithmetic overflow safety, bijectivity, and allocation correctness.
+*   **Kani Formal Proofs**: 42 formal proofs verifying arithmetic overflow safety, bijectivity, block pointer path resolution, and allocation correctness.
 
 Run all standard tests:
 ```bash

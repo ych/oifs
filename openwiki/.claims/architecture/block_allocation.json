@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:7f36c07347592ba03ece73f78b80cd25e70004d758f54a139c482dc13d190162",
+  "pageVersion": "sha256:390eb8cec1d668fb1a9dfdc7510d664cd3e53d8ca838c4332ba01147512ed763",
   "claims": [
     {
       "id": "claim_a54bbd734e5f48d39aebfd777213aead",
@@ -11,7 +11,7 @@
           "version": "repo-lines-v1:sha256:5b9e36a653d3c932092a75b097e53fd2b3bde2938f243ee3d68a18708a20b0b7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5YTMzNzdmNzU5MWE4OWJlNzNjMGQ2MTg2NzlkMzcxY2E3YWIwYjg3M2IxNmYxZDViMDkyNTIxYzUwMjJkNTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4NDk5NTFmMzAzMDU5MTZjMmUwNzg0NGYyNzBlYWFmNmFlMTRlMWY4NGU2ZjlhNzAyYjY3NzlmNmRjYzM2ODEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzMDM4NjhiZTljNmNkN2E1ZTI5MzQyN2Y5YmZiZDFiM2Y5OTM5Mjk1MDdiMjExNjU5ZDYyNDAxZDE0OGM5MmYifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L188-L192",
+          "resource": "repo://src/disk.rs#L201-L205",
           "version": "repo-lines-v1:sha256:ba2e6e8b095b51033e2d115a681fc4b7b5fb9d29d8d2b66f93e7cec328f91806:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg1M2MxZGI0YzQyMTViN2NmNzkwZDMwY2QzMDUwNWQxYTdlOTQyNTlmMmE5ZWFiMzI4N2E0N2EwMTg0YzFlOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjFkOGRhZDllZjU1Y2JjNTk3YzhhMjJmOWRiMGNlMDNkZmEzM2RmZjhmNWI1NGVmYzg2MTUyZTI4NjhjNDU4ZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDkwYzA1OTM5ZjNmYTZmMGY4ZjI2YmMxYzQ4ZGY3ZDdkZjk2YWNkYTE2NWI3MTA4ODRlOGU5YzQyMDQyMzBlNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmVjNTk5M2E4YTVlNzMzMTdmYzMxYTYyMWVmMjY5NjM5MjdjYjNmN2U1YzdmMTFiMzRkN2ZhZGUzYjdkNTkxYiJ9"
         }
       ]
@@ -49,7 +49,7 @@
       "statement": "OIFS files map to physical blocks via direct blocks[0..10], a single indirect block (512 entries), a double indirect block (512*512), and a triple indirect pointer (512*512*512), capping files at 134,480,394 blocks (~513GB).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L760-L845",
+          "resource": "repo://src/disk.rs#L807-L892",
           "version": "repo-lines-v1:sha256:d96c2d1cc89bab8e174eb480e06e9a10094ea31018685863b4f8f664b1393805:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyODA3OWE1ODZmZGQ5NThhMDhiYzZmYjg1NmMwZDg5MzI5MTczZjFiMmE4YWZlYjgxN2M1ZWMwOGZjODk4MWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczNDc5Njg0MGNhYmIyZmI5MDBlZDBhZTc2OWRmYWNhZDZlOWYwNjM5Y2YyNTI5YjcyMTM2YjlhZTg0ZTQxYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhOTQ2NWZhODQxNTQ4NTEwMTAwYjczMDkyMjQ5OWQ5MzAxNjRlMjA1NzBkMzZlODJmNThkNDQ2MzEzOTE1MzQifQ"
         },
         {
@@ -63,18 +63,14 @@
       "statement": "Indirect-tree traversal skips entire zero sub-trees lazily and is capped by the file's logical/compressed size, which reduced sparse large-file read latency from 6.91s to 0.01s.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1018-L1120",
-          "version": "repo-lines-v1:sha256:734d29189426ffdb723091cad41a688faad3d0a730cd3d825305dd99138e794b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzMzZhNWZjMDUyMTFmN2QxMmM2MjVlMjk1MDdhY2Q5N2NkMGZmMDVjOTI4YjEwZDE0OGRiNDdiNzg4NmNiODVlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1ZmQxYWIzNTFjYWE4ZGU0Nzc3Mjg1MWJhNGY1MWJlYzlkNDljZjcxMGQ2OGU3NTQ0NTk3ZWRjZDA5ODFiOGRkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwYzk0NWEwNDc2NGU3ZWE3YzViNWEzYTZkZmM2OWQzZTk3NWUxMzlmMzE5Yjg2M2FkMDUwMmE4OTg2YTU4MTk1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5MTc3MDYzNDNmZWMzNDBhOGM1MzUxZmYwYjA2MjE1YmJlOWJmZGQ2MTRjNmE0NjI3M2ZiNzFmODFkN2UzYmUwIn0"
-        },
-        {
-          "resource": "repo://src/disk.rs#L785-L845",
-          "version": "repo-lines-v1:sha256:7e47900b502ecc5769d8d6bdeb304c23e1c418827f04c0750b0524f9a865f115:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyZmQ0YmYwZjk5NmVkYjNhZDUzNTYyYTcwMGU4ZWRlZmE1MTFmZWM1YmIxZDkwYmU4YjdmOTE3N2FkOWY4NzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyODA3OWE1ODZmZGQ5NThhMDhiYzZmYjg1NmMwZDg5MzI5MTczZjFiMmE4YWZlYjgxN2M1ZWMwOGZjODk4MWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdjOTA2OTliMGU0NjNhYTI0YmJiOWMzMWRhMWM3NWI0MmI1Zjk5NDlhN2EzNTk4ZDVmODU0YmZkYzE3Yjc4NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhOTQ2NWZhODQxNTQ4NTEwMTAwYjczMDkyMjQ5OWQ5MzAxNjRlMjA1NzBkMzZlODJmNThkNDQ2MzEzOTE1MzQifQ"
+          "resource": "repo://src/disk.rs#L1070-L1232",
+          "version": "repo-lines-v1:sha256:3f01f782401ceb542cc707d81628bd65a18383a7a777f2d58898581f50aa460d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZDk3NDk3MjNmYjNjNDliZDJiMTZlMTNiNWE0YWUwYjJiYzQ1NWM4NmU1YWQ0ZDc5NTlkNmZlODYxYzg4OGI1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyZDg1OGEyZTFkNTU2M2ZjM2Q5YzAzMDE2YjIxODY4ZWUzNjZmMmQxZGNlODc0MTgzYzQzNjIzOGVkM2U4MjliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3Nzk3YmUxYTUzY2I1NGIxMzFkM2NmZTc3ZmI1Y2EwMTVjZTU0ZGY5MDI5Y2NhNmM0YTcxOTM4OWQ0ZDYwMWI0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0MzdiOGQzMWU1Nzk2NjEyNzI0YWIyMWJmNmE0OGRkODBhODkzMzk3M2NhODkxYzUyZjE2NjlkNWRmYjljNmQyIn0"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-03T08:18:49.684Z"
+    "at": "2026-10-03T11:29:24.571Z"
   }
 }

@@ -3,9 +3,6 @@ type: architecture
 title: Block Allocation and Bitmap Indexing
 description: How OIFS allocates and tracks data blocks and inodes with 64-bit bitmap scanning, allocation hints for amortized O(1) sequential allocation, and the single/double/triple indirect block addressing scheme that expands files up to ~513GB.
 tags: [allocation, bitmap, indirect-blocks, hint, performance]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-03T08:18:49.684Z
 sources:
   - id: openwiki-source-57692e9ab78d05d0aeba3e7c
     resource: repo://src/allocator.rs
@@ -15,7 +12,10 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-bc305a37042018e1ebd6d860
     resource: repo://src/inode.rs
-generated: { by: "pi", at: "2026-10-03T08:18:49.684Z" }
+generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-03T11:29:24.571Z
 ---
 
 ## Responsibility and ownership
@@ -40,8 +40,10 @@ blocks starting at `data_block_start`).
 
 Two views wrap the raw bytes:
 
+<!-- openwiki: broken internal link [src/bitmap.rs#L2-L111] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`BitmapRef`](src/bitmap.rs#L2-L111) — read-only view used for analysis,
   scanning, and fsck.
+<!-- openwiki: broken internal link [src/bitmap.rs#L186-L245] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [`Bitmap`](src/bitmap.rs#L186-L245) — mutable view that forwards `set` /
   `clear` and delegates search helpers to a `BitmapRef`.
 
@@ -88,6 +90,7 @@ keeping sequential allocation compact.
 
 ## Indirect block addressing scheme
 
+<!-- openwiki: broken internal link [src/disk.rs] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`DiskManager`](src/disk.rs) maps logical file blocks to physical blocks using
 a hybrid direct + indirect index tree. Each block pointer entry is an 8-byte
 little-endian `u64`, so a 4KB block holds 512 pointers. The layout
@@ -119,6 +122,7 @@ under concurrent access serialized by the DiskManager mutex.
 
 ## Extension seams
 
+<!-- openwiki: broken internal link [src/allocator.rs#L13-L26] file "src/allocator.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Allocation is centralized behind the [`BlockAllocator`](src/allocator.rs#L13-L26)
 trait (`allocate`/`free`), so alternative allocation strategies could be added
 without touching the write path. The hint machinery, bitmap word scanning, and

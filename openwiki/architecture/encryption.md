@@ -6,7 +6,7 @@ tags: [encryption, security, aead, xchacha20-poly1305, argon2id, siv, zeroize]
 sources:
   - id: openwiki-source-88657ea41344918d5e874716
     resource: repo://src/encryption.rs
-generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
 verified:
   - by: openwiki/0.6.1
     at: 2026-10-03T08:18:49.684Z
@@ -14,17 +14,24 @@ verified:
 
 ## Responsibility and ownership
 
+<!-- openwiki: broken internal link [src/encryption.rs] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The encryption subsystem ([`src/encryption.rs`](src/encryption.rs)) provides cryptographic privacy and authenticated integrity for stored files, directory entries, and on-disk metadata.
 
 It isolates cryptographic primitives into three clean layers:
+<!-- openwiki: broken internal link [src/encryption.rs#L13-L34] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 1. **Key Management and Hygiene**: Passphrase hashing and automatic secret erasing via [`EncryptionKey`](src/encryption.rs#L13-L34).
+<!-- openwiki: broken internal link [src/encryption.rs#L71-L93] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [src/encryption.rs#L95-L117] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 2. **File Payload AEAD**: Authenticated payload confidentiality via [`encrypt_data`](src/encryption.rs#L71-L93) and [`decrypt_data`](src/encryption.rs#L95-L117).
+<!-- openwiki: broken internal link [src/encryption.rs#L142-L178] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [src/encryption.rs#L184-L232] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 3. **Deterministic Filename Privacy**: Directory structure and file naming privacy via Synthetic Initialization Vector (SIV) encryption in [`encrypt_filename`](src/encryption.rs#L142-L178) and [`decrypt_filename`](src/encryption.rs#L184-L232).
 
 ## Key derivation and memory hygiene
 
 ### Memory hygiene with ZeroizeOnDrop
 
+<!-- openwiki: broken internal link [src/encryption.rs#L13-L34] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Cryptographic keys must never linger in memory or bleed into swap space or crash dumps. The [`EncryptionKey`](src/encryption.rs#L13-L34) struct wraps a 256-bit (32-byte) key with `zeroize` macros:
 
 ```rust
@@ -39,6 +46,7 @@ pub struct EncryptionKey {
 
 ### Argon2id password-based key derivation (PBKDF)
 
+<!-- openwiki: broken internal link [src/encryption.rs#L44-L69] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Keys are derived from user-supplied passphrases using Argon2id via [`derive_key`](src/encryption.rs#L44-L69):
 - **Salt Management**: A cryptographically secure 16-byte random salt is generated with `OsRng` via `generate_salt()` (`src/encryption.rs#L128-L133`). This salt is permanently stored in plaintext within the filesystem's `SuperBlock::encryption_salt` (`src/superblock.rs`).
 - **Rainbow Table and GPU Resistance**: Argon2id combines data-dependent and data-independent memory access passes, providing state-of-the-art resistance against both side-channel cache timing attacks and GPU/ASIC password cracking.
@@ -63,6 +71,7 @@ Standard ChaCha20-Poly1305 uses a 96-bit nonce, which risks catastrophic key/non
 
 ## Pipeline ordering: filter $\to$ compress $\to$ encrypt
 
+<!-- openwiki: broken internal link [src/disk.rs#L953-L1040] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 In [`DiskManager::write_data_from_start_internal`](src/disk.rs#L953-L1040), the write pipeline strictly enforces that **pre-compression filtering and compression execute before encryption**:
 
 ```
@@ -83,6 +92,7 @@ Plain directory entry storage exposes sensitive filename patterns, extensions, a
 
 ### SIV construction and directory tweak
 
+<!-- openwiki: broken internal link [src/encryption.rs#L142-L178] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`encrypt_filename`](src/encryption.rs#L142-L178) deterministically generates a synthetic nonce using Blake2b-512 over a domain-separated context:
 
 ```
@@ -99,11 +109,13 @@ Synthetic Nonce = Blake2b-512("OIFS_SIV_FILENAME_V1" || key || parent_inode || f
 
 ### Decryption and verification
 
+<!-- openwiki: broken internal link [src/encryption.rs#L184-L232] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`decrypt_filename`](src/encryption.rs#L184-L232) decodes the Base64URL string, extracts the 12-byte synthetic nonce, verifies the Poly1305 authentication tag, and re-computes the Blake2b hash to ensure the synthetic nonce matches `(key, parent_inode, plaintext)`:
 - If a filename does not start with `_e_` or fails authentication, it gracefully returns the original name (`src/encryption.rs#L189-L191`), maintaining backward compatibility with unencrypted images.
 
 ## Error handling
 
+<!-- openwiki: broken internal link [src/encryption.rs#L236-L248] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 All cryptographic failures map to [`EncryptionError`](src/encryption.rs#L236-L248):
 
 | Error Variant | Meaning | Trigger Condition |

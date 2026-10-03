@@ -6,7 +6,7 @@ tags: [defragmentation, fragmentation, atomic-rename, contiguous-allocation, fil
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
-generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
 verified:
   - by: openwiki/0.6.1
     at: 2026-10-03T08:18:49.684Z
@@ -14,12 +14,17 @@ verified:
 
 ## Responsibility and ownership
 
+<!-- openwiki: broken internal link [src/disk.rs#L1475-L1759] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [src/disk.rs#L1475-L1593] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [src/disk.rs#L1604-L1609] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Defragmentation and space reorganization logic reside entirely within [`DiskManager`](src/disk.rs#L1475-L1759). It evaluates disk layout health through [`analyze_fragmentation`](src/disk.rs#L1475-L1593), which measures free-block scattering across physical data space. Defragmentation execution is exposed via [`DiskManager::defragment`](src/disk.rs#L1604-L1609), supporting two operational modes:
 - `DefragMode::Safe` (default): An out-of-place reorganization in a temporary image followed by transactional verification and rename.
 - `DefragMode::InPlace`: Direct modification of the existing image (currently reserved and returns an error).
 
 ## Fragmentation analysis
 
+<!-- openwiki: broken internal link [src/disk.rs#L1475-L1593] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [src/bitmap.rs#L2-L111] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Before and after defragmentation, [`DiskManager::analyze_fragmentation`](src/disk.rs#L1475-L1593) inspects the filesystem's `data_bitmap_block` using a read-only [`BitmapRef`](src/bitmap.rs#L2-L111).
 
 ### 64-bit word scanning
@@ -32,6 +37,7 @@ Instead of checking bit by bit, the analyzer slices the bitmap into 8-byte chunk
 
 ### Metrics and fragmentation ratio
 
+<!-- openwiki: broken internal link [src/disk.rs#L73-L82] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The resulting [`FragmentationStats`](src/disk.rs#L73-L82) tracks:
 - `total_blocks`, `used_blocks`, `free_blocks`.
 - `free_runs`: Number of separate contiguous sequences of free blocks.
@@ -43,6 +49,7 @@ The resulting [`FragmentationStats`](src/disk.rs#L73-L82) tracks:
 
 ## Safe defragmentation pipeline
 
+<!-- openwiki: broken internal link [src/disk.rs#L1612-L1751] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`defragment_safe`](src/disk.rs#L1612-L1751) reorganizes the filesystem out-of-place to protect against crashes, power failures, or corruption. The process executes across six distinct stages:
 
 ```
@@ -68,8 +75,10 @@ The resulting [`FragmentationStats`](src/disk.rs#L73-L82) tracks:
 The entire active image file is copied via `std::fs::copy(source_path, &temp_path)` (`src/disk.rs#L1624`). The destination defaults to `{source_path}.defrag.tmp`. This guarantees that if the defragmentation process is killed mid-stream, the original image file remains untouched and uncorrupted.
 
 ### 2. Inode scan and metadata preservation
+<!-- openwiki: broken internal link [src/bitmap.rs#L94-L108] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The temporary image is opened via `DiskManager::open(&temp_path, 0)` (`src/disk.rs#L1627`). Using [`BitmapRef::for_each_set_bit`](src/bitmap.rs#L94-L108), all allocated inode indices are collected from `inode_bitmap_block` (`src/disk.rs#L1634-L1644`):
 - **Directories**: Directory blocks cannot simply be moved without updating parent pointer graphs, so directory block addresses are harvested via `collect_inode_blocks` and staged in `directory_blocks` (`src/disk.rs#L1648-L1651`).
+<!-- openwiki: broken internal link [src/filters.rs#L19-L26] file "src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - **Regular Files**: For each file with `size > 0`, the complete uncompressed payload is read into memory via `temp_dm.read_data(inode_id)`. The file's exact compression status (`is_compressed = inode.compressed_size > 0`) and pre-compression filter configuration ([`FilterConfig`](src/filters.rs#L19-L26): `typesize`, `delta`, `shuffle`, `bitshuffle`) are recorded (`src/disk.rs#L1654-L1662`).
 - **Inode Reset**: The inode on disk is zeroed out (`size = 0`, `compressed_size = 0`, `blocks = [0; 12]`, `triple_indirect = 0`) via `write_inode` (`src/disk.rs#L1665-L1670`), freeing the blocks for contiguous reassignment.
 
@@ -98,4 +107,5 @@ To swap the defragmented image in place without risking downtime or data loss, `
 
 ## In-place defragmentation status
 
+<!-- openwiki: broken internal link [src/disk.rs#L1754-L1759] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`DiskManager::defragment_inplace`](src/disk.rs#L1754-L1759) is a planned feature intended for disk environments with insufficient free space to hold a duplicate temporary file. It currently returns `Err("In-place defragmentation not yet implemented")`. All production defragmentation operations should use `DefragMode::Safe`.

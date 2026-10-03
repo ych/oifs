@@ -6,7 +6,7 @@ tags: [fsck, integrity, consistency, bitmaps, verification, orphan-inodes, leake
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
-generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
 verified:
   - by: openwiki/0.6.1
     at: 2026-10-03T08:18:49.684Z
@@ -14,10 +14,13 @@ verified:
 
 ## Responsibility and ownership
 
+<!-- openwiki: broken internal link [src/disk.rs#L1762-L1877] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Filesystem structural consistency verification is owned by [`DiskManager::verify_integrity`](src/disk.rs#L1762-L1877).
 
 It serves as the OIFS equivalents of `fsck` (filesystem consistency check). Unlike continuous runtime operations that trust filesystem invariants, `verify_integrity` treats the raw on-disk state as untrusted, scanning block bitmaps, the inode table, and directory pointer trees to diagnose storage corruption, crash remnants, or software bugs.
 
+<!-- openwiki: broken internal link [src/disk.rs#L115-L126] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [src/bin/oifs.rs#L619-L650] file "src/bin/oifs.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Results are encapsulated within [`FsckReport`](src/disk.rs#L115-L126), which is exposed directly to the CLI command `oifs fsck` ([`src/bin/oifs.rs`](src/bin/oifs.rs#L619-L650)) and over the IPC layer via `IpcRequest::Fsck`.
 
 ## The consistency model: allocation vs reachability
@@ -61,10 +64,12 @@ The integrity scanner partitions discrepancies into four formal failure modes:
 
 ## Verification algorithm
 
+<!-- openwiki: broken internal link [src/disk.rs#L1762-L1877] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`DiskManager::verify_integrity`](src/disk.rs#L1762-L1877) operates under a shared read lock (`self.inner.read().unwrap()`), allowing concurrent inspections without halting read workloads.
 
 ### Step 1: Bitmap ground-truth harvesting
 
+<!-- openwiki: broken internal link [src/bitmap.rs#L94-L108] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Using 64-bit word scanning via [`BitmapRef::for_each_set_bit`](src/bitmap.rs#L94-L108), the scanner collects all physically marked bits:
 - `allocated_inodes` (`src/disk.rs#L1767-L1774`): Scans `superblock.inode_bitmap_block` across `superblock.inode_count`.
 - `allocated_data_blocks` (`src/disk.rs#L1777-L1786`): Scans `superblock.data_bitmap_block` starting at `superblock.data_block_start`.
@@ -99,10 +104,12 @@ while let Some(dir_id) = queue.pop() {
 ```
 
 - Tracks visited directories in `visited` to prevent infinite loops caused by circular directory links.
+<!-- openwiki: broken internal link [src/directory.rs] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - Uses streaming [`DirectoryIterator`](src/directory.rs) to collect all reachable child inodes.
 
 ### Step 3: Block reference resolution and cross-link detection
 
+<!-- openwiki: broken internal link [src/disk.rs#L1822-L1833] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 For every reachable inode in `referenced_inodes`, [`DiskManager::collect_inode_blocks`](src/disk.rs#L1822-L1833) extracts all physical block pointers:
 - Resolves all 10 direct blocks, 512 single indirect blocks, $512^2$ double indirect blocks, and $512^3$ triple indirect blocks.
 - Appends each block reference to `referenced_data_blocks: HashMap<u64, Vec<u64>>`.
@@ -126,6 +133,7 @@ let is_clean = orphan_inodes.is_empty()
 
 ## The FsckReport structure
 
+<!-- openwiki: broken internal link [src/disk.rs#L115-L126] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The resulting report is defined in [`src/disk.rs#L115-L126`](src/disk.rs#L115-L126):
 
 ```rust
@@ -141,6 +149,7 @@ pub struct FsckReport {
 
 ## CLI integration and automation
 
+<!-- openwiki: broken internal link [src/bin/oifs.rs#L619-L650] file "src/bin/oifs.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The `oifs fsck` command ([`src/bin/oifs.rs#L619-L650`](src/bin/oifs.rs#L619-L650)) provides human and machine interfaces:
 
 ### Human-readable terminal output

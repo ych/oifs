@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:8931638f9e4da1b39ecf0c9f630af2e4fd473f40c737c8623b447b871c8342de",
+  "pageVersion": "sha256:a5140eba147ef6cfcf57ab39f4eed5382b9ae952f797f62e8400bfabb9738a99",
   "claims": [
     {
       "id": "claim_8eccbc7a648e4c478605801185ff08b1",
-      "statement": "src/lib.rs declares the 11 core subsystems of OIFS (allocator, bitmap, disk, encryption, filters, inode, superblock, directory, ipc, session, ffi) and defines the uniform BLOCK_SIZE constant as 4096 bytes.",
+      "statement": "src/lib.rs declares the 12 core subsystems of OIFS (allocator, bitmap, directory, disk, encryption, ffi, filters, inode, io_engine, ipc, session, superblock) and defines the uniform BLOCK_SIZE constant as 4096 bytes.",
       "evidence": [
         {
-          "resource": "repo://src/lib.rs#L1-L18",
-          "version": "repo-lines-v1:sha256:ab9ac52769c5b618e87fef2ad31b21856753d94c0ba0c8505fab447c5c70a273:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOGIwZTZkZjFjMDViNzMwMmFmNGUxNmU3MDhkMDA3OWVjOTRjNzliOWYzNTk5NjAzZDVhMjIyYTQ5YzZiZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4M2ZlYWEyYzhiN2QwMjFlYmJhNDJjM2NiMTVjMDljODhiN2NhNDgwN2QyNDVmODg3ODRjYjMwNmE2ODdiY2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+          "resource": "repo://src/lib.rs#L1-L20",
+          "version": "repo-lines-v1:sha256:cae05b012661ad35a3454d7fca47617b1c0896c26f92cef5558f99c479be39e1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOGIwZTZkZjFjMDViNzMwMmFmNGUxNmU3MDhkMDA3OWVjOTRjNzliOWYzNTk5NjAzZDVhMjIyYTQ5YzZiZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4M2ZlYWEyYzhiN2QwMjFlYmJhNDJjM2NiMTVjMDljODhiN2NhNDgwN2QyNDVmODg3ODRjYjMwNmE2ODdiY2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
     },
@@ -31,11 +31,11 @@
           "version": "repo-lines-v1:sha256:8b8b0771246deb484f9fa15eff0c482582a2733481d51f92af2d0688b996568a:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmM0N2MwNmMwOWNjODYyZDUxZWJhMDM4ZDJkNzMwYjkzM2QxYzAxNDgzNzcxMmNjMzIyZDdiY2UyNDE1MjNhMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDhhMTBjOGZlNTI4NGY2Zjc3NTEzZjUzOWI3ZDE5YmZjNjFmZjRiZjMxODIzNjI4YzlkYzZmNGE2MWZmNjRmNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2JkYWVhMDA5Zjc4MDE4ODAyMDVlNzVlOGQ4YjBkM2FlMmZkNWQ0ZTI5NDU0MmUyZjBkNzNmNWMzNjJiMThhMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTQxYzhjNjU3NTExZWY3YTQwOGE5OWE0MWEzZDNhMTY0ODQ3N2UwYjUzYTUzZmMzYTc2MGRhZGU1NjEwY2MyYSJ9"
         },
         {
-          "resource": "repo://Cargo.toml#L44-L44",
+          "resource": "repo://Cargo.toml#L49-L49",
           "version": "repo-lines-v1:sha256:b6f6c1c73e4685b6f55792ae5392553ff79d3cc067b0b74e068698f6b2c76b82:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjZmNmMxYzczZTQ2ODViNmY1NTc5MmFlNTM5MjU1M2ZmNzlkM2NjMDY3YjBiNzRlMDY4Njk4ZjZiMmM3NmI4MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjZmNmMxYzczZTQ2ODViNmY1NTc5MmFlNTM5MjU1M2ZmNzlkM2NjMDY3YjBiNzRlMDY4Njk4ZjZiMmM3NmI4MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODY0ZjY4YWY1MmRjZTY0ZDE3ZWUwNmYxMzk2YzAyZTUzOTNlNzI2MWIyZTU3MzM0MWM5NTI4MDI0YmJlZTVhYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmU5YjY1M2ZjZWY1ZmI1N2E3MjIxNDc3MDcwYWJmNjdkODgzNDIyYmM0NWM1YmRjZTc2ZDQ0YTVhZDZiODc4NiJ9"
         },
         {
-          "resource": "repo://Cargo.toml#L50-L53",
+          "resource": "repo://Cargo.toml#L56-L59",
           "version": "repo-lines-v1:sha256:fc1b6d294ce7f5d4c2634789855cf7a27eb23f72dcd8abaa507c44b7104e2ecb:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWZkNTQzNTU4ZGI5MTJjN2MwM2JjNDZiM2M2Y2Q3YTUzNzUzNzg4NjkyYzhiYmMyMGFiN2MxOGEzODM3ZjIwZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzU5YTc1YjE2M2U3ZTM2MTUwM2U5YmU0NThkNjg3ODBjNDdhNTQ5ZDgxNjBhOGJhMDg2YTU3YTI1OGEzZWNmMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjZlMDlhZGFiZTRhYmE1NTE0OWZiNTc2MTRmZDNiMTE3MWRhMWQ0MWJkNWM5Yzk2ODVlZDc1ODU1NDk2OWFhMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWE0ODRjOWFiMTU5N2UyYTYyN2Y1MWZjZmM4NjlhNDhjZjBlMTM3ZWY3YzE4YzdhZTFhZmM3NTdjZjc2YmI1ZiJ9"
         }
       ]
@@ -53,6 +53,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-03T08:18:49.684Z"
+    "at": "2026-10-03T11:29:24.571Z"
   }
 }

@@ -10,7 +10,7 @@ sources:
     resource: repo://src/ipc.rs
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
-generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
 verified:
   - by: openwiki/0.6.1
     at: 2026-10-03T08:18:49.684Z
@@ -19,8 +19,10 @@ verified:
 ## Responsibility and ownership
 
 The session layer owns the process coordination contract while the IPC layer
+<!-- openwiki: broken internal link [`src/session.rs#L59-L78`] file "`src/session.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 owns the transport. [`OifsSession`](`src/session.rs#L59-L78`) decides whether a
 given process runs in **Direct (Master)** or **Remote (Proxy)** mode and forwards
+<!-- openwiki: broken internal link [`src/ipc.rs`] file "`src/ipc.rs`" does not exist. Fix the href or restore the target, then delete this comment. -->
 every operation to the right place. [`ipc.rs`](`src/ipc.rs`) provides the
 `bind_or_connect` master election, the `IpcServer` request dispatcher, and the
 length-prefixed framing used on every hop. The actual mutation of the image
@@ -51,6 +53,7 @@ Master election is transport-dependent and implemented in `bind_or_connect`
 
 ## Process-level session registry
 
+<!-- openwiki: broken internal link [`src/session.rs#L77`] file "`src/session.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 [`SESSION_REGISTRY`](`src/session.rs#L77`) is a process-wide
 `Mutex<HashMap<PathBuf, OifsSession>>` keyed by the canonicalized absolute path.
 `get_or_open_with_mode` (`src/session.rs#L195`) returns a `Clone` of the existing

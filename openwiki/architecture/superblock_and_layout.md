@@ -6,7 +6,7 @@ tags: [superblock, layout, on-disk, geometry, magic, backward-compatibility, kan
 sources:
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
-generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
+generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
 verified:
   - by: openwiki/0.6.1
     at: 2026-10-03T08:18:49.684Z
@@ -14,12 +14,15 @@ verified:
 
 ## Responsibility and ownership
 
+<!-- openwiki: broken internal link [src/superblock.rs] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The superblock subsystem ([`src/superblock.rs`](src/superblock.rs)) defines the foundational on-disk geometry and physical layout of an OIFS image.
 
+<!-- openwiki: broken internal link [src/superblock.rs#L19-L48] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The [`SuperBlock`](src/superblock.rs#L19-L48) resides at **Block 0** (byte offset `0..4096`) of the container image. It acts as the root configuration header, storing filesystem identification, block metrics, physical offsets to metadata regions (bitmaps and inode tables), encryption parameters, and root directory references.
 
 ## The SuperBlock structure
 
+<!-- openwiki: broken internal link [src/superblock.rs#L19-L48] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The [`SuperBlock`](src/superblock.rs#L19-L48) struct is marked `#[repr(C)]` for fixed binary alignment:
 
 ```rust
@@ -43,10 +46,12 @@ pub struct SuperBlock {
 
 ### Magic identification
 
+<!-- openwiki: broken internal link [src/superblock.rs#L52] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 The filesystem is identified by a 4-byte magic number ([`SuperBlock::MAGIC = 0x4F494653`](src/superblock.rs#L52)), which corresponds to ASCII `"OIFS"` (`0x4F` = `'O'`, `0x49` = `'I'`, `0x46` = `'F'`, `0x53` = `'S'`). During `DiskManager::open`, any file lacking this exact magic returns `DiskManagerError::InvalidMagic`, rejecting non-OIFS binary files before attempting to interpret metadata.
 
 ### Field descriptions
 
+<!-- openwiki: broken internal link [src/lib.rs#L17] file "src/lib.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 - `block_size`: Uniform filesystem block size in bytes (set to [`BLOCK_SIZE = 4096`](src/lib.rs#L17)).
 - `block_count`: Total physical block capacity of the container image ($(\text{file\_size}) / 4096$).
 - `inode_bitmap_block`: Fixed to Block `1`.
@@ -79,6 +84,7 @@ OIFS partitions the container image into five contiguous regions:
 
 ## Sizing rules and layout calculation
 
+<!-- openwiki: broken internal link [src/superblock.rs#L68-L114] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Layout calculation is handled deterministically in [`SuperBlock::new`](src/superblock.rs#L68-L114):
 
 - **Minimum Size Constraint**: A valid OIFS filesystem requires at least 5 blocks (`assert!(total_blocks >= 5)`): Block 0 (superblock), Block 1 (inode bitmap), Block 2 (data bitmap), Block 3 (at least 1 inode table block), and Block 4 (at least 1 data block).
@@ -109,6 +115,7 @@ Layout calculation is handled deterministically in [`SuperBlock::new`](src/super
 
 ## Formal verification with Kani
 
+<!-- openwiki: broken internal link [src/superblock.rs#L117-L170] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 `src/superblock.rs` includes automated mathematical proofs verified with the AWS Kani Rust Verifier ([`kani_proofs`](src/superblock.rs#L117-L170)):
 
 - **`proof_superblock_layout_ordering`**:

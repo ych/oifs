@@ -2,7 +2,10 @@
 type: guide
 title: Quickstart
 description: A step-by-step beginner's guide to building OIFS, creating your first container filesystem image, performing basic file and directory operations, using encryption, and exploring compression filters.
-tags: [quickstart, guide, tutorial, build, cli, encryption, compression]
+tags: [quickstart, guide, tutorial, build, cli, encryption, compression, io_engine]
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-03T11:29:24.571Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -10,13 +13,10 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
-generated: { by: "pi", at: "2026-09-29T16:14:34.721Z" }
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-03T08:18:49.684Z
+generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
 ---
 
-## Introduction
+# Quickstart
 
 **OIFS (O's Inode File System)** is a single-file containerized Unix-like inode filesystem implemented in Rust. It packages an entire filesystem—complete with permissions, directories, compression, and encryption—into a portable `.img` container file.
 
@@ -27,11 +27,11 @@ This quickstart guide walks you through:
 4. Working with encrypted images.
 5. Next steps and documentation links.
 
-## 1. Prerequisites and building
+## 1. Prerequisites and Building
 
 OIFS requires the Rust toolchain (edition 2024 / Rust 1.85+).
 
-### Standard build
+### Standard Build
 
 Clone the repository and build the release binaries:
 
@@ -43,7 +43,7 @@ This compiles:
 - `target/release/oifs`: The primary command-line tool.
 - `target/release/liboifs.so` (or `liboifs.dylib` on macOS): The C-compatible FFI shared library.
 
-### Building with AI Agent MCP support
+### Building with AI Agent MCP Support
 
 To include the Model Context Protocol (MCP) server for integration with AI coding assistants (Claude Desktop, Cursor, Antigravity):
 
@@ -53,7 +53,7 @@ cargo build --release --features mcp
 
 This additionally produces `target/release/oifs_mcp`.
 
-## 2. Creating your first filesystem image
+## 2. Creating Your First Filesystem Image
 
 Every OIFS filesystem lives inside a single `.img` file. Let's create a 10MB filesystem image named `my_disk.img`:
 
@@ -72,11 +72,11 @@ Created image "my_disk.img" with size 10MB
 
 The tool allocates a 10MB container on your host machine, formats Block 0 as the SuperBlock, initializes the inode and data block bitmaps, and allocates the root directory (inode 0).
 
-## 3. Basic file and directory operations
+## 3. Basic File and Directory Operations
 
 All filesystem commands require `-i <image_path>`.
 
-### Creating directories (`mkdir`)
+### Creating Directories (`mkdir`)
 
 Create a subdirectory named `documents` inside the image:
 
@@ -84,7 +84,7 @@ Create a subdirectory named `documents` inside the image:
 ./target/release/oifs -i my_disk.img mkdir documents
 ```
 
-### Importing files (`put`)
+### Importing Files (`put`)
 
 Create a sample text file on your host machine:
 
@@ -104,72 +104,47 @@ You can also import files directly into subdirectories or specify a new remote n
 ./target/release/oifs -i my_disk.img put sample.txt documents/notes.txt
 ```
 
-### Listing directory contents (`ls`)
+### Listing Directory Contents (`ls`)
 
-List the contents of the image:
+List files in the root directory:
 
 ```bash
 ./target/release/oifs -i my_disk.img ls
 ```
 
-Output:
-```text
-=== Directory Listing: "/" ===
-NAME                 KIND       SIZE COMP_SIZE MODIFIED
---------------------------------------------------------------------------------
-documents            dir        4096         - 2026-09-30 01:30:00
-sample.txt           file         27         - 2026-09-30 01:30:15
-```
+Output displays permissions, size, modification timestamp, and filename.
 
-To view nested contents recursively:
+### Reading and Exporting Files (`cat` and `get`)
+
+View file contents directly to standard output:
 
 ```bash
-./target/release/oifs -i my_disk.img ls -r
+./target/release/oifs -i my_disk.img cat sample.txt
 ```
 
-### Appending content (`append`)
-
-Append text to an existing or new file in the container:
+Export a file from the image back to your host machine:
 
 ```bash
-./target/release/oifs -i my_disk.img append documents/notes.txt "Appending line 2."
+./target/release/oifs -i my_disk.img get sample.txt restored.txt
 ```
 
-### Exporting files (`get`)
-
-Read and export files back from the image to your host machine:
+### Deleting Files (`rm`)
 
 ```bash
-./target/release/oifs -i my_disk.img get documents/notes.txt exported_notes.txt
-cat exported_notes.txt
+./target/release/oifs -i my_disk.img rm sample.txt
 ```
 
-Output:
-```text
-Hello from OIFS container!
-Appending line 2.
-```
+## 4. Working with Encrypted Images
 
-## 4. Encrypted filesystems 🔒
+OIFS provides military-grade at-rest encryption powered by XChaCha20-Poly1305 AEAD, Argon2id key derivation, and deterministic SIV filename encryption.
 
-OIFS includes end-to-end authenticated encryption via XChaCha20-Poly1305 and Argon2id.
-
-### Creating an encrypted image
-
-Add the `--encrypt` flag when creating the image:
+### Creating an Encrypted Image
 
 ```bash
-./target/release/oifs -i secure.img create --size 10 --encrypt
+./target/release/oifs -i secure.img create --size 20 --password "my-secret-passphrase"
 ```
 
-Terminal prompt:
-```text
-Enter password: [hidden]
-Confirm password: [hidden]
-✅ Encrypted filesystem created: "secure.img"
-```
-
-### Accessing encrypted images
+### Accessing Encrypted Images
 
 When running commands against an encrypted image, OIFS automatically detects encryption and securely prompts for your passphrase:
 
@@ -178,7 +153,7 @@ When running commands against an encrypted image, OIFS automatically detects enc
 # 🔒 Encrypted filesystem detected. Enter password: [hidden]
 ```
 
-### Non-interactive / scripted password handling
+### Non-Interactive / Scripted Password Handling
 
 For scripts and CI/CD pipelines, provide the password using the environment variable or `--password` argument:
 
@@ -191,11 +166,11 @@ export OIFS_PASSWORD="my-secret-passphrase"
 ./target/release/oifs -i secure.img --password "my-secret-passphrase" ls
 ```
 
-## 5. Pre-compression filters and analysis
+## 5. Pre-Compression Filters and Analysis
 
 OIFS features Blosc2-style data filters (Delta, ByteShuffle, BitShuffle) that collapse Shannon entropy before Zstd compression:
 
-### Analyzing host data before import
+### Analyzing Host Data Before Import
 
 Analyze numerical or tabular data to find the optimal filter configuration:
 
@@ -205,13 +180,13 @@ Analyze numerical or tabular data to find the optimal filter configuration:
 
 Output recommends the ideal pipeline (e.g. `--filter both --typesize 4` for 32-bit floats), boosting compression ratios up to 390x.
 
-### Importing with filters
+### Importing with Filters
 
 ```bash
 ./target/release/oifs -i my_disk.img put data.bin --filter both --typesize 4 --compress
 ```
 
-## 6. Structural diagnostics (`fsck`)
+## 6. Structural Diagnostics (`fsck`)
 
 Verify that the image is structurally intact:
 
@@ -229,10 +204,21 @@ Missing Blocks:      0
 Cross-linked Blocks: 0
 ```
 
-## Next steps & documentation links
+## Next Steps & Documentation Links
 
+<!-- openwiki: broken internal link [openwiki/architecture/overview.md] file "openwiki/architecture/overview.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [OIFS Architecture Overview](openwiki/architecture/overview.md) — Subsystem layout, memory-mapped storage engine, and block allocation.
+<!-- openwiki: broken internal link [openwiki/architecture/async_io_and_engines.md] file "openwiki/architecture/async_io_and_engines.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [Asynchronous I/O and Pluggable Engines](openwiki/architecture/async_io_and_engines.md) — Deep dive into Mmap, Pread, Linux io_uring backends, ExtentList coalescing, and kernel gating.
+<!-- openwiki: broken internal link [openwiki/architecture/disk_manager_and_persistence.md] file "openwiki/architecture/disk_manager_and_persistence.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [DiskManager and Persistence Model](openwiki/architecture/disk_manager_and_persistence.md) — Storage engine coordinator, durability policies, and read/write pipelines.
+<!-- openwiki: broken internal link [openwiki/architecture/compression_and_filters.md] file "openwiki/architecture/compression_and_filters.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [Compression and Filters](openwiki/architecture/compression_and_filters.md) — Deep dive into Blosc2 filters, Delta encoding, and Zstd multi-frame streams.
+<!-- openwiki: broken internal link [openwiki/architecture/encryption.md] file "openwiki/architecture/encryption.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [Encryption Subsystem](openwiki/architecture/encryption.md) — Cryptographic design, 192-bit nonces, and deterministic SIV filename privacy.
+<!-- openwiki: broken internal link [openwiki/architecture/ffi_interface.md] file "openwiki/architecture/ffi_interface.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [C FFI Interface](openwiki/architecture/ffi_interface.md) — Shared library bindings, handle lifecycle, and I/O backend selection.
+<!-- openwiki: broken internal link [openwiki/operations/cli_reference.md] file "openwiki/operations/cli_reference.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [CLI Reference](openwiki/operations/cli_reference.md) — Complete manual for all subcommands, options, and JSON pipelines.
+<!-- openwiki: broken internal link [openwiki/operations/testing_and_verification.md] file "openwiki/operations/testing_and_verification.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [Testing and Formal Verification](openwiki/operations/testing_and_verification.md) — Guide to running integration tests, Shuttle concurrency permutations, and Kani proofs.

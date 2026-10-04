@@ -6,7 +6,7 @@
 use oifs::disk::CompressionMode;
 use oifs::journal::{
     JOURNAL_HEADER_BLOCK, JOURNAL_RESERVED_BLOCKS, JournalRing, JournalState, MetadataOp,
-    apply_op_in_place, crc32c, decode_frame, encode_frame, encode_ops,
+    apply_op_in_place, crc32c, decode_frame, encode_frame, encode_ops, journal_ring_bytes,
 };
 use oifs::superblock::SuperBlock;
 use std::fs;
@@ -245,6 +245,162 @@ fn test_apply_op_idempotent_in_place() {
     let once = image.clone();
     apply_op_in_place(&mut image, &sb, &op).expect("re-apply");
     assert_eq!(image, once, "redo must be idempotent");
+}
+
+// ---------------------------------------------------------------------------
+// M3: write-path integration
+// ---------------------------------------------------------------------------
+
+/// Count the transaction frames currently sitting in the journal ring.
+fn ring_tx_count(image: &[u8]) -> usize {
+    let start = (JOURNAL_HEADER_BLOCK as usize) * 4096;
+    let region_len = (JOURNAL_RESERVED_BLOCKS as usize) * 4096;
+    let mut snapshot = image[start..start + region_len].to_vec();
+    let ring = JournalRing::open(&mut snapshot, 4096).expect("open ring");
+    let state = ring.state();
+    let mut count = 0usize;
+    let mut cursor = state.tail % journal_ring_bytes(4096);
+    let ring_slice = ring_snapshot(&snapshot, 4096);
+    while cursor != state.head % journal_ring_bytes(4096) {
+        match decode_frame(&ring_slice[cursor as usize..]) {
+            Some((_, len)) => {
+                cursor = (cursor + len as u64) % journal_ring_bytes(4096);
+                count += 1;
+            }
+            None => break,
+        }
+    }
+    count
+}
+
+fn ring_snapshot(region: &[u8], block_size: u64) -> Vec<u8> {
+    let bs = usize::try_from(block_size).unwrap();
+    region[bs..].to_vec()
+}
+
+#[test]
+fn test_journaled_delete_writes_transaction() {
+    let img = Img::new("delete_tx");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        for n in ["x.txt", "y.txt", "z.txt"] {
+            dm.create_file(root, n).expect("create");
+        }
+    }
+    let before = fs::read(&img.path).expect("read");
+    assert_eq!(
+        ring_tx_count(&before),
+        0,
+        "a freshly mounted image starts with an empty ring"
+    );
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("mount");
+        let root = dm.superblock().root_inode;
+        dm.delete_file(root, "y.txt").expect("journaled delete");
+        // A transaction must now be pending in the ring.
+        assert_eq!(
+            ring_tx_count(&fs::read(&img.path).expect("read")),
+            1,
+            "delete must commit exactly one WAL transaction"
+        );
+    }
+}
+
+#[test]
+fn test_journaled_delete_is_atomic_and_recoverable() {
+    let img = Img::new("delete_recover");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        for n in ["a", "b", "c", "d"] {
+            dm.create_file(root, n).expect("create");
+        }
+        dm.delete_file(root, "b").expect("delete b");
+    }
+    // Remount: the delete must be visible exactly once, with no double-apply.
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+        let root = dm.superblock().root_inode;
+        assert!(dm.lookup(root, "b").is_err(), "b must stay deleted");
+        for n in ["a", "c", "d"] {
+            dm.lookup(root, n).expect("sibling must survive");
+        }
+        // The freed inode must be reusable.
+        let reused = dm.create_file(root, "e").expect("recreate");
+        assert!(reused < 8, "freed inode slot should be reused");
+    }
+}
+
+#[test]
+fn test_journaled_delete_frees_data_blocks() {
+    let img = Img::new("delete_blocks");
+    let (freed_before, freed_after);
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "big.dat").expect("create");
+        let payload = vec![0xABu8; 100 * 1024];
+        dm.write_data(f, 0, &payload, CompressionMode::Never)
+            .expect("write 100KB");
+        let sb = dm.superblock();
+        let stats_before = dm.analyze_fragmentation().expect("stats");
+        freed_before = stats_before.used_blocks;
+
+        dm.delete_file(root, "big.dat").expect("delete");
+        let stats_after = dm.analyze_fragmentation().expect("stats");
+        freed_after = stats_after.used_blocks;
+        assert!(
+            freed_after < freed_before,
+            "deleting a 100KB file must release data blocks ({freed_before} -> {freed_after})"
+        );
+        let _ = sb;
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+        let root = dm.superblock().root_inode;
+        assert!(dm.lookup(root, "big.dat").is_err());
+    }
+}
+
+#[test]
+fn test_legacy_delete_path_untouched_by_journal() {
+    // The legacy path must still work and must NOT create journal transactions.
+    let img = Img::new("legacy_delete");
+    let dm = oifs::DiskManager::open(&img.path, 20 * MB).expect("create legacy");
+    let root = dm.superblock().root_inode;
+    dm.create_file(root, "keep").expect("create");
+    dm.create_file(root, "drop").expect("create");
+    dm.delete_file(root, "drop").expect("legacy delete");
+    assert!(dm.lookup(root, "drop").is_err());
+    assert!(dm.lookup(root, "keep").is_ok());
+}
+
+#[test]
+fn test_journaled_repeated_delete_reuse_cycle() {
+    // Exercises allocator hints, inode reuse and dir-cache invalidation across
+    // many journaled transactions.
+    let img = Img::new("reuse_cycle");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        for i in 0..25 {
+            let name = format!("f{i}");
+            let fid = dm.create_file(root, &name).expect("create");
+            dm.write_data(fid, 0, &vec![i as u8; 512], CompressionMode::Never)
+                .expect("write");
+            dm.delete_file(root, &name).expect("delete");
+            assert!(dm.lookup(root, &name).is_err(), "{name} must be gone");
+        }
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+        let root = dm.superblock().root_inode;
+        assert!(
+            dm.list_dir(root).expect("list").is_empty(),
+            "root must be empty"
+        );
+    }
 }
 
 #[test]

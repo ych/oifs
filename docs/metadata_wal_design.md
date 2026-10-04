@@ -259,7 +259,7 @@ pub fn recover_from_journal(mmap: &mut MmapMut, sb: &mut SuperBlock) -> Result<u
 | :--- | :--- | :--- | :--- |
 | **M1** | 格式與日誌模組 (`src/journal.rs`) | 實作 `MetadataOp` 序列化、TxHeader 與 CRC32C 計算 | ✅ **完成** |
 | **M2** | Superblock 擴充與佈局更新 | 支援建立帶有日誌區塊的映像檔，並保持向下相容解析 | ✅ **完成** |
-| **M3** | 寫入路徑重構 (`src/disk.rs`) | 將 `create_file`、`delete_file`、`mkdir` 納入日誌交易 | ⏳ **未開始** |
+| **M3** | 寫入路徑重構 (`src/disk.rs`) | 將 `create_file`、`delete_file`、`mkdir` 納入日誌交易 | 🟡 **delete_file 已完成** |
 | **M4** | 崩潰復原與壓力測試 | 模擬斷電崩潰（Kill process / Torn-write injection）驗證自動自癒 | 🟡 **部分完成** |
 | **M5** | Kani 形式化證明 | 加入 CBMC 形式化數學驗證，證明重放安全性與環狀緩衝不變量 | 🟡 **部分完成** |
 
@@ -290,10 +290,30 @@ pub fn recover_from_journal(mmap: &mut MmapMut, sb: &mut SuperBlock) -> Result<u
 * **Kani 證明 53 項全數通過**（新增 3 項）：`proof_legacy_layout_unchanged`、`proof_journaled_layout_non_overlapping`、`proof_journaled_shifts_data_start`。
 * 全數 45 個測試套件、clippy（`-D warnings`）、fmt 皆通過，無回歸。
 
-### 8.4 尚未完成：M3 寫入路徑整合
+### 8.4 已完成：M3 寫入路徑整合（`delete_file`）
 
-目前日誌基礎設施與復原機制已就緒，但 `create_file` / `delete_file` / `mkdir` **尚未寫入交易**。這是接下來的核心工作，設計約束如下：
+`delete_file` 已改為 WAL-first，並以 `has_journal_layout()` 分流，**未啟用日誌的映像檔完全走原路徑，零額外開銷**。
 
-1. **必須 WAL-first**：需先算出各區塊的「後映像」再落盤 WAL，最後才套用。這要求重構 `create_entry_internal` 與 `delete_file`，把「計算」與「套用」拆開——因為現有函式是邊算邊改。
-2. **可行切入點**：`delete_file` 的後映像皆可在不修改 mmap 的前提下算出（剩餘 entries 序列化、父 inode mtime、要釋放的區塊清單），最適合作為第一個接入點。
-3. **零開銷保證**：未啟用日誌時必須完全走既有路徑，以 `guard.superblock.has_journal_layout()` 分流。
+**三階段實作**（`delete_file_journaled`）：
+
+1. **Compute（不變更映像檔）**：定位 entry → 序列化成新的目錄區塊後映像 → 收集待釋放區塊清單 → 算出具 mtime 的父 inode 後映像。
+2. **Commit（原子提交點）**：`commit_journal_tx` 將交易 append 至環狀緩衝，並 `msync` **框架位元組**與**推進 `head` 的標頭區塊**。兩者都必須刷盤且不可重新排序，否則復原時看不到交易。
+3. **Apply**：`apply_journal_ops` 將同一組 op 套用回映像檔，接著同步 allocator hint 與 inode/dir cache。
+
+**關鍵輔助函式**：
+
+* `build_dir_block_image()` — 零填後依序序列化，與 `rewrite_dir_entries_in_block()` **逐位元組相同**，確保兩條路徑產生的區塊完全一致。
+* `build_inode_post_image()` — `write_inode_internal()` 只覆寫 bincode 前綴、保留 slot 尾端舊位元組，因此後映像必須**從 slot 現有內容出發**而非從零開始。這個細節若忽略，復原會寫出與原路徑不同的 inode。
+* `commit_journal_tx()` — 非日誌映像檔直接返回，確保零開銷。
+
+### 8.5 尚未完成：M3 其餘部分
+
+* `create_entry_internal`（`create_file` / `mkdir`）與 `write_data` 的 metadata 部分仍走原路徑。
+* `create_entry_internal` 的難點在於**配置 inode 與資料區塊本身會改動 bitmap**，而 bit 是「依序找第一個空位」決定，必須先算出結果才能寫 WAL。建議做法：先在暫存複本上跑完整個配置流程以取得最終 bitmap 後映像，再 commit，最後才套用。
+* WAL 目前**無 checkpoint 機制**：`recover()` 在每次掛載時把 ring 重置為空，因此不會無限增長；但長時間運行的 Master 進程會持續累積交易，需要在 `flush()` 或閒置時推進 tail 釋放空間。
+
+### 8.6 驗證結果（M3）
+
+* **新增 5 項整合測試**（`tests/journal_test.rs`，共 16 項）：刪除確實提交恰好一筆交易、刪除原子且重複掛載不會重複套用、刪除 100KB 檔案確實釋放資料區塊、legacy 刪除路徑不受影響、25 輪刪除/重建循環後 inode 重用與 dir_cache 失效皆正確。
+* 實機驗證：`create --journal` 後執行 put/ls/get/fsck，`fsck` 報 **CLEAN**（0 orphan / 0 leaked / 0 cross-linked），檔案內容可正確讀出。
+* 全數 45 個測試套件、53 項 Kani、clippy `-D warnings`、fmt 皆通過。

@@ -635,6 +635,8 @@ pub struct JournalRing<'a> {
     ring_bytes: u64,
     /// Current persistent ring state.
     state: JournalState,
+    /// Byte range written by the most recent [`JournalRing::append`], ring-relative.
+    last_write: Option<(u64, u64)>,
 }
 
 impl<'a> JournalRing<'a> {
@@ -669,6 +671,7 @@ impl<'a> JournalRing<'a> {
             block_size,
             ring_bytes,
             state,
+            last_write: None,
         })
     }
 
@@ -702,12 +705,21 @@ impl<'a> JournalRing<'a> {
             block_size,
             ring_bytes,
             state,
+            last_write: None,
         })
     }
 
     /// Current persistent ring state.
     pub fn state(&self) -> JournalState {
         self.state
+    }
+
+    /// Byte range written by the most recent [`JournalRing::append`], ring-relative.
+    ///
+    /// The durability layer `msync`s exactly this range plus the header block to
+    /// establish the commit point.
+    pub fn last_write(&self) -> Option<(u64, u64)> {
+        self.last_write
     }
 
     /// Number of bytes currently occupied by un-checkpointed transactions.
@@ -753,6 +765,7 @@ impl<'a> JournalRing<'a> {
         let head = usize::try_from(self.state.head).unwrap_or(0);
         let end = head + len as usize;
         self.ring()[head..end].copy_from_slice(&frame);
+        self.last_write = Some((self.state.head, self.state.head + len));
 
         self.state.head = (self.state.head + len) % self.ring_bytes;
         self.state.tx_seq = tx_seq;

@@ -976,6 +976,131 @@ impl DiskManager {
         Ok(())
     }
 
+    /// Build the post-image of a directory block without touching the image.
+    ///
+    /// Mirrors [`Self::rewrite_dir_entries_in_block`] byte for byte (zero-fill, then
+    /// serialize entries in order) so a journaled rewrite produces exactly the same
+    /// block as the legacy in-place path.
+    fn build_dir_block_image(
+        entries: &[crate::directory::DirectoryEntry],
+    ) -> Result<Vec<u8>, DiskManagerError> {
+        let mut buf = vec![0u8; BLOCK_SIZE];
+        {
+            let mut cursor = std::io::Cursor::new(&mut buf[..]);
+            for entry in entries {
+                entry
+                    .serialize_into(&mut cursor)
+                    .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
+            }
+        }
+        Ok(buf)
+    }
+
+    /// Build the 256-byte post-image of an inode slot without touching the image.
+    ///
+    /// [`Self::write_inode_internal`] overwrites only the leading `bincode` bytes and
+    /// leaves the tail of the slot untouched, so the post-image must start from the
+    /// slot's current contents rather than from zeros.
+    fn build_inode_post_image(
+        guard: &DiskManagerInner,
+        inode_id: u64,
+        inode: &Inode,
+    ) -> Result<[u8; 256], DiskManagerError> {
+        let mut out = [0u8; 256];
+        let bs = guard.superblock.block_size as u64;
+        let base = usize::try_from(guard.superblock.inode_table_block)
+            .ok()
+            .and_then(|t| t.checked_mul(usize::try_from(bs).ok()?))
+            .and_then(|b| {
+                usize::try_from(inode_id)
+                    .ok()
+                    .and_then(|id| id.checked_mul(256))
+                    .and_then(|o| b.checked_add(o))
+            })
+            .ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Offset overflow",
+                ))
+            })?;
+        let end = base.checked_add(256).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Offset overflow",
+            ))
+        })?;
+        if end <= guard.mmap.len() {
+            out.copy_from_slice(&guard.mmap[base..end]);
+        }
+        let bytes = bincode::serialize(inode)?;
+        if bytes.len() > 256 {
+            return Err(DiskManagerError::Serialization(Box::new(
+                bincode::ErrorKind::SizeLimit,
+            )));
+        }
+        out[..bytes.len()].copy_from_slice(&bytes);
+        Ok(out)
+    }
+
+    /// Write a metadata transaction to the WAL and flush it to stable storage.
+    ///
+    /// This is the **commit point**: on return the transaction is durable, so the
+    /// caller may apply the ops in place. If the process dies between the commit and
+    /// the in-place phase, mount-time recovery replays the transaction.
+    ///
+    /// No-op for non-journaled filesystems, which keeps the legacy path free of any
+    /// extra I/O or CPU.
+    fn commit_journal_tx(
+        guard: &mut DiskManagerInner,
+        ops: &[crate::journal::MetadataOp],
+    ) -> Result<(), DiskManagerError> {
+        let sb = guard.superblock;
+        if !sb.has_journal_layout() {
+            return Ok(());
+        }
+        let bs = sb.block_size as u64;
+        let written = {
+            let region = Self::journal_region(&mut guard.mmap, &sb)?;
+            let mut ring = crate::journal::JournalRing::open(region, bs)?;
+            ring.append(ops)?;
+            ring.last_write()
+        };
+
+        // Flush the frame bytes *and* the header block that advances `head`.
+        // Without the header flush the cursor update could be reordered after the
+        // frame, and recovery would never see the transaction.
+        let start = Self::journal_region_start(bs).unwrap_or(0);
+        let ring_base = start + usize::try_from(bs).unwrap_or(0);
+        if let Some((s, e)) = written
+            && e > s
+        {
+            let off = ring_base + usize::try_from(s).unwrap_or(0);
+            let len = usize::try_from(e - s).unwrap_or(0);
+            if off + len <= guard.mmap.len() {
+                guard.mmap.flush_range(off, len)?;
+            }
+        }
+        let header_len = usize::try_from(bs)
+            .unwrap_or(0)
+            .min(crate::journal::JOURNAL_HEADER_LEN);
+        if header_len > 0 {
+            guard.mmap.flush_range(start, header_len)?;
+        }
+        Ok(())
+    }
+
+    /// Apply ops to the image and refresh the caches they invalidate.
+    fn apply_journal_ops(
+        guard: &mut DiskManagerInner,
+        ops: &[crate::journal::MetadataOp],
+    ) -> Result<(), DiskManagerError> {
+        let sb = guard.superblock;
+        for op in ops {
+            crate::journal::apply_op_in_place(&mut guard.mmap, &sb, op)?;
+        }
+        Ok(())
+    }
+
     fn collect_inode_blocks(mmap: &MmapMut, inode: &Inode) -> Vec<u64> {
         let mut blks = Vec::new();
 
@@ -2373,8 +2498,158 @@ impl DiskManager {
         guard.mmap.flush().map_err(DiskManagerError::Io)
     }
 
+    /// Journaled delete: compute every post-image first, commit one transaction, then apply.
+    ///
+    /// The three phases are strictly ordered:
+    ///
+    /// 1. **Compute** — derive the new directory block, the blocks to free, and the
+    ///    updated parent inode *without mutating the image*.
+    /// 2. **Commit** — append the transaction to the WAL and `msync` it. This is the
+    ///    atomic commit point.
+    /// 3. **Apply** — replay the ops in place and refresh the affected caches.
+    ///
+    /// A crash before (2) leaves the filesystem untouched; a crash during (3) leaves
+    /// the WAL ahead of the image, and mount-time recovery finishes the job. Because
+    /// every op is an absolute post-image, recovery is idempotent even if a crash
+    /// lands halfway through (3).
+    fn delete_file_journaled(
+        guard: &mut DiskManagerInner,
+        parent_inode_id: u64,
+        name: &str,
+    ) -> Result<(), DiskManagerError> {
+        let mut parent_inode = Self::read_inode_internal(guard, parent_inode_id)?;
+        if parent_inode.mode != crate::inode::FileType::Directory {
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Not a directory",
+            )));
+        }
+
+        let enc_name = if let Some(key) = &guard.encryption_key {
+            crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
+        } else {
+            None
+        };
+        let candidates = [enc_name.as_deref(), Some(name)];
+
+        // Locate the entry (ciphertext name first, then legacy plaintext) without
+        // deserializing. Read-only, so this belongs to the compute phase.
+        let (matched_name, target_inode_id, phys_blk) = candidates
+            .iter()
+            .flatten()
+            .find_map(|c| {
+                Self::locate_entry_in_dir(
+                    &guard.mmap,
+                    &parent_inode,
+                    c,
+                    crate::directory::hash_filename(c),
+                )
+                .map(|(id, blk)| (*c, id, blk))
+            })
+            .ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "File not found",
+                ))
+            })?;
+
+        // ---- Phase 1: compute post-images (no mutation) ----
+        let remaining_entries: Vec<_> = Self::read_dir_entries_from_block(&guard.mmap, phys_blk)?
+            .into_iter()
+            .filter(|e| e.name != matched_name)
+            .collect();
+        let dir_image = Self::build_dir_block_image(&remaining_entries)?;
+
+        let file_inode = Self::read_inode_internal(guard, target_inode_id)?;
+        let blocks_to_free = Self::collect_inode_blocks(&guard.mmap, &file_inode);
+
+        parent_inode.modified_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let parent_image = Self::build_inode_post_image(guard, parent_inode_id, &parent_inode)?;
+
+        let mut ops = Vec::with_capacity(blocks_to_free.len() + 3);
+        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+            block_id: phys_blk,
+            offset: 0,
+            data: dir_image,
+        });
+        for blk in &blocks_to_free {
+            ops.push(crate::journal::MetadataOp::SetDataBitmap {
+                block_id: *blk,
+                allocated: false,
+            });
+        }
+        ops.push(crate::journal::MetadataOp::SetInodeBitmap {
+            inode_id: target_inode_id,
+            allocated: false,
+        });
+        ops.push(crate::journal::MetadataOp::WriteInode {
+            inode_id: parent_inode_id,
+            inode_bytes: Box::new(parent_image),
+        });
+
+        // ---- Phase 2: commit point ----
+        Self::commit_journal_tx(guard, &ops)?;
+
+        // ---- Phase 3: apply in place ----
+        Self::apply_journal_ops(guard, &ops)?;
+
+        // Refresh allocator hints and caches to match what was just applied.
+        if let Some(min_freed) = blocks_to_free.iter().copied().min()
+            && min_freed < guard.free_block_hint
+        {
+            guard.free_block_hint = min_freed;
+        }
+        if target_inode_id < guard.free_inode_hint {
+            guard.free_inode_hint = target_inode_id;
+        }
+        {
+            let mut ic = guard.inode_cache.write().unwrap();
+            ic.remove(&target_inode_id);
+            ic.insert(parent_inode_id, parent_inode);
+        }
+        {
+            let mut cache = guard.dir_cache.write().unwrap();
+            if let Some(ix) = cache.get_mut(&parent_inode_id) {
+                ix.plain.remove(name);
+                ix.stored.remove(matched_name);
+            }
+            cache.remove(&target_inode_id);
+        }
+
+        if guard.durability_mode().is_range_based() {
+            let mut ranges = vec![
+                guard.inode_bitmap_byte_range(),
+                guard.data_bitmap_byte_range(),
+                guard.inode_byte_range(target_inode_id),
+                guard.inode_byte_range(parent_inode_id),
+                guard.block_byte_range(phys_blk),
+            ];
+            for blk in &blocks_to_free {
+                ranges.push(guard.block_byte_range(*blk));
+            }
+            guard.sync_mutation_ranges(&ranges)?;
+        } else {
+            guard.sync_mutation_ranges(&[])?;
+        }
+        Ok(())
+    }
+
     pub fn delete_file(&self, parent_inode_id: u64, name: &str) -> Result<(), DiskManagerError> {
         let mut guard = self.inner.write().unwrap();
+
+        // M3: journaled images take the WAL-first path; legacy images keep the
+        // original in-place implementation untouched (zero-overhead guarantee).
+        if guard.superblock.has_journal_layout() {
+            return Self::delete_file_journaled(&mut guard, parent_inode_id, name);
+        }
+
+        // M3: journaled images take the WAL-first path; legacy images keep the
+        // original in-place implementation untouched (zero-overhead guarantee).
+        if guard.superblock.has_journal_layout() {
+            return Self::delete_file_journaled(&mut guard, parent_inode_id, name);
+        }
 
         let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {

@@ -96,8 +96,8 @@
       "pageVersion": "sha256:205373f42ed2c95247db10e669b8e0f43fd84aff1576ac8a624fbfa26d697348",
       "completedBy": "openwiki/0.6.1",
       "completedRunId": "a8173d4a-4d13-48a7-969e-300426257f46",
-      "gitHead": "15da54f5228898a10cf7c9f099eeba0f3ef295a0",
-      "sourceFingerprint": "sha256:6ed8aa688b9adf7d60c2115719589b949a2dc3de8ecf8f5b9819377e74434264"
+      "gitHead": "82a9294ed9152659b0df90b753ec2cc4e8aa5c46",
+      "sourceFingerprint": "sha256:8e93dc9c439f98232d72d9403e21fc8cadfe0ec9b006be10d40f707d73837acb"
     },
     "/openwiki/operations/cli_reference.md": {
       "gitHead": "0f2303883ee50883ded72473c4b486f58e298166",

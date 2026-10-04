@@ -8,6 +8,7 @@ pub mod filters;
 pub mod inode;
 pub mod io_engine;
 pub mod ipc;
+pub mod journal;
 pub mod session;
 pub mod superblock;
 
@@ -15,6 +16,7 @@ pub use disk::{DiskManager, DiskManagerError, DurabilityMode, ReadRequest};
 pub use filters::{FilterConfig, FilterPipeline, FilterType};
 pub use io_engine::IoBackend;
 pub use ipc::{MasterInfo, SessionEvent, SessionMode};
+pub use journal::{JournalState, MetadataOp, Transaction};
 pub use session::{OifsSession, SessionError};
 
 pub const BLOCK_SIZE: usize = 4096;

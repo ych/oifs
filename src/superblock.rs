@@ -66,14 +66,29 @@ impl SuperBlock {
     /// # Panics
     /// Panics if `total_blocks < 5` (minimum: superblock + 2 bitmaps + 1 inode table + 1 data)
     pub fn new(total_blocks: u64) -> Self {
-        assert!(total_blocks >= 5, "File system requires at least 5 blocks");
+        Self::new_with_layout(total_blocks, 3)
+    }
+
+    /// Creates a new SuperBlock, placing the inode table at `inode_table_block`.
+    ///
+    /// Journaled images reuse this with a table start past the reserved journal
+    /// region, so both layouts share one sizing formula and stay provably
+    /// non-overlapping.
+    ///
+    /// # Panics
+    /// Panics if `total_blocks` cannot hold the metadata regions plus one data block.
+    pub fn new_with_layout(total_blocks: u64, inode_table_block: u64) -> Self {
+        let reserved = inode_table_block;
+        assert!(
+            total_blocks >= reserved + 2,
+            "File system too small for the requested metadata layout"
+        );
 
         let inode_bitmap_block = 1;
         let data_bitmap_block = 2;
-        let inode_table_block: u64 = 3;
 
-        // Blocks available after fixed metadata (superblock + 2 bitmaps)
-        let available = total_blocks - 3;
+        // Blocks available after fixed metadata (superblock + 2 bitmaps + any reserved journal)
+        let available = total_blocks - reserved;
 
         // Maximum inodes the bitmap can track (1 block = 4096 * 8 = 32,768 bits)
         let bitmap_max_inodes: u64 = 4096 * 8;
@@ -86,7 +101,7 @@ impl SuperBlock {
 
         // If the filesystem has room for the standard 1024 inode table blocks (plus at least 1 data block),
         // allocate the standard 1024 blocks (32,768 inodes) for full capacity and backward compatibility.
-        // For smaller filesystems (< 1028 blocks), dynamically size the table up to 25% of available space.
+        // For smaller filesystems, dynamically size the table up to 25% of available space.
         let inode_table_blocks = if total_blocks > inode_table_block + inode_table_blocks_cap {
             inode_table_blocks_cap // = 1024 blocks = 32,768 inodes
         } else {
@@ -111,6 +126,23 @@ impl SuperBlock {
             encryption_salt: [0u8; 16],
             encryption_version: 0,
         }
+    }
+
+    /// Creates a SuperBlock for a journaled image, reserving space for the
+    /// metadata WAL ring between the data bitmap and the inode table.
+    ///
+    /// The returned layout is `inode_table_block == 3 + JOURNAL_RESERVED_BLOCKS`,
+    /// which is what [`crate::journal::is_journaled_layout`] detects on mount.
+    ///
+    /// # Panics
+    /// Panics if `total_blocks` is too small to hold the journal plus one data block.
+    pub fn new_journaled(total_blocks: u64) -> Self {
+        Self::new_with_layout(total_blocks, crate::journal::JOURNAL_INODE_TABLE_BLOCK)
+    }
+
+    /// Returns `true` when this image reserves a metadata WAL region.
+    pub fn has_journal_layout(&self) -> bool {
+        crate::journal::is_journaled_layout(self)
     }
 }
 
@@ -170,6 +202,66 @@ mod kani_proofs {
         assert!(!sb.encrypted);
         assert_eq!(sb.encryption_salt, [0u8; 16]);
         assert_eq!(sb.encryption_version, 0);
+    }
+
+    /// Prove that `SuperBlock::new` and `SuperBlock::new_with_layout` agree for the
+    /// legacy table start, so journaling cannot silently change legacy geometry.
+    #[kani::proof]
+    fn proof_legacy_layout_unchanged() {
+        let total_blocks: u64 = kani::any();
+        kani::assume(total_blocks >= 5 && total_blocks <= 1_000_000);
+
+        let legacy = SuperBlock::new(total_blocks);
+        let explicit = SuperBlock::new_with_layout(total_blocks, 3);
+        assert_eq!(legacy, explicit);
+        assert_eq!(legacy.inode_table_block, 3);
+        assert!(!crate::journal::is_journaled_layout(&legacy));
+    }
+
+    /// Prove that a journaled layout never overlaps the journal region and that
+    /// the inode table starts strictly after the reserved journal blocks.
+    #[kani::proof]
+    fn proof_journaled_layout_non_overlapping() {
+        use crate::journal::{
+            JOURNAL_HEADER_BLOCK, JOURNAL_INODE_TABLE_BLOCK, JOURNAL_RESERVED_BLOCKS,
+        };
+
+        let total_blocks: u64 = kani::any();
+        kani::assume(total_blocks >= 1_200 && total_blocks <= 1_000_000);
+
+        let sb = SuperBlock::new_journaled(total_blocks);
+
+        // The journal header occupies block 3; the record ring follows it.
+        assert_eq!(JOURNAL_HEADER_BLOCK, 3);
+        assert_eq!(JOURNAL_INODE_TABLE_BLOCK, 3 + JOURNAL_RESERVED_BLOCKS);
+        assert!(sb.inode_table_block >= JOURNAL_INODE_TABLE_BLOCK);
+
+        // Bitmaps sit before the journal, the inode table after it.
+        assert!(sb.inode_bitmap_block < sb.data_bitmap_block);
+        assert!(sb.data_bitmap_block <= JOURNAL_HEADER_BLOCK);
+        assert!(JOURNAL_HEADER_BLOCK < sb.inode_table_block);
+
+        // No region runs past the end of the image.
+        assert!(sb.inode_table_block <= sb.data_block_start);
+        assert!(sb.data_block_start <= sb.block_count);
+        assert!(sb.block_count - sb.data_block_start >= 1);
+
+        assert!(crate::journal::is_journaled_layout(&sb));
+    }
+
+    /// Prove that a journaled image is strictly larger in metadata than the legacy
+    /// image of the same size, so `has_journal_layout` never false-positives.
+    #[kani::proof]
+    fn proof_journaled_shifts_data_start() {
+        let total_blocks: u64 = kani::any();
+        kani::assume(total_blocks >= 1_200 && total_blocks <= 1_000_000);
+
+        let legacy = SuperBlock::new(total_blocks);
+        let journaled = SuperBlock::new_journaled(total_blocks);
+
+        assert!(journaled.data_block_start > legacy.data_block_start);
+        // Inode capacity is unchanged; only the placement moves.
+        assert_eq!(journaled.inode_count, legacy.inode_count);
     }
 }
 

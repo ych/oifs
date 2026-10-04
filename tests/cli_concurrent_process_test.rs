@@ -33,7 +33,13 @@ fn test_cli_concurrent_processes() {
         let handle = thread::spawn(move || {
             let remote = format!("remote_{}.txt", i);
             let output = Command::new(bin)
-                .args(["--image", &img, "put", payload_path.to_str().unwrap(), &remote])
+                .args([
+                    "--image",
+                    &img,
+                    "put",
+                    payload_path.to_str().unwrap(),
+                    &remote,
+                ])
                 .output()
                 .expect("CLI put failed");
             assert!(
@@ -76,7 +82,13 @@ fn test_cli_concurrent_processes() {
         let handle = thread::spawn(move || {
             let remote = format!("remote_{}.txt", i);
             let output = Command::new(bin)
-                .args(["--image", &img, "get", &remote, downloaded_path.to_str().unwrap()])
+                .args([
+                    "--image",
+                    &img,
+                    "get",
+                    &remote,
+                    downloaded_path.to_str().unwrap(),
+                ])
                 .output()
                 .expect("CLI get failed");
             assert!(

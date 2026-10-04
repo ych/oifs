@@ -306,12 +306,40 @@ impl OifsSession {
         password: Option<&str>,
         create_encrypted: bool,
     ) -> Result<Self, SessionError> {
+        Self::open_with_mode_ext(path, total_size, mode, password, create_encrypted, false)
+    }
+
+    /// Unified session constructor that creates a **journaled** image.
+    ///
+    /// Journaling is decided at creation time. Once the image exists, every later
+    /// open (including from Proxy processes) auto-detects the journaled layout from
+    /// the superblock geometry and replays any outstanding transactions, so callers
+    /// never need to pass this flag again.
+    pub fn open_journaled_with_mode<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        mode: SessionMode,
+        password: Option<&str>,
+        create_encrypted: bool,
+    ) -> Result<Self, SessionError> {
+        Self::open_with_mode_ext(path, total_size, mode, password, create_encrypted, true)
+    }
+
+    fn open_with_mode_ext<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        mode: SessionMode,
+        password: Option<&str>,
+        create_encrypted: bool,
+        journal: bool,
+    ) -> Result<Self, SessionError> {
         Self::open_with_mode_retry(
             path.as_ref(),
             total_size,
             mode,
             password,
             create_encrypted,
+            journal,
             0,
         )
     }
@@ -322,6 +350,7 @@ impl OifsSession {
         mode: SessionMode,
         password: Option<&str>,
         create_encrypted: bool,
+        journal: bool,
         retry_count: usize,
     ) -> Result<Self, SessionError> {
         let master_or_client = match bind_or_connect(path_ref, &mode) {
@@ -336,6 +365,7 @@ impl OifsSession {
                     mode,
                     password,
                     create_encrypted,
+                    journal,
                     retry_count + 1,
                 );
             }
@@ -345,13 +375,16 @@ impl OifsSession {
         match master_or_client {
             MasterOrClient::Master(listener) => {
                 let dm_res = if create_encrypted {
-                    DiskManager::create_encrypted(
-                        path_ref,
-                        total_size,
-                        password.unwrap_or_default(),
-                    )
+                    let pwd = password.unwrap_or_default();
+                    if journal {
+                        DiskManager::create_encrypted_journaled(path_ref, total_size, pwd)
+                    } else {
+                        DiskManager::create_encrypted(path_ref, total_size, pwd)
+                    }
                 } else if let Some(pwd) = password {
                     DiskManager::open_with_password(path_ref, total_size, Some(pwd))
+                } else if journal {
+                    DiskManager::open_journaled(path_ref, total_size)
                 } else {
                     DiskManager::open(path_ref, total_size)
                 };
@@ -370,6 +403,7 @@ impl OifsSession {
                                 mode,
                                 password,
                                 create_encrypted,
+                                journal,
                                 retry_count + 1,
                             );
                         } else {

@@ -42,6 +42,9 @@ pub enum DiskManagerError {
     /// Encryption error
     #[error("Encryption error: {0}")]
     Encryption(#[from] crate::encryption::EncryptionError),
+    /// Metadata WAL / journal error
+    #[error("Journal error: {0}")]
+    Journal(#[from] crate::journal::JournalError),
     /// Password required for encrypted filesystem
     #[error("Password required to access encrypted filesystem")]
     PasswordRequired,
@@ -340,7 +343,19 @@ impl DiskManager {
     /// Open an existing OIFS image or create a new one if it doesn't exist.
     /// `size`: Total size in bytes (only used when creating a new file).
     pub fn open<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, DiskManagerError> {
-        Self::init_or_open(path, total_size, None, false)
+        Self::init_or_open(path, total_size, None, false, false)
+    }
+
+    /// Open (or create) a journaled OIFS image with metadata WAL enabled.
+    ///
+    /// Journaling is opt-in at creation time. Opening an existing journaled image
+    /// automatically replays any uncommitted-but-durable transactions before
+    /// returning, so the caller always observes a fully recovered filesystem.
+    pub fn open_journaled<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open(path, total_size, None, false, true)
     }
 
     /// Open an encrypted OIFS image with a password
@@ -349,7 +364,7 @@ impl DiskManager {
         total_size: u64,
         password: Option<&str>,
     ) -> Result<Self, DiskManagerError> {
-        Self::init_or_open(path, total_size, password, false)
+        Self::init_or_open(path, total_size, password, false, false)
     }
 
     /// Create a new encrypted filesystem
@@ -358,7 +373,16 @@ impl DiskManager {
         total_size: u64,
         password: &str,
     ) -> Result<Self, DiskManagerError> {
-        Self::init_or_open(path, total_size, Some(password), true)
+        Self::init_or_open(path, total_size, Some(password), true, false)
+    }
+
+    /// Create a new encrypted filesystem with metadata journaling enabled.
+    pub fn create_encrypted_journaled<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: &str,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open(path, total_size, Some(password), true, true)
     }
 
     fn init_or_open<P: AsRef<Path>>(
@@ -366,6 +390,7 @@ impl DiskManager {
         total_size: u64,
         password: Option<&str>,
         create_encrypted: bool,
+        journal: bool,
     ) -> Result<Self, DiskManagerError> {
         let path = path.as_ref();
         let exists = path.exists();
@@ -398,7 +423,11 @@ impl DiskManager {
 
         if is_new {
             let block_count = total_size / BLOCK_SIZE as u64;
-            let mut sb = SuperBlock::new(block_count);
+            let mut sb = if journal {
+                SuperBlock::new_journaled(block_count)
+            } else {
+                SuperBlock::new(block_count)
+            };
             if create_encrypted {
                 let pwd = password.unwrap_or_default();
                 sb.encrypted = true;
@@ -428,6 +457,16 @@ impl DiskManager {
             } else {
                 encryption_key = None;
             }
+        }
+
+        // M2: Mount-time journal handling.
+        // A journaled image is recovered *before* the manager is published, so no
+        // caller can ever observe a filesystem mid-replay.
+        if is_new {
+            Self::format_journal(&mut mmap, &superblock)?;
+        } else if superblock.has_journal_layout() {
+            Self::recover_journal(&mut mmap, &superblock)?;
+            mmap.flush()?;
         }
 
         let free_block_hint = superblock.data_block_start;
@@ -478,9 +517,33 @@ impl DiskManager {
             root_inode.size = BLOCK_SIZE as u64;
             Self::write_inode_internal(&mut guard, 0, &root_inode)?;
             guard.mmap.flush()?;
+        } else {
+            // Already replayed at mount time above; record a clean-shutdown marker so
+            // the next mount can tell "clean" from "crashed" without a ring scan.
+            let mut guard = dm.inner.write().unwrap();
+            if guard.superblock.has_journal_layout() {
+                let sb = guard.superblock;
+                Self::mark_journal_clean(&mut guard.mmap, &sb)?;
+            }
         }
 
         Ok(dm)
+    }
+
+    /// Record a clean-shutdown marker in the journal header.
+    fn mark_journal_clean(mmap: &mut MmapMut, sb: &SuperBlock) -> Result<(), DiskManagerError> {
+        if !sb.has_journal_layout() {
+            return Ok(());
+        }
+        let region = Self::journal_region(mmap, sb)?;
+        let bs = sb.block_size as u64;
+        crate::journal::JournalRing::open(region, bs)?.mark_clean_shutdown();
+        Ok(())
+    }
+
+    /// Returns `true` when this filesystem was created with metadata journaling.
+    pub fn has_journal(&self) -> bool {
+        self.inner.read().unwrap().superblock.has_journal_layout()
     }
 
     // Accessor for SuperBlock (Copy)
@@ -497,6 +560,105 @@ impl DiskManager {
         } else {
             Some(&mut mmap[start..end])
         }
+    }
+
+    /// Byte length of the journal region (header block + record ring).
+    fn journal_region_len(block_size: u64) -> usize {
+        usize::try_from(crate::journal::JOURNAL_RESERVED_BLOCKS.saturating_mul(block_size))
+            .unwrap_or(0)
+    }
+
+    /// Absolute byte offset of the journal region within the image.
+    fn journal_region_start(block_size: u64) -> Option<usize> {
+        usize::try_from(crate::journal::JOURNAL_HEADER_BLOCK)
+            .ok()?
+            .checked_mul(usize::try_from(block_size).ok()?)
+    }
+
+    /// Resolve the journal region as a mutable slice, if the image is large enough.
+    fn journal_region<'m>(
+        mmap: &'m mut MmapMut,
+        sb: &SuperBlock,
+    ) -> Result<&'m mut [u8], DiskManagerError> {
+        let bs = sb.block_size as u64;
+        let start = Self::journal_region_start(bs).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::other("Journal offset overflow"))
+        })?;
+        let end = start
+            .checked_add(Self::journal_region_len(bs))
+            .ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::other("Journal region overflow"))
+            })?;
+        if end > mmap.len() {
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Journal region does not fit in image",
+            )));
+        }
+        Ok(&mut mmap[start..end])
+    }
+
+    /// Format the journal region of a freshly created journaled image.
+    ///
+    /// No-op for non-journaled images. The ring starts empty with
+    /// `cleanly_unmounted = false`, so a crash before the next clean shutdown is
+    /// still detectable on the next mount.
+    fn format_journal(mmap: &mut MmapMut, sb: &SuperBlock) -> Result<(), DiskManagerError> {
+        if !sb.has_journal_layout() {
+            return Ok(());
+        }
+        let region = Self::journal_region(mmap, sb)?;
+        crate::journal::JournalRing::create(region, sb.block_size as u64)
+            .map_err(DiskManagerError::Journal)?;
+        Ok(())
+    }
+
+    /// Replay any durable-but-unapplied journal transactions (crash recovery).
+    ///
+    /// Returns the number of transactions replayed. No-op for non-journaled images.
+    ///
+    /// The region is snapshotted so the image can be mutated while iterating, and
+    /// every op is an absolute post-image write, so replaying a transaction twice
+    /// is indistinguishable from replaying it once.
+    fn recover_journal(mmap: &mut MmapMut, sb: &SuperBlock) -> Result<usize, DiskManagerError> {
+        if !sb.has_journal_layout() {
+            return Ok(0);
+        }
+        let bs = sb.block_size as u64;
+
+        // Phase 1: validate + decode frames from a snapshot, releasing the borrow.
+        let mut snapshot = Self::journal_region(mmap, sb)?.to_vec();
+        let mut ops = Vec::new();
+        let (tx_count, tx_seq) = {
+            let mut ring = crate::journal::JournalRing::open(&mut snapshot, bs)
+                .map_err(DiskManagerError::Journal)?;
+            let n = ring
+                .recover(|op| {
+                    ops.push(op.clone());
+                    Ok(())
+                })
+                .map_err(DiskManagerError::Journal)?;
+            (n, ring.state().tx_seq)
+        };
+
+        // Phase 2: redo the ops directly against the image.
+        for op in &ops {
+            crate::journal::apply_op_in_place(mmap, sb, op).map_err(DiskManagerError::Journal)?;
+        }
+
+        // Phase 3: reset the ring and record a clean shutdown.
+        let state = crate::journal::JournalState {
+            head: 0,
+            tail: 0,
+            tx_seq,
+            cleanly_unmounted: true,
+        };
+        let header_len = usize::try_from(bs)
+            .unwrap_or(0)
+            .min(crate::journal::JOURNAL_HEADER_LEN);
+        let region = Self::journal_region(mmap, sb)?;
+        region[..header_len].copy_from_slice(&state.encode()[..header_len]);
+
+        Ok(tx_count)
     }
 
     /// Reads an inode from the inode table

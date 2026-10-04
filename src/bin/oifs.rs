@@ -51,6 +51,13 @@ enum Commands {
         /// Enable encryption (will prompt for password)
         #[arg(long)]
         encrypt: bool,
+        /// Enable the metadata WAL (journaling) for crash-safe metadata updates.
+        ///
+        /// Reserves 33 blocks (1 header + 128 KB ring) between the data bitmap and
+        /// the inode table. Uncommitted transactions are replayed automatically on
+        /// the next mount, so `oifs fsck` is no longer needed after a power loss.
+        #[arg(long)]
+        journal: bool,
     },
     /// Import a file into the image
     Put {
@@ -309,7 +316,11 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     match &cli.command {
         Commands::FilterAnalyze { .. } => unreachable!(),
-        Commands::Create { size, encrypt } => {
+        Commands::Create {
+            size,
+            encrypt,
+            journal,
+        } => {
             if image.exists() {
                 return Err(format!("Image {:?} already exists.", image).into());
             }
@@ -347,28 +358,59 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("⚠️  Warning: Password is shorter than 8 characters");
                 }
 
-                let _session = OifsSession::open_with_mode(
-                    image,
-                    size_bytes,
-                    session_mode,
-                    Some(&password),
-                    true,
-                )?;
+                let _session = if *journal {
+                    OifsSession::open_journaled_with_mode(
+                        image,
+                        size_bytes,
+                        session_mode,
+                        Some(&password),
+                        true,
+                    )?
+                } else {
+                    OifsSession::open_with_mode(
+                        image,
+                        size_bytes,
+                        session_mode,
+                        Some(&password),
+                        true,
+                    )?
+                };
                 if cli.json {
                     println!(
                         "{}",
-                        json!({"ok": true, "message": "Encrypted filesystem created"})
+                        json!({"ok": true, "message": "Encrypted filesystem created", "journal": journal})
                     );
                 } else {
                     println!("✅ Encrypted filesystem created: {:?}", image);
                 }
             } else {
-                let _session =
-                    OifsSession::open_with_mode(image, size_bytes, session_mode, None, false)?;
-                if cli.json {
-                    println!("{}", json!({"ok": true, "message": "Filesystem created"}));
+                let _session = if *journal {
+                    OifsSession::open_journaled_with_mode(
+                        image,
+                        size_bytes,
+                        session_mode,
+                        None,
+                        false,
+                    )?
                 } else {
-                    println!("Created image {:?} with size {}MB", image, size);
+                    OifsSession::open_with_mode(image, size_bytes, session_mode, None, false)?
+                };
+                if cli.json {
+                    println!(
+                        "{}",
+                        json!({"ok": true, "message": "Filesystem created", "journal": journal})
+                    );
+                } else {
+                    println!(
+                        "Created image {:?} with size {}MB{}",
+                        image,
+                        size,
+                        if *journal {
+                            " (journaling enabled)"
+                        } else {
+                            ""
+                        }
+                    );
                 }
             }
             Ok(())

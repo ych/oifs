@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:c2070603cc78b5a4cb63bfc83d8fc2e89478f33a949e5dac1f1a4b66371419ee",
+  "pageVersion": "sha256:581816b0f4791a272afc22fa4358858223d6e2c6fe9959fba703d7f4d3e82b65",
   "claims": [
     {
       "id": "claim_2ab581ececd1487b994cf6cdc99cea2a",
@@ -41,8 +41,8 @@
       "statement": "DiskManager::write_data_with_filters branches across three paths: offset-0 writes run full filter-compression-encryption staging, compressed files use Zstd Multi-Frame Append at EOF or a Read-Modify-Recompress fallback, and raw files perform direct or extending block writes.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1657-L1825",
-          "version": "repo-lines-v1:sha256:b27eae747c6e54b0b2210bbc45387a7bf755a5e53592ad2206277cd57c7f340e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjMWQ2M2NhZjYxYThhNWFlZDZkYTQ3ZDVlODBkYzYzNWZhYTk5YmNmMWY0NDc4ZGEzY2EzYjY4YWEwMWNhNThkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1MDcxYzZlOTIyZDY0ZTNjMmQxMmQxYjQwMDg0YzMxY2M0ZTc4MDdmYjQyZTdmNzIyOWNjODg2MDVlN2ZjOGI1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjMTkwNjYwZGU4YWZmMmQwMzliNThhYTczM2MwOGMzZmU0OWQwMGU2NWZlMGE4OThhNDI5ZmY4MWQ2NDM1ZDNlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwOGMzZTNhMWU1ODI5Y2JhZjYwZGQwNzcxOTViZmY4ZTgxZTA4NDYxYzBmM2E3Y2M4ZmQwMDM3YjQ3MzU2Y2JjIn0"
+          "resource": "repo://src/disk.rs#L1657-L1854",
+          "version": "repo-lines-v1:sha256:2e1354eef87943eb7e5a9c567f72c482dc23e780e13b0a7491e370561fe08ca3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjMWQ2M2NhZjYxYThhNWFlZDZkYTQ3ZDVlODBkYzYzNWZhYTk5YmNmMWY0NDc4ZGEzY2EzYjY4YWEwMWNhNThkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1MDcxYzZlOTIyZDY0ZTNjMmQxMmQxYjQwMDg0YzMxY2M0ZTc4MDdmYjQyZTdmNzIyOWNjODg2MDVlN2ZjOGI1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjMTkwNjYwZGU4YWZmMmQwMzliNThhYTczM2MwOGMzZmU0OWQwMGU2NWZlMGE4OThhNDI5ZmY4MWQ2NDM1ZDNlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwOGMzZTNhMWU1ODI5Y2JhZjYwZGQwNzcxOTViZmY4ZTgxZTA4NDYxYzBmM2E3Y2M4ZmQwMDM3YjQ3MzU2Y2JjIn0"
         }
       ]
     },
@@ -73,7 +73,7 @@
           "version": "repo-lines-v1:sha256:7b4e64479ad2e5369d1b51bdef4579044547bc430f48aba20ab5887cb76fe5dc:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxOTg3ZDAyNTY2MGZkOGU2YTRlMDFkZTUwY2M0NDYwMzJmOGY0MzBmNTE2N2QyZTYwMmZjZTY3ZWQ5N2FmOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2NGY3YTA2MTU3Y2NjYzUxYzM1ZDk2NjUxNjVkMWM1YmE2ZjNjY2I3N2IzODdlYzFkYjI4NTU5ODk1NTM5MjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0ODk4OGRhNGI5NWQzN2M3YzhjN2Y4OWNmMDJhMGQzMGFmOTIwZjlmMTExYzU0ODExMzdjMmY5YWEzYmRjZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2Y2I0MDQ1MjQ1YTllZDM0N2U4ZjgwZTk1Zjc2MmQwZGFmNjFhOWFmNTVmMWNiYmZkY2RmODVmMzg5NGJjMjkifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L2735-L2747",
+          "resource": "repo://src/disk.rs#L2764-L2776",
           "version": "repo-lines-v1:sha256:463a25b90cda5441618db6a88f0e91a10129529dece9d329f753a1017a30f652:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NDRiYzcxMDM5ZjA3ZWIzY2E5ZDU5MmI0MGE4MDE1YWE2MjRlMDEwZWEyMjM4MTUxMDllNWY4MGEzNzJjNmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNzBhYzhhMmY4ZjA5YTYyMTYxNGM3ODBjZWJmYTc1YWRlNTc4Mzg1MDU1NDU2OTAxYTQzNjA5OWQ3NzU5ZWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0Y2QzMjM0Y2I4NjZkNGE1NzgyZGMwNGJhZWRjYjY4YjdmMzBmMjI5MGMyN2M0MGVmM2NhOTgxYmZlM2RkNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmOTE1ZDdiMzEwNzk3YjNhMjVjMDI3YmNlZjI4OTAxZGYxMTNmZGRhOWJjMDZjYWI0MTViNjlmZmI2Y2RiYWQifQ"
         }
       ]
@@ -83,7 +83,7 @@
       "statement": "DiskManagerInner maintains an in-memory inode cache (RwLock<HashMap<u64, Inode>>) that serves read_inode_internal hits and is invalidated on delete_file, cutting re-serialization of inodes on hot read paths.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1829-L1882",
+          "resource": "repo://src/disk.rs#L1858-L1911",
           "version": "repo-lines-v1:sha256:84c8a924edd399f34dd252531d3d494938bafc59bc0ad73ba0fd6f75e8a98f9c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2MmI2MDNjOWVjYTZiMGIzNDVhNThhOTZhZTMwYjI4NzJlNGQ4NWEwZWY2OTk2MjhkMzQ0NDkzNjFmNGZjOTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4YzNlM2ExZTU4MjljYmFmNjBkZDA3NzE5NWJmZjhlODFlMDg0NjFjMGYzYTdjYzhmZDAwMzdiNDczNTZjYmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY0ZmNmNmM3M2NhMjVmZGQzM2ZhMTZmMzQ0ZGJjNWI4ZGYwMWM1MWI2NDU5YzFhMDc5ZmJlNDJiNzUwNDMwNTcifQ"
         },
         {
@@ -91,7 +91,7 @@
           "version": "repo-lines-v1:sha256:5a133d4052256af749fbe51d9f37b53519e748648348c90d344ef578b99baedf:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWExMzNkNDA1MjI1NmFmNzQ5ZmJlNTFkOWYzN2I1MzUxOWU3NDg2NDgzNDhjOTBkMzQ0ZWY1NzhiOTliYWVkZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWExMzNkNDA1MjI1NmFmNzQ5ZmJlNTFkOWYzN2I1MzUxOWU3NDg2NDgzNDhjOTBkMzQ0ZWY1NzhiOTliYWVkZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjdmMzA3NzQ5NWU5ZjJlMWEzZThhOTBlZDA3MDhhOTMwYzg3OTg3MDRhODA0MTBhNWE3NzllODg4NGE0ZDUzZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTdhMDhmNTY0MjgzNjc0MThiYWU0MzFlOWFmNzhjMDgxOTFiZGU1YWI2ZmQyZmE1NmJjZmVjYmNiN2ZiNmNkYiJ9"
         },
         {
-          "resource": "repo://src/disk.rs#L2271-L2271",
+          "resource": "repo://src/disk.rs#L2300-L2300",
           "version": "repo-lines-v1:sha256:afda4446665f95e4d29bcc7cc6eb2f12fe3783b6105b451f63b61cd1b139b8e4:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWZkYTQ0NDY2NjVmOTVlNGQyOWJjYzdjYzZlYjJmMTJmZTM3ODNiNjEwNWI0NTFmNjNiNjFjZDFiMTM5YjhlNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWZkYTQ0NDY2NjVmOTVlNGQyOWJjYzdjYzZlYjJmMTJmZTM3ODNiNjEwNWI0NTFmNjNiNjFjZDFiMTM5YjhlNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTg3ODE5MDg5MWRlODViMThjZmViM2E4ZGYwMjI1N2JiODQxYzA3YzY4ZDFiYTMxY2QwZGRlYWNjYzFlZDAwZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiN2E4YTQzNTlkYWEwZDZkNzgzNzg1YjQ1ZGU5MzdiNDg0NTlkYjY2NTE0YjY2ODU1YjUzYzM3MDEyYmExNzBkZCJ9"
         }
       ]
@@ -127,6 +127,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-04T06:56:29.774Z"
+    "at": "2026-10-04T13:48:44.224Z"
   }
 }

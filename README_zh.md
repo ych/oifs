@@ -1,6 +1,9 @@
 # OIFS (O's Inode File System)
 
-[English](README.md) | [繁體中文](README_zh.md)
+[English](README.md) | [繁體中文](README_zh.md) | [📖 線上官方文件](https://ych.github.io/oifs/)
+
+> 🌐 **線上官方文件與架構視覺化網站 (Docs Website)**: [https://ych.github.io/oifs/](https://ych.github.io/oifs/)
+> 探索完整的互動式系統架構圖形導覽、模組呼叫關係、形式化數學證明與技術規格文件。
 
 OIFS 是一個使用 Rust 編寫的簡單 Inode 檔案系統實作。它支援基本的檔案操作、目錄管理、並發訪問保護 (Thread-safe)，以及透過 FFI 供 C/C++ 呼叫。
 
@@ -46,7 +49,19 @@ OIFS 是一個使用 Rust 編寫的簡單 Inode 檔案系統實作。它支援�
     *   **智慧推薦工具 (Filter Recommendation Tool)**：自動量測資料資訊熵並平行模擬評估 14 種濾鏡組合，輸出壓縮效益排行榜與建議參數。
     *   **原生 C-Blosc2 整合**：支援直接呼叫原生 `blosc2` C 函式庫 Chunk 編碼解碼器。
 *   **Formal Verification Guarantee (形式化數學驗證)** 🛡️:
-    *   使用 AWS **Kani Rust Verifier (CBMC/CaDiCaL)** 建立 **25 項數學證明**，覆蓋濾鏡雙射可逆性、二補數環繞溢位安全、Superblock 邊界與區塊配置無碰撞。
+    *   使用 AWS **Kani Rust Verifier (CBMC/CaDiCaL)** 建立 **50 項數學證明**，覆蓋濾鏡雙射可逆性、二補數環繞溢位安全、Superblock 邊界、區塊配置無碰撞、目錄跨區塊序列化無 OOB，以及覆寫檔案大小不變量保證 (`proof_write_from_start_size_invariant`)。
+*   **可插拔異步 I/O 引擎 (Pluggable Async I/O Engine - P3.2)** ⚡:
+    *   抽象化 `IoEngine` 讀取引擎架構：提供 `IoBackend::Mmap`（共享記憶體零拷貝）、`IoBackend::Pread`（連續 Extent 位置系統呼叫），以及 Linux 上的 `IoBackend::IoUring`（核心並行佇列），支援透過環境變數 `OIFS_IO_BACKEND` 或 Rust API 於執行階段自由切換。
+*   **可設定持久化策略 (Configurable Durability Policies - P3.3)** 💾:
+    *   提供細粒度 `DurabilityMode`（`Lazy`、`RangeAsync`、`Strict`、`LegacyWholeMmapAsync`），讓使用者能自由取捨即時斷電崩潰復原保證（`msync(MS_SYNC)`）與微秒級寫入輸送量。
+*   **動態多區塊目錄支援 (Multi-Block Directory - P3.1)** 📁:
+    *   突破舊版 4KB 單區塊目錄限制，目錄隨項目增長動態鏈結額外區塊，支援單一目錄容納數千至數萬個檔案，並維持原地切片與步進跳躍零 Heap 配置極速搜尋。
+*   **並行非阻塞 Flush (Non-Blocking Flush Concurrency)** 🔄:
+    *   背景 `flush()` 採用共享讀鎖（Shared Read Lock）搭配專屬同步 Mutex，確保長時間的磁碟同步操作絕不阻礙並行的讀取執行緒。
+*   **3-State FFI 版本協商機制** 🔌:
+    *   提供 `oifs_init_version_check` 進行 C/C++ ABI 相容性三態握手驗證，保證動態函式庫升級的二進制相容性。
+*   **互動式架構與 OpenWiki 視覺化導覽 (Interactive Visualizer)** 🌐:
+    *   可直接於線上透過 [OpenWiki Interactive Visualizer](https://ych.github.io/oifs/) 瀏覽完整的系統架構圖、模組呼叫關係與驗證聲明。
 *   **C API (FFI)** 🔌: 提供極為完整的 C 語言介面庫 (`liboifs.so`)，支援加密開啟、檔案讀寫、目錄建立、`oifs_get_or_open` 工作階段快取以及詳細錯誤診斷輸出。
 
 ## 建置 (Build)
@@ -249,7 +264,7 @@ let decompressed = blosc2_decompress(&compressed)?;
 ```
 
 ### 5. 形式化驗證保證 (Formal Verification with Kani)
-所有純 Rust 濾鏡實作皆透過 AWS **Kani Rust Verifier (CBMC/CaDiCaL)** 完成形式化數學證明（共 25 個 Proof Harness 全部通過）：
+所有純 Rust 濾鏡實作皆透過 AWS **Kani Rust Verifier (CBMC/CaDiCaL)** 完成形式化數學證明（專案全模組共 50 個 Proof Harness 全部通過）：
 * 證明二補數溢位環繞下 Delta 嚴格可逆且不 panic。
 * 證明任意符號化位元組序列經 Shuffle / BitShuffle 運算皆完全雙射還原。
 * 證明任意非對齊尾部位元組（Tail Bytes）不被吞噬或錯位。
@@ -308,13 +323,26 @@ assert_eq!(content, data);
 | **同 Block、不重疊位移 (Disjoint Slices)** | **In-place Byte Merging (原地合併)** | 例如 Process A 寫 `0..100`，Process B 寫 `200..300`。兩者在 4KB 切片中各自寫入自己的 offset，未觸及的 byte 原樣保留，**雙方資料完美合併共存**。 |
 | **同 Block、重疊位移 (Overlapping Slices)** | **Last-Writer-Wins (原子性後寫者勝)** | 重疊部分依 Master Mutex 獲取順序，由後寫入者原子性覆蓋；單次寫入受 Mutex 保護，**絕不產生位元撕裂 (No Torn Writes)**。符合標準 POSIX `pwrite()` 語意。 |
 | **同 Block、已壓縮檔案 (Compressed File)** | **Zstd 多幀追加 (Multi-Frame Append) / 讀取-修改-重壓回退** | 當從檔案末端追加（`file_offset == size`）時，OIFS 透過 Zstandard 多幀串聯 (Multi-Frame Concatenation) 直接寫入獨立壓縮幀，無需解壓縮歷史區塊；若為中間位移隨機寫入或加密檔案，則透明透過 Read-Modify-Recompress 回退機制確保流一致性與正確性。 |
+---
+
+## 線上文件與架構視覺化導覽 (Documentation Website) 🌐
+
+完整的系統設計文件、架構技術規範與互動式知識圖譜皆已公開部署：
+👉 **[https://ych.github.io/oifs/](https://ych.github.io/oifs/)**
+
+網站亮點包含：
+* **互動式架構圖 (Interactive Force-Directed Graph)**：視覺化探索子系統、模組、資料結構與形式化數學證明（Kani Proofs）之依賴關係。
+* **程式碼聲明即時驗證 (Verified Claim Inspector)**：逐行比對設計聲明與原始碼實作，確保規格與最新程式碼 100% 同步。
+* **深度子系統專題**：詳盡介紹共享記憶體映射、可插拔 I/O 引擎、持久化策略與密碼學保證。
+
+---
 
 ## 測試 (Testing)
 
-專案包含超過 50 項完整的測試套件與形式化數學證明：
-*   **Unit Tests**: 基本模組功能測試（Superblock、Inode、Directory、Allocator 等）。
-*   **Integration Tests**: 基礎與擴充整合測試。
-*   **Large File Test**: 驗證大檔案極限（1MB 以上）的單/雙級間接區塊讀寫。
+專案包含超過 100 項自動化單元與整合測試，以及 50 項形式化數學證明：
+*   **Unit Tests**: 基本模組功能測試（Superblock、Inode、Directory、Allocator、Bitmaps、IoEngine 等）。
+*   **Integration Tests**: 基礎與擴充整合測試、持久化模式（Durability Modes）與重啟一致性驗證。
+*   **Large File Test**: 驗證大檔案極限（支援高達 513GB）的單/雙/三級間接區塊讀寫。
 *   **FSCK Extended Test**: 驗證孤立 Inode、洩漏區塊、遺失區塊與交叉引用之診斷偵測。
 *   **Online Defrag Test**: 驗證碎片分析、3 步驟安全原子重組與 Metadata 完整保留。
 *   **Shuttle Concurrency Tests**: 使用 **Shuttle** 隨機交錯排程探索，驗證多執行緒競態與死鎖安全。
@@ -323,7 +351,7 @@ assert_eq!(content, data);
 *   **Network Multi-Node Sync Tests**: 驗證多節點跨 TCP 連線在單一檔案上的並發切片寫入與資料同步。
 *   **MCP Server Tests**: 驗證符合 Model Context Protocol 規範之 JSON-RPC 工具呼叫。
 *   **Performance Comparison Microbenchmark**: 實測驗證重構後之 Zero-Allocation 與演算法加速倍率。
-*   **Kani Formal Proofs**: 25 項數學證明，保證濾鏡雙射可逆性與區塊配置無溢位。
+*   **Kani Formal Proofs**: **50 項數學證明**，嚴格驗證整數溢位安全、雙射可逆性、目錄序列化安全性與覆寫大小不變量。
 
 執行所有標準測試：
 ```bash
@@ -379,3 +407,11 @@ cargo run --bin oifs -- -i encrypted.img put test.txt
 # 檢查原始磁碟映像（應該找不到明文）
 hexdump -C encrypted.img | grep "SECRET_DATA"  # 應該沒有結果
 ```
+
+---
+
+## 授權條款 (License)
+
+Copyright (c) 2026 Yu-Chun Huang <ych@ychuang.org>
+
+本專案採用 Apache License 2.0 條款授權開源。詳細內容請參閱 [LICENSE](LICENSE) 檔案。

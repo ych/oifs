@@ -1,6 +1,9 @@
 # OIFS (O's Inode File System)
 
-[English](README.md) | [繁體中文](README_zh.md)
+[English](README.md) | [繁體中文](README_zh.md) | [📖 Online Documentation](https://ych.github.io/oifs/)
+
+> 🌐 **Documentation & Architecture Website**: [https://ych.github.io/oifs/](https://ych.github.io/oifs/)
+> Browse interactive architecture diagrams, module call trees, verified design claims, and comprehensive technical specifications.
 
 OIFS is an inode-based file system implemented in Rust. It provides robust file operations, directory management, multi-process thread-safe concurrency, online safe defragmentation, pre-compression data filters, AEAD encryption, Model Context Protocol (MCP) server integration, and a C FFI interface for C/C++ integration.
 
@@ -48,7 +51,20 @@ OIFS is an inode-based file system implemented in Rust. It provides robust file 
     *   **Filter Recommendation Tool**: Automatically measures Shannon entropy and evaluates 14 candidate pipelines in parallel to suggest optimal parameters.
     *   **Native C-Blosc2 Integration**: Direct bindings to the compiled C-Blosc2 chunk codec.
 *   **Formal Verification Guarantee 🛡️**:
-    *   25 mathematical proofs verified with AWS **Kani Rust Verifier (CBMC/CaDiCaL)**, proving filter bijectivity, two's-complement overflow safety, superblock bounds, and collision-free block allocation.
+    *   **50 mathematical proofs** verified with AWS **Kani Rust Verifier (CBMC/CaDiCaL)** across 9 modules, proving filter bijectivity, two's-complement overflow safety, superblock bounds, directory serialization safety, block pointer path traversal, and file size invariants on full/partial overwrites (`proof_write_from_start_size_invariant`).
+*   **Pluggable Asynchronous I/O Engine (P3.2) ⚡**:
+    *   Abstracted `IoEngine` decoupling block payload reads into pluggable backends: `IoBackend::Mmap` (zero-copy memory map), `IoBackend::Pread` (positional syscalls per coalesced extent), and `IoBackend::IoUring` (Linux concurrent submission queue).
+    *   Selectable at runtime via the `OIFS_IO_BACKEND` environment variable (`mmap`, `pread`, `io_uring`) or via Rust API.
+*   **Configurable Durability Policies (P3.3) 💾**:
+    *   Granular `DurabilityMode` (`Lazy`, `RangeAsync`, `Strict`, `LegacyWholeMmapAsync`) allowing developers to precisely balance immediate power-loss crash resilience (`msync(MS_SYNC)`) against microsecond-level write throughput.
+*   **Dynamic Multi-Block Directories (P3.1) 📁**:
+    *   Directories seamlessly expand across multiple dynamically allocated 4KB extent blocks, scaling to tens of thousands of entries per directory while retaining zero-allocation step-skipping search.
+*   **Non-Blocking Flush Concurrency 🔄**:
+    *   Background `flush()` operations employ a shared read-lock separated by a dedicated synchronization mutex, guaranteeing that long disk flushes never block concurrent reader threads.
+*   **3-State FFI Version Handshake 🔌**:
+    *   `oifs_init_version_check` provides a 3-state compatibility handshake for C/C++ FFI dynamic linking, guaranteeing ABI stability across library upgrades.
+*   **Interactive Architecture & OpenWiki Visualizer 🌐**:
+    *   Explore interactive architecture diagrams, module call trees, and verified design claims on the [OpenWiki Interactive Visualizer](https://ych.github.io/oifs/).
 *   **C API (FFI) 🔌**: Comprehensive C shared library (`liboifs.so`) supporting encrypted access, I/O, directory management, `oifs_get_or_open` session reuse, and rich diagnostics.
 
 ---
@@ -293,12 +309,24 @@ When multiple processes write to the **same file and the same 4KB block**, OIFS 
 
 ---
 
+## Documentation Website & Architecture Visualizer 🌐
+
+The complete system documentation, architecture specifications, and interactive knowledge graph are published at:
+👉 **[https://ych.github.io/oifs/](https://ych.github.io/oifs/)**
+
+Highlights of the documentation portal:
+* **Interactive Architecture Graph**: Visualize the relationships between subsystems, modules, struct definitions, and formal proof harnesses.
+* **Verified Claim Inspector**: Real-time line-by-line verification tracking design assertions directly against source code.
+* **Deep-Dive Subsystem Specs**: Comprehensive references covering memory-mapped I/O, pluggable engines, durability modes, and cryptographic guarantees.
+
+---
+
 ## Testing Suite
 
-OIFS is backed by over 50 automated tests and formal verification harnesses:
+OIFS is validated by over 100 automated unit/integration tests and 50 formal verification proofs:
 
-*   **Unit Tests**: Core module functionality (Superblock, Inode, Directory, Allocator).
-*   **Integration Tests**: End-to-end file system operations and persistence across re-openings.
+*   **Unit Tests**: Core module functionality (Superblock, Inode, Directory, Allocator, Bitmaps, IoEngine).
+*   **Integration Tests**: End-to-end file system operations, durability modes, and persistence across re-openings.
 *   **Large File Tests**: Validates boundary limits across single, double, and triple indirect blocks (up to 513GB).
 *   **FSCK Extended Tests**: Verifies detection of orphan inodes, leaked blocks, missing blocks, and cross-linked references.
 *   **Online Defrag Tests**: Verifies fragmentation analysis, 3-step atomic rename, and metadata preservation.
@@ -308,7 +336,7 @@ OIFS is backed by over 50 automated tests and formal verification harnesses:
 *   **Network Multi-Node Sync Tests**: Verifies multi-node TCP concurrent slice writes and synchronization on a single shared file.
 *   **MCP Server Tests**: Validates JSON-RPC tool invocations adhering to the Model Context Protocol.
 *   **Performance Microbenchmark**: Empirically proves zero-allocation and algorithmic speedup ratios.
-*   **Kani Formal Proofs**: 42 formal proofs verifying arithmetic overflow safety, bijectivity, block pointer path resolution, and allocation correctness.
+*   **Kani Formal Proofs**: **50 mathematical proofs** verifying arithmetic overflow safety, filter bijectivity, directory serialization correctness, block pointer path resolution, and file size invariants on write/overwrite.
 
 Run all standard tests:
 ```bash

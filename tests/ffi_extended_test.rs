@@ -149,10 +149,10 @@ fn test_ffi_version_handshake_compatibility() {
         .to_str()
         .unwrap();
 
-    assert_eq!(major, 0);
-    assert_eq!(minor, 1);
+    assert_eq!(major, 1);
+    assert_eq!(minor, 0);
     assert_eq!(patch, 0);
-    assert_eq!(version_str, "0.1.0");
+    assert_eq!(version_str, "1.0.0");
     assert!(code > 0);
 
     // Rule: "舊版本 error out (-1)，新版本 warning (1)，預期版本就沒事 (0)"

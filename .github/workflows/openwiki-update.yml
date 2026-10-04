@@ -12,7 +12,6 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    environment: GEMINI_API_KEY
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -34,19 +33,16 @@ jobs:
       - name: Run OpenWiki
         id: openwiki
         continue-on-error: true
-        run: openwiki code --update --print
+        run: |
+          openwiki code --update --print
+          openwiki visualize openwiki --export docs/openwiki-visualizer
         env:
-          OPENWIKI_PROVIDER: gemini
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENWIKI_MODEL_ID: "gemini-3.5-flash"
+          OPENWIKI_PROVIDER: openrouter
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENWIKI_MODEL_ID: "qwen/qwen3.8-27b:free"
           OPENWIKI_PAGE_CONCURRENCY: "1"
           OPENWIKI_PROVIDER_RETRY_ATTEMPTS: "6"
-          # Required for the LangSmith connector's code-mode pull to authenticate.
-          # For extra workspaces, add OPENWIKI_LANGSMITH_API_KEY_2, _3, ... as repo
-          # secrets and env entries here.
-          OPENWIKI_LANGSMITH_API_KEY: ${{ secrets.OPENWIKI_LANGSMITH_API_KEY }}
           # Optional: also trace this workflow's own OpenWiki run to LangSmith.
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           LANGCHAIN_PROJECT: openwiki
           LANGCHAIN_TRACING_V2: "false"
 
@@ -60,7 +56,7 @@ jobs:
         # CLAUDE.md is listed only when present: git add fails on a missing path
         # and then stages nothing.
         run: |
-          paths=openwiki,AGENTS.md,.github/workflows/openwiki-update.yml
+          paths=openwiki,docs,AGENTS.md,.github/workflows/openwiki-update.yml
           if [ -e CLAUDE.md ]; then paths="$paths,CLAUDE.md"; fi
           echo "list=$paths" >> "$GITHUB_OUTPUT"
 

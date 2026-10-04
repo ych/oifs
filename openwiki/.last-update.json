@@ -1,8 +1,8 @@
 {
-  "updatedAt": "2026-10-04T08:56:00.701Z",
+  "updatedAt": "2026-10-04T09:12:50.275Z",
   "command": "update",
   "gitHead": "0f2303883ee50883ded72473c4b486f58e298166",
-  "model": "qwen/qwen3.8-27b:free",
+  "model": "nvidia/nemotron-3-super-120b-a12b:free",
   "status": "interrupted",
   "language": "en"
 }

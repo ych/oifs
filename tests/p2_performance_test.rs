@@ -1,10 +1,10 @@
+use oifs::filters::{FilterConfig, calculate_entropy, recommend_filters};
 use oifs::session::OifsSession;
-use oifs::filters::{recommend_filters, calculate_entropy, FilterConfig};
-use std::time::Instant;
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
+use std::time::Instant;
 
 // =========================================================================
 // P2.1 Core & Benchmark Tests
@@ -30,25 +30,49 @@ fn test_p2_1_recommend_filters_large_file_performance_and_accuracy() {
 
     println!("P2.1 Execution Time: {:?}", elapsed);
     println!("  Original Size: {} bytes", rec.original_size);
-    println!("  Baseline Compressed: {} bytes (Entropy: {:.3})", rec.baseline_compressed_size, rec.baseline_entropy);
-    println!("  Best Filter: {} (Estimated Comp: {} bytes, Savings: {:.1}%, Ratio: {:.2}x)",
-        rec.best_report.label, rec.best_report.compressed_size, rec.best_report.space_savings_percent, rec.best_report.compression_ratio);
+    println!(
+        "  Baseline Compressed: {} bytes (Entropy: {:.3})",
+        rec.baseline_compressed_size, rec.baseline_entropy
+    );
+    println!(
+        "  Best Filter: {} (Estimated Comp: {} bytes, Savings: {:.1}%, Ratio: {:.2}x)",
+        rec.best_report.label,
+        rec.best_report.compressed_size,
+        rec.best_report.space_savings_percent,
+        rec.best_report.compression_ratio
+    );
 
     // Latency assertion: With 192KB multi-window sampling and Rayon multi-core parallelism,
     // 10MB recommendation must finish well within 100 milliseconds (typically < 10ms),
     // whereas non-optimized sequential 14-trial 10MB zstd encoding would take 3-5+ seconds.
-    assert!(elapsed.as_millis() < 500, "P2.1 recommendation must execute in sub-second (actual: {:?})", elapsed);
+    assert!(
+        elapsed.as_millis() < 500,
+        "P2.1 recommendation must execute in sub-second (actual: {:?})",
+        elapsed
+    );
 
     // Accuracy assertions
     assert_eq!(rec.original_size, 10_000_000);
-    assert!(rec.best_config.delta, "Must select delta filter for continuous float series");
-    assert_eq!(rec.best_config.typesize, 4, "Must detect 4-byte typesize for f32 data");
-    assert!(rec.best_report.compressed_size < rec.baseline_compressed_size,
-        "Best filtered compression must outperform raw baseline zstd");
-    assert!(rec.best_report.entropy < raw_entropy,
-        "Best filter must reduce Shannon entropy");
-    assert!(rec.best_report.space_savings_percent > 70.0,
-        "Delta on continuous float series should achieve > 70% space savings");
+    assert!(
+        rec.best_config.delta,
+        "Must select delta filter for continuous float series"
+    );
+    assert_eq!(
+        rec.best_config.typesize, 4,
+        "Must detect 4-byte typesize for f32 data"
+    );
+    assert!(
+        rec.best_report.compressed_size < rec.baseline_compressed_size,
+        "Best filtered compression must outperform raw baseline zstd"
+    );
+    assert!(
+        rec.best_report.entropy < raw_entropy,
+        "Best filter must reduce Shannon entropy"
+    );
+    assert!(
+        rec.best_report.space_savings_percent > 70.0,
+        "Delta on continuous float series should achieve > 70% space savings"
+    );
 }
 
 #[test]
@@ -98,9 +122,18 @@ fn test_p2_1_high_entropy_random_noise_prefers_none() {
     }
 
     let rec = recommend_filters(&noise);
-    println!("Random Noise: Baseline Entropy = {:.3}, Best = {}", rec.baseline_entropy, rec.best_report.label);
-    assert!(rec.baseline_entropy > 7.9, "Pseudo-random noise must have entropy close to 8 bits/byte");
-    assert!(rec.best_report.space_savings_percent < 5.0, "White noise should achieve negligible savings (< 5%)");
+    println!(
+        "Random Noise: Baseline Entropy = {:.3}, Best = {}",
+        rec.baseline_entropy, rec.best_report.label
+    );
+    assert!(
+        rec.baseline_entropy > 7.9,
+        "Pseudo-random noise must have entropy close to 8 bits/byte"
+    );
+    assert!(
+        rec.best_report.space_savings_percent < 5.0,
+        "White noise should achieve negligible savings (< 5%)"
+    );
 }
 
 #[test]
@@ -109,17 +142,31 @@ fn test_p2_1_bitshuffle_sparse_bitfield_selection() {
     let size = 512 * 1024;
     let mut bitfield_data = Vec::with_capacity(size);
     for i in 0..(size / 8) {
-        let val: u64 = if i % 4 == 0 { 0x01 } else if i % 4 == 2 { 0x02 } else { 0x00 };
+        let val: u64 = if i % 4 == 0 {
+            0x01
+        } else if i % 4 == 2 {
+            0x02
+        } else {
+            0x00
+        };
         bitfield_data.extend_from_slice(&val.to_le_bytes());
     }
 
     let rec = recommend_filters(&bitfield_data);
-    println!("Sparse Bitfield: Best Filter = {} (Savings: {:.1}%, Ratio: {:.2}x)",
-        rec.best_report.label, rec.best_report.space_savings_percent, rec.best_report.compression_ratio);
-    assert!(rec.best_config.bitshuffle || rec.best_config.shuffle || rec.best_config.delta,
-        "Sparse bitfields must select a compression filter");
-    assert!(rec.best_report.space_savings_percent > 80.0,
-        "Sparse bitfields must achieve > 80% compression space savings");
+    println!(
+        "Sparse Bitfield: Best Filter = {} (Savings: {:.1}%, Ratio: {:.2}x)",
+        rec.best_report.label,
+        rec.best_report.space_savings_percent,
+        rec.best_report.compression_ratio
+    );
+    assert!(
+        rec.best_config.bitshuffle || rec.best_config.shuffle || rec.best_config.delta,
+        "Sparse bitfields must select a compression filter"
+    );
+    assert!(
+        rec.best_report.space_savings_percent > 80.0,
+        "Sparse bitfields must achieve > 80% compression space savings"
+    );
 }
 
 // =========================================================================
@@ -133,8 +180,8 @@ fn test_p2_2_inode_cache_consistency_and_performance() {
         let _ = fs::remove_file(img_path);
     }
 
-    let session = OifsSession::get_or_open(img_path, 20 * 1024 * 1024)
-        .expect("Failed to create session");
+    let session =
+        OifsSession::get_or_open(img_path, 20 * 1024 * 1024).expect("Failed to create session");
 
     // Create nested directory hierarchy
     let root = session.resolve_path(".").unwrap();
@@ -143,7 +190,9 @@ fn test_p2_2_inode_cache_consistency_and_performance() {
     let file_id = session.create_file(dir_b, "data.bin").unwrap();
 
     let initial_data = b"Hello OIFS Inode Cache (P2.2)!";
-    session.write_data(file_id, 0, initial_data, oifs::disk::CompressionMode::Never).unwrap();
+    session
+        .write_data(file_id, 0, initial_data, oifs::disk::CompressionMode::Never)
+        .unwrap();
 
     // 1. Warm-up and test rapid cached path resolution (10,000 lookups)
     let start = Instant::now();
@@ -153,11 +202,16 @@ fn test_p2_2_inode_cache_consistency_and_performance() {
     }
     let elapsed = start.elapsed();
     println!("10,000 cached path resolutions completed in {:?}", elapsed);
-    assert!(elapsed.as_millis() < 500, "Cached path resolution should be ultra-fast");
+    assert!(
+        elapsed.as_millis() < 500,
+        "Cached path resolution should be ultra-fast"
+    );
 
     // 2. Test cache coherence on write (mtime and size updates)
     let updated_data = b"Updated content for cache coherence verification";
-    session.write_data(file_id, 0, updated_data, oifs::disk::CompressionMode::Never).unwrap();
+    session
+        .write_data(file_id, 0, updated_data, oifs::disk::CompressionMode::Never)
+        .unwrap();
 
     let inode = session.read_inode(file_id).unwrap();
     assert_eq!(inode.size, updated_data.len() as u64);
@@ -170,7 +224,10 @@ fn test_p2_2_inode_cache_consistency_and_performance() {
 
     // Looking up the deleted file should return error
     let lookup_res = session.resolve_path("/dir_a/dir_b/data.bin");
-    assert!(lookup_res.is_err(), "Deleted file must not be found in cache or disk");
+    assert!(
+        lookup_res.is_err(),
+        "Deleted file must not be found in cache or disk"
+    );
 
     // 4. Persistence check: Reopen session from disk
     drop(session);
@@ -180,7 +237,11 @@ fn test_p2_2_inode_cache_consistency_and_performance() {
     assert_eq!(reopened_dir_b, dir_b);
 
     let list = reopened.list_dir(reopened_dir_b).unwrap();
-    assert_eq!(list.len(), 0, "Deleted file must remain gone after reopening");
+    assert_eq!(
+        list.len(),
+        0,
+        "Deleted file must remain gone after reopening"
+    );
 
     // Clean up
     let _ = fs::remove_file(img_path);
@@ -199,7 +260,10 @@ fn test_p2_2_inode_cache_eviction_threshold_stress() {
     let root = session.resolve_path(".").unwrap();
 
     let total_files = 2_500;
-    println!("Creating {} files across multiple directories to exceed 2048 cache capacity...", total_files);
+    println!(
+        "Creating {} files across multiple directories to exceed 2048 cache capacity...",
+        total_files
+    );
 
     let num_dirs = 25;
     let files_per_dir = total_files / num_dirs; // 100
@@ -212,7 +276,14 @@ fn test_p2_2_inode_cache_eviction_threshold_stress() {
             let file_name = format!("f_{:03}.dat", f);
             let fid = session.create_file(dir_id, &file_name).unwrap();
             let payload = format!("Payload for d{}_f{}", d, f);
-            session.write_data(fid, 0, payload.as_bytes(), oifs::disk::CompressionMode::Never).unwrap();
+            session
+                .write_data(
+                    fid,
+                    0,
+                    payload.as_bytes(),
+                    oifs::disk::CompressionMode::Never,
+                )
+                .unwrap();
             file_ids.push((fid, payload));
         }
     }
@@ -221,7 +292,10 @@ fn test_p2_2_inode_cache_eviction_threshold_stress() {
 
     // Now read all 2,500 inodes sequentially.
     // Because the cache capacity is capped at 2048, reading 2,500 entries forces cache clear and re-insertion.
-    println!("Reading all {} inodes to trigger cache eviction cycles...", total_files);
+    println!(
+        "Reading all {} inodes to trigger cache eviction cycles...",
+        total_files
+    );
     for (fid, expected_payload) in &file_ids {
         let inode = session.read_inode(*fid).unwrap();
         assert_eq!(inode.size, expected_payload.len() as u64);
@@ -237,7 +311,10 @@ fn test_p2_2_inode_cache_eviction_threshold_stress() {
     }
     let elapsed = start.elapsed();
     println!("1,000 cached inode reads after eviction: {:?}", elapsed);
-    assert!(elapsed.as_millis() < 50, "Cached reads after eviction must remain fast");
+    assert!(
+        elapsed.as_millis() < 50,
+        "Cached reads after eviction must remain fast"
+    );
 
     drop(session);
     let _ = fs::remove_file(img_path);
@@ -260,7 +337,9 @@ fn test_p2_2_multithreaded_concurrent_cache_access() {
         let name = format!("shared_file_{:03}.bin", i);
         let fid = session.create_file(root, &name).unwrap();
         let init_bytes = vec![(i % 256) as u8; 64];
-        session.write_data(fid, 0, &init_bytes, oifs::disk::CompressionMode::Never).unwrap();
+        session
+            .write_data(fid, 0, &init_bytes, oifs::disk::CompressionMode::Never)
+            .unwrap();
         initial_files.push((fid, name));
     }
 
@@ -278,7 +357,9 @@ fn test_p2_2_multithreaded_concurrent_cache_access() {
                 let inode = sess.read_inode(fid).expect("Concurrent read_inode failed");
                 assert_eq!(inode.size, 64);
                 let path = format!("/{}", name);
-                let resolved = sess.resolve_path(&path).expect("Concurrent resolve_path failed");
+                let resolved = sess
+                    .resolve_path(&path)
+                    .expect("Concurrent resolve_path failed");
                 assert_eq!(resolved, fid);
             }
         }));
@@ -325,7 +406,9 @@ fn test_p2_2_encrypted_filesystem_with_inode_cache() {
     let enc_file = session.create_file(enc_dir, "secret_notes.txt").unwrap();
 
     let secret_data = b"Confidential encrypted data protected by OIFS XChaCha20-Poly1305";
-    session.write_data(enc_file, 0, secret_data, oifs::disk::CompressionMode::Never).unwrap();
+    session
+        .write_data(enc_file, 0, secret_data, oifs::disk::CompressionMode::Never)
+        .unwrap();
 
     // 1,000 rapid cached lookups in encrypted filesystem
     for _ in 0..1000 {
@@ -343,9 +426,12 @@ fn test_p2_2_encrypted_filesystem_with_inode_cache() {
     // Drop and reopen encrypted session
     drop(session);
 
-    let reopened = OifsSession::get_or_open_with_password(img_path, 20 * 1024 * 1024, Some(password))
-        .expect("Failed to reopen encrypted session");
-    let reopened_file = reopened.resolve_path("/vault_dir/secret_notes.txt").unwrap();
+    let reopened =
+        OifsSession::get_or_open_with_password(img_path, 20 * 1024 * 1024, Some(password))
+            .expect("Failed to reopen encrypted session");
+    let reopened_file = reopened
+        .resolve_path("/vault_dir/secret_notes.txt")
+        .unwrap();
     assert_eq!(reopened_file, enc_file);
     let decrypted = reopened.read_data(reopened_file).unwrap();
     assert_eq!(decrypted, secret_data);
@@ -363,10 +449,17 @@ fn test_p2_1_f64_timeseries_and_u16_sensor_data_recommendation() {
         f64_data.extend_from_slice(&val.to_le_bytes());
     }
     let rec_f64 = recommend_filters(&f64_data);
-    println!("f64 Timeseries Best Filter: {} (Savings: {:.1}%, Ratio: {:.2}x)",
-        rec_f64.best_report.label, rec_f64.best_report.space_savings_percent, rec_f64.best_report.compression_ratio);
+    println!(
+        "f64 Timeseries Best Filter: {} (Savings: {:.1}%, Ratio: {:.2}x)",
+        rec_f64.best_report.label,
+        rec_f64.best_report.space_savings_percent,
+        rec_f64.best_report.compression_ratio
+    );
     // Delta or Shuffle with type_size = 8 should be selected and save > 80% space
-    assert!(rec_f64.best_report.space_savings_percent > 80.0, "f64 timeseries should compress > 80% with filters");
+    assert!(
+        rec_f64.best_report.space_savings_percent > 80.0,
+        "f64 timeseries should compress > 80% with filters"
+    );
     assert_eq!(rec_f64.best_report.config.typesize, 8);
 
     // 2. 2-byte PCM audio / sensor data (512KB = 262,144 u16 values, e.g. triangular wave)
@@ -377,9 +470,16 @@ fn test_p2_1_f64_timeseries_and_u16_sensor_data_recommendation() {
         u16_data.extend_from_slice(&val.to_le_bytes());
     }
     let rec_u16 = recommend_filters(&u16_data);
-    println!("u16 Signal Best Filter: {} (Savings: {:.1}%, Ratio: {:.2}x)",
-        rec_u16.best_report.label, rec_u16.best_report.space_savings_percent, rec_u16.best_report.compression_ratio);
-    assert!(rec_u16.best_report.space_savings_percent > 70.0, "u16 signal should compress well");
+    println!(
+        "u16 Signal Best Filter: {} (Savings: {:.1}%, Ratio: {:.2}x)",
+        rec_u16.best_report.label,
+        rec_u16.best_report.space_savings_percent,
+        rec_u16.best_report.compression_ratio
+    );
+    assert!(
+        rec_u16.best_report.space_savings_percent > 70.0,
+        "u16 signal should compress well"
+    );
 }
 
 #[test]
@@ -399,7 +499,8 @@ fn test_p2_1_concurrent_recommend_filters_stress() {
         }));
     }
     for h in handles {
-        h.join().expect("Worker thread panicked in concurrent recommendation");
+        h.join()
+            .expect("Worker thread panicked in concurrent recommendation");
     }
 }
 
@@ -416,29 +517,44 @@ fn test_p2_2_cache_invalidation_on_file_deletion_and_resize() {
 
     // 1. Initial write of 100 bytes
     let payload1 = vec![0xAA; 100];
-    session.write_data(fid, 0, &payload1, oifs::disk::CompressionMode::Never).unwrap();
+    session
+        .write_data(fid, 0, &payload1, oifs::disk::CompressionMode::Never)
+        .unwrap();
     let inode1 = session.read_inode(fid).unwrap();
     assert_eq!(inode1.size, 100);
 
     // 2. Overwrite expanding to 5,000 bytes
     let payload2 = vec![0xBB; 5000];
-    session.write_data(fid, 0, &payload2, oifs::disk::CompressionMode::Never).unwrap();
+    session
+        .write_data(fid, 0, &payload2, oifs::disk::CompressionMode::Never)
+        .unwrap();
     let inode2 = session.read_inode(fid).unwrap();
-    assert_eq!(inode2.size, 5000, "Cache must immediately reflect enlarged file size");
+    assert_eq!(
+        inode2.size, 5000,
+        "Cache must immediately reflect enlarged file size"
+    );
     assert_eq!(session.read_data(fid).unwrap(), payload2);
 
     // 3. Partial overwrite at offset 50
     let patch = vec![0xCC; 10];
-    session.write_data(fid, 50, &patch, oifs::disk::CompressionMode::Never).unwrap();
+    session
+        .write_data(fid, 50, &patch, oifs::disk::CompressionMode::Never)
+        .unwrap();
     let inode3 = session.read_inode(fid).unwrap();
-    assert_eq!(inode3.size, 5000, "Cache must keep size after sub-block write");
+    assert_eq!(
+        inode3.size, 5000,
+        "Cache must keep size after sub-block write"
+    );
     let patched_data = session.read_data(fid).unwrap();
     assert_eq!(&patched_data[50..60], &patch[..]);
 
     // 4. Delete file: inode must be evicted from cache
     session.delete_file(root, "dynamic.bin").unwrap();
     let resolved_after_delete = session.resolve_path("/dynamic.bin");
-    assert!(resolved_after_delete.is_err(), "Deleted file must no longer resolve");
+    assert!(
+        resolved_after_delete.is_err(),
+        "Deleted file must no longer resolve"
+    );
 
     drop(session);
     let _ = fs::remove_file(img_path);
@@ -463,7 +579,14 @@ fn test_p2_2_deep_directory_hierarchy_and_fsck_consistency() {
 
     let target_fid = session.create_file(current_dir, "target.txt").unwrap();
     let target_data = b"Deeply nested file verified via cached inodes!";
-    session.write_data(target_fid, 0, target_data, oifs::disk::CompressionMode::Never).unwrap();
+    session
+        .write_data(
+            target_fid,
+            0,
+            target_data,
+            oifs::disk::CompressionMode::Never,
+        )
+        .unwrap();
 
     // Rapid path resolutions traversing the full 6-level hierarchy
     let deep_path = "/level0/level1/level2/level3/level4/level5/target.txt";
@@ -474,7 +597,10 @@ fn test_p2_2_deep_directory_hierarchy_and_fsck_consistency() {
 
     // Verify filesystem integrity with fsck report
     let fsck = session.verify_integrity().unwrap();
-    assert!(fsck.is_clean, "Fsck report must be clean after nested directory operations");
+    assert!(
+        fsck.is_clean,
+        "Fsck report must be clean after nested directory operations"
+    );
 
     drop(session);
     let _ = fs::remove_file(img_path);

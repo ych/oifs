@@ -1,8 +1,8 @@
 use oifs::disk::{CompressionMode, DiskManager};
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Instant;
 
@@ -23,11 +23,14 @@ fn test_concurrent_readers_scaling_and_safety() {
 
     let dm = DiskManager::open(img_path, 20 * 1024 * 1024).expect("Failed to create disk");
     let root_id = dm.superblock().root_inode;
-    let file_id = dm.create_file(root_id, "shared_read.bin").expect("create_file");
+    let file_id = dm
+        .create_file(root_id, "shared_read.bin")
+        .expect("create_file");
 
     // Write 50KB payload
     let payload: Vec<u8> = (0..50_000).map(|i| (i * 31 % 256) as u8).collect();
-    dm.write_data(file_id, 0, &payload, CompressionMode::Never).expect("write_data");
+    dm.write_data(file_id, 0, &payload, CompressionMode::Never)
+        .expect("write_data");
 
     let num_readers = 16;
     let reads_per_thread = 500;
@@ -46,9 +49,14 @@ fn test_concurrent_readers_scaling_and_safety() {
             for i in 0..reads_per_thread {
                 // Varying offset across the file
                 let offset = ((thread_idx * 137 + i * 97) % (payload_ref.len() - 1024)) as u64;
-                let n = dm_clone.read_at(file_id, offset, &mut buf).expect("read_at");
+                let n = dm_clone
+                    .read_at(file_id, offset, &mut buf)
+                    .expect("read_at");
                 assert_eq!(n, 1024);
-                assert_eq!(&buf[..], &payload_ref[offset as usize..offset as usize + 1024]);
+                assert_eq!(
+                    &buf[..],
+                    &payload_ref[offset as usize..offset as usize + 1024]
+                );
                 total_bytes.fetch_add(n, Ordering::Relaxed);
             }
         }));
@@ -79,10 +87,13 @@ fn test_mixed_readers_and_writers_safety() {
 
     let dm = DiskManager::open(img_path, 30 * 1024 * 1024).expect("Failed to create disk");
     let root_id = dm.superblock().root_inode;
-    let main_file_id = dm.create_file(root_id, "main_file.bin").expect("create_file");
+    let main_file_id = dm
+        .create_file(root_id, "main_file.bin")
+        .expect("create_file");
 
     let payload: Vec<u8> = (0..20_000).map(|i| (i * 17 % 256) as u8).collect();
-    dm.write_data(main_file_id, 0, &payload, CompressionMode::Never).expect("write_data");
+    dm.write_data(main_file_id, 0, &payload, CompressionMode::Never)
+        .expect("write_data");
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let mut reader_handles = Vec::new();
@@ -98,9 +109,14 @@ fn test_mixed_readers_and_writers_safety() {
             let mut read_count = 0;
             while !stop.load(Ordering::Relaxed) {
                 let offset = ((t * 100 + read_count * 50) % (payload_ref.len() - 512)) as u64;
-                let n = dm_clone.read_at(main_file_id, offset, &mut buf).expect("read_at");
+                let n = dm_clone
+                    .read_at(main_file_id, offset, &mut buf)
+                    .expect("read_at");
                 assert_eq!(n, 512);
-                assert_eq!(&buf[..], &payload_ref[offset as usize..offset as usize + 512]);
+                assert_eq!(
+                    &buf[..],
+                    &payload_ref[offset as usize..offset as usize + 512]
+                );
                 read_count += 1;
             }
             read_count
@@ -116,7 +132,9 @@ fn test_mixed_readers_and_writers_safety() {
                 let fname = format!("writer_{}_{}.bin", w, i);
                 let fid = dm_clone.create_file(root_id, &fname).expect("create_file");
                 let data = vec![(w * 10 + i) as u8; 1000];
-                dm_clone.write_data(fid, 0, &data, CompressionMode::Never).expect("write_data");
+                dm_clone
+                    .write_data(fid, 0, &data, CompressionMode::Never)
+                    .expect("write_data");
                 let read_back = dm_clone.read_data(fid).expect("read_data");
                 assert_eq!(read_back, data);
             }

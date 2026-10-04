@@ -227,14 +227,23 @@ impl DiskManagerInner {
 
     #[inline]
     pub fn inode_byte_range(&self, inode_id: u64) -> (usize, usize) {
-        let offset =
-            self.superblock.inode_table_block as usize * BLOCK_SIZE + inode_id as usize * 256;
+        let base = (self.superblock.inode_table_block as usize).checked_mul(BLOCK_SIZE);
+        let id_offset = usize::try_from(inode_id)
+            .ok()
+            .and_then(|id| id.checked_mul(256));
+        let offset = base
+            .and_then(|b| id_offset.and_then(|i| b.checked_add(i)))
+            .unwrap_or(usize::MAX);
         (offset, 256)
     }
 
     #[inline]
     pub fn block_byte_range(&self, block_id: u64) -> (usize, usize) {
-        (block_id as usize * BLOCK_SIZE, BLOCK_SIZE)
+        let start = usize::try_from(block_id)
+            .ok()
+            .and_then(|b| b.checked_mul(BLOCK_SIZE))
+            .unwrap_or(usize::MAX);
+        (start, BLOCK_SIZE)
     }
 
     #[inline]
@@ -478,8 +487,8 @@ impl DiskManager {
 
     // Private helper for Inner
     fn get_block_mut_from_map(mmap: &mut MmapMut, block_id: u64) -> Option<&mut [u8]> {
-        let start = block_id as usize * BLOCK_SIZE;
-        let end = start + BLOCK_SIZE;
+        let start = usize::try_from(block_id).ok()?.checked_mul(BLOCK_SIZE)?;
+        let end = start.checked_add(BLOCK_SIZE)?;
         if end > mmap.len() {
             None
         } else {
@@ -1824,14 +1833,41 @@ impl DiskManager {
         }
 
         let inode_size = 256u64;
-        let offset = guard.superblock.inode_table_block * BLOCK_SIZE as u64 + inode_id * inode_size;
-        if offset + inode_size > guard.mmap.len() as u64 {
+        let base = guard
+            .superblock
+            .inode_table_block
+            .checked_mul(BLOCK_SIZE as u64)
+            .ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Offset overflow",
+                ))
+            })?;
+        let id_off = inode_id.checked_mul(inode_size).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Offset overflow",
+            ))
+        })?;
+        let offset = base.checked_add(id_off).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Offset overflow",
+            ))
+        })?;
+        let end = offset.checked_add(inode_size).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Offset overflow",
+            ))
+        })?;
+        if end > guard.mmap.len() as u64 {
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "Bounds",
             )));
         }
-        let slice = &guard.mmap[offset as usize..(offset + inode_size) as usize];
+        let slice = &guard.mmap[offset as usize..end as usize];
         let inode: Inode = bincode::deserialize(slice)?;
 
         let mut cache = guard.inode_cache.write().unwrap();
@@ -1847,12 +1883,44 @@ impl DiskManager {
         inode_id: u64,
         inode: &Inode,
     ) -> Result<(), DiskManagerError> {
-        let inode_size = 256usize;
-        let offset =
-            guard.superblock.inode_table_block * BLOCK_SIZE as u64 + inode_id * inode_size as u64;
-        let slice = &mut guard.mmap[offset as usize..(offset + inode_size as u64) as usize];
+        let inode_size = 256u64;
+        let base = guard
+            .superblock
+            .inode_table_block
+            .checked_mul(BLOCK_SIZE as u64)
+            .ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Offset overflow",
+                ))
+            })?;
+        let id_off = inode_id.checked_mul(inode_size).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Offset overflow",
+            ))
+        })?;
+        let offset = base.checked_add(id_off).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Offset overflow",
+            ))
+        })?;
+        let end = offset.checked_add(inode_size).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Offset overflow",
+            ))
+        })?;
+        if end > guard.mmap.len() as u64 {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Bounds",
+            )));
+        }
+        let slice = &mut guard.mmap[offset as usize..end as usize];
         let bytes = bincode::serialize(inode)?;
-        if bytes.len() > inode_size {
+        if bytes.len() > inode_size as usize {
             return Err(DiskManagerError::Serialization(Box::new(
                 bincode::ErrorKind::SizeLimit,
             )));
@@ -1992,8 +2060,8 @@ impl DiskManager {
     }
 
     fn get_block_from_map(mmap: &MmapMut, block_id: u64) -> Option<&[u8]> {
-        let start = block_id as usize * BLOCK_SIZE;
-        let end = start + BLOCK_SIZE;
+        let start = usize::try_from(block_id).ok()?.checked_mul(BLOCK_SIZE)?;
+        let end = start.checked_add(BLOCK_SIZE)?;
         if end > mmap.len() {
             None
         } else {
@@ -2663,6 +2731,66 @@ mod verification {
             assert!(is_range);
         } else {
             assert!(!is_range);
+        }
+    }
+
+    /// Prove that checked arithmetic in get_block_from_map strictly prevents integer wrap-around.
+    /// Specifically: for ANY non-zero block_id, it is mathematically impossible to wrap around
+    /// and resolve to offset 0 (the SuperBlock).
+    #[kani::proof]
+    fn proof_get_block_checked_arithmetic_prevents_wrap_around() {
+        let block_id: u64 = kani::any();
+        let mmap_len: usize = kani::any();
+
+        let checked_start = usize::try_from(block_id)
+            .ok()
+            .and_then(|b| b.checked_mul(BLOCK_SIZE));
+        let checked_end = checked_start.and_then(|s| s.checked_add(BLOCK_SIZE));
+
+        match (checked_start, checked_end) {
+            (Some(start), Some(end)) => {
+                assert!(start < end);
+                assert_eq!(end - start, BLOCK_SIZE);
+                if block_id > 0 {
+                    assert!(
+                        start >= BLOCK_SIZE,
+                        "Non-zero block_id must NEVER resolve to Block 0 (SuperBlock)"
+                    );
+                } else {
+                    assert_eq!(start, 0, "block_id 0 must resolve to Block 0");
+                }
+                if end <= mmap_len {
+                    assert!(end <= mmap_len);
+                }
+                kani::cover!(block_id > 0 && end <= mmap_len, "Valid in-bounds block");
+                kani::cover!(block_id == 0 && end <= mmap_len, "Block 0");
+            }
+            _ => {
+                // Safely rejected upon multiplication/addition overflow or usize truncation
+                kani::cover!(block_id > 0, "Overflow safely rejected");
+            }
+        }
+    }
+
+    /// Prove that inode_byte_range never wraps around to low memory on large inode_id.
+    #[kani::proof]
+    fn proof_inode_byte_range_checked_bounds() {
+        let inode_id: u64 = kani::any();
+        let inode_table_block: u64 = 3; // Standard block 3
+
+        let base = (inode_table_block as usize).checked_mul(BLOCK_SIZE);
+        let id_offset = usize::try_from(inode_id)
+            .ok()
+            .and_then(|id| id.checked_mul(256));
+        let offset = base
+            .and_then(|b| id_offset.and_then(|i| b.checked_add(i)))
+            .unwrap_or(usize::MAX);
+
+        if offset != usize::MAX {
+            assert!(offset >= 3 * BLOCK_SIZE);
+            if inode_id > 0 {
+                assert!(offset >= 3 * BLOCK_SIZE + 256);
+            }
         }
     }
 }

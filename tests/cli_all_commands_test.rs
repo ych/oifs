@@ -62,14 +62,28 @@ fn test_cli_full_lifecycle_and_json_outputs() {
     // 3. Put files with different compression modes
     let f1 = ctx.create_temp_file("input1.txt", b"Regular plain text content");
     let output = Command::new(bin_path)
-        .args(["--image", &ctx.image_path, "put", "--no-compress", &f1, "docs/plain.txt"])
+        .args([
+            "--image",
+            &ctx.image_path,
+            "put",
+            "--no-compress",
+            &f1,
+            "docs/plain.txt",
+        ])
         .output()
         .expect("put no-compress");
     assert!(output.status.success());
 
     let f2 = ctx.create_temp_file("input2.txt", "COMPRESSIBLE_CHUNK_".repeat(300).as_bytes());
     let output = Command::new(bin_path)
-        .args(["--image", &ctx.image_path, "put", "--compress", &f2, "docs/compressed.txt"])
+        .args([
+            "--image",
+            &ctx.image_path,
+            "put",
+            "--compress",
+            &f2,
+            "docs/compressed.txt",
+        ])
         .output()
         .expect("put compress");
     assert!(output.status.success());
@@ -83,7 +97,13 @@ fn test_cli_full_lifecycle_and_json_outputs() {
     assert!(output.status.success());
 
     let output = Command::new(bin_path)
-        .args(["--image", &ctx.image_path, "append", "log.txt", "Second line\n"])
+        .args([
+            "--image",
+            &ctx.image_path,
+            "append",
+            "log.txt",
+            "Second line\n",
+        ])
         .output()
         .expect("append to log");
     assert!(output.status.success());
@@ -92,7 +112,13 @@ fn test_cli_full_lifecycle_and_json_outputs() {
     let downloaded_log = format!("{}_downloaded_log.txt", ctx.image_path);
     ctx.temp_files.push(downloaded_log.clone());
     let output = Command::new(bin_path)
-        .args(["--image", &ctx.image_path, "get", "log.txt", &downloaded_log])
+        .args([
+            "--image",
+            &ctx.image_path,
+            "get",
+            "log.txt",
+            &downloaded_log,
+        ])
         .output()
         .expect("get log");
     assert!(output.status.success());
@@ -146,7 +172,16 @@ fn test_cli_encrypted_filesystem_workflow() {
 
     // 1. Create encrypted image
     let output = Command::new(bin_path)
-        .args(["--image", &ctx.image_path, "--password", pwd, "create", "--size", "10", "--encrypt"])
+        .args([
+            "--image",
+            &ctx.image_path,
+            "--password",
+            pwd,
+            "create",
+            "--size",
+            "10",
+            "--encrypt",
+        ])
         .output()
         .expect("create encrypted");
     assert!(output.status.success());
@@ -154,7 +189,15 @@ fn test_cli_encrypted_filesystem_workflow() {
     // 2. Put file with correct password
     let host_file = ctx.create_temp_file("secret.txt", b"Classified secret content");
     let output = Command::new(bin_path)
-        .args(["--image", &ctx.image_path, "--password", pwd, "put", &host_file, "classified.txt"])
+        .args([
+            "--image",
+            &ctx.image_path,
+            "--password",
+            pwd,
+            "put",
+            &host_file,
+            "classified.txt",
+        ])
         .output()
         .expect("put encrypted");
     assert!(output.status.success());
@@ -163,21 +206,43 @@ fn test_cli_encrypted_filesystem_workflow() {
     let out_file = format!("{}_out.txt", ctx.image_path);
     ctx.temp_files.push(out_file.clone());
     let output = Command::new(bin_path)
-        .args(["--image", &ctx.image_path, "get", "classified.txt", &out_file])
+        .args([
+            "--image",
+            &ctx.image_path,
+            "get",
+            "classified.txt",
+            &out_file,
+        ])
         .output()
         .expect("get without pwd");
     assert!(!output.status.success());
 
     // 4. Try to read with wrong password -> must fail
     let output = Command::new(bin_path)
-        .args(["--image", &ctx.image_path, "--password", "WrongPassword", "get", "classified.txt", &out_file])
+        .args([
+            "--image",
+            &ctx.image_path,
+            "--password",
+            "WrongPassword",
+            "get",
+            "classified.txt",
+            &out_file,
+        ])
         .output()
         .expect("get with wrong pwd");
     assert!(!output.status.success());
 
     // 5. Read with correct password -> must succeed
     let output = Command::new(bin_path)
-        .args(["--image", &ctx.image_path, "--password", pwd, "get", "classified.txt", &out_file])
+        .args([
+            "--image",
+            &ctx.image_path,
+            "--password",
+            pwd,
+            "get",
+            "classified.txt",
+            &out_file,
+        ])
         .output()
         .expect("get with correct pwd");
     assert!(output.status.success());

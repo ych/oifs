@@ -46,7 +46,7 @@ fn test_allocation_persistence() {
         let mut dm = DiskManager::open(path, total_size).expect("Failed to create");
         let mut allocator = dm.data_block_allocator();
         allocated_block_id = allocator.allocate().expect("Allocation failed");
-        
+
         // Check reasonable ID (should be >= data_block_start)
         assert!(allocated_block_id >= dm.superblock.data_block_start);
     }
@@ -55,7 +55,7 @@ fn test_allocation_persistence() {
     {
         let mut dm = DiskManager::open(path, total_size).expect("Failed to reopen");
         let mut allocator = dm.data_block_allocator();
-        
+
         // Next allocation should be different
         let next_id = allocator.allocate().expect("Allocation 2 failed");
         assert_ne!(next_id, allocated_block_id);

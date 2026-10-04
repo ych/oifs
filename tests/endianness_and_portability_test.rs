@@ -188,4 +188,3 @@ fn test_rust_idiomatic_endianness_detection_and_conversions() {
         assert_eq!(u64::from_le(test_u64), test_u64);
     }
 }
-

@@ -17,7 +17,7 @@ fn test_cli_ls() {
     /*
     {
         let mut dm = DiskManager::open(path, total_size).expect("Failed to create");
-        
+
         // Update root inode (Inode 0)
         let mut root_inode = dm.read_inode(0).expect("Read root inode");
         root_inode.mode = FileType::Directory;
@@ -30,7 +30,7 @@ fn test_cli_ls() {
         // Allocate a inode for a file "hello.txt"
         let mut inode_alloc = dm.inode_allocator();
         let file_inode_id = inode_alloc.allocate().expect("Allocate inode");
-        
+
         // Write file inode
         let mut file_inode = Inode::new(FileType::File);
         file_inode.size = 123;
@@ -52,7 +52,7 @@ fn test_cli_ls() {
         dm.write_inode(0, &root_inode).expect("Write root inode");
     }
     */
-    
+
     // Use high level API for setup instead
     {
         let dm = DiskManager::open(path, total_size).expect("Setup");
@@ -60,9 +60,10 @@ fn test_cli_ls() {
         // create_file checks if file exists, if it does it might error? No, checking impl.
         match dm.create_file(root, "hello.txt") {
             Ok(id) => {
-                 let data = vec![0u8; 123];
-                 dm.write_data(id, 0, &data, oifs::disk::CompressionMode::Auto).unwrap();
-            },
+                let data = vec![0u8; 123];
+                dm.write_data(id, 0, &data, oifs::disk::CompressionMode::Auto)
+                    .unwrap();
+            }
             Err(_) => {
                 // If it exists (e.g. failed cleanup), try to lookup?
                 // But we remove file at start.

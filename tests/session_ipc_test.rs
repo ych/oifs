@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use oifs::disk::CompressionMode;
-use oifs::ipc::{get_master_info_path, get_socket_path, SessionEvent};
+use oifs::ipc::{SessionEvent, get_master_info_path, get_socket_path};
 use oifs::session::OifsSession;
 
 #[test]
@@ -16,14 +16,21 @@ fn test_single_process_direct_mode() {
     }
 
     let session = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Open failed");
-    assert!(session.is_direct(), "First session must be in Direct mode (Master)");
+    assert!(
+        session.is_direct(),
+        "First session must be in Direct mode (Master)"
+    );
     assert_eq!(session.peer_count(), 0);
 
     let root_id = session.resolve_path(".").expect("Resolve root failed");
-    let file_id = session.create_file(root_id, "hello.txt").expect("Create file failed");
+    let file_id = session
+        .create_file(root_id, "hello.txt")
+        .expect("Create file failed");
 
     let test_data = b"Hello from single process direct mode!";
-    session.write_data(file_id, 0, test_data, CompressionMode::Auto).expect("Write failed");
+    session
+        .write_data(file_id, 0, test_data, CompressionMode::Auto)
+        .expect("Write failed");
 
     let read_back = session.read_data(file_id).expect("Read failed");
     assert_eq!(read_back, test_data);
@@ -56,7 +63,11 @@ fn test_multi_process_transparent_proxy_and_concurrency() {
 
     // Wait a brief moment for connection counters
     thread::sleep(Duration::from_millis(50));
-    assert_eq!(master.peer_count(), 2, "Master should see 2 active peer clients");
+    assert_eq!(
+        master.peer_count(),
+        2,
+        "Master should see 2 active peer clients"
+    );
 
     // 4. Concurrent write operations from Client 1 and Client 2
     let c1_handle = {
@@ -92,9 +103,13 @@ fn test_multi_process_transparent_proxy_and_concurrency() {
     assert_eq!(master_read_c2, c2_expected);
 
     // 6. Cross-client reading: Client 1 reads file created by Client 2
-    let c2_lookup = client1.lookup(0, "c2_file.txt").expect("Lookup from client1 failed");
+    let c2_lookup = client1
+        .lookup(0, "c2_file.txt")
+        .expect("Lookup from client1 failed");
     assert_eq!(c2_lookup, c2_fid);
-    let c1_reads_c2 = client1.read_data(c2_lookup).expect("Read from client1 failed");
+    let c1_reads_c2 = client1
+        .read_data(c2_lookup)
+        .expect("Read from client1 failed");
     assert_eq!(c1_reads_c2, c2_expected);
 
     // 7. Directory listing via IPC
@@ -106,11 +121,19 @@ fn test_multi_process_transparent_proxy_and_concurrency() {
     // 8. Dropping client 1 reduces active peer count
     drop(client1);
     thread::sleep(Duration::from_millis(50));
-    assert_eq!(master.peer_count(), 1, "Master should now see 1 active peer client");
+    assert_eq!(
+        master.peer_count(),
+        1,
+        "Master should now see 1 active peer client"
+    );
 
     drop(client2);
     thread::sleep(Duration::from_millis(50));
-    assert_eq!(master.peer_count(), 0, "Master should now see 0 active peer clients");
+    assert_eq!(
+        master.peer_count(),
+        0,
+        "Master should now see 0 active peer clients"
+    );
 
     drop(master);
     let _ = fs::remove_file(img_path);
@@ -124,7 +147,9 @@ fn test_event_notification_on_master() {
     }
 
     let master = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Master open failed");
-    let event_rx = master.take_event_receiver().expect("Must have event receiver");
+    let event_rx = master
+        .take_event_receiver()
+        .expect("Must have event receiver");
 
     // Spawn a peer client in a thread
     let img_path_clone = img_path.to_string();
@@ -132,7 +157,9 @@ fn test_event_notification_on_master() {
         let client = OifsSession::open(&img_path_clone, 0).expect("Client open failed");
         let root = client.resolve_path(".").unwrap();
         let fid = client.create_file(root, "event_test.txt").unwrap();
-        client.write_data(fid, 0, b"event notification", CompressionMode::Never).unwrap();
+        client
+            .write_data(fid, 0, b"event notification", CompressionMode::Never)
+            .unwrap();
         thread::sleep(Duration::from_millis(50));
         drop(client);
     });
@@ -145,13 +172,22 @@ fn test_event_notification_on_master() {
         events.push(event);
     }
 
-    let has_connect = events.iter().any(|e| matches!(e, SessionEvent::PeerConnected { .. }));
-    let has_disconnect = events.iter().any(|e| matches!(e, SessionEvent::PeerDisconnected { .. }));
-    let has_request = events.iter().any(|e| matches!(e, SessionEvent::RequestHandled { .. }));
+    let has_connect = events
+        .iter()
+        .any(|e| matches!(e, SessionEvent::PeerConnected { .. }));
+    let has_disconnect = events
+        .iter()
+        .any(|e| matches!(e, SessionEvent::PeerDisconnected { .. }));
+    let has_request = events
+        .iter()
+        .any(|e| matches!(e, SessionEvent::RequestHandled { .. }));
 
     assert!(has_connect, "Master should receive PeerConnected event");
     assert!(has_request, "Master should receive RequestHandled events");
-    assert!(has_disconnect, "Master should receive PeerDisconnected event");
+    assert!(
+        has_disconnect,
+        "Master should receive PeerDisconnected event"
+    );
 
     drop(master);
     let _ = fs::remove_file(img_path);
@@ -177,7 +213,10 @@ fn test_stale_socket_recovery() {
 
     // Opening session now must detect that socket is dead, remove it, and become Master!
     let new_session = OifsSession::open(img_path, 0).expect("Open with stale socket must recover");
-    assert!(new_session.is_direct(), "Recovered session must be Master (Direct mode)");
+    assert!(
+        new_session.is_direct(),
+        "Recovered session must be Master (Direct mode)"
+    );
 
     drop(new_session);
     let _ = fs::remove_file(img_path);
@@ -206,7 +245,9 @@ fn test_encrypted_filesystem_with_session() {
     let root = client.resolve_path(".").unwrap();
     let fid = client.create_file(root, "top_secret.txt").unwrap();
     let secret_payload = b"Top secret data accessed across IPC session";
-    client.write_data(fid, 0, secret_payload, CompressionMode::Auto).unwrap();
+    client
+        .write_data(fid, 0, secret_payload, CompressionMode::Auto)
+        .unwrap();
 
     // Master reads file
     let read_back = master.read_data(fid).unwrap();
@@ -233,18 +274,22 @@ fn test_network_mode_transparent_proxy_and_concurrency() {
     let master_info_file = get_master_info_path(img_path);
     assert!(master_info_file.exists(), "Rendezvous file must exist");
     let content = fs::read_to_string(&master_info_file).unwrap();
-    assert!(content.contains("\"addr\""), "Rendezvous file must contain addr");
+    assert!(
+        content.contains("\"addr\""),
+        "Rendezvous file must contain addr"
+    );
 
     // 2. Client connects via Network mode
-    let client = OifsSession::open_network(img_path, 0, None)
-        .expect("Network client open failed");
+    let client = OifsSession::open_network(img_path, 0, None).expect("Network client open failed");
     assert!(!client.is_direct(), "Network Client must be Remote mode");
 
     // 3. Client writes data over TCP
     let root = client.resolve_path(".").unwrap();
     let fid = client.create_file(root, "net_file.txt").unwrap();
     let payload = b"Data transmitted seamlessly over TCP network transport";
-    client.write_data(fid, 0, payload, CompressionMode::Auto).unwrap();
+    client
+        .write_data(fid, 0, payload, CompressionMode::Auto)
+        .unwrap();
 
     // 4. Master verifies data
     let read_back = master.read_data(fid).unwrap();
@@ -258,7 +303,10 @@ fn test_network_mode_transparent_proxy_and_concurrency() {
     drop(master);
 
     // After drop, rendezvous file must be cleaned up
-    assert!(!master_info_file.exists(), "Rendezvous file must be cleaned up on Master drop");
+    assert!(
+        !master_info_file.exists(),
+        "Rendezvous file must be cleaned up on Master drop"
+    );
     let _ = fs::remove_file(img_path);
 }
 
@@ -281,7 +329,11 @@ fn test_network_mode_stale_rendezvous_recovery_and_active_probe() {
         addr: "127.0.0.1:59999".to_string(), // Dead port
         pid: 99999,
     };
-    fs::write(&master_info_file, serde_json::to_string(&dead_info).unwrap()).unwrap();
+    fs::write(
+        &master_info_file,
+        serde_json::to_string(&dead_info).unwrap(),
+    )
+    .unwrap();
     assert!(master_info_file.exists());
 
     // 3. Open in Network mode -> Active Ping Probe discovers port is dead, cleans up file, and promotes to Master!
@@ -315,7 +367,14 @@ fn test_cli_network_flag() {
 
     // Put via CLI --network
     let res = Command::new(bin)
-        .args(["--network", "--image", img_path, "put", host_file, "remote_net.txt"])
+        .args([
+            "--network",
+            "--image",
+            img_path,
+            "put",
+            host_file,
+            "remote_net.txt",
+        ])
         .status()
         .expect("Failed to run put");
     assert!(res.success());

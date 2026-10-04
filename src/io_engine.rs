@@ -159,10 +159,12 @@ pub fn is_kernel_version_supported(release: &str) -> bool {
         return true;
     }
     // RHEL 9: 5.14.0-xxx with "el9" in release
-    if major == 5 && minor == 14 && release.contains("el9") {
-        if let Some(build) = parse_rhel_build(release) {
-            return build >= MIN_RHEL9_BUILD_FOR_IO_URING;
-        }
+    if major == 5
+        && minor == 14
+        && release.contains("el9")
+        && let Some(build) = parse_rhel_build(release)
+    {
+        return build >= MIN_RHEL9_BUILD_FOR_IO_URING;
     }
     false
 }

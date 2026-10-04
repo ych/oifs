@@ -1,9 +1,9 @@
-use oifs::superblock::SuperBlock;
-use oifs::inode::FileType;
 use oifs::BLOCK_SIZE;
+use oifs::inode::FileType;
+use oifs::superblock::SuperBlock;
 use serde::Serialize;
+use std::io::{Seek, SeekFrom, Write};
 use tempfile::NamedTempFile;
-use std::io::{Write, Seek, SeekFrom};
 
 #[derive(Serialize)]
 struct V1SuperBlock {
@@ -97,20 +97,37 @@ fn test_v1_image_compatibility() {
     let sb = dm.superblock();
     assert_eq!(sb.magic, SuperBlock::MAGIC);
     assert_eq!(sb.block_count, 2560);
-    assert!(!sb.encrypted, "V1 image must deserialize with encrypted=false");
+    assert!(
+        !sb.encrypted,
+        "V1 image must deserialize with encrypted=false"
+    );
     assert_eq!(sb.encryption_version, 0);
 
     let root_inode = dm.read_inode(0).expect("Must read V1 root inode");
     assert_eq!(root_inode.mode, FileType::Directory);
-    assert!(!root_inode.encrypted, "V1 inode must deserialize with encrypted=false");
-    assert_eq!(root_inode.filter_typesize, 0, "V1 inode must have filter_typesize=0");
+    assert!(
+        !root_inode.encrypted,
+        "V1 inode must deserialize with encrypted=false"
+    );
+    assert_eq!(
+        root_inode.filter_typesize, 0,
+        "V1 inode must have filter_typesize=0"
+    );
     assert!(!root_inode.filter_delta);
     assert!(!root_inode.filter_shuffle);
     assert!(!root_inode.filter_bitshuffle);
 
     // Can we create a new file and write/read in this legacy V1 image?
-    let new_file = dm.create_file(0, "test_v1_append.txt").expect("create file on v1");
-    dm.write_data(new_file, 0, b"Hello from new binary on V1 image!", oifs::disk::CompressionMode::Always).expect("write data");
+    let new_file = dm
+        .create_file(0, "test_v1_append.txt")
+        .expect("create file on v1");
+    dm.write_data(
+        new_file,
+        0,
+        b"Hello from new binary on V1 image!",
+        oifs::disk::CompressionMode::Always,
+    )
+    .expect("write data");
     let read_back = dm.read_data(new_file).expect("read data");
     assert_eq!(read_back, b"Hello from new binary on V1 image!");
 }

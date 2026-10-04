@@ -1,8 +1,8 @@
 use oifs::ffi::{
-    oifs_open_with_password, oifs_close, oifs_write_file, oifs_read_file,
-    oifs_mkdir, oifs_last_error
+    oifs_close, oifs_last_error, oifs_mkdir, oifs_open_with_password, oifs_read_file,
+    oifs_write_file,
 };
-use std::ffi::{CString, CStr};
+use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::Path;
 
@@ -19,14 +19,18 @@ fn test_ffi_extended_flow() {
 
     // 1. Setup an encrypted image using the Rust API first
     {
-        let _dm = oifs::disk::DiskManager::create_encrypted(path_str, total_size, password).unwrap();
+        let _dm =
+            oifs::disk::DiskManager::create_encrypted(path_str, total_size, password).unwrap();
     }
 
     // 2. Open via C FFI using the correct password (should succeed)
     let c_path = CString::new(path_str).unwrap();
     let c_correct_pass = CString::new(password).unwrap();
     let handle = oifs_open_with_password(c_path.as_ptr(), 0, c_correct_pass.as_ptr());
-    assert!(!handle.is_null(), "FFI open with correct password should succeed");
+    assert!(
+        !handle.is_null(),
+        "FFI open with correct password should succeed"
+    );
 
     // 3. Test oifs_mkdir via FFI
     let c_dir = CString::new("docs").unwrap();
@@ -54,13 +58,19 @@ fn test_ffi_extended_flow() {
     );
     assert!(bytes_read > 0, "oifs_read_file should read > 0 bytes");
     let read_content = String::from_utf8(read_buf[..bytes_read as usize].to_vec()).unwrap();
-    assert_eq!(read_content, content, "Read content should match written content exactly");
+    assert_eq!(
+        read_content, content,
+        "Read content should match written content exactly"
+    );
 
     // 6. Open via C FFI using a wrong password
     // Argon2 KDF allows opening (it derives *some* key), but file decryptions will fail.
     let c_wrong_pass = CString::new("wrong_password").unwrap();
     let handle_wrong = oifs_open_with_password(c_path.as_ptr(), 0, c_wrong_pass.as_ptr());
-    assert!(!handle_wrong.is_null(), "FFI open with wrong password should return a handle");
+    assert!(
+        !handle_wrong.is_null(),
+        "FFI open with wrong password should return a handle"
+    );
 
     // 7. Try to read with the wrong handle (must fail with DecryptionFailed)
     let mut read_buf_wrong = vec![0u8; 100];
@@ -70,16 +80,26 @@ fn test_ffi_extended_flow() {
         read_buf_wrong.as_mut_ptr(),
         read_buf_wrong.len() as u64,
     );
-    assert_eq!(bytes_read_wrong, -1, "Reading file with wrong password must fail");
+    assert_eq!(
+        bytes_read_wrong, -1,
+        "Reading file with wrong password must fail"
+    );
 
     // 8. Verify error diagnostics on wrong handle
     let mut err_msg_buf_wrong = vec![0 as std::os::raw::c_char; 200];
-    let err_res_wrong = oifs_last_error(handle_wrong, err_msg_buf_wrong.as_mut_ptr(), err_msg_buf_wrong.len() as u32);
+    let err_res_wrong = oifs_last_error(
+        handle_wrong,
+        err_msg_buf_wrong.as_mut_ptr(),
+        err_msg_buf_wrong.len() as u32,
+    );
     assert_eq!(err_res_wrong, 0);
-    let err_msg_wrong = unsafe { CStr::from_ptr(err_msg_buf_wrong.as_ptr()) }.to_str().unwrap();
+    let err_msg_wrong = unsafe { CStr::from_ptr(err_msg_buf_wrong.as_ptr()) }
+        .to_str()
+        .unwrap();
     println!("Caught expected wrong-password error: {}", err_msg_wrong);
     assert!(
-        err_msg_wrong.to_lowercase().contains("decryption") || err_msg_wrong.to_lowercase().contains("not found"),
+        err_msg_wrong.to_lowercase().contains("decryption")
+            || err_msg_wrong.to_lowercase().contains("not found"),
         "Error message should describe failure with wrong password (either filename lookup or data decryption failure)"
     );
 
@@ -92,15 +112,25 @@ fn test_ffi_extended_flow() {
         err_buf.as_mut_ptr(),
         err_buf.len() as u64,
     );
-    assert_eq!(read_fake_res, -1, "Reading non-existent file should return -1");
+    assert_eq!(
+        read_fake_res, -1,
+        "Reading non-existent file should return -1"
+    );
 
     let mut err_msg_buf = vec![0 as std::os::raw::c_char; 200];
     let err_res = oifs_last_error(handle, err_msg_buf.as_mut_ptr(), err_msg_buf.len() as u32);
     assert_eq!(err_res, 0);
 
-    let err_msg = unsafe { CStr::from_ptr(err_msg_buf.as_ptr()) }.to_str().unwrap();
+    let err_msg = unsafe { CStr::from_ptr(err_msg_buf.as_ptr()) }
+        .to_str()
+        .unwrap();
     println!("Caught last FFI error: {}", err_msg);
-    assert!(err_msg.contains("NotFound") || err_msg.contains("not found") || err_msg.contains("IO error"), "Error message should describe failure");
+    assert!(
+        err_msg.contains("NotFound")
+            || err_msg.contains("not found")
+            || err_msg.contains("IO error"),
+        "Error message should describe failure"
+    );
 
     // 10. Close handles and clean up
     oifs_close(handle);

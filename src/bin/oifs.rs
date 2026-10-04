@@ -1,18 +1,18 @@
+use chrono::{DateTime, Local, TimeZone};
 use clap::{Parser, Subcommand};
 use oifs::disk::{CompressionMode, DefragMode};
 use oifs::inode::FileType;
 use oifs::session::OifsSession;
-use std::path::PathBuf;
-use chrono::{DateTime, Local, TimeZone};
 use serde::Serialize;
 use serde_json::json;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     #[arg(short, long)]
     image: Option<PathBuf>,
-    
+
     /// Password for encrypted filesystem (optional, will prompt if needed)
     #[arg(short, long)]
     password: Option<String>,
@@ -158,14 +158,17 @@ fn open_session(
 ) -> Result<OifsSession, Box<dyn std::error::Error>> {
     match OifsSession::open_with_mode(image_path, 0, mode.clone(), None, false) {
         Ok(s) => Ok(s),
-        Err(oifs::session::SessionError::DiskManager(oifs::disk::DiskManagerError::PasswordRequired)) => {
+        Err(oifs::session::SessionError::DiskManager(
+            oifs::disk::DiskManagerError::PasswordRequired,
+        )) => {
             let password = if let Some(pwd) = password_arg {
                 pwd.clone()
             } else if let Ok(env_pwd) = std::env::var("OIFS_PASSWORD") {
                 env_pwd
             } else if json_mode {
                 return Err(
-                    "Encrypted filesystem requires --password or OIFS_PASSWORD env in --json mode".into(),
+                    "Encrypted filesystem requires --password or OIFS_PASSWORD env in --json mode"
+                        .into(),
                 );
             } else {
                 read_password("🔒 Encrypted filesystem detected. Enter password: ")?
@@ -222,23 +225,49 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         if cli.json {
             println!("{}", serde_json::to_string_pretty(&rec)?);
         } else {
-            println!("=== OIFS Filter Recommendation Report for {:?} ===", host_path);
+            println!(
+                "=== OIFS Filter Recommendation Report for {:?} ===",
+                host_path
+            );
             println!("Original Size:        {} bytes", rec.original_size);
-            println!("Baseline Zstd Size:   {} bytes (Entropy: {:.3} bits/byte)", rec.baseline_compressed_size, rec.baseline_entropy);
+            println!(
+                "Baseline Zstd Size:   {} bytes (Entropy: {:.3} bits/byte)",
+                rec.baseline_compressed_size, rec.baseline_entropy
+            );
             println!("{:-<80}", "");
-            println!("{:<32} {:>10} {:>10} {:>10} {:>10}", "Filter Pipeline", "Entropy", "Zstd Size", "Ratio", "Savings");
+            println!(
+                "{:<32} {:>10} {:>10} {:>10} {:>10}",
+                "Filter Pipeline", "Entropy", "Zstd Size", "Ratio", "Savings"
+            );
             println!("{:-<80}", "");
             for c in &rec.candidates {
-                let marker = if c.config == rec.best_config { " [*RECOMMENDED*]" } else { "" };
-                println!("{:<32} {:>10.3} {:>10} {:>9.2}x {:>9.1}%{}",
-                    c.label, c.entropy, c.compressed_size, c.compression_ratio, c.space_savings_percent, marker);
+                let marker = if c.config == rec.best_config {
+                    " [*RECOMMENDED*]"
+                } else {
+                    ""
+                };
+                println!(
+                    "{:<32} {:>10.3} {:>10} {:>9.2}x {:>9.1}%{}",
+                    c.label,
+                    c.entropy,
+                    c.compressed_size,
+                    c.compression_ratio,
+                    c.space_savings_percent,
+                    marker
+                );
             }
             println!("{:-<80}", "");
-            let filter_arg = if rec.best_config.delta && rec.best_config.shuffle { "both" }
-                else if rec.best_config.delta { "delta" }
-                else if rec.best_config.shuffle { "shuffle" }
-                else if rec.best_config.bitshuffle { "bitshuffle" }
-                else { "none" };
+            let filter_arg = if rec.best_config.delta && rec.best_config.shuffle {
+                "both"
+            } else if rec.best_config.delta {
+                "delta"
+            } else if rec.best_config.shuffle {
+                "shuffle"
+            } else if rec.best_config.bitshuffle {
+                "bitshuffle"
+            } else {
+                "none"
+            };
 
             let rationale = if rec.best_config.delta {
                 "Data displays strong linear/temporal correlation; first-order delta collapses dynamic range, shrinking entropy."
@@ -265,13 +294,18 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!("Recommendation Rationale: {}", rationale);
             println!("Recommended Blosc2 Filter(s): {:?}", blosc_equivalents);
             println!("Command to import with recommended filter:");
-            println!("  oifs -i <image.img> put {:?} --filter {} --typesize {}",
-                host_path, filter_arg, rec.best_config.typesize);
+            println!(
+                "  oifs -i <image.img> put {:?} --filter {} --typesize {}",
+                host_path, filter_arg, rec.best_config.typesize
+            );
         }
         return Ok(());
     }
 
-    let image = cli.image.as_ref().ok_or("Image path must be provided via -i / --image")?;
+    let image = cli
+        .image
+        .as_ref()
+        .ok_or("Image path must be provided via -i / --image")?;
 
     match &cli.command {
         Commands::FilterAnalyze { .. } => unreachable!(),
@@ -280,36 +314,57 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("Image {:?} already exists.", image).into());
             }
             let size_bytes = size * 1024 * 1024;
-            
+
             if *encrypt {
                 let password = if let Some(pwd) = cli.password.clone() {
-                    if pwd.is_empty() { return Err("Password cannot be empty".into()); }
+                    if pwd.is_empty() {
+                        return Err("Password cannot be empty".into());
+                    }
                     pwd
                 } else if let Ok(env_pwd) = std::env::var("OIFS_PASSWORD") {
-                    if env_pwd.is_empty() { return Err("Password cannot be empty".into()); }
+                    if env_pwd.is_empty() {
+                        return Err("Password cannot be empty".into());
+                    }
                     env_pwd
                 } else if cli.json {
-                    return Err("Encrypted create requires --password or OIFS_PASSWORD env in --json mode".into());
+                    return Err(
+                        "Encrypted create requires --password or OIFS_PASSWORD env in --json mode"
+                            .into(),
+                    );
                 } else {
                     let pwd = read_password("Enter password: ")?;
-                    if pwd.is_empty() { return Err("Password cannot be empty".into()); }
+                    if pwd.is_empty() {
+                        return Err("Password cannot be empty".into());
+                    }
                     let pwd_confirm = read_password("Confirm password: ")?;
-                    if pwd != pwd_confirm { return Err("Passwords do not match".into()); }
+                    if pwd != pwd_confirm {
+                        return Err("Passwords do not match".into());
+                    }
                     pwd
                 };
 
                 if password.len() < 8 && !cli.json {
                     eprintln!("⚠️  Warning: Password is shorter than 8 characters");
                 }
-                
-                let _session = OifsSession::open_with_mode(image, size_bytes, session_mode, Some(&password), true)?;
+
+                let _session = OifsSession::open_with_mode(
+                    image,
+                    size_bytes,
+                    session_mode,
+                    Some(&password),
+                    true,
+                )?;
                 if cli.json {
-                    println!("{}", json!({"ok": true, "message": "Encrypted filesystem created"}));
+                    println!(
+                        "{}",
+                        json!({"ok": true, "message": "Encrypted filesystem created"})
+                    );
                 } else {
                     println!("✅ Encrypted filesystem created: {:?}", image);
                 }
             } else {
-                let _session = OifsSession::open_with_mode(image, size_bytes, session_mode, None, false)?;
+                let _session =
+                    OifsSession::open_with_mode(image, size_bytes, session_mode, None, false)?;
                 if cli.json {
                     println!("{}", json!({"ok": true, "message": "Filesystem created"}));
                 } else {
@@ -318,7 +373,14 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(())
         }
-        Commands::Put { host_path, remote_name, compress, no_compress, filter, typesize } => {
+        Commands::Put {
+            host_path,
+            remote_name,
+            compress,
+            no_compress,
+            filter,
+            typesize,
+        } => {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
@@ -326,9 +388,9 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("Host file {:?} does not exist.", host_path).into());
             }
 
-            let path_str = remote_name.clone().unwrap_or_else(|| {
-                host_path.file_name().unwrap().to_string_lossy().to_string()
-            });
+            let path_str = remote_name
+                .clone()
+                .unwrap_or_else(|| host_path.file_name().unwrap().to_string_lossy().to_string());
 
             let compression_mode = if *compress {
                 CompressionMode::Always
@@ -339,7 +401,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
-            
+
             let dm_clone = dm.clone();
             ctrlc::set_handler(move || {
                 let _ = dm_clone.flush();
@@ -347,11 +409,11 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             })?;
 
             let (parent_id, filename) = dm.resolve_parent(&path_str)?;
-            
+
             if dm.lookup(parent_id, &filename).is_ok() {
-                 return Err(format!("File '{}' already exists.", filename).into());
+                return Err(format!("File '{}' already exists.", filename).into());
             }
-            
+
             let inode_id = dm.create_file(parent_id, &filename)?;
             let content = std::fs::read(host_path)?;
 
@@ -373,20 +435,27 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             dm.write_data_with_filters(inode_id, 0, &content, compression_mode, filter_config)?;
-            
+
             if cli.json {
-                println!("{}", json!({"ok": true, "inode": inode_id, "bytes": content.len()}));
+                println!(
+                    "{}",
+                    json!({"ok": true, "inode": inode_id, "bytes": content.len()})
+                );
             } else {
                 println!("Imported '{}' to image.", path_str);
             }
             Ok(())
         }
-        Commands::Append { remote_name, content, no_newline } => {
+        Commands::Append {
+            remote_name,
+            content,
+            no_newline,
+        } => {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
             let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
-            
+
             let dm_clone = dm.clone();
             ctrlc::set_handler(move || {
                 let _ = dm_clone.flush();
@@ -394,43 +463,58 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             })?;
 
             let (parent_id, filename) = dm.resolve_parent(remote_name)?;
-            
+
             let inode_id = match dm.lookup(parent_id, &filename) {
                 Ok(id) => id,
                 Err(_) => dm.create_file(parent_id, &filename)?,
             };
-            
+
             let mut existing = dm.read_data(inode_id).unwrap_or_default();
             existing.extend_from_slice(content.as_bytes());
             if !*no_newline && !content.ends_with('\n') {
                 existing.push(b'\n');
             }
-            
+
             dm.write_data(inode_id, 0, &existing, CompressionMode::Auto)?;
-            
+
             if cli.json {
-                println!("{}", json!({"ok": true, "inode": inode_id, "total_bytes": existing.len()}));
+                println!(
+                    "{}",
+                    json!({"ok": true, "inode": inode_id, "total_bytes": existing.len()})
+                );
             } else {
-                println!("Appended to '{}'. Total bytes: {}", remote_name, existing.len());
+                println!(
+                    "Appended to '{}'. Total bytes: {}",
+                    remote_name,
+                    existing.len()
+                );
             }
             Ok(())
         }
-        Commands::Get { remote_name, host_path } => {
-             if !image.exists() {
+        Commands::Get {
+            remote_name,
+            host_path,
+        } => {
+            if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
             let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             let inode_id = dm.resolve_path(remote_name)?;
             let data = dm.read_data(inode_id)?;
-            let dest = host_path.clone().unwrap_or_else(|| PathBuf::from(PathBuf::from(remote_name).file_name().unwrap()));
-            
+            let dest = host_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(PathBuf::from(remote_name).file_name().unwrap()));
+
             if let Some(parent) = dest.parent() {
-                 std::fs::create_dir_all(parent)?;
+                std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&dest, &data)?;
-            
+
             if cli.json {
-                println!("{}", json!({"ok": true, "bytes": data.len(), "dest": dest.to_string_lossy()}));
+                println!(
+                    "{}",
+                    json!({"ok": true, "bytes": data.len(), "dest": dest.to_string_lossy()})
+                );
             } else {
                 println!("Exported '{}' to {:?}", remote_name, dest);
             }
@@ -442,9 +526,9 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             let (parent_id, filename) = dm.resolve_parent(dir_name)?;
-            
+
             if dm.lookup(parent_id, &filename).is_ok() {
-                 return Err(format!("Directory or file '{}' already exists.", dir_name).into());
+                return Err(format!("Directory or file '{}' already exists.", dir_name).into());
             }
 
             let dir_id = dm.create_directory(parent_id, &filename)?;
@@ -456,11 +540,11 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Ls { path, recursive } => {
-             if !image.exists() {
+            if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
             let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
-            
+
             let target_inode_id = if let Some(p) = path.as_ref() {
                 dm.resolve_path(p)?
             } else {
@@ -472,8 +556,14 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let mut results = Vec::new();
 
             if target_inode.mode != FileType::Directory {
-                let dt: DateTime<Local> = Local.timestamp_opt(target_inode.modified_at as i64, 0).unwrap();
-                let comp_size = if target_inode.compressed_size > 0 { Some(target_inode.compressed_size) } else { None };
+                let dt: DateTime<Local> = Local
+                    .timestamp_opt(target_inode.modified_at as i64, 0)
+                    .unwrap();
+                let comp_size = if target_inode.compressed_size > 0 {
+                    Some(target_inode.compressed_size)
+                } else {
+                    None
+                };
                 results.push(LsEntry {
                     name: path.as_deref().unwrap_or(".").to_string(),
                     kind: "f".to_string(),
@@ -482,36 +572,54 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     modified: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
                 });
             } else {
-                fn collect_ls(dm: &OifsSession, inode_id: u64, current_path: &str, recursive: bool, results: &mut Vec<LsEntry>) -> Result<(), Box<dyn std::error::Error>> {
-                     let inode = dm.read_inode(inode_id)?;
-                     if inode.mode != FileType::Directory { return Ok(()); }
-                     
-                     let entries = dm.list_dir(inode_id)?;
-                     for dir_entry in entries {
-                         let entry_inode = dm.read_inode(dir_entry.inode)?;
-                         let full_path = if current_path.is_empty() || current_path == "." {
-                             dir_entry.name.clone()
-                         } else {
-                             format!("{}/{}", current_path, dir_entry.name)
-                         };
-                         
-                         let dt: DateTime<Local> = Local.timestamp_opt(entry_inode.modified_at as i64, 0).unwrap();
-                         let kind = if entry_inode.mode == FileType::Directory { "d" } else { "f" };
-                         let comp_size = if entry_inode.compressed_size > 0 { Some(entry_inode.compressed_size) } else { None };
-                         
-                         results.push(LsEntry {
-                             name: full_path.clone(),
-                             kind: kind.to_string(),
-                             size: entry_inode.size,
-                             comp_size,
-                             modified: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-                         });
+                fn collect_ls(
+                    dm: &OifsSession,
+                    inode_id: u64,
+                    current_path: &str,
+                    recursive: bool,
+                    results: &mut Vec<LsEntry>,
+                ) -> Result<(), Box<dyn std::error::Error>> {
+                    let inode = dm.read_inode(inode_id)?;
+                    if inode.mode != FileType::Directory {
+                        return Ok(());
+                    }
 
-                         if recursive && entry_inode.mode == FileType::Directory {
-                             collect_ls(dm, dir_entry.inode, &full_path, true, results)?;
-                         }
-                     }
-                     Ok(())
+                    let entries = dm.list_dir(inode_id)?;
+                    for dir_entry in entries {
+                        let entry_inode = dm.read_inode(dir_entry.inode)?;
+                        let full_path = if current_path.is_empty() || current_path == "." {
+                            dir_entry.name.clone()
+                        } else {
+                            format!("{}/{}", current_path, dir_entry.name)
+                        };
+
+                        let dt: DateTime<Local> = Local
+                            .timestamp_opt(entry_inode.modified_at as i64, 0)
+                            .unwrap();
+                        let kind = if entry_inode.mode == FileType::Directory {
+                            "d"
+                        } else {
+                            "f"
+                        };
+                        let comp_size = if entry_inode.compressed_size > 0 {
+                            Some(entry_inode.compressed_size)
+                        } else {
+                            None
+                        };
+
+                        results.push(LsEntry {
+                            name: full_path.clone(),
+                            kind: kind.to_string(),
+                            size: entry_inode.size,
+                            comp_size,
+                            modified: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        });
+
+                        if recursive && entry_inode.mode == FileType::Directory {
+                            collect_ls(dm, dir_entry.inode, &full_path, true, results)?;
+                        }
+                    }
+                    Ok(())
                 }
                 let base_path = path.as_deref().unwrap_or("");
                 collect_ls(&dm, target_inode_id, base_path, *recursive, &mut results)?;
@@ -524,12 +632,21 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     let r = &results[0];
                     println!("{:<20} {:<10} {:<25}", r.name, r.size, r.modified);
                 } else {
-                    println!("{:<40} {:<10} {:<10} {:<25}", "Name", "Size", "CompSize", "Modified");
+                    println!(
+                        "{:<40} {:<10} {:<10} {:<25}",
+                        "Name", "Size", "CompSize", "Modified"
+                    );
                     println!("{:-<40} {:-<10} {:-<10} {:-<25}", "", "", "", "");
                     for r in results {
-                        let comp_str = r.comp_size.map(|s| s.to_string()).unwrap_or("-".to_string());
+                        let comp_str = r
+                            .comp_size
+                            .map(|s| s.to_string())
+                            .unwrap_or("-".to_string());
                         let type_char = if r.kind == "d" { "d" } else { "-" };
-                        println!("{} {:<38} {:<10} {:<10} {:<25}", type_char, r.name, r.size, comp_str, r.modified);
+                        println!(
+                            "{} {:<38} {:<10} {:<10} {:<25}",
+                            type_char, r.name, r.size, comp_str, r.modified
+                        );
                     }
                 }
             }
@@ -541,29 +658,51 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             let stats = dm.analyze_fragmentation()?;
-            
+
             if cli.json {
-                println!("{}", json!({
-                    "ok": true,
-                    "total_blocks": stats.total_blocks,
-                    "used_blocks": stats.used_blocks,
-                    "free_blocks": stats.free_blocks,
-                    "free_runs": stats.free_runs,
-                    "largest_free_run": stats.largest_free_run,
-                    "avg_gap_size": stats.avg_gap_size,
-                    "fragmentation_ratio": stats.fragmentation_ratio
-                }));
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "total_blocks": stats.total_blocks,
+                        "used_blocks": stats.used_blocks,
+                        "free_blocks": stats.free_blocks,
+                        "free_runs": stats.free_runs,
+                        "largest_free_run": stats.largest_free_run,
+                        "avg_gap_size": stats.avg_gap_size,
+                        "fragmentation_ratio": stats.fragmentation_ratio
+                    })
+                );
             } else {
                 println!("\n=== Disk Fragmentation Analysis ===");
-                println!("Total blocks:        {} blocks ({} KB)", stats.total_blocks, stats.total_blocks * 4);
-                println!("Used blocks:         {} blocks ({} KB)", stats.used_blocks, stats.used_blocks * 4);
-                println!("Free blocks:         {} blocks ({} KB)", stats.free_blocks, stats.free_blocks * 4);
+                println!(
+                    "Total blocks:        {} blocks ({} KB)",
+                    stats.total_blocks,
+                    stats.total_blocks * 4
+                );
+                println!(
+                    "Used blocks:         {} blocks ({} KB)",
+                    stats.used_blocks,
+                    stats.used_blocks * 4
+                );
+                println!(
+                    "Free blocks:         {} blocks ({} KB)",
+                    stats.free_blocks,
+                    stats.free_blocks * 4
+                );
                 println!();
                 println!("Free runs (gaps):    {}", stats.free_runs);
-                println!("Largest free run:    {} blocks ({} KB)", stats.largest_free_run, stats.largest_free_run * 4);
+                println!(
+                    "Largest free run:    {} blocks ({} KB)",
+                    stats.largest_free_run,
+                    stats.largest_free_run * 4
+                );
                 println!("Avg gap size:        {:.2} blocks", stats.avg_gap_size);
                 println!();
-                println!("Fragmentation ratio: {:.2}%", stats.fragmentation_ratio * 100.0);
+                println!(
+                    "Fragmentation ratio: {:.2}%",
+                    stats.fragmentation_ratio * 100.0
+                );
             }
             Ok(())
         }
@@ -571,15 +710,17 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
-            
+
             let defrag_mode = match mode.to_lowercase().as_str() {
                 "safe" => DefragMode::Safe,
                 "inplace" => DefragMode::InPlace,
-                _ => return Err(format!("Invalid mode '{}'. Use 'safe' or 'inplace'.", mode).into())
+                _ => {
+                    return Err(format!("Invalid mode '{}'. Use 'safe' or 'inplace'.", mode).into());
+                }
             };
-            
+
             let image_path = image.to_str().ok_or("Invalid image path")?;
-            
+
             if !cli.json {
                 println!("Starting defragmentation in {:?} mode...", defrag_mode);
                 if defrag_mode == DefragMode::InPlace {
@@ -588,26 +729,36 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                 }
             }
-            
+
             let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             match dm.defragment(image_path, defrag_mode, None) {
                 Ok(stats) => {
                     if cli.json {
-                        println!("{}", json!({
-                            "ok": true,
-                            "files_processed": stats.files_processed,
-                            "bytes_moved": stats.bytes_moved,
-                            "frag_before": stats.frag_before,
-                            "frag_after": stats.frag_after
-                        }));
+                        println!(
+                            "{}",
+                            json!({
+                                "ok": true,
+                                "files_processed": stats.files_processed,
+                                "bytes_moved": stats.bytes_moved,
+                                "frag_before": stats.frag_before,
+                                "frag_after": stats.frag_after
+                            })
+                        );
                     } else {
                         println!("\n✅ Defragmentation complete!");
                         println!("Files processed:     {}", stats.files_processed);
-                        println!("Bytes moved:         {} bytes ({:.2} KB)", stats.bytes_moved, stats.bytes_moved as f64 / 1024.0);
+                        println!(
+                            "Bytes moved:         {} bytes ({:.2} KB)",
+                            stats.bytes_moved,
+                            stats.bytes_moved as f64 / 1024.0
+                        );
                         println!("Fragmentation:");
                         println!("  Before:            {:.2}%", stats.frag_before * 100.0);
                         println!("  After:             {:.2}%", stats.frag_after * 100.0);
-                        println!("  Improvement:       {:.2}%", (stats.frag_before - stats.frag_after) * 100.0);
+                        println!(
+                            "  Improvement:       {:.2}%",
+                            (stats.frag_before - stats.frag_after) * 100.0
+                        );
                     }
                 }
                 Err(e) => {
@@ -627,7 +778,14 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         println!("{}", serde_json::to_string_pretty(&report).unwrap());
                     } else {
                         println!("\n=== Filesystem Consistency Check (fsck) ===");
-                        println!("Status:              {}", if report.is_clean { "✅ CLEAN" } else { "❌ CORRUPTED" });
+                        println!(
+                            "Status:              {}",
+                            if report.is_clean {
+                                "✅ CLEAN"
+                            } else {
+                                "❌ CORRUPTED"
+                            }
+                        );
                         println!("Orphan Inodes:       {}", report.orphan_inodes.len());
                         if !report.orphan_inodes.is_empty() {
                             println!("  IDs: {:?}", report.orphan_inodes);

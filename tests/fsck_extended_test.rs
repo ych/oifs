@@ -33,11 +33,20 @@ fn test_fsck_clean_filesystem() {
     let root_id = dm.superblock().root_inode;
 
     let id1 = dm.create_file(root_id, "file1.txt").expect("create file 1");
-    dm.write_data(id1, 0, b"Hello file 1", CompressionMode::Never).expect("write file 1");
+    dm.write_data(id1, 0, b"Hello file 1", CompressionMode::Never)
+        .expect("write file 1");
 
-    let dir1 = dm.create_directory(root_id, "subdir").expect("create subdir");
+    let dir1 = dm
+        .create_directory(root_id, "subdir")
+        .expect("create subdir");
     let id2 = dm.create_file(dir1, "file2.txt").expect("create file 2");
-    dm.write_data(id2, 0, b"Hello file 2 inside subdir", CompressionMode::Never).expect("write file 2");
+    dm.write_data(
+        id2,
+        0,
+        b"Hello file 2 inside subdir",
+        CompressionMode::Never,
+    )
+    .expect("write file 2");
 
     let report = dm.verify_integrity().expect("fsck");
     assert!(report.is_clean);
@@ -55,7 +64,11 @@ fn test_fsck_detect_orphan_inode() {
     drop(dm);
 
     // Modify image directly: set bit 5 in inode bitmap (inode 5)
-    let file = OpenOptions::new().read(true).write(true).open(&ctx.image_path).expect("open file");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&ctx.image_path)
+        .expect("open file");
     let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file).expect("mmap") };
     let ib_start = (sb.inode_bitmap_block * 4096) as usize;
     let mut bitmap = Bitmap::new(&mut mmap[ib_start..ib_start + 4096]);
@@ -78,7 +91,11 @@ fn test_fsck_detect_leaked_data_block() {
     drop(dm);
 
     // Modify image directly: set bit 20 in data bitmap (block: data_block_start + 20)
-    let file = OpenOptions::new().read(true).write(true).open(&ctx.image_path).expect("open file");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&ctx.image_path)
+        .expect("open file");
     let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file).expect("mmap") };
     let db_start = (sb.data_bitmap_block * 4096) as usize;
     let mut bitmap = Bitmap::new(&mut mmap[db_start..db_start + 4096]);
@@ -98,8 +115,11 @@ fn test_fsck_detect_missing_data_block() {
     let ctx = TestContext::new("test_fsck_missing");
     let dm = DiskManager::open(&ctx.image_path, 10 * 1024 * 1024).expect("open dm");
     let root_id = dm.superblock().root_inode;
-    let file_id = dm.create_file(root_id, "missing_test.txt").expect("create file");
-    dm.write_data(file_id, 0, b"Important data", CompressionMode::Never).expect("write data");
+    let file_id = dm
+        .create_file(root_id, "missing_test.txt")
+        .expect("create file");
+    dm.write_data(file_id, 0, b"Important data", CompressionMode::Never)
+        .expect("write data");
 
     let inode = dm.read_inode(file_id).expect("read inode");
     let allocated_block = inode.blocks[0];
@@ -107,7 +127,11 @@ fn test_fsck_detect_missing_data_block() {
     drop(dm);
 
     // Modify image directly: clear the bit in data bitmap for allocated_block
-    let file = OpenOptions::new().read(true).write(true).open(&ctx.image_path).expect("open file");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&ctx.image_path)
+        .expect("open file");
     let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file).expect("mmap") };
     let db_start = (sb.data_bitmap_block * 4096) as usize;
     let mut bitmap = Bitmap::new(&mut mmap[db_start..db_start + 4096]);
@@ -130,10 +154,12 @@ fn test_fsck_detect_cross_linked_blocks() {
     let root_id = dm.superblock().root_inode;
 
     let f1 = dm.create_file(root_id, "file_a.txt").expect("create f1");
-    dm.write_data(f1, 0, b"Data in block A", CompressionMode::Never).expect("write f1");
+    dm.write_data(f1, 0, b"Data in block A", CompressionMode::Never)
+        .expect("write f1");
 
     let f2 = dm.create_file(root_id, "file_b.txt").expect("create f2");
-    dm.write_data(f2, 0, b"Data in block B", CompressionMode::Never).expect("write f2");
+    dm.write_data(f2, 0, b"Data in block B", CompressionMode::Never)
+        .expect("write f2");
 
     let inode1 = dm.read_inode(f1).expect("read inode 1");
     let target_block = inode1.blocks[0];
@@ -142,7 +168,8 @@ fn test_fsck_detect_cross_linked_blocks() {
     let mut inode2 = Inode::new(FileType::File);
     inode2.size = 15;
     inode2.blocks[0] = target_block;
-    dm.write_inode(f2, &inode2).expect("write corrupted inode 2");
+    dm.write_inode(f2, &inode2)
+        .expect("write corrupted inode 2");
 
     let report = dm.verify_integrity().expect("fsck");
     assert!(!report.is_clean);

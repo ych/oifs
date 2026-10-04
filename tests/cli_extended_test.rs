@@ -1,6 +1,6 @@
-use std::process::Command;
-use std::path::Path;
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 
 #[test]
 fn test_cli_extended_flow() {
@@ -9,14 +9,21 @@ fn test_cli_extended_flow() {
     let extracted_file = "extracted.txt";
 
     // Clean up
-    if Path::new(image_path).exists() { fs::remove_file(image_path).unwrap(); }
-    if Path::new(host_file).exists() { fs::remove_file(host_file).unwrap(); }
-    if Path::new(extracted_file).exists() { fs::remove_file(extracted_file).unwrap(); }
+    if Path::new(image_path).exists() {
+        fs::remove_file(image_path).unwrap();
+    }
+    if Path::new(host_file).exists() {
+        fs::remove_file(host_file).unwrap();
+    }
+    if Path::new(extracted_file).exists() {
+        fs::remove_file(extracted_file).unwrap();
+    }
 
     // 1. Create Image
     let status = Command::new(env!("CARGO_BIN_EXE_oifs"))
         .args(["--image", image_path, "create", "--size", "10"])
-        .status().expect("Cmd failed");
+        .status()
+        .expect("Cmd failed");
     assert!(status.success());
     assert!(Path::new(image_path).exists());
 
@@ -27,22 +34,25 @@ fn test_cli_extended_flow() {
     // 3. Put file
     let status = Command::new(env!("CARGO_BIN_EXE_oifs"))
         .args(["--image", image_path, "put", host_file])
-        .status().expect("Cmd failed");
+        .status()
+        .expect("Cmd failed");
     assert!(status.success());
 
     // Verify LS
     let output = Command::new(env!("CARGO_BIN_EXE_oifs"))
         .args(["--image", image_path, "ls"])
-        .output().expect("Cmd failed");
+        .output()
+        .expect("Cmd failed");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("test_put.txt"));
 
     // 4. Get file
     let status = Command::new(env!("CARGO_BIN_EXE_oifs"))
         .args(["--image", image_path, "get", "test_put.txt", extracted_file])
-        .status().expect("Cmd failed");
+        .status()
+        .expect("Cmd failed");
     assert!(status.success());
-    
+
     // Verify content
     let extracted_content = fs::read_to_string(extracted_file).unwrap();
     assert_eq!(content, extracted_content);

@@ -1,13 +1,13 @@
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use oifs::disk::CompressionMode;
 use oifs::OifsSession;
+use oifs::disk::CompressionMode;
 
 #[test]
 fn test_get_or_open_concurrent_threads_same_path() {
@@ -32,8 +32,8 @@ fn test_get_or_open_concurrent_threads_same_path() {
             }
 
             // All threads concurrently invoke get_or_open
-            let session = OifsSession::get_or_open(image_path, total_size)
-                .expect("get_or_open failed");
+            let session =
+                OifsSession::get_or_open(image_path, total_size).expect("get_or_open failed");
 
             // Verify all threads get Direct (Master) mode with zero IPC overhead
             assert!(session.is_direct(), "Session should be Direct mode");
@@ -41,7 +41,9 @@ fn test_get_or_open_concurrent_threads_same_path() {
             // Write a thread-specific file
             let root_id = session.resolve_path(".").expect("resolve root");
             let file_name = format!("thread_data_{}.bin", i);
-            let inode_id = session.create_file(root_id, &file_name).expect("create file");
+            let inode_id = session
+                .create_file(root_id, &file_name)
+                .expect("create file");
 
             let data: Vec<u8> = (0..2048).map(|x| ((x + i) % 256) as u8).collect();
             session
@@ -68,7 +70,11 @@ fn test_get_or_open_concurrent_threads_same_path() {
             .lookup(root_id, &file_name)
             .expect("file should exist");
         let actual_data = verify_session.read_data(inode_id).expect("read data");
-        assert_eq!(actual_data, expected_data, "Data mismatch for {}", file_name);
+        assert_eq!(
+            actual_data, expected_data,
+            "Data mismatch for {}",
+            file_name
+        );
     }
 
     // Clean up
@@ -118,16 +124,13 @@ fn test_get_or_open_concurrent_with_symlinks() {
 
             let root_id = session.resolve_path(".").expect("resolve root");
             let file_name = format!("file_from_thread_{}.txt", i);
-            let inode_id = session.create_file(root_id, &file_name).expect("create file");
+            let inode_id = session
+                .create_file(root_id, &file_name)
+                .expect("create file");
 
             let content = format!("Written via path {} by thread {}", p, i);
             session
-                .write_data(
-                    inode_id,
-                    0,
-                    content.as_bytes(),
-                    CompressionMode::Auto,
-                )
+                .write_data(inode_id, 0, content.as_bytes(), CompressionMode::Auto)
                 .expect("write content");
 
             (file_name, content)
@@ -145,7 +148,9 @@ fn test_get_or_open_concurrent_with_symlinks() {
     let root_id = check_session.resolve_path(".").expect("resolve root");
 
     for (file_name, expected_content) in expected_entries {
-        let inode_id = check_session.lookup(root_id, &file_name).expect("lookup file");
+        let inode_id = check_session
+            .lookup(root_id, &file_name)
+            .expect("lookup file");
         let data = check_session.read_data(inode_id).expect("read content");
         assert_eq!(String::from_utf8(data).unwrap(), expected_content);
     }
@@ -172,7 +177,9 @@ fn test_get_or_open_encrypted_and_registry_lifecycle() {
     let session1 = OifsSession::get_or_create_encrypted(enc_image, total_size, password)
         .expect("create encrypted");
     let root1 = session1.resolve_path(".").expect("resolve root");
-    let file1 = session1.create_file(root1, "secret.txt").expect("create file");
+    let file1 = session1
+        .create_file(root1, "secret.txt")
+        .expect("create file");
     session1
         .write_data(file1, 0, b"Top secret data", CompressionMode::Auto)
         .expect("write data");
@@ -243,7 +250,9 @@ fn test_nested_and_chained_symlinks() {
 
             let root_id = session.resolve_path(".").expect("resolve root");
             let file_name = format!("hop_{}_file.txt", i);
-            let inode_id = session.create_file(root_id, &file_name).expect("create file");
+            let inode_id = session
+                .create_file(root_id, &file_name)
+                .expect("create file");
 
             let data = format!("Payload from chain hop {} ({})", i, p);
             session
@@ -319,11 +328,18 @@ fn test_concurrent_race_creation_via_different_symlinks() {
 
             // All threads simultaneously race to get_or_open
             let session = OifsSession::get_or_open(&p, total_size).expect("race get_or_open");
-            assert!(session.is_direct(), "Thread {} with path '{}' must be Direct", i, p);
+            assert!(
+                session.is_direct(),
+                "Thread {} with path '{}' must be Direct",
+                i,
+                p
+            );
 
             let root_id = session.resolve_path(".").expect("resolve root");
             let file_name = format!("race_winner_{}.dat", i);
-            let inode_id = session.create_file(root_id, &file_name).expect("create file");
+            let inode_id = session
+                .create_file(root_id, &file_name)
+                .expect("create file");
 
             let data = vec![(i % 255) as u8; 1024];
             session
@@ -391,7 +407,9 @@ fn test_symlink_concurrent_readers_and_writers_stress() {
             let session = OifsSession::get_or_open(&path, total_size).expect("writer open");
             let root_id = session.resolve_path(".").expect("resolve root");
             let fname = format!("writer_{}.log", w_idx);
-            let inode_id = session.create_file(root_id, &fname).expect("create writer file");
+            let inode_id = session
+                .create_file(root_id, &fname)
+                .expect("create writer file");
 
             for iter in 0..num_iterations {
                 let chunk = format!("[W{}:iter{}] ", w_idx, iter);
@@ -448,8 +466,12 @@ fn test_symlink_concurrent_readers_and_writers_stress() {
     let root_id = verify_session.resolve_path(".").expect("resolve root");
 
     for (w_idx, fname) in written_files.into_iter().enumerate() {
-        let inode_id = verify_session.lookup(root_id, &fname).expect("lookup writer file");
-        let data = verify_session.read_data(inode_id).expect("read writer data");
+        let inode_id = verify_session
+            .lookup(root_id, &fname)
+            .expect("lookup writer file");
+        let data = verify_session
+            .read_data(inode_id)
+            .expect("read writer data");
         let text = String::from_utf8(data).expect("utf8 string");
 
         for iter in 0..num_iterations {
@@ -493,7 +515,10 @@ fn test_symlink_inter_process_cli_and_session() {
     // 2. Open Direct Session via link_master in this process
     let master_session =
         OifsSession::get_or_open(link_master, total_size).expect("open via link_master");
-    assert!(master_session.is_direct(), "Master session should be Direct");
+    assert!(
+        master_session.is_direct(),
+        "Master session should be Direct"
+    );
 
     // 3. Subprocess CLI accesses the filesystem via link_cli
     let test_file = "payload_from_cli.txt";
@@ -504,7 +529,11 @@ fn test_symlink_inter_process_cli_and_session() {
         .output()
         .expect("CLI put execution failed");
 
-    assert!(output.status.success(), "CLI put failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "CLI put failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // 4. In-process Master session via link_master immediately verifies the new file
     let root_id = master_session.resolve_path(".").expect("resolve root");
@@ -521,4 +550,3 @@ fn test_symlink_inter_process_cli_and_session() {
         let _ = fs::remove_file(p);
     }
 }
-

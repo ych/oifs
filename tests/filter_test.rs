@@ -1,8 +1,8 @@
+use oifs::OifsSession;
+use oifs::disk::CompressionMode;
+use oifs::filters::{FilterConfig, calculate_entropy, recommend_filters};
 use std::fs;
 use std::path::Path;
-use oifs::disk::CompressionMode;
-use oifs::filters::{FilterConfig, recommend_filters, calculate_entropy};
-use oifs::OifsSession;
 
 #[test]
 fn test_filter_pipeline_roundtrips() {
@@ -22,25 +22,51 @@ fn test_filter_pipeline_roundtrips() {
 
     // Write with delta only (typesize = 4)
     let fid_delta = session.create_file(root, "seq_delta.bin").unwrap();
-    session.write_data_with_filters(fid_delta, 0, &num_data, CompressionMode::Always, FilterConfig::delta_only(4)).unwrap();
+    session
+        .write_data_with_filters(
+            fid_delta,
+            0,
+            &num_data,
+            CompressionMode::Always,
+            FilterConfig::delta_only(4),
+        )
+        .unwrap();
     let read_delta = session.read_data(fid_delta).unwrap();
     assert_eq!(read_delta, num_data, "Delta-only read mismatch");
 
     // Write with shuffle only (typesize = 4)
     let fid_shuffle = session.create_file(root, "seq_shuffle.bin").unwrap();
-    session.write_data_with_filters(fid_shuffle, 0, &num_data, CompressionMode::Always, FilterConfig::shuffle_only(4)).unwrap();
+    session
+        .write_data_with_filters(
+            fid_shuffle,
+            0,
+            &num_data,
+            CompressionMode::Always,
+            FilterConfig::shuffle_only(4),
+        )
+        .unwrap();
     let read_shuffle = session.read_data(fid_shuffle).unwrap();
     assert_eq!(read_shuffle, num_data, "Shuffle-only read mismatch");
 
     // Write with full numeric pipeline (Delta + Shuffle, typesize = 4)
     let fid_both = session.create_file(root, "seq_both.bin").unwrap();
-    session.write_data_with_filters(fid_both, 0, &num_data, CompressionMode::Always, FilterConfig::numeric(4)).unwrap();
+    session
+        .write_data_with_filters(
+            fid_both,
+            0,
+            &num_data,
+            CompressionMode::Always,
+            FilterConfig::numeric(4),
+        )
+        .unwrap();
     let read_both = session.read_data(fid_both).unwrap();
     assert_eq!(read_both, num_data, "Numeric (delta+shuffle) read mismatch");
 
     // Write with no filters (baseline)
     let fid_raw = session.create_file(root, "seq_raw.bin").unwrap();
-    session.write_data(fid_raw, 0, &num_data, CompressionMode::Always).unwrap();
+    session
+        .write_data(fid_raw, 0, &num_data, CompressionMode::Always)
+        .unwrap();
     let read_raw = session.read_data(fid_raw).unwrap();
     assert_eq!(read_raw, num_data, "Raw read mismatch");
 
@@ -60,18 +86,35 @@ fn test_filter_recommendation_tool() {
     let rec = recommend_filters(&seq_data);
 
     // Delta should dramatically lower entropy for sequential data
-    assert!(rec.best_config.delta, "Recommendation tool should select delta for linear series");
-    assert_eq!(rec.best_config.typesize, 4, "Recommendation tool should detect 4-byte typesize");
-    assert!(rec.best_report.compressed_size <= rec.baseline_compressed_size,
-        "Recommended filter must achieve <= compressed size than raw zstd");
-    assert!(rec.best_report.entropy < raw_entropy,
-        "Recommended filter should reduce entropy");
+    assert!(
+        rec.best_config.delta,
+        "Recommendation tool should select delta for linear series"
+    );
+    assert_eq!(
+        rec.best_config.typesize, 4,
+        "Recommendation tool should detect 4-byte typesize"
+    );
+    assert!(
+        rec.best_report.compressed_size <= rec.baseline_compressed_size,
+        "Recommended filter must achieve <= compressed size than raw zstd"
+    );
+    assert!(
+        rec.best_report.entropy < raw_entropy,
+        "Recommended filter should reduce entropy"
+    );
 
     println!("Recommendation summary:");
-    println!("  Baseline size: {} B (compressed: {} B, entropy: {:.3})",
-        rec.original_size, rec.baseline_compressed_size, rec.baseline_entropy);
-    println!("  Best: {} (compressed: {} B, entropy: {:.3}, savings: {:.1}%)",
-        rec.best_report.label, rec.best_report.compressed_size, rec.best_report.entropy, rec.best_report.space_savings_percent);
+    println!(
+        "  Baseline size: {} B (compressed: {} B, entropy: {:.3})",
+        rec.original_size, rec.baseline_compressed_size, rec.baseline_entropy
+    );
+    println!(
+        "  Best: {} (compressed: {} B, entropy: {:.3}, savings: {:.1}%)",
+        rec.best_report.label,
+        rec.best_report.compressed_size,
+        rec.best_report.entropy,
+        rec.best_report.space_savings_percent
+    );
 }
 
 #[test]
@@ -93,13 +136,15 @@ fn test_encrypted_filesystem_with_filters() {
     }
 
     let fid = session.create_file(root, "floats.bin").unwrap();
-    session.write_data_with_filters(
-        fid,
-        0,
-        &float_data,
-        CompressionMode::Always,
-        FilterConfig::numeric(4),
-    ).unwrap();
+    session
+        .write_data_with_filters(
+            fid,
+            0,
+            &float_data,
+            CompressionMode::Always,
+            FilterConfig::numeric(4),
+        )
+        .unwrap();
 
     let read_back = session.read_data(fid).unwrap();
     assert_eq!(read_back, float_data);
@@ -127,7 +172,10 @@ fn test_composite_filter_pipeline() {
     assert_ne!(filtered, data, "Data must be transformed by the pipeline");
 
     let restored = pipeline.unapply(&filtered);
-    assert_eq!(restored, data, "Composite pipeline roundtrip must match perfectly");
+    assert_eq!(
+        restored, data,
+        "Composite pipeline roundtrip must match perfectly"
+    );
 }
 
 #[test]
@@ -146,11 +194,37 @@ fn test_native_blosc2_integration() {
         &[blosc2::Filter::BitShuffle],
         blosc2::CompressAlgo::Lz4,
         5,
-    ).expect("Native Blosc2 compression failed");
+    )
+    .expect("Native Blosc2 compression failed");
 
-    println!("Native Blosc2 compressed {} bytes to {} bytes", data.len(), compressed.len());
-    assert!(compressed.len() < data.len(), "Compression must reduce size");
+    println!(
+        "Native Blosc2 compressed {} bytes to {} bytes",
+        data.len(),
+        compressed.len()
+    );
+    assert!(
+        compressed.len() < data.len(),
+        "Compression must reduce size"
+    );
 
     let decompressed = blosc2_decompress(&compressed).expect("Native Blosc2 decompression failed");
-    assert_eq!(decompressed, data, "Native Blosc2 roundtrip must match original data");
+    assert_eq!(
+        decompressed, data,
+        "Native Blosc2 roundtrip must match original data"
+    );
+}
+
+#[test]
+fn test_delta_typesize_zero_safe() {
+    let mut data = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    oifs::filters::delta_encode_inplace(&mut data, 0);
+    assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    oifs::filters::delta_decode_inplace(&mut data, 0);
+    assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+
+    // Also test public non-inplace wrappers
+    let enc = oifs::filters::delta_encode(&data, 0);
+    assert_eq!(enc, data);
+    let dec = oifs::filters::delta_decode(&enc, 0);
+    assert_eq!(dec, data);
 }

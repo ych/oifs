@@ -10,13 +10,13 @@ use anyhow::Result;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_router, ServerHandler, ServiceExt};
+use rmcp::{ServerHandler, ServiceExt, tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as TokioMutex;
 
-use oifs::disk::{CompressionMode, DiskManager};
 use oifs::directory::DirectoryIterator;
+use oifs::disk::{CompressionMode, DiskManager};
 use oifs::inode::FileType;
 
 // ── Default image config ──────────────────────────────────────────────
@@ -133,7 +133,9 @@ struct EntryInfo {
 
 #[tool_router]
 impl OifsMcpServer {
-    #[tool(description = "Write (create or overwrite) a file inside the OIFS sandbox image. Parent directories must already exist.")]
+    #[tool(
+        description = "Write (create or overwrite) a file inside the OIFS sandbox image. Parent directories must already exist."
+    )]
     async fn write_file(&self, Parameters(params): Parameters<WriteFileParams>) -> String {
         let dm = self.dm.lock().await;
         let result = (|| -> Result<String> {
@@ -142,8 +144,17 @@ impl OifsMcpServer {
                 Ok(existing_id) => existing_id,
                 Err(_) => dm.create_file(parent_id, &name)?,
             };
-            dm.write_data(inode_id, 0, params.content.as_bytes(), CompressionMode::Auto)?;
-            Ok(format!("{{\"ok\":true,\"inode\":{},\"bytes\":{}}}", inode_id, params.content.len()))
+            dm.write_data(
+                inode_id,
+                0,
+                params.content.as_bytes(),
+                CompressionMode::Auto,
+            )?;
+            Ok(format!(
+                "{{\"ok\":true,\"inode\":{},\"bytes\":{}}}",
+                inode_id,
+                params.content.len()
+            ))
         })();
         match result {
             Ok(msg) => msg,
@@ -151,7 +162,9 @@ impl OifsMcpServer {
         }
     }
 
-    #[tool(description = "Read the contents of a file inside the OIFS sandbox image. Returns UTF-8 text content.")]
+    #[tool(
+        description = "Read the contents of a file inside the OIFS sandbox image. Returns UTF-8 text content."
+    )]
     async fn read_file(&self, Parameters(params): Parameters<ReadFileParams>) -> String {
         let dm = self.dm.lock().await;
         let result = (|| -> Result<String> {
@@ -165,7 +178,9 @@ impl OifsMcpServer {
         }
     }
 
-    #[tool(description = "List files and directories at a given path inside the OIFS sandbox image. Returns one JSON object per line (JSONL).")]
+    #[tool(
+        description = "List files and directories at a given path inside the OIFS sandbox image. Returns one JSON object per line (JSONL)."
+    )]
     async fn list_dir(&self, Parameters(params): Parameters<ListDirParams>) -> String {
         let dm = self.dm.lock().await;
         let result = (|| -> Result<String> {
@@ -174,9 +189,15 @@ impl OifsMcpServer {
             if entries.is_empty() {
                 return Ok("{\"entries\":0}".to_string());
             }
-            let lines: Vec<String> = entries.iter().map(|e| {
-                format!("{{\"name\":\"{}\",\"kind\":\"{}\",\"size\":{}}}", e.name, e.kind, e.size)
-            }).collect();
+            let lines: Vec<String> = entries
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{{\"name\":\"{}\",\"kind\":\"{}\",\"size\":{}}}",
+                        e.name, e.kind, e.size
+                    )
+                })
+                .collect();
             Ok(lines.join("\n"))
         })();
         match result {
@@ -185,7 +206,9 @@ impl OifsMcpServer {
         }
     }
 
-    #[tool(description = "Create a directory inside the OIFS sandbox image. Parent directories must exist.")]
+    #[tool(
+        description = "Create a directory inside the OIFS sandbox image. Parent directories must exist."
+    )]
     async fn mkdir(&self, Parameters(params): Parameters<MkdirParams>) -> String {
         let dm = self.dm.lock().await;
         let result = (|| -> Result<String> {
@@ -213,7 +236,9 @@ impl OifsMcpServer {
         }
     }
 
-    #[tool(description = "Append a line to a file inside the OIFS sandbox image. Creates the file if it does not exist. Ideal for JSONL memory logs.")]
+    #[tool(
+        description = "Append a line to a file inside the OIFS sandbox image. Creates the file if it does not exist. Ideal for JSONL memory logs."
+    )]
     async fn append_file(&self, Parameters(params): Parameters<AppendFileParams>) -> String {
         let dm = self.dm.lock().await;
         let result = (|| -> Result<String> {
@@ -229,7 +254,11 @@ impl OifsMcpServer {
                 new_content.push(b'\n');
             }
             dm.write_data(inode_id, 0, &new_content, CompressionMode::Never)?;
-            Ok(format!("{{\"ok\":true,\"inode\":{},\"total_bytes\":{}}}", inode_id, new_content.len()))
+            Ok(format!(
+                "{{\"ok\":true,\"inode\":{},\"total_bytes\":{}}}",
+                inode_id,
+                new_content.len()
+            ))
         })();
         match result {
             Ok(msg) => msg,
@@ -237,14 +266,20 @@ impl OifsMcpServer {
         }
     }
 
-    #[tool(description = "Show filesystem status: image path, total/used/free blocks, and fragmentation ratio.")]
+    #[tool(
+        description = "Show filesystem status: image path, total/used/free blocks, and fragmentation ratio."
+    )]
     async fn status(&self) -> String {
         let dm = self.dm.lock().await;
         let result = (|| -> Result<String> {
             let frag = dm.analyze_fragmentation()?;
             Ok(format!(
                 "{{\"image\":\"{}\",\"total_blocks\":{},\"used_blocks\":{},\"free_blocks\":{},\"fragmentation\":{:.3}}}",
-                self.image_path.display(), frag.total_blocks, frag.used_blocks, frag.free_blocks, frag.fragmentation_ratio
+                self.image_path.display(),
+                frag.total_blocks,
+                frag.used_blocks,
+                frag.free_blocks,
+                frag.fragmentation_ratio
             ))
         })();
         match result {
@@ -277,7 +312,10 @@ fn print_usage() {
     eprintln!("Usage: oifs_mcp [OPTIONS] [IMAGE_PATH]");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --size <MB>     Initial size when creating a new image (default: {} MB)", DEFAULT_SIZE_MB);
+    eprintln!(
+        "  --size <MB>     Initial size when creating a new image (default: {} MB)",
+        DEFAULT_SIZE_MB
+    );
     eprintln!("  -h, --help      Show this help");
     eprintln!();
     eprintln!("Environment:");
@@ -294,9 +332,11 @@ async fn main() -> Result<()> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--size" => {
-                let v = args.next()
+                let v = args
+                    .next()
                     .ok_or_else(|| anyhow::anyhow!("--size requires a value (MB)"))?;
-                size_mb = v.parse()
+                size_mb = v
+                    .parse()
                     .map_err(|e| anyhow::anyhow!("--size value '{}' invalid: {}", v, e))?;
             }
             "-h" | "--help" => {

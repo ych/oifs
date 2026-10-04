@@ -5,10 +5,10 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration};
+use std::time::Duration;
 
 use oifs::disk::{CompressionMode, DiskManager};
 
@@ -35,7 +35,9 @@ fn test_stress_multithread_read_write_integrity() {
         let dm_clone = dm.clone();
         let handle = thread::spawn(move || {
             let filename = format!("worker_file_{}.dat", t_id);
-            let inode_id = dm_clone.create_file(root, &filename).expect("Create failed");
+            let inode_id = dm_clone
+                .create_file(root, &filename)
+                .expect("Create failed");
 
             let mut expected_bytes = Vec::with_capacity(iterations_per_thread * chunk_size);
 
@@ -89,12 +91,20 @@ fn test_stress_multithread_read_write_integrity() {
         let inode_id = dm.lookup(root, &filename).expect("File missing after test");
         let actual = dm.read_data(inode_id).expect("Final read failed");
         assert_eq!(actual.len(), expected.len());
-        assert_eq!(actual, expected, "Mismatch on final integrity of {}", filename);
+        assert_eq!(
+            actual, expected,
+            "Mismatch on final integrity of {}",
+            filename
+        );
     }
 
     // Run FSCK to ensure structural integrity
     let report = dm.verify_integrity().expect("FSCK failed");
-    assert!(report.is_clean, "FSCK reported errors after concurrent test: {:?}", report);
+    assert!(
+        report.is_clean,
+        "FSCK reported errors after concurrent test: {:?}",
+        report
+    );
 
     drop(dm);
     let _ = fs::remove_file(img_path);
@@ -120,7 +130,10 @@ fn test_stress_concurrent_mutations_with_live_fsck() {
         let mut checks = 0;
         while !stop_fsck.load(Ordering::Relaxed) {
             let report = dm_fsck.verify_integrity().expect("Concurrent fsck failed");
-            assert!(report.is_clean, "FSCK detected filesystem corruption during active mutations!");
+            assert!(
+                report.is_clean,
+                "FSCK detected filesystem corruption during active mutations!"
+            );
             checks += 1;
             thread::sleep(Duration::from_millis(5));
         }
@@ -134,17 +147,23 @@ fn test_stress_concurrent_mutations_with_live_fsck() {
         let h = thread::spawn(move || {
             for i in 0..15 {
                 let fname = format!("temp_{}_{}.tmp", w_id, i);
-                let inode = dm_worker.create_file(root, &fname).expect("Create tmp failed");
+                let inode = dm_worker
+                    .create_file(root, &fname)
+                    .expect("Create tmp failed");
                 let data = vec![(w_id + i) as u8; 1024];
-                dm_worker.write_data(inode, 0, &data, CompressionMode::Never).expect("Write tmp failed");
-                
+                dm_worker
+                    .write_data(inode, 0, &data, CompressionMode::Never)
+                    .expect("Write tmp failed");
+
                 // Read back
                 let read = dm_worker.read_data(inode).expect("Read tmp failed");
                 assert_eq!(read, data);
 
                 // Delete half of them
                 if i % 2 == 0 {
-                    dm_worker.delete_file(root, &fname).expect("Delete tmp failed");
+                    dm_worker
+                        .delete_file(root, &fname)
+                        .expect("Delete tmp failed");
                 }
             }
         });
@@ -232,7 +251,11 @@ fn test_stress_large_file_indirect_block_expansion() {
     }
 
     let report = dm.verify_integrity().expect("Integrity check failed");
-    assert!(report.is_clean, "FSCK dirty after indirect block test: {:?}", report);
+    assert!(
+        report.is_clean,
+        "FSCK dirty after indirect block test: {:?}",
+        report
+    );
 
     drop(dm);
     let _ = fs::remove_file(img_path);
@@ -255,7 +278,9 @@ fn test_stress_concurrent_disjoint_slices_same_file() {
     let dm = DiskManager::open(img_path, 8 * 1024 * 1024).expect("Open failed");
     let dm = Arc::new(dm);
     let root = dm.resolve_path(".").unwrap();
-    let shared_inode = dm.create_file(root, "disjoint_shared.dat").expect("Create shared file failed");
+    let shared_inode = dm
+        .create_file(root, "disjoint_shared.dat")
+        .expect("Create shared file failed");
 
     let slice_size = 16 * 1024; // 16KB (4 blocks)
     let num_threads = 4;
@@ -268,8 +293,7 @@ fn test_stress_concurrent_disjoint_slices_same_file() {
             let pattern = (0x10 + t as u8) * 3;
             let chunk = vec![pattern; slice_size];
 
-            dm_t
-                .write_data(shared_inode, offset, &chunk, CompressionMode::Never)
+            dm_t.write_data(shared_inode, offset, &chunk, CompressionMode::Never)
                 .expect("Disjoint write failed");
         });
         handles.push(h);
@@ -280,7 +304,9 @@ fn test_stress_concurrent_disjoint_slices_same_file() {
     }
 
     // Verify entire 64KB content
-    let full_data = dm.read_data(shared_inode).expect("Read full shared data failed");
+    let full_data = dm
+        .read_data(shared_inode)
+        .expect("Read full shared data failed");
     assert_eq!(full_data.len(), num_threads * slice_size);
 
     for t in 0..num_threads {

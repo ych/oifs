@@ -15,7 +15,9 @@ fn bench_dir_scaling() {
         let d = dm.create_directory(root, "d").unwrap();
         let t = Instant::now();
         for i in 0..n {
-            let id = dm.create_file(d, &format!("data_node_{:05}.bin", i)).unwrap();
+            let id = dm
+                .create_file(d, &format!("data_node_{:05}.bin", i))
+                .unwrap();
             dm.write_data(id, 0, b"x", CompressionMode::Never).unwrap();
         }
         println!("create {n}: {:?}", t.elapsed());

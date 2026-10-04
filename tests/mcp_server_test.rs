@@ -86,7 +86,19 @@ fn test_mcp_stdio_initialize_and_tools_list() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Verify MCP initialize response and capabilities
-    assert!(stdout.contains("\"jsonrpc\":\"2.0\""), "MCP stdout must contain valid jsonrpc response: {}", stdout);
-    assert!(stdout.contains("OIFS Memory Sandbox"), "MCP stdout must contain server instructions: {}", stdout);
-    assert!(stdout.contains("\"tools\""), "MCP capabilities must include tools: {}", stdout);
+    assert!(
+        stdout.contains("\"jsonrpc\":\"2.0\""),
+        "MCP stdout must contain valid jsonrpc response: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("OIFS Memory Sandbox"),
+        "MCP stdout must contain server instructions: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("\"tools\""),
+        "MCP capabilities must include tools: {}",
+        stdout
+    );
 }

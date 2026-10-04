@@ -1,4 +1,4 @@
-use oifs::disk::{DiskManager, CompressionMode};
+use oifs::disk::{CompressionMode, DiskManager};
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
@@ -19,7 +19,13 @@ fn test_fsck_diagnostic_flow() {
         let root = dm.superblock().root_inode;
 
         let file_id = dm.create_file(root, "clean.txt").unwrap();
-        dm.write_data(file_id, 0, b"Healthy data block content", CompressionMode::Never).unwrap();
+        dm.write_data(
+            file_id,
+            0,
+            b"Healthy data block content",
+            CompressionMode::Never,
+        )
+        .unwrap();
 
         // Check integrity of clean filesystem
         let report = dm.verify_integrity().unwrap();
@@ -44,12 +50,18 @@ fn test_fsck_diagnostic_flow() {
     {
         let dm = DiskManager::open(path, total_size).unwrap();
         let report = dm.verify_integrity().unwrap();
-        
+
         println!("FSCK Corrupted Report: {:?}", report);
-        assert!(!report.is_clean, "Corrupted filesystem should NOT report clean");
-        
+        assert!(
+            !report.is_clean,
+            "Corrupted filesystem should NOT report clean"
+        );
+
         // Block 131 should be reported as missing
-        assert!(!report.missing_blocks.is_empty(), "FSCK should detect missing blocks");
+        assert!(
+            !report.missing_blocks.is_empty(),
+            "FSCK should detect missing blocks"
+        );
         assert_eq!(report.missing_blocks[0], dm.superblock().data_block_start);
     }
 

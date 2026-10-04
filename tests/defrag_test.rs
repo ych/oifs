@@ -41,7 +41,8 @@ fn test_fragmentation_analysis_and_safe_defragmentation() {
         let name = format!("file_{}.txt", i);
         let id = dm.create_file(root_id, &name).expect("create file");
         let content = format!("Content of file {} repeated data: {}", i, "X".repeat(8192));
-        dm.write_data(id, 0, content.as_bytes(), CompressionMode::Never).expect("write data");
+        dm.write_data(id, 0, content.as_bytes(), CompressionMode::Never)
+            .expect("write data");
         files_data.push((name, content));
     }
 
@@ -53,11 +54,19 @@ fn test_fragmentation_analysis_and_safe_defragmentation() {
 
     // Analyze fragmentation before defrag
     let stats_before = dm.analyze_fragmentation().expect("analyze frag before");
-    assert!(stats_before.free_runs > 1, "Should have multiple free runs after deleting alternating files");
-    assert!(stats_before.fragmentation_ratio > 0.0, "Fragmentation ratio should be > 0.0");
+    assert!(
+        stats_before.free_runs > 1,
+        "Should have multiple free runs after deleting alternating files"
+    );
+    assert!(
+        stats_before.fragmentation_ratio > 0.0,
+        "Fragmentation ratio should be > 0.0"
+    );
 
     // Perform safe defragmentation
-    let defrag_stats = dm.defragment(&ctx.image_path, DefragMode::Safe, None).expect("defrag safe");
+    let defrag_stats = dm
+        .defragment(&ctx.image_path, DefragMode::Safe, None)
+        .expect("defrag safe");
     assert_eq!(defrag_stats.files_processed, 5);
     assert!(defrag_stats.frag_after <= defrag_stats.frag_before);
 
@@ -68,18 +77,33 @@ fn test_fragmentation_analysis_and_safe_defragmentation() {
     // Verify surviving files (0, 2, 4, 6, 8) have 100% data integrity
     for i in (0..10).step_by(2) {
         let (ref name, ref expected_content) = files_data[i];
-        let file_id = dm_reopened.lookup(root_id, name).expect("lookup existing file");
+        let file_id = dm_reopened
+            .lookup(root_id, name)
+            .expect("lookup existing file");
         let data = dm_reopened.read_data(file_id).expect("read data");
-        assert_eq!(data, expected_content.as_bytes(), "Data for {} must match perfectly", name);
+        assert_eq!(
+            data,
+            expected_content.as_bytes(),
+            "Data for {} must match perfectly",
+            name
+        );
     }
 
     // Verify deleted files (1, 3, 5, 7, 9) are truly gone
     for i in (1..10).step_by(2) {
         let (ref name, _) = files_data[i];
-        assert!(dm_reopened.lookup(root_id, name).is_err(), "Deleted file {} must not exist", name);
+        assert!(
+            dm_reopened.lookup(root_id, name).is_err(),
+            "Deleted file {} must not exist",
+            name
+        );
     }
 
     // Verify filesystem integrity
     let fsck = dm_reopened.verify_integrity().expect("verify integrity");
-    assert!(fsck.is_clean, "Defragmented filesystem must pass fsck cleanly: {:?}", fsck);
+    assert!(
+        fsck.is_clean,
+        "Defragmented filesystem must pass fsck cleanly: {:?}",
+        fsck
+    );
 }

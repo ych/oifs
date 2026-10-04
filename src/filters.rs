@@ -189,6 +189,9 @@ impl FilterConfig {
 /// In-place first-order delta encoding with zero allocations
 #[inline]
 pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
+    if typesize == 0 {
+        return;
+    }
     let n = data.len() / typesize;
     if n <= 1 {
         return;
@@ -271,6 +274,9 @@ pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
 /// In-place first-order delta decoding with zero allocations
 #[inline]
 pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
+    if typesize == 0 {
+        return;
+    }
     let n = data.len() / typesize;
     if n <= 1 {
         return;
@@ -1053,5 +1059,39 @@ mod kani_proofs {
         let mut copy = data;
         trunc_precision_encode_inplace(&mut copy, 4, 0);
         assert_eq!(data, copy);
+    }
+
+    /// Prove that delta encoding and decoding with typesize == 0 is safe, never panics with divide-by-zero,
+    /// and leaves the data unmodified.
+    #[kani::proof]
+    fn proof_delta_zero_typesize_panic_free() {
+        let mut data = [0u8; 8];
+        for i in 0..8 {
+            data[i] = kani::any();
+        }
+        let original = data;
+        delta_encode_inplace(&mut data, 0);
+        assert_eq!(
+            data, original,
+            "delta_encode_inplace with typesize 0 must be a no-op"
+        );
+        delta_decode_inplace(&mut data, 0);
+        assert_eq!(
+            data, original,
+            "delta_decode_inplace with typesize 0 must be a no-op"
+        );
+    }
+
+    /// Prove that delta encoding and decoding with ANY symbolic typesize never panics.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn proof_delta_arbitrary_typesize_panic_free() {
+        let mut data = [0u8; 8];
+        for i in 0..8 {
+            data[i] = kani::any();
+        }
+        let typesize: usize = kani::any();
+        delta_encode_inplace(&mut data, typesize);
+        delta_decode_inplace(&mut data, typesize);
     }
 }

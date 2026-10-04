@@ -118,3 +118,10 @@ This document records the implemented optimizations (P0 & P1) and the planned fu
     - Manual override available via `OIFS_ALLOW_PRE_5_15=1`.
   - **Formal Verification**: Verified with Kani formal proofs (`proof_extent_push_preserves_coverage`, `proof_io_backend_from_u8_soundness`).
 
+
+---
+
+## 4. Next Generation Performance & Verification Roadmap (P4)
+
+For the latest deep architectural audit, identified performance bottlenecks (P4.1 ~ P4.9), critical arithmetic safety discoveries, and Kani formal verification blueprints, see the dedicated research report:
+- 📄 **[Performance & Formal Verification (Kani) Research Report](performance_and_verification_research.md)**

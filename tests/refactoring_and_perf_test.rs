@@ -1,8 +1,6 @@
 use oifs::bitmap::{Bitmap, BitmapRef};
 use oifs::disk::{CompressionMode, DiskManager};
-use oifs::filters::{
-    delta_decode_inplace, delta_encode_inplace, trunc_precision_encode_inplace,
-};
+use oifs::filters::{delta_decode_inplace, delta_encode_inplace, trunc_precision_encode_inplace};
 use oifs::ipc::IpcRequest;
 use std::fs;
 use std::path::Path;
@@ -38,12 +36,7 @@ fn test_bitmap_ref_parity_and_bounds() {
 
     // Verify bit-by-bit parity between Bitmap and BitmapRef
     for i in 0..32 {
-        assert_eq!(
-            bm_mut.get(i),
-            bm_ref.get(i),
-            "Mismatch at bit {}",
-            i
-        );
+        assert_eq!(bm_mut.get(i), bm_ref.get(i), "Mismatch at bit {}", i);
     }
 
     // Out of bounds safety
@@ -71,9 +64,15 @@ fn test_delta_inplace_roundtrip_all_typesizes() {
     let original_u8: Vec<u8> = (0..255).map(|i| (i * 13 % 256) as u8).collect();
     let mut buf_u8 = original_u8.clone();
     delta_encode_inplace(&mut buf_u8, 1);
-    assert_ne!(buf_u8, original_u8, "Encoded data should differ from original");
+    assert_ne!(
+        buf_u8, original_u8,
+        "Encoded data should differ from original"
+    );
     delta_decode_inplace(&mut buf_u8, 1);
-    assert_eq!(buf_u8, original_u8, "Decoded u8 must match original exactly");
+    assert_eq!(
+        buf_u8, original_u8,
+        "Decoded u8 must match original exactly"
+    );
 
     // Test typesize = 2 (u16) with unaligned tail
     let mut original_u16 = Vec::new();
@@ -83,9 +82,16 @@ fn test_delta_inplace_roundtrip_all_typesizes() {
     original_u16.push(0x42); // 1 tail byte (unaligned)
     let mut buf_u16 = original_u16.clone();
     delta_encode_inplace(&mut buf_u16, 2);
-    assert_eq!(*buf_u16.last().unwrap(), 0x42, "Tail byte must be preserved");
+    assert_eq!(
+        *buf_u16.last().unwrap(),
+        0x42,
+        "Tail byte must be preserved"
+    );
     delta_decode_inplace(&mut buf_u16, 2);
-    assert_eq!(buf_u16, original_u16, "Decoded u16 must match original exactly");
+    assert_eq!(
+        buf_u16, original_u16,
+        "Decoded u16 must match original exactly"
+    );
 
     // Test typesize = 4 (u32)
     let mut original_u32 = Vec::new();
@@ -96,7 +102,10 @@ fn test_delta_inplace_roundtrip_all_typesizes() {
     let mut buf_u32 = original_u32.clone();
     delta_encode_inplace(&mut buf_u32, 4);
     delta_decode_inplace(&mut buf_u32, 4);
-    assert_eq!(buf_u32, original_u32, "Decoded u32 must match original exactly");
+    assert_eq!(
+        buf_u32, original_u32,
+        "Decoded u32 must match original exactly"
+    );
 
     // Test typesize = 8 (u64)
     let mut original_u64 = Vec::new();
@@ -106,7 +115,10 @@ fn test_delta_inplace_roundtrip_all_typesizes() {
     let mut buf_u64 = original_u64.clone();
     delta_encode_inplace(&mut buf_u64, 8);
     delta_decode_inplace(&mut buf_u64, 8);
-    assert_eq!(buf_u64, original_u64, "Decoded u64 must match original exactly");
+    assert_eq!(
+        buf_u64, original_u64,
+        "Decoded u64 must match original exactly"
+    );
 
     // Edge cases: empty, 1 element
     let mut empty: Vec<u8> = Vec::new();
@@ -129,7 +141,10 @@ fn test_trunc_precision_inplace_logic() {
     // Truncate to 10 bits precision
     trunc_precision_encode_inplace(&mut buf, 4, 10);
     let truncated = f32::from_le_bytes(buf[..4].try_into().unwrap());
-    assert!((truncated - f32_val).abs() < 0.01, "Truncated float should be close to original");
+    assert!(
+        (truncated - f32_val).abs() < 0.01,
+        "Truncated float should be close to original"
+    );
     let bits = u32::from_le_bytes(buf[..4].try_into().unwrap());
     let mask = (1u32 << (23 - 10)) - 1;
     assert_eq!(bits & mask, 0, "Lower mantissa bits must be zeroed");
@@ -250,7 +265,10 @@ fn test_created_at_timestamp_population() {
     let dir_inode = dm.read_inode(dir_id).expect("read dir inode");
 
     assert!(dir_inode.created_at > 0, "dir created_at must be non-zero");
-    assert!(dir_inode.modified_at > 0, "dir modified_at must be non-zero");
+    assert!(
+        dir_inode.modified_at > 0,
+        "dir modified_at must be non-zero"
+    );
     assert!(
         dir_inode.created_at <= dir_inode.modified_at,
         "dir created_at must be <= modified_at"
@@ -263,16 +281,21 @@ fn test_write_buffer_and_collection_consistency() {
     let dm = DiskManager::open(&ctx.path, 20 * 1024 * 1024).expect("open dm");
     let root = dm.superblock().root_inode;
 
-    let file_id = dm.create_file(root, "multi_block.dat").expect("create file");
+    let file_id = dm
+        .create_file(root, "multi_block.dat")
+        .expect("create file");
 
     // Write 3 separate chunks across block boundaries
     let chunk1 = vec![0xAAu8; 3000];
     let chunk2 = vec![0xBBu8; 2000];
     let chunk3 = vec![0xCCu8; 4096];
 
-    dm.write_data(file_id, 0, &chunk1, CompressionMode::Never).expect("write 1");
-    dm.write_data(file_id, 3000, &chunk2, CompressionMode::Never).expect("write 2");
-    dm.write_data(file_id, 5000, &chunk3, CompressionMode::Never).expect("write 3");
+    dm.write_data(file_id, 0, &chunk1, CompressionMode::Never)
+        .expect("write 1");
+    dm.write_data(file_id, 3000, &chunk2, CompressionMode::Never)
+        .expect("write 2");
+    dm.write_data(file_id, 5000, &chunk3, CompressionMode::Never)
+        .expect("write 3");
 
     let read_back = dm.read_data(file_id).expect("read data");
     assert_eq!(read_back.len(), 5000 + 4096);
@@ -285,7 +308,8 @@ fn test_write_buffer_and_collection_consistency() {
     assert!(fsck.is_clean, "Filesystem should be clean: {:?}", fsck);
 
     // Delete and verify clean cleanup
-    dm.delete_file(root, "multi_block.dat").expect("delete file");
+    dm.delete_file(root, "multi_block.dat")
+        .expect("delete file");
     let fsck2 = dm.verify_integrity().expect("fsck after delete");
     assert!(fsck2.is_clean, "Filesystem should be clean after deletion");
 }

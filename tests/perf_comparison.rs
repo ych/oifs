@@ -7,8 +7,8 @@ use std::io::Cursor;
 use std::time::Instant;
 
 use oifs::bitmap::{Bitmap, BitmapRef};
-use oifs::directory::{find_entry_in_block, find_insert_offset_in_block, DirectoryEntry};
-use oifs::filters::{apply_filters_cow, bitshuffle_encode, shuffle_encode, FilterConfig};
+use oifs::directory::{DirectoryEntry, find_entry_in_block, find_insert_offset_in_block};
+use oifs::filters::{FilterConfig, apply_filters_cow, bitshuffle_encode, shuffle_encode};
 
 // =========================================================================
 // Benchmark 1: Bitmap find_first_free
@@ -290,7 +290,10 @@ fn bench_comprehensive_performance_proof() {
     let lookup_iters = 20_000;
     for (desc, target) in lookup_targets {
         // Warmup
-        assert_eq!(old_lookup(&dir_block, target), new_lookup(&dir_block, target));
+        assert_eq!(
+            old_lookup(&dir_block, target),
+            new_lookup(&dir_block, target)
+        );
 
         let start = Instant::now();
         for _ in 0..lookup_iters {
@@ -323,7 +326,10 @@ fn bench_comprehensive_performance_proof() {
     // CASE 3: Directory Append Offset Scan (finding insertion point)
     // -------------------------------------------------------------------------
     println!("\n--- [CASE 3] Directory Append Offset Scan (create_file / mkdir) ---");
-    assert_eq!(old_find_insert_offset(&dir_block), new_find_insert_offset(&dir_block));
+    assert_eq!(
+        old_find_insert_offset(&dir_block),
+        new_find_insert_offset(&dir_block)
+    );
 
     let scan_iters = 30_000;
     let start = Instant::now();
@@ -379,7 +385,8 @@ fn bench_comprehensive_performance_proof() {
         let new_time = start.elapsed();
 
         let speedup = old_time.as_nanos() as f64 / new_time.as_nanos() as f64;
-        let old_throughput = (sz as f64 * write_iters as f64 / 1_048_576.0) / old_time.as_secs_f64();
+        let old_throughput =
+            (sz as f64 * write_iters as f64 / 1_048_576.0) / old_time.as_secs_f64();
         println!("  Payload: {}", desc);
         println!(
             "    Old (Unconditional data.to_vec() copy) : {:>8.2?} (throughput: {:.1} MB/s)",
@@ -395,7 +402,9 @@ fn bench_comprehensive_performance_proof() {
     // -------------------------------------------------------------------------
     // CASE 5: Sequential Multi-Block Allocation (Hint vs No Hint)
     // -------------------------------------------------------------------------
-    println!("\n--- [CASE 5] Multi-Block Sequential Allocation (2,000 blocks in 32,768-block bitmap) ---");
+    println!(
+        "\n--- [CASE 5] Multi-Block Sequential Allocation (2,000 blocks in 32,768-block bitmap) ---"
+    );
     let alloc_count = 2000;
     let alloc_iters = 100;
 
@@ -437,7 +446,10 @@ fn bench_comprehensive_performance_proof() {
         *byte = 0xAA;
     }
 
-    assert_eq!(old_fsck_bitmap_scan(&fsck_buf, total_bits), new_fsck_bitmap_scan(&fsck_buf, total_bits));
+    assert_eq!(
+        old_fsck_bitmap_scan(&fsck_buf, total_bits),
+        new_fsck_bitmap_scan(&fsck_buf, total_bits)
+    );
 
     let fsck_iters = 50_000;
     let start = Instant::now();

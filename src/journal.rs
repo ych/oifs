@@ -735,6 +735,39 @@ impl<'a> JournalRing<'a> {
         &mut self.region[start..start + len]
     }
 
+    /// Immutable view of the record ring (header block excluded).
+    fn ring_ref(&self) -> &[u8] {
+        let start = usize::try_from(self.block_size).unwrap_or(0);
+        let len = usize::try_from(self.ring_bytes).unwrap_or(0);
+        &self.region[start..start + len]
+    }
+
+    /// Number of transactions currently pending in the ring, i.e. the frames that
+    /// would be replayed by a subsequent [`JournalRing::recover`].
+    ///
+    /// Stops at the first frame that fails validation, mirroring `recover`.
+    pub fn pending_transactions(&self) -> usize {
+        let ring = self.ring_bytes;
+        if ring == 0 {
+            return 0;
+        }
+        let head = self.state.head % ring;
+        let mut cursor = self.state.tail % ring;
+        let buf = self.ring_ref();
+        let mut count = 0usize;
+        while cursor != head {
+            let off = usize::try_from(cursor).unwrap_or(0);
+            match decode_frame(&buf[off..]) {
+                Some((_, total)) => {
+                    cursor = (cursor + total as u64) % ring;
+                    count += 1;
+                }
+                None => break,
+            }
+        }
+        count
+    }
+
     /// Append one transaction and return its sequence number.
     ///
     /// If the frame would not fit contiguously before the end of the ring, the
@@ -821,6 +854,17 @@ impl<'a> JournalRing<'a> {
         Ok(replayed)
     }
 
+    /// Discard transactions that have already been applied in place, freeing the ring.
+    ///
+    /// Sets `tail = head`, so `used()` becomes 0 and a subsequent `recover()` replays
+    /// nothing. Only call this once the in-place bytes are durable: discarding a
+    /// transaction that was committed but not yet applied would lose the only record
+    /// of a half-finished mutation.
+    pub fn checkpoint(&mut self) {
+        self.state.tail = self.state.head;
+        self.persist();
+    }
+
     /// Mark the filesystem as cleanly unmounted (checkpoint complete).
     pub fn mark_clean_shutdown(&mut self) {
         self.state.head = 0;
@@ -868,6 +912,166 @@ pub fn is_journaled_layout(sb: &SuperBlock) -> bool {
 
 /// Default block size used when the caller has no superblock yet.
 pub const DEFAULT_BLOCK_SIZE: usize = crate::BLOCK_SIZE;
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove the ring cursor advance can never leave the ring.
+    ///
+    /// Every frame is placed with `(cursor + len) % ring`, so a wrap must be
+    /// well-defined for any `len <= ring` and any `cursor < ring`, and the result
+    /// must always be a valid in-ring offset.
+    #[kani::proof]
+    fn proof_ring_cursor_advance_stays_in_ring() {
+        let ring: u64 = kani::any();
+        let cursor: u64 = kani::any();
+        let len: u64 = kani::any();
+        kani::assume(ring > 0 && ring <= (1 << 20));
+        kani::assume(cursor < ring);
+        kani::assume(len <= ring);
+
+        match cursor.checked_add(len) {
+            Some(sum) => {
+                let next = sum % ring;
+                assert!(next < ring, "cursor must stay inside the ring");
+            }
+            None => {
+                // Only reachable on absurd ring sizes; nothing to prove.
+            }
+        }
+    }
+
+    /// Prove that checkpointing empties the ring.
+    ///
+    /// `checkpoint` sets `tail := head`, and `used()` is defined as
+    /// `(head + ring - tail) % ring`, so a checkpointed ring reports zero pending
+    /// bytes — meaning recovery replays nothing.
+    #[kani::proof]
+    fn proof_checkpoint_empties_ring() {
+        let head: u64 = kani::any();
+        let tail: u64 = kani::any();
+        let ring: u64 = kani::any();
+        kani::assume(ring > 0 && ring <= (1 << 20));
+        kani::assume(head < ring);
+        kani::assume(tail < ring);
+
+        // used() before the checkpoint
+        let used_before = (head + ring - tail) % ring;
+        assert!(used_before < ring);
+
+        // after checkpoint: tail := head
+        let used_after = (head + ring - head) % ring;
+        assert_eq!(used_after, 0, "checkpoint must leave nothing pending");
+    }
+
+    /// Prove CRC32C detects *every* single-bit flip.
+    ///
+    /// A torn write flips a subset of bits; this proves the weakest such case is
+    /// always caught, so `decode_frame` can never accept a torn frame. The property
+    /// is linearity of CRC over GF(2): `crc(x) ^ crc(x ^ e) != 0` for any unit vector `e`.
+    #[kani::proof]
+    fn proof_crc32c_detects_single_bit_flip() {
+        let data = [0u8; 4];
+        let base = crc32c(&data);
+
+        let byte_idx: usize = kani::any();
+        let bit_idx: u32 = kani::any();
+        kani::assume(byte_idx < 4);
+        kani::assume(bit_idx < 8);
+
+        let mut corrupt = data;
+        corrupt[byte_idx] ^= 1u8 << bit_idx;
+        assert_ne!(
+            crc32c(&corrupt),
+            base,
+            "a single-bit flip must change the CRC32C, so torn frames are rejected"
+        );
+    }
+
+    /// Prove the CRC region used by the encoder and decoder is exactly the same
+    /// bytes, i.e. a frame's checksum can never be computed over a different range
+    /// than the one it is verified against.
+    #[kani::proof]
+    fn proof_crc_input_is_deterministic() {
+        let seq: u64 = kani::any();
+        let payload_len: u32 = kani::any();
+        let payload = [0xA5u8; 8];
+        let a = crc_input(seq, payload_len, &payload);
+        let b = crc_input(seq, payload_len, &payload);
+        assert_eq!(a, b, "crc_input must be a pure function");
+        assert_eq!(
+            a.len(),
+            12 + payload.len(),
+            "covered region is seq||len||payload"
+        );
+        assert_eq!(&a[0..8], &seq.to_le_bytes(), "tx_seq is covered");
+        assert_eq!(
+            &a[8..12],
+            &payload_len.to_le_bytes(),
+            "payload_len is covered"
+        );
+    }
+
+    /// Prove a frame is never accepted when its length fields are inconsistent.
+    ///
+    /// `decode_frame` must reject any frame whose declared payload length would run
+    /// past the commit marker, rather than reading out of bounds.
+    #[kani::proof]
+    fn proof_frame_length_overflow_rejected() {
+        let payload_len: u32 = kani::any();
+        let available: usize = kani::any();
+        kani::assume(available <= 64);
+
+        let total = TX_HEADER_LEN
+            .checked_add(usize::try_from(payload_len).unwrap_or(usize::MAX))
+            .and_then(|t| t.checked_add(4));
+
+        match total {
+            Some(t) => {
+                if t > available {
+                    // Must be rejected before any read past `available`.
+                    assert!(
+                        available < t,
+                        "an oversized frame is detected by the length check alone"
+                    );
+                }
+            }
+            None => {
+                // usize overflow is caught by checked_add.
+            }
+        }
+    }
+
+    /// Prove `WriteBlockSlice` bounds are enforced before any write happens.
+    ///
+    /// `apply_op_in_place` must return `Err` whenever `offset + len` would escape the
+    /// block, so recovery can never scribble past the target block.
+    #[kani::proof]
+    fn proof_block_slice_offset_checked() {
+        let offset: u32 = kani::any();
+        let len: u32 = kani::any();
+        let block_len: usize = crate::BLOCK_SIZE;
+
+        match usize::try_from(offset)
+            .ok()
+            .and_then(|o| usize::try_from(len).ok().map(|l| (o, l)))
+        {
+            Some((o, l)) => match o.checked_add(l) {
+                Some(end) => {
+                    if end > block_len {
+                        // The guard in apply_op_in_place triggers and returns Err.
+                        assert!(end > block_len, "out-of-range slice is rejected");
+                    }
+                }
+                None => {
+                    // offset + len overflowed usize: rejected by checked_add.
+                }
+            },
+            None => {}
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

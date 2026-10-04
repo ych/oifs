@@ -288,20 +288,21 @@ fn test_journaled_delete_writes_transaction() {
             dm.create_file(root, n).expect("create");
         }
     }
-    let before = fs::read(&img.path).expect("read");
-    assert_eq!(
-        ring_tx_count(&before),
-        0,
-        "a freshly mounted image starts with an empty ring"
-    );
     {
         let dm = oifs::DiskManager::open(&img.path, 0).expect("mount");
         let root = dm.superblock().root_inode;
+
+        // Mount-time recovery replays and then resets the ring, so measure the
+        // baseline now rather than from the pre-mount image.
+        let txs_before = ring_tx_count(&fs::read(&img.path).expect("read"));
+
         dm.delete_file(root, "y.txt").expect("journaled delete");
-        // A transaction must now be pending in the ring.
+
+        // The delete must add exactly one transaction.
+        let txs_after = ring_tx_count(&fs::read(&img.path).expect("read"));
         assert_eq!(
-            ring_tx_count(&fs::read(&img.path).expect("read")),
-            1,
+            txs_after,
+            txs_before + 1,
             "delete must commit exactly one WAL transaction"
         );
     }
@@ -446,4 +447,328 @@ fn test_metadata_ops_encode_decode_roundtrip() {
     let encoded = encode_ops(&ops);
     let decoded = oifs::journal::MetadataOp::decode_all(&encoded).expect("decode");
     assert_eq!(decoded, ops);
+}
+
+// ---------------------------------------------------------------------------
+// M3: journaled create (create_file / mkdir) + checkpoint
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_journaled_mkdir_creates_directory_with_block() {
+    let img = Img::new("mkdir_j");
+    let dir_id = {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let d = dm.create_directory(root, "docs").expect("mkdir");
+        let ino = dm.read_inode(d).expect("read dir inode");
+        assert_eq!(ino.mode, oifs::inode::FileType::Directory);
+        assert_ne!(ino.blocks[0], 0, "a directory must own a data block");
+        assert_eq!(ino.size, 4096);
+        d
+    };
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+        let root = dm.superblock().root_inode;
+        let d = dm.lookup(root, "docs").expect("docs survives");
+        assert_eq!(d, dir_id);
+        assert_ne!(dm.read_inode(d).expect("inode").blocks[0], 0);
+    }
+}
+
+#[test]
+fn test_journaled_create_write_delete_roundtrip_large() {
+    let img = Img::new("crud_large");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        for i in 0..40 {
+            let name = format!("file{i}.bin");
+            let fid = dm.create_file(root, &name).expect("create");
+            let payload: Vec<u8> = (0..2048).map(|k| ((i + k) % 251) as u8).collect();
+            dm.write_data(fid, 0, &payload, CompressionMode::Never)
+                .expect("write");
+        }
+        for i in 0..40 {
+            dm.delete_file(root, &format!("file{i}.bin"))
+                .expect("delete");
+        }
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+        let root = dm.superblock().root_inode;
+        assert!(
+            dm.list_dir(root).expect("list").is_empty(),
+            "all entries must be gone after remount"
+        );
+    }
+}
+
+#[test]
+fn test_journaled_multi_block_directory_growth() {
+    // 300 entries forces the directory past 10 blocks, exercising the simulated
+    // single-indirect allocation path.
+    let img = Img::new("dir_growth");
+    let n = 3000usize;
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        for i in 0..n {
+            dm.create_file(root, &format!("e{i:04}"))
+                .expect("create in large dir");
+        }
+        let ino = dm.read_inode(root).expect("root inode");
+        let blocks = oifs::disk::DiskManager::dir_num_blocks(&ino);
+        assert!(
+            blocks > 10,
+            "directory must grow past the direct limit (blocks={blocks})"
+        );
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+        let root = dm.superblock().root_inode;
+        let entries = dm.list_dir(root).expect("list after remount");
+        assert_eq!(entries.len(), n, "every entry must survive the remount");
+        for i in 0..n {
+            dm.lookup(root, &format!("e{i:04}")).expect("lookup");
+        }
+    }
+}
+
+#[test]
+fn test_journaled_create_duplicate_name_rejected() {
+    let img = Img::new("dup_name");
+    let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+    let root = dm.superblock().root_inode;
+    dm.create_file(root, "dup").expect("first create");
+    let err = dm
+        .create_file(root, "dup")
+        .expect_err("duplicate must be rejected");
+    assert!(
+        err.to_string().contains("already exists"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_journaled_checkpoint_discards_applied_transactions() {
+    let img = Img::new("ckpt");
+    let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+    let root = dm.superblock().root_inode;
+    for i in 0..5 {
+        dm.create_file(root, &format!("c{i}")).expect("create");
+    }
+    let before = ring_tx_count(&fs::read(&img.path).expect("read"));
+    assert!(before > 0, "creates must leave transactions pending");
+
+    let discarded = dm.checkpoint_journal_now().expect("checkpoint");
+    assert_eq!(
+        discarded, before,
+        "checkpoint must discard every pending tx"
+    );
+    assert_eq!(
+        ring_tx_count(&fs::read(&img.path).expect("read")),
+        0,
+        "ring must be empty after a checkpoint"
+    );
+    assert_eq!(dm.list_dir(root).expect("list").len(), 5);
+}
+
+#[test]
+fn test_journaled_checkpoint_is_idempotent_and_mount_safe() {
+    let img = Img::new("ckpt_safe");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        dm.create_file(root, "keep").expect("create");
+        dm.checkpoint_journal_now().expect("checkpoint");
+        assert_eq!(
+            dm.checkpoint_journal_now().expect("second checkpoint"),
+            0,
+            "checkpointing an empty ring discards nothing"
+        );
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+        let root = dm.superblock().root_inode;
+        dm.lookup(root, "keep")
+            .expect("entry survives checkpoint + remount");
+        assert_eq!(dm.list_dir(root).expect("list").len(), 1);
+    }
+}
+
+#[test]
+fn test_journaled_checkpoint_strict_mode_reclaims_ring() {
+    use oifs::DurabilityMode;
+    let img = Img::new("ckpt_strict");
+    let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB)
+        .expect("create")
+        .with_durability_mode(DurabilityMode::Strict);
+    let root = dm.superblock().root_inode;
+    for i in 0..10 {
+        dm.create_file(root, &format!("s{i}")).expect("create");
+    }
+    assert_eq!(
+        ring_tx_count(&fs::read(&img.path).expect("read")),
+        0,
+        "Strict mode must checkpoint after every transaction"
+    );
+    assert_eq!(dm.list_dir(root).expect("list").len(), 10);
+}
+
+#[test]
+fn test_journaled_recovery_after_checkpoint_is_noop() {
+    let img = Img::new("ckpt_noop");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "data.txt").expect("create");
+        dm.write_data(f, 0, b"payload", CompressionMode::Never)
+            .expect("write");
+        dm.checkpoint_journal_now().expect("checkpoint");
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+        let root = dm.superblock().root_inode;
+        let f = dm.lookup(root, "data.txt").expect("lookup");
+        assert_eq!(
+            dm.read_data(f).expect("read"),
+            b"payload",
+            "content must be intact after checkpoint + remount"
+        );
+    }
+}
+
+#[test]
+fn test_journaled_create_leaks_no_data_blocks() {
+    let img = Img::new("alloc_hints");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        for i in 0..15 {
+            dm.create_file(root, &format!("h{i}")).expect("create");
+        }
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+        let root = dm.superblock().root_inode;
+        for i in 0..15 {
+            dm.lookup(root, &format!("h{i}")).expect("lookup");
+        }
+        let stats = dm.analyze_fragmentation().expect("stats");
+        assert_eq!(
+            stats.used_blocks, 1,
+            "only the root directory's own data block should be in use"
+        );
+    }
+}
+
+#[test]
+fn test_journaled_create_after_delete_reuses_inode() {
+    let img = Img::new("reuse_inode");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let a = dm.create_file(root, "a").expect("create a");
+        dm.delete_file(root, "a").expect("delete a");
+        let b = dm.create_file(root, "b").expect("create b");
+        assert_eq!(a, b, "the freed inode must be reused");
+        assert!(dm.lookup(root, "a").is_err(), "old name must be gone");
+        assert!(dm.lookup(root, "b").is_ok());
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+        let root = dm.superblock().root_inode;
+        assert!(dm.lookup(root, "a").is_err());
+        dm.lookup(root, "b").expect("b survives remount");
+    }
+}
+
+#[test]
+fn test_journaled_create_matches_legacy_geometry() {
+    // A journaled create must consume the same data blocks as a legacy create,
+    // otherwise the two layouts would drift apart.
+    let jimg = Img::new("geom_j");
+    let limg = Img::new("geom_l");
+
+    let jstats = {
+        let dm = oifs::DiskManager::open_journaled(&jimg.path, 20 * MB).expect("j create");
+        let root = dm.superblock().root_inode;
+        for i in 0..8 {
+            dm.create_directory(root, &format!("d{i}"))
+                .expect("j mkdir");
+        }
+        dm.analyze_fragmentation().expect("j stats").used_blocks
+    };
+    let lstats = {
+        let dm = oifs::DiskManager::open(&limg.path, 20 * MB).expect("l create");
+        let root = dm.superblock().root_inode;
+        for i in 0..8 {
+            dm.create_directory(root, &format!("d{i}"))
+                .expect("l mkdir");
+        }
+        dm.analyze_fragmentation().expect("l stats").used_blocks
+    };
+
+    assert_eq!(
+        jstats, lstats,
+        "journaled and legacy creates must consume identical data blocks"
+    );
+}
+
+#[test]
+fn test_journaled_fsck_clean_after_creates_and_deletes() {
+    let img = Img::new("fsck_j");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        dm.create_directory(root, "dir").expect("mkdir");
+        for i in 0..25 {
+            dm.create_file(root, &format!("f{i}")).expect("create");
+        }
+        dm.delete_file(root, "f0").expect("delete");
+        dm.delete_file(root, "f1").expect("delete");
+    }
+    let dm = oifs::DiskManager::open(&img.path, 0).expect("remount");
+    let report = dm.verify_integrity().expect("fsck");
+    assert!(
+        report.is_clean,
+        "journaled image must pass fsck: {report:?}"
+    );
+}
+
+#[test]
+fn test_journaled_concurrent_creates_and_deletes() {
+    let img = Img::new("concurrent");
+    let dm =
+        std::sync::Arc::new(oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create"));
+    let root = dm.superblock().root_inode;
+    let mut handles = Vec::new();
+    for t in 0..4 {
+        let dm = dm.clone();
+        handles.push(std::thread::spawn(move || {
+            for i in 0..15 {
+                let name = format!("t{t}_f{i}");
+                if let Ok(id) = dm.create_file(root, &name) {
+                    let _ = dm.write_data(id, 0, b"x", CompressionMode::Never);
+                    if i % 2 == 0 {
+                        let _ = dm.delete_file(root, &name);
+                    }
+                }
+            }
+        }));
+    }
+    for h in handles {
+        h.join().expect("join");
+    }
+    let entries = dm.list_dir(root).expect("list");
+    for e in &entries {
+        dm.lookup(root, &e.name).expect("lookup survives");
+    }
+    drop(dm);
+    let dm2 = oifs::DiskManager::open(&img.path, 0).expect("remount");
+    let report = dm2.verify_integrity().expect("fsck");
+    assert!(
+        report.is_clean,
+        "concurrent journaled writes must stay consistent: {report:?}"
+    );
 }

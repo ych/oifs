@@ -339,6 +339,180 @@ pub struct DiskManager {
     sync_mutex: Arc<Mutex<()>>,
 }
 
+/// Local simulation of block/inode allocation against copied bitmaps.
+///
+/// The journaled create path must know every allocated id *before* it touches the
+/// image, so the whole operation can be expressed as post-images and committed to
+/// the WAL first. Allocation here mirrors `SimpleBlockAllocator` semantics exactly
+/// (same hint handling, same "first free bit at or after hint" rule), so the ids it
+/// predicts are the ids the real allocator would hand out.
+struct AllocSim {
+    inode_bitmap: Vec<u8>,
+    data_bitmap: Vec<u8>,
+    data_start: u64,
+    free_inode_hint: u64,
+    free_block_hint: u64,
+    /// Blocks allocated during this simulation, in order.
+    fresh_blocks: Vec<u64>,
+}
+
+impl AllocSim {
+    fn new(
+        guard: &DiskManagerInner,
+        free_inode_hint: u64,
+        free_block_hint: u64,
+    ) -> Result<Self, DiskManagerError> {
+        let sb = guard.superblock;
+        let ib = DiskManager::get_block_from_map(&guard.mmap, sb.inode_bitmap_block)
+            .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("inode bitmap not found")))?;
+        let db = DiskManager::get_block_from_map(&guard.mmap, sb.data_bitmap_block)
+            .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("data bitmap not found")))?;
+        Ok(Self {
+            inode_bitmap: ib.to_vec(),
+            data_bitmap: db.to_vec(),
+            data_start: sb.data_block_start,
+            free_inode_hint,
+            free_block_hint,
+            fresh_blocks: Vec::new(),
+        })
+    }
+
+    fn alloc_inode(&mut self) -> Result<u64, DiskManagerError> {
+        let mut a = SimpleBlockAllocator::new(&mut self.inode_bitmap, 0);
+        let id = a
+            .allocate_with_hint(Some(self.free_inode_hint))
+            .map_err(DiskManagerError::Allocator)?;
+        self.free_inode_hint = id + 1;
+        Ok(id)
+    }
+
+    fn alloc_block(&mut self) -> Result<u64, DiskManagerError> {
+        let mut a = SimpleBlockAllocator::new(&mut self.data_bitmap, self.data_start);
+        let blk = a
+            .allocate_with_hint(Some(self.free_block_hint))
+            .map_err(DiskManagerError::Allocator)?;
+        self.free_block_hint = blk + 1;
+        self.fresh_blocks.push(blk);
+        Ok(blk)
+    }
+
+    fn is_fresh(&self, block_id: u64) -> bool {
+        self.fresh_blocks.contains(&block_id)
+    }
+}
+
+/// Mirror of [`DiskManager::get_or_alloc_block`] that allocates against [`AllocSim`].
+///
+/// Instead of writing pointer blocks into the image it records the equivalent
+/// `MetadataOp`s, so the resulting indirect-block structure is captured in the WAL
+/// transaction exactly as the legacy path would have written it.
+fn sim_get_or_alloc_block(
+    mmap: &MmapMut,
+    inode: &mut Inode,
+    logical_idx: usize,
+    sim: &mut AllocSim,
+    ops: &mut Vec<crate::journal::MetadataOp>,
+) -> Result<u64, DiskManagerError> {
+    use crate::inode::BlockPath;
+
+    fn ensure_root(
+        slot: &mut u64,
+        sim: &mut AllocSim,
+        ops: &mut Vec<crate::journal::MetadataOp>,
+    ) -> Result<u64, DiskManagerError> {
+        if *slot == 0 {
+            let blk = sim.alloc_block()?;
+            ops.push(crate::journal::MetadataOp::SetDataBitmap {
+                block_id: blk,
+                allocated: true,
+            });
+            *slot = blk;
+        }
+        Ok(*slot)
+    }
+
+    fn child(
+        mmap: &MmapMut,
+        parent_blk: u64,
+        idx: usize,
+        sim: &mut AllocSim,
+        ops: &mut Vec<crate::journal::MetadataOp>,
+    ) -> Result<u64, DiskManagerError> {
+        // A freshly allocated pointer block reads as all-zero, so its entries are 0.
+        let existing = if sim.is_fresh(parent_blk) {
+            0
+        } else {
+            DiskManager::read_block_ptr(mmap, parent_blk, idx)
+        };
+        if existing != 0 {
+            return Ok(existing);
+        }
+        let blk = sim.alloc_block()?;
+        ops.push(crate::journal::MetadataOp::SetDataBitmap {
+            block_id: blk,
+            allocated: true,
+        });
+        // Record the pointer write into the parent pointer block.
+        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+            block_id: parent_blk,
+            offset: (idx * 8) as u32,
+            data: blk.to_le_bytes().to_vec(),
+        });
+        Ok(blk)
+    }
+
+    match BlockPath::from_logical(logical_idx) {
+        Some(BlockPath::Direct(i)) => {
+            if inode.blocks[i] == 0 {
+                let blk = sim.alloc_block()?;
+                ops.push(crate::journal::MetadataOp::SetDataBitmap {
+                    block_id: blk,
+                    allocated: true,
+                });
+                inode.blocks[i] = blk;
+            }
+            Ok(inode.blocks[i])
+        }
+        Some(BlockPath::Single(i)) => {
+            let sib = ensure_root(&mut inode.blocks[10], sim, ops)?;
+            if sib == 0 {
+                return Ok(0);
+            }
+            child(mmap, sib, i, sim, ops)
+        }
+        Some(BlockPath::Double(a, b)) => {
+            let dib = ensure_root(&mut inode.blocks[11], sim, ops)?;
+            if dib == 0 {
+                return Ok(0);
+            }
+            let sib = child(mmap, dib, a, sim, ops)?;
+            if sib == 0 {
+                return Ok(0);
+            }
+            child(mmap, sib, b, sim, ops)
+        }
+        Some(BlockPath::Triple(a, b, c)) => {
+            let tib = ensure_root(&mut inode.triple_indirect, sim, ops)?;
+            if tib == 0 {
+                return Ok(0);
+            }
+            let dib = child(mmap, tib, a, sim, ops)?;
+            if dib == 0 {
+                return Ok(0);
+            }
+            let sib = child(mmap, dib, b, sim, ops)?;
+            if sib == 0 {
+                return Ok(0);
+            }
+            child(mmap, sib, c, sim, ops)
+        }
+        None => Err(DiskManagerError::Io(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            "File too large (max 513GB)",
+        ))),
+    }
+}
+
 impl DiskManager {
     /// Open an existing OIFS image or create a new one if it doesn't exist.
     /// `size`: Total size in bytes (only used when creating a new file).
@@ -1209,6 +1383,292 @@ impl DiskManager {
         blks
     }
 
+    /// Journaled create: simulate the allocation, commit one transaction, then apply.
+    ///
+    /// Covers both [`crate::inode::FileType::File`] and
+    /// [`crate::inode::FileType::Directory`], since `mkdir` differs only in whether a
+    /// data block is reserved for the new inode.
+    ///
+    /// The hard part is that allocation itself mutates the bitmaps, and the chosen
+    /// ids depend on the current bitmap contents. [`AllocSim`] therefore runs the
+    /// exact same allocator against *copies* of the bitmaps, so every allocated id
+    /// (including any indirect pointer blocks needed to grow a multi-block directory)
+    /// is known before the image is touched. That lets the whole operation be
+    /// described as post-images and committed before it is applied.
+    /// Reset the journal ring, discarding transactions already applied in place.
+    fn checkpoint_journal(mmap: &mut MmapMut, sb: &SuperBlock) -> Result<(), DiskManagerError> {
+        if !sb.has_journal_layout() {
+            return Ok(());
+        }
+        let bs = sb.block_size as u64;
+        let start = Self::journal_region_start(bs).unwrap_or(0);
+        let header_len = usize::try_from(bs)
+            .unwrap_or(0)
+            .min(crate::journal::JOURNAL_HEADER_LEN);
+        {
+            let region = Self::journal_region(mmap, sb)?;
+            crate::journal::JournalRing::open(region, bs)?.checkpoint();
+        }
+        if header_len > 0 {
+            mmap.flush_range(start, header_len)?;
+        }
+        Ok(())
+    }
+
+    /// Checkpoint the WAL when it is provably safe to discard committed transactions.
+    ///
+    /// A checkpoint throws away transactions that have already been applied in place,
+    /// so it is only safe once those in-place bytes are durable. Otherwise a crash
+    /// could leave a half-applied transaction with no WAL record left to replay.
+    ///
+    /// * `Strict` — `sync_mutation_ranges` has already `msync`ed every mutated range,
+    ///   so the ring can be reclaimed immediately.
+    /// * `Lazy` / `RangeAsync` / `LegacyWholeMmapAsync` — the image may still live only
+    ///   in the page cache, so the ring is kept and mount-time recovery will replay it.
+    ///   This is safe because the ring overwrites oldest-first, so a long-running Master
+    ///   never grows the journal without bound.
+    ///
+    /// Non-journaled images are a no-op.
+    fn maybe_checkpoint(guard: &mut DiskManagerInner) -> Result<(), DiskManagerError> {
+        let sb = guard.superblock;
+        if !sb.has_journal_layout() || guard.durability_mode() != DurabilityMode::Strict {
+            return Ok(());
+        }
+        Self::checkpoint_journal(&mut guard.mmap, &sb)
+    }
+
+    /// Publicly force a journal checkpoint, e.g. after an explicit [`Self::flush`].
+    ///
+    /// Returns the number of transactions discarded.
+    pub fn checkpoint_journal_now(&self) -> Result<usize, DiskManagerError> {
+        let mut guard = self.inner.write().unwrap();
+        let sb = guard.superblock;
+        if !sb.has_journal_layout() {
+            return Ok(0);
+        }
+        let bs = sb.block_size as u64;
+        let region = Self::journal_region(&mut guard.mmap, &sb)?;
+        let discarded = {
+            let mut ring = crate::journal::JournalRing::open(region, bs)?;
+            let pending = ring.pending_transactions();
+            ring.checkpoint();
+            pending
+        };
+        let start = Self::journal_region_start(bs).unwrap_or(0);
+        let header_len = usize::try_from(bs)
+            .unwrap_or(0)
+            .min(crate::journal::JOURNAL_HEADER_LEN);
+        if header_len > 0 {
+            guard.mmap.flush_range(start, header_len)?;
+        }
+        Ok(discarded)
+    }
+
+    /// Prepare for a metadata mutation that is **not** covered by the WAL.
+    ///
+    /// While `write_data` and friends are still on the in-place path, a journaled
+    /// transaction left pending in the ring would become *stale*: recovery would
+    /// replay its old post-image over whatever the in-place path wrote afterwards,
+    /// silently rolling the file back (e.g. a create's zeroed inode overwriting the
+    /// size and block pointer that a later write had set).
+    ///
+    /// Dropping those transactions before the mutation is safe precisely because the
+    /// journaled paths apply their ops under the same write lock and complete
+    /// atomically: by the time this runs, every committed transaction has already
+    /// been applied in place. Once every metadata path is journaled this becomes a
+    /// no-op and can be removed.
+    fn prepare_non_journaled_mutation(
+        guard: &mut DiskManagerInner,
+    ) -> Result<(), DiskManagerError> {
+        let sb = guard.superblock;
+        if !sb.has_journal_layout() {
+            return Ok(());
+        }
+        Self::checkpoint_journal(&mut guard.mmap, &sb)
+    }
+
+    fn create_entry_journaled(
+        guard: &mut DiskManagerInner,
+        parent_inode_id: u64,
+        name: &str,
+        file_type: crate::inode::FileType,
+    ) -> Result<u64, DiskManagerError> {
+        // ---- Phase 1: read-only validation ----
+        let mut parent_inode = Self::read_inode_internal(guard, parent_inode_id)?;
+        if parent_inode.mode != crate::inode::FileType::Directory {
+            return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
+        }
+
+        let stored_name = if let Some(key) = &guard.encryption_key {
+            crate::encryption::encrypt_filename(key, parent_inode_id, name)
+                .unwrap_or_else(|_| name.to_string())
+        } else {
+            name.to_string()
+        };
+        let stored_hash = crate::directory::hash_filename(&stored_name);
+
+        if Self::dir_lookup(guard, parent_inode_id, name)?.is_some() {
+            let type_str = if file_type == crate::inode::FileType::Directory {
+                "Directory"
+            } else {
+                "File"
+            };
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{} '{}' already exists", type_str, name),
+            )));
+        }
+
+        let mut sim = AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
+        let mut ops = Vec::new();
+
+        // ---- Phase 2: simulate allocation ----
+        let new_inode_id = sim.alloc_inode()?;
+        ops.push(crate::journal::MetadataOp::SetInodeBitmap {
+            inode_id: new_inode_id,
+            allocated: true,
+        });
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut new_inode = Inode::new(file_type);
+        new_inode.created_at = now;
+        new_inode.modified_at = now;
+
+        if file_type == crate::inode::FileType::Directory {
+            let dir_data_block = sim.alloc_block()?;
+            ops.push(crate::journal::MetadataOp::SetDataBitmap {
+                block_id: dir_data_block,
+                allocated: true,
+            });
+            new_inode.blocks[0] = dir_data_block;
+            new_inode.size = BLOCK_SIZE as u64;
+        }
+
+        let entry = crate::directory::DirectoryEntry {
+            inode: new_inode_id,
+            hash: stored_hash,
+            name: stored_name.clone(),
+        };
+        let mut entry_bytes = Vec::new();
+        {
+            let mut cursor = std::io::Cursor::new(&mut entry_bytes);
+            entry
+                .serialize_into(&mut cursor)
+                .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
+        }
+
+        // Try to place the entry into an existing directory block (read-only probe).
+        let num_blocks = Self::dir_num_blocks(&parent_inode);
+        let needed_space = 20 + entry.name.len();
+        let mut written_blk = 0u64;
+        if num_blocks > 0 {
+            let probe_order = std::iter::once(num_blocks - 1).chain(0..num_blocks - 1);
+            for blk_idx in probe_order {
+                let phys_blk = Self::resolve_logical_block_id(&guard.mmap, &parent_inode, blk_idx);
+                if phys_blk == 0 {
+                    continue;
+                }
+                if let Some(slice) = Self::get_block_from_map(&guard.mmap, phys_blk) {
+                    let insert_offset = crate::directory::find_insert_offset_in_block(slice);
+                    if insert_offset + needed_space <= BLOCK_SIZE {
+                        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                            block_id: phys_blk,
+                            offset: insert_offset as u32,
+                            data: entry_bytes.clone(),
+                        });
+                        written_blk = phys_blk;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if written_blk == 0 {
+            // Grow the directory by one block. `sim_get_or_alloc_block` may also need to
+            // allocate indirect pointer blocks once the directory exceeds 10 blocks;
+            // those allocations are recorded as ops too.
+            let new_blk_idx = num_blocks;
+            let phys_blk = sim_get_or_alloc_block(
+                &guard.mmap,
+                &mut parent_inode,
+                new_blk_idx,
+                &mut sim,
+                &mut ops,
+            )?;
+            // A freshly grown directory block is zero-filled by the legacy path, so the
+            // post-image is the whole block rather than just the entry.
+            let mut block_image = vec![0u8; BLOCK_SIZE];
+            block_image[..entry_bytes.len()].copy_from_slice(&entry_bytes);
+            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                block_id: phys_blk,
+                offset: 0,
+                data: block_image,
+            });
+            parent_inode.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
+            written_blk = phys_blk;
+        }
+
+        parent_inode.modified_at = now;
+
+        // Post-images must be read from the *unmodified* image.
+        let new_inode_image = Self::build_inode_post_image(guard, new_inode_id, &new_inode)?;
+        let parent_image = Self::build_inode_post_image(guard, parent_inode_id, &parent_inode)?;
+        ops.push(crate::journal::MetadataOp::WriteInode {
+            inode_id: new_inode_id,
+            inode_bytes: Box::new(new_inode_image),
+        });
+        ops.push(crate::journal::MetadataOp::WriteInode {
+            inode_id: parent_inode_id,
+            inode_bytes: Box::new(parent_image),
+        });
+
+        // ---- Phase 3: commit point ----
+        Self::commit_journal_tx(guard, &ops)?;
+
+        // ---- Phase 4: apply in place ----
+        Self::apply_journal_ops(guard, &ops)?;
+
+        guard.free_inode_hint = sim.free_inode_hint;
+        guard.free_block_hint = sim.free_block_hint;
+
+        {
+            let mut ic = guard.inode_cache.write().unwrap();
+            ic.insert(new_inode_id, new_inode);
+            ic.insert(parent_inode_id, parent_inode);
+        }
+        let encrypted = guard.encryption_key.is_some();
+        if let Some(ix) = guard.dir_cache.write().unwrap().get_mut(&parent_inode_id) {
+            if encrypted {
+                ix.plain.insert(name.to_string(), new_inode_id);
+            }
+            ix.stored.insert(stored_name, new_inode_id);
+        }
+
+        let mut ranges = vec![
+            guard.inode_bitmap_byte_range(),
+            guard.data_bitmap_byte_range(),
+            guard.inode_byte_range(new_inode_id),
+            guard.inode_byte_range(parent_inode_id),
+            guard.block_byte_range(written_blk),
+        ];
+        if file_type == crate::inode::FileType::Directory {
+            ranges.push(guard.block_byte_range(new_inode.blocks[0]));
+        }
+        for blk in &sim.fresh_blocks {
+            ranges.push(guard.block_byte_range(*blk));
+        }
+        if guard.durability_mode().is_range_based() {
+            guard.sync_mutation_ranges(&ranges)?;
+        } else {
+            guard.sync_mutation_ranges(&[])?;
+        }
+        Self::maybe_checkpoint(guard)?;
+        Ok(new_inode_id)
+    }
+
     fn create_entry_internal(
         &self,
         parent_inode_id: u64,
@@ -1216,6 +1676,12 @@ impl DiskManager {
         file_type: crate::inode::FileType,
     ) -> Result<u64, DiskManagerError> {
         let mut guard = self.inner.write().unwrap();
+
+        // M3: journaled images take the WAL-first path; legacy images keep the
+        // original in-place implementation untouched (zero-overhead guarantee).
+        if guard.superblock.has_journal_layout() {
+            return Self::create_entry_journaled(&mut guard, parent_inode_id, name, file_type);
+        }
 
         // 1. Read Parent
         let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
@@ -1958,6 +2424,10 @@ impl DiskManager {
             )));
         }
 
+        // This path is not journaled yet; drop any pending WAL transaction first so
+        // recovery cannot replay a stale post-image over the mutation below.
+        Self::prepare_non_journaled_mutation(&mut guard)?;
+
         // Case 1: Writing from offset 0
         // Determine if this is a true full overwrite (initial write or complete replacement)
         // vs a partial write at the beginning of the file.
@@ -2633,6 +3103,7 @@ impl DiskManager {
         } else {
             guard.sync_mutation_ranges(&[])?;
         }
+        Self::maybe_checkpoint(guard)?;
         Ok(())
     }
 

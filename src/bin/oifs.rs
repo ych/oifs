@@ -105,6 +105,14 @@ enum Commands {
         /// Directory name
         dir_name: String,
     },
+    /// Delete a file or directory
+    Rm {
+        /// Path of the file or directory to delete
+        path: String,
+        /// Allow deleting a directory that still has contents
+        #[arg(short, long)]
+        recursive: bool,
+    },
     /// Analyze disk fragmentation
     Analyze,
     /// Defragment the filesystem
@@ -578,6 +586,68 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", json!({"ok": true, "inode": dir_id}));
             } else {
                 println!("Created directory '{}'", dir_name);
+            }
+            Ok(())
+        }
+        Commands::Rm { path, recursive } => {
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
+            }
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let (parent_id, filename) = dm.resolve_parent(path)?;
+
+            let target = match dm.lookup(parent_id, &filename) {
+                Ok(id) => id,
+                Err(_) => {
+                    return Err(format!("File or directory '{}' not found.", path).into());
+                }
+            };
+
+            // Never let the root directory itself be removed.
+            let root = dm.superblock()?.root_inode;
+            if target == root {
+                return Err("Refusing to delete the filesystem root.".into());
+            }
+
+            let is_dir = dm.read_inode(target)?.mode == oifs::inode::FileType::Directory;
+            if is_dir && !*recursive {
+                // Guard against silently discarding a non-empty directory.
+                let entries = dm.list_dir(target)?;
+                if !entries.is_empty() {
+                    return Err(format!(
+                        "Directory '{}' is not empty; pass --recursive to delete it and its contents.",
+                        path
+                    )
+                    .into());
+                }
+            }
+            if is_dir {
+                // Depth-first removal so children exist to be deleted.
+                for entry in dm.list_dir(target)? {
+                    let child_path = format!("{path}/{}", entry.name);
+                    let child = dm.lookup(target, &entry.name)?;
+                    let child_is_dir =
+                        dm.read_inode(child)?.mode == oifs::inode::FileType::Directory;
+                    if child_is_dir {
+                        for sub in dm.list_dir(child)? {
+                            let sub_path = format!("{child_path}/{}", sub.name);
+                            dm.delete_file(child, &sub.name)
+                                .map_err(|e| format!("Failed to delete '{sub_path}': {e}"))?;
+                        }
+                    }
+                    dm.delete_file(target, &entry.name)
+                        .map_err(|e| format!("Failed to delete '{child_path}': {e}"))?;
+                }
+            }
+
+            dm.delete_file(parent_id, &filename)?;
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({"ok": true, "removed": path, "inode": target, "recursive": recursive})
+                );
+            } else {
+                println!("Removed '{}'", path);
             }
             Ok(())
         }

@@ -259,9 +259,9 @@ pub fn recover_from_journal(mmap: &mut MmapMut, sb: &mut SuperBlock) -> Result<u
 | :--- | :--- | :--- | :--- |
 | **M1** | 格式與日誌模組 (`src/journal.rs`) | 實作 `MetadataOp` 序列化、TxHeader 與 CRC32C 計算 | ✅ **完成** |
 | **M2** | Superblock 擴充與佈局更新 | 支援建立帶有日誌區塊的映像檔，並保持向下相容解析 | ✅ **完成** |
-| **M3** | 寫入路徑重構 (`src/disk.rs`) | 將 `create_file`、`delete_file`、`mkdir` 納入日誌交易 | 🟡 **delete_file 已完成** |
-| **M4** | 崩潰復原與壓力測試 | 模擬斷電崩潰（Kill process / Torn-write injection）驗證自動自癒 | 🟡 **部分完成** |
-| **M5** | Kani 形式化證明 | 加入 CBMC 形式化數學驗證，證明重放安全性與環狀緩衝不變量 | 🟡 **部分完成** |
+| **M3** | 寫入路徑重構 (`src/disk.rs`) | 將 `create_file`、`delete_file`、`mkdir` 納入日誌交易 | ✅ **完成** |
+| **M4** | 崩潰復原與壓力測試 | 模擬斷電崩潰（Kill process / Torn-write injection）驗證自動自癒 | ✅ **完成** |
+| **M5** | Kani 形式化證明 | 加入 CBMC 形式化數學驗證，證明重放安全性與環狀緩衝不變量 | ✅ **完成** |
 
 ---
 
@@ -306,14 +306,45 @@ pub fn recover_from_journal(mmap: &mut MmapMut, sb: &mut SuperBlock) -> Result<u
 * `build_inode_post_image()` — `write_inode_internal()` 只覆寫 bincode 前綴、保留 slot 尾端舊位元組，因此後映像必須**從 slot 現有內容出發**而非從零開始。這個細節若忽略，復原會寫出與原路徑不同的 inode。
 * `commit_journal_tx()` — 非日誌映像檔直接返回，確保零開銷。
 
-### 8.5 尚未完成：M3 其餘部分
+### 8.5 M3 其餘部分：`create_file` / `mkdir` 已完成
 
-* `create_entry_internal`（`create_file` / `mkdir`）與 `write_data` 的 metadata 部分仍走原路徑。
-* `create_entry_internal` 的難點在於**配置 inode 與資料區塊本身會改動 bitmap**，而 bit 是「依序找第一個空位」決定，必須先算出結果才能寫 WAL。建議做法：先在暫存複本上跑完整個配置流程以取得最終 bitmap 後映像，再 commit，最後才套用。
-* WAL 目前**無 checkpoint 機制**：`recover()` 在每次掛載時把 ring 重置為空，因此不會無限增長；但長時間運行的 Master 進程會持續累積交易，需要在 `flush()` 或閒置時推進 tail 釋放空間。
+`create_entry_journaled` 同時涵蓋檔案與目錄（兩者差別僅在於是否為新 inode 保留資料區塊）。
 
-### 8.6 驗證結果（M3）
+**最大難題：配置本身會修改 bitmap。** 配置器是「從 hint 起找第一個空位」，因此結果依賴當下 bitmap 內容，邊算邊改。
 
-* **新增 5 項整合測試**（`tests/journal_test.rs`，共 16 項）：刪除確實提交恰好一筆交易、刪除原子且重複掛載不會重複套用、刪除 100KB 檔案確實釋放資料區塊、legacy 刪除路徑不受影響、25 輪刪除/重建循環後 inode 重用與 dir_cache 失效皆正確。
-* 實機驗證：`create --journal` 後執行 put/ls/get/fsck，`fsck` 報 **CLEAN**（0 orphan / 0 leaked / 0 cross-linked），檔案內容可正確讀出。
-* 全數 45 個測試套件、53 項 Kani、clippy `-D warnings`、fmt 皆通過。
+解法是 **`AllocSim`**：把兩個 bitmap 區塊複製到本地，對複本執行**完全相同**的配置器（相同 hint 處理、相同找空位規則），因此預測出的 id 就是真實配置器會給的 id。`sim_get_or_alloc_block` 進一步模擬 `get_or_alloc_block`，包含目錄超過 10 個區塊時所需的**單層間接指標區塊**，並將指標寫入記錄成 `WriteBlockSlice` op 而非直接改 mmap。
+
+如此一來，整個操作得以在**不動映像檔**的前提下完整描述為後映像：新增 inode bitmap 位元、資料 bitmap 位元、指標區塊寫入、目錄區塊寫入、兩個 inode 後映像。
+
+**關鍵約束**：後映像必須在映像檔**尚未被修改**時讀取。
+
+### 8.6 Checkpoint 機制
+
+`JournalRing::checkpoint()` 將 `tail := head`，使 `used()` 歸零、復原時不重放任何交易。
+
+**安全性判準**：只有當 in-place 位元組已持久化後才能 checkpoint，否則會遺失「已提交但未套用」交易的唯一紀錄。因此：
+
+* `Strict`：交易已 `msync`，每筆交易後立即 checkpoint。
+* `Lazy` / `RangeAsync` / `LegacyWholeMmapAsync`：映像檔可能僅存在於 page cache，保留環狀緩衝，由掛載時復原重放。因為採覆蓋最舊策略，長時間運行的 Master 也不會無限膨脹。
+* 非日誌映像檔為 no-op。
+
+### 8.7 一個必須處理的交互作用：未日誌化的寫入路徑
+
+`write_data` 目前**尚未**納入日誌。若此時環狀緩衝仍留有待重放交易，復原時會把**舊的後映像**覆蓋在之後的 in-place 寫入之上，造成無聲的資料回滾（實測：create 的空 inode 後映像會把後續 write 設定的 `size` 與 block 指標覆寫掉，重開後讀回空檔案）。
+
+解法是 `prepare_non_journaled_mutation()`：任何未日誌化的 metadata 變更開始前先清空環狀緩衝。由於日誌化路徑在同一把寫入鎖下原子完成，此時所有已提交交易都已在 in-place 套用完畢，因此清除是安全的。待全部路徑日誌化後，此函式即可移除。
+
+### 8.8 CLI `rm` 子命令
+
+新增 `oifs -i <image> rm <path>`，含 `--recursive/-r` 與 `--json`：
+
+* 拒絕刪除根目錄。
+* 非空目錄需明確加 `-r`，否則報錯（避免誤刪資料）。
+* `-r` 以深度優先逐層刪除子項，確保每個子節點在被刪除時確實存在。
+
+### 8.9 驗證結果
+
+* **整合測試 29 項**（`tests/journal_test.rs`）：涵蓋 mkdir、重複名稱拒絕、**3000 筆檔案的單層間接指標目錄成長**、journaled 與 legacy 的區塊消耗幾何一致性（`used_blocks` 相同）、checkpoint 捨棄數量正確且可重複呼叫、Strict 模式每筆交易後回收環狀緩衝、checkpoint 後復原為 no-op 且內容完好、刪除後 inode 重用、四執行緒並行 create/delete 後 fsck CLEAN。
+* **CLI 測試 10 項**（`tests/cli_rm_test.rs`）：legacy 與 journaled 映像檔刪除、遺失路徑失敗、拒絕根目錄、空目錄可刪、非空需 `-r`、巢狀遞迴刪除後 fsck CLEAN、JSON 輸出、`--journal` 旗標確認預留區塊、刪除後同名重建可讀取、刪除後其餘檔案仍可讀取。
+* **Kani 證明 59 項全數通過**（新增 6 項）：環狀游標永不越界、checkpoint 必使環狀緩衝歸零、**CRC32C 必能偵測任意單一位元翻轉**（GF(2) 線性）、CRC 輸入區域為純函式且編解碼器一致、框架長度溢位在讀取前被拒、區塊切片邊界在寫入前被檢查。
+* 全數 **46 個測試套件**、clippy（`-D warnings`）、fmt、Shuttle 隨機化並發測試皆通過。

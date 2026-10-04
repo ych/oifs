@@ -3,9 +3,6 @@ type: guide
 title: Quickstart
 description: A step-by-step beginner's guide to building OIFS, creating your first container filesystem image, performing basic file and directory operations, using encryption, and exploring compression filters.
 tags: [quickstart, guide, tutorial, build, cli, encryption, compression, io_engine]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-03T11:29:24.571Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -14,6 +11,9 @@ sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
 generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-04T06:56:29.774Z
 ---
 
 # Quickstart

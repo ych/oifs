@@ -5,7 +5,7 @@ description: Pluggable payload read engine supporting Mmap, Pread, and io_uring 
 tags: [io_engine, async_io, io_uring, pread, extent_coalescing, kani, performance]
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-03T11:29:24.571Z
+    at: 2026-10-04T06:56:29.774Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs

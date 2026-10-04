@@ -13,7 +13,7 @@ sources:
 generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-03T08:18:49.684Z
+    at: 2026-10-04T06:56:29.774Z
 ---
 
 ## Responsibility and ownership

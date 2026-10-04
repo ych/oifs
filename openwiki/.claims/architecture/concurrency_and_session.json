@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:9fdc369a9918a28744823f7c74066b027dfbcecd972f4f457bb4d20dd086ce4f",
+  "pageVersion": "sha256:95fa321d492549351a8b9d7134fc9a9a63581d607d6db5a7c80a22c5cf4a721d",
   "claims": [
     {
       "id": "claim_ccf982a2acb94220b5a4016b54d25dda",
@@ -81,12 +81,12 @@
       "statement": "The block-level merge policy is enforced by the Master's single DiskManagerInner mutex rather than per-block locks: disjoint byte offsets merge in place, overlapping offsets are last-writer-wins, and compressed writes use multi-frame append or read-modify-recompress.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L309-L312",
-          "version": "repo-lines-v1:sha256:201bb15d0df0846116311ca63d215599f7f27bc61577f144fe05d77702cd6d49:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTlmZDQ0MmYwZDkxMTQ2MmU2OGMyODgzZDJmNTMyNDI4Mjc1MWZiNmMzN2E4M2QxYWUwYjc0YjJlZGQ1NGQwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjkxOTA3YTk4M2MzYmE0ZTVlZjRmMzUwMGM0MGQ1NWE4ZTUyMWI3YjZjOWU1MDI0ZDRiNjcxZGI0NWY1MzIyOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODRhMTJmYTZmZDNlZDkwMmZiNjY1NzkyYTYwMmZiZjEzZDA1ZDA5MzFkYmFmZGMwMmYxZTdlMTQxZWRlYzZhMCJ9"
+          "resource": "repo://src/disk.rs#L332-L337",
+          "version": "repo-lines-v1:sha256:9cfd3ecc749162fd747dbf4a764555772994f3f8573f47c7a0d2257ef55b642e:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjkwNmNhZmJkMzc4MzU2ZDZlMjU1YmIwYTg1Y2NhYzIzMzMwNmYyNDA2ZWI3ZDAzMzUyNGE0Nzk4YzkwMzRjMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDE0MWUyZmE0M2RlODNjYjYyOWI3MzlhODY2MTc3NTI2YTRiYjM2YTEyYmMyNThkYmYzMWE3MmIzOTEzYWU4ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzQxNjVmYjI3ZTFlNGJiMDc1ZDRlNGYyMGJiMGY0MmEzNjE3OTJhZDliZjVkMWE0YzM5ZmE2Yzk2ZDllNDVlNiJ9"
         },
         {
-          "resource": "repo://src/session.rs#L59-L78",
-          "version": "repo-lines-v1:sha256:98833293276e14e6aa6b6e233c7d7998a19dbe4a8f89343e410b6b1a76fe0223:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmNTc3NWQxOGZhZTJlZjU1ODhiZTEwYjQwMDJiYTIyNzhlZWMxM2Q5Njk1Y2U3OGJkNTE5ZTQ1OTBiOWJiNmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliM2ZlMjJiYzJmOWZjYzZlNzI2MTNlOWI3ZGJkMmE1Y2NkNjY5MzlkMDI2YWY4Mzk2MDFhN2Q1NzRkZjFlNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4ZTJmN2Y2ODM2MDE1Nzg0YWU2M2M4NzkzZTQ5Y2QwYTQyMDE0YzhhODljYjllMWI5ZjkzOGZmODBjYTcxZjMifQ"
+          "resource": "repo://src/session.rs#L59-L75",
+          "version": "repo-lines-v1:sha256:c9929d7b2bc56e36a020c68627deb8c37e5e1d6634300701a8965731b4872e12:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmNTc3NWQxOGZhZTJlZjU1ODhiZTEwYjQwMDJiYTIyNzhlZWMxM2Q5Njk1Y2U3OGJkNTE5ZTQ1OTBiOWJiNmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliM2ZlMjJiYzJmOWZjYzZlNzI2MTNlOWI3ZGJkMmE1Y2NkNjY5MzlkMDI2YWY4Mzk2MDFhN2Q1NzRkZjFlNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjNjFjYjExZTNlOWIxOTJlMGNhZDAzNmJjOGIzZWMyZmRkYmQyMDI5ZTBlMWJkZTEyYzIyN2NjMWNjNWZkMzYifQ"
         }
       ]
     },
@@ -113,6 +113,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-03T08:18:49.684Z"
+    "at": "2026-10-04T06:56:29.774Z"
   }
 }

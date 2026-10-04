@@ -3,9 +3,6 @@ type: operations
 title: Testing and Formal Verification
 description: Detailed overview of the OIFS multi-tier quality assurance strategy, spanning unit and integration test suites, Shuttle randomized concurrency exploration, and mathematical formal verification using the AWS Kani Rust Verifier.
 tags: [testing, verification, kani, shuttle, concurrency, bijectivity, formal-proofs, model-checking, io_engine]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-03T11:29:24.571Z
 sources:
   - id: openwiki-source-69dc9c7ca45b38a30db2f06f
     resource: repo://src/bitmap.rs
@@ -21,7 +18,10 @@ sources:
     resource: repo://tests/integration_test.rs
   - id: openwiki-source-5b30823597738f668b07d33c
     resource: repo://tests/shuttle_concurrency_test.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+generated: { by: "antigravity", at: "2026-10-04T06:56:29.774Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-04T06:56:29.774Z
 ---
 
 # Testing and Formal Verification
@@ -96,7 +96,7 @@ Shuttle intercepts thread creation, synchronization primitives (`Mutex`, `RwLock
 
 ## Formal Verification with AWS Kani
 
-While empirical testing verifies specific concrete inputs, formal verification mathematically proves properties across the **entire input space**. OIFS incorporates 44 formal proofs using the **AWS Kani Rust Verifier (CBMC/CaDiCaL)**:
+While empirical testing verifies specific concrete inputs, formal verification mathematically proves properties across the **entire input space**. OIFS incorporates 49 formal proofs using the **AWS Kani Rust Verifier (CBMC/CaDiCaL)**:
 
 ### 1. Filter Bijectivity and Involution Proofs (`src/filters.rs`)
 

@@ -6,10 +6,10 @@ tags: [cli, commands, clap, json-mode, network-mode, password-precedence, fsck, 
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+generated: { by: "antigravity", at: "2026-10-04T06:56:29.774Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-03T08:18:49.684Z
+    at: 2026-10-04T06:56:29.774Z
 ---
 
 ## Overview
@@ -39,8 +39,8 @@ Global options apply across all subcommands:
 
 ## Password precedence and security model
 
-<!-- openwiki: broken internal link [src/bin/oifs.rs#L149-L183] file "src/bin/oifs.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-When interacting with encrypted filesystems, `oifs` determines passphrases according to a strict 3-tier precedence hierarchy ([`src/bin/oifs.rs#L149-L183`](src/bin/oifs.rs#L149-L183)):
+<!-- openwiki: broken internal link [src/bin/oifs.rs#L149-L186] file "src/bin/oifs.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+When interacting with encrypted filesystems, `oifs` determines passphrases according to a strict 3-tier precedence hierarchy ([`src/bin/oifs.rs#L149-L186`](src/bin/oifs.rs#L149-L186)):
 
 ```
 1. CLI Argument (--password <PWD>)
@@ -66,23 +66,23 @@ When interacting with encrypted filesystems, `oifs` determines passphrases accor
 ### Password confirmation on creation
 
 When creating an encrypted image (`oifs -i disk.img create --encrypt`):
-- Interactive mode prompts twice (`Enter password: ` and `Confirm password: `) to prevent accidental typos (`src/bin/oifs.rs#L294-L298`).
-- If the password is fewer than 8 characters, a non-blocking warning is emitted to stderr: `⚠️ Warning: Password is shorter than 8 characters` (`src/bin/oifs.rs#L301-L303`).
+- Interactive mode prompts twice (`Enter password: ` and `Confirm password: `) to prevent accidental typos (`src/bin/oifs.rs#L335-L344`).
+- If the password is fewer than 8 characters, a non-blocking warning is emitted to stderr: `⚠️ Warning: Password is shorter than 8 characters` (`src/bin/oifs.rs#L346-L348`).
 
 ## JSON output mode (`--json`)
 
 The `--json` flag guarantees machine-readable outputs for automation, AI agent tools, and monitoring scripts:
 - **Success Responses**: Emits JSON objects (e.g. `{"ok": true, "message": "..."}`) or formatted diagnostic reports.
-<!-- openwiki: broken internal link [src/bin/oifs.rs#L188-L195] file "src/bin/oifs.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- **Failure Responses**: Intercepts panics and errors in `main` ([`src/bin/oifs.rs#L188-L195`](src/bin/oifs.rs#L188-L195)), emitting `{"ok": false, "error": "<msg>"}` to stdout and exiting with status code 1.
+<!-- openwiki: broken internal link [src/bin/oifs.rs#L188-L199] file "src/bin/oifs.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- **Failure Responses**: Intercepts panics and errors in `main` ([`src/bin/oifs.rs#L188-L199`](src/bin/oifs.rs#L188-L199)), emitting `{"ok": false, "error": "<msg>"}` to stdout and exiting with status code 1.
 
 ## Network mode and Master-Proxy coordination
 
 By default, OIFS runs in local IPC mode, creating a Unix domain socket under `/tmp/oifs_<name>_<hash>.sock`.
 
 When operating over networked shared storage (NFS, Lustre, AWS EFS, or multi-node clusters):
-<!-- openwiki: broken internal link [src/bin/oifs.rs#L208-L214] file "src/bin/oifs.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- Adding `-n` / `--network` ([`src/bin/oifs.rs#L208-L214`](src/bin/oifs.rs#L208-L214)) switches to `SessionMode::Network`.
+<!-- openwiki: broken internal link [src/bin/oifs.rs#L211-L217] file "src/bin/oifs.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- Adding `-n` / `--network` ([`src/bin/oifs.rs#L211-L217`](src/bin/oifs.rs#L211-L217)) switches to `SessionMode::Network`.
 - The first process creates an atomic `<image>.master` rendezvous file containing the TCP address and PID of the Master.
 - Secondary processes read the rendezvous file, probe connectivity using ping/pong packets, and connect over TCP.
 - The optional `--bind <ADDR>` flag allows binding to explicit network interfaces or port ranges.

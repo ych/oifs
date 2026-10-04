@@ -3,13 +3,13 @@ type: architecture
 title: DiskManager and Persistence Model
 description: How OIFS encapsulates memory-mapped I/O, RwLock concurrency, pluggable async I/O engines (Mmap, Pread, io_uring), configurable durability policies, zero-copy reads, and the integrated write pipeline inside DiskManager.
 tags: [disk-manager, mmap, persistence, durability, io_engine, io_uring, rwlock, read-at, pipeline, path-resolution]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-03T11:29:24.571Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
 generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-04T06:56:29.774Z
 ---
 
 # DiskManager and Persistence Model

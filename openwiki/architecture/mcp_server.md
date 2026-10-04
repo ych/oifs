@@ -6,10 +6,10 @@ tags: [mcp, rmcp, ai-agents, cursor, claude-desktop, sandbox, stdio, json-schema
 sources:
   - id: openwiki-source-1d8ff572dc201d9ae2619645
     resource: repo://src/bin/oifs_mcp.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+generated: { by: "antigravity", at: "2026-10-04T06:56:29.774Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-03T08:18:49.684Z
+    at: 2026-10-04T06:56:29.774Z
 ---
 
 ## Responsibility and ownership
@@ -69,8 +69,8 @@ struct OifsMcpServer {
 
 ## Server capabilities and initialization
 
-<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L259-L272] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-The server implements [`ServerHandler`](src/bin/oifs_mcp.rs#L259-L272) to announce capabilities during the MCP handshake:
+<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L294-L307] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+The server implements [`ServerHandler`](src/bin/oifs_mcp.rs#L294-L307) to announce capabilities during the MCP handshake:
 
 ```rust
 #[rmcp::tool_handler]
@@ -93,9 +93,9 @@ By enabling `.enable_tools()`, the server advertises its available tool registry
 
 ## Available MCP tools
 
-<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L134-L255] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L134-L290] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 <!-- openwiki: broken internal link [src/bin/oifs_mcp.rs#L14] file "src/bin/oifs_mcp.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-The server registers 7 specialized tools via the `#[tool_router]` macro ([`src/bin/oifs_mcp.rs#L134-L255`](src/bin/oifs_mcp.rs#L134-L255)). Input parameters derive [`schemars::JsonSchema`](src/bin/oifs_mcp.rs#L14) to emit standard OpenAPI/JSON-Schema definitions.
+The server registers 7 specialized tools via the `#[tool_router]` macro ([`src/bin/oifs_mcp.rs#L134-L290`](src/bin/oifs_mcp.rs#L134-L290)). Input parameters derive [`schemars::JsonSchema`](src/bin/oifs_mcp.rs#L14) to emit standard OpenAPI/JSON-Schema definitions.
 
 ### 1. `write_file`
 - **Description**: `"Write (create or overwrite) a file inside the OIFS sandbox image. Parent directories must already exist."`

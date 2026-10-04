@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  workflows: write
 
 jobs:
   update:
@@ -57,7 +58,7 @@ jobs:
         if: ${{ !cancelled() }}
         # Check if actual markdown or docs visualizer files changed before creating a PR
         run: |
-          paths=openwiki,docs,AGENTS.md,.github/workflows/openwiki-update.yml
+          paths=openwiki,docs,AGENTS.md
           if [ -e CLAUDE.md ]; then paths="$paths,CLAUDE.md"; fi
           echo "list=$paths" >> "$GITHUB_OUTPUT"
 

@@ -1,8 +1,8 @@
 {
-  "updatedAt": "2026-10-04T07:03:02.763Z",
+  "updatedAt": "2026-10-04T08:34:16.465Z",
   "command": "update",
   "gitHead": "0f2303883ee50883ded72473c4b486f58e298166",
-  "model": "host-agent/antigravity",
+  "model": "gemini-3.5-flash",
   "status": "interrupted",
   "language": "en"
 }

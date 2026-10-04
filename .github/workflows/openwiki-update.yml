@@ -55,16 +55,26 @@ jobs:
       - name: List OpenWiki update paths
         id: paths
         if: ${{ !cancelled() }}
-        # CLAUDE.md is listed only when present: git add fails on a missing path
-        # and then stages nothing.
+        # Check if actual markdown or docs visualizer files changed before creating a PR
         run: |
           paths=openwiki,docs,AGENTS.md,.github/workflows/openwiki-update.yml
           if [ -e CLAUDE.md ]; then paths="$paths,CLAUDE.md"; fi
           echo "list=$paths" >> "$GITHUB_OUTPUT"
 
+          # Detect actual documentation (.md) or docs visualizer changes (ignore pure metadata JSONs)
+          meaningful_changes=$(git status --porcelain | awk '{print $2}' | grep -E '(\.md$|^docs/)' || true)
+          if [ -n "$meaningful_changes" ]; then
+            echo "has_content=true" >> "$GITHUB_OUTPUT"
+            echo "Meaningful content changes detected:"
+            echo "$meaningful_changes"
+          else
+            echo "has_content=false" >> "$GITHUB_OUTPUT"
+            echo "No meaningful documentation changes detected (skipping PR creation)."
+          fi
+
       - name: Create OpenWiki update pull request
         id: create-pr
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.paths.outputs.has_content == 'true' }}
         uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
         with:
           add-paths: ${{ steps.paths.outputs.list }}

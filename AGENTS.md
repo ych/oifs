@@ -31,7 +31,8 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **Configurable Durability (P3.3)**: `Lazy` (fastest, OS writeback / process crash safe), `RangeAsync` (msync modified byte ranges), `Strict` (msync synchronous), and `LegacyWholeMmapAsync`.
 - **Pre-compression Filters**: Integrated Blosc2 filters (Delta, Byte Shuffle, BitShuffle with Hacker's Delight 8x8 transposition, TruncPrecision) followed by Zstandard.
 - **Encryption**: XChaCha20-Poly1305 with Argon2id KDF and parent-inode tweaked deterministic SIV filename encryption (`_e_...`).
-- **Formal Verification**: 48 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, and bounds safety.
+- **FFI Dynamic Library Handshake**: 3-state runtime version & path verification (`oifs_check_version`, `oifs_loaded_path`): 0=OK, 1=WARN (newer), -1=ERR (older).
+- **Formal Verification**: 49 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, version policy soundness, and bounds safety.
 
 ---
 
@@ -89,8 +90,9 @@ An inode stores:
 ## 4. Key Architectural Patterns & Invariants
 
 1. **Lock Hierarchy & Concurrency**:
-   - `DiskManager` wraps `Arc<RwLock<DiskManagerInner>>`.
-   - Read operations (`read_data`, `read_at`, `lookup`, `stat`, `list_dir`, `resolve_path`) acquire `.read()` locks.
+   - `DiskManager` wraps `Arc<RwLock<DiskManagerInner>>` and a dedicated `sync_mutex: Arc<Mutex<()>>`.
+   - Read operations (`read_data`, `read_at`, `lookup`, `stat`, `list_dir`, `resolve_path`, `flush`, `flush_async`) acquire `.read()` locks.
+   - Flush operations (`flush`, `flush_async`) hold `sync_mutex` to serialize physical `msync` calls, but only hold `inner.read()`, allowing all concurrent readers to proceed without latency spikes.
    - Write operations (`create_file`, `write_data`, `delete_file`) acquire `.write()` locks.
    - Inside `DiskManagerInner`, `inode_cache` and `dir_cache` have their own fine-grained `RwLock`s.
    - **Rule**: Never hold an inner write lock while requesting an outer lock (prevent deadlocks).

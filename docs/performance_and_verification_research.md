@@ -69,13 +69,13 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.5: Read Lock Concurrency for `DiskManager::flush()`
-* **File & Lines**: [`src/disk.rs:2091-2094`](file:///Users/ych/oifs/src/disk.rs#L2091-L2094)
-* **Current Behavior**:
-  `flush()` acquires `self.inner.write().unwrap()`. Calling `mmap.flush()` (`msync`) can take hundreds of milliseconds on slow storage. Because it holds a write lock, **all reader threads are blocked**.
-* **Proposed Remedy**:
-  `mmap.flush()` only requires shared memory access. Change `flush()` to acquire a `.read()` lock.
-* **Impact**: **High** (Prevents read stalls during background flushes in `DurabilityMode::Lazy`).
+### P4.5: Read Lock Concurrency for `DiskManager::flush()` [IMPLEMENTED]
+* **File & Lines**: [`src/disk.rs:2162-2176`](file:///Users/ych/oifs/src/disk.rs#L2162-L2176)
+* **Optimization**:
+  `flush()` and `flush_async()` acquire a dedicated `sync_mutex: Arc<Mutex<()>>` to serialize physical `msync` calls without duplicate I/O storms, while acquiring an `inner.read()` lock instead of an exclusive write lock.
+* **Benefit**:
+  Concurrent reader threads are completely unblocked during flush operations, eliminating read latency spikes. Verified via `tests/rwlock_concurrency_test.rs::test_concurrent_flush_and_readers`.
+
 
 ---
 

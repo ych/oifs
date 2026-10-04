@@ -1,6 +1,7 @@
 use oifs::ffi::{
-    oifs_close, oifs_last_error, oifs_mkdir, oifs_open_with_password, oifs_read_file,
-    oifs_write_file,
+    oifs_check_version, oifs_close, oifs_last_error, oifs_loaded_path, oifs_mkdir,
+    oifs_open_with_password, oifs_read_file, oifs_version_code, oifs_version_major,
+    oifs_version_minor, oifs_version_patch, oifs_version_string, oifs_write_file,
 };
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -136,4 +137,71 @@ fn test_ffi_extended_flow() {
     oifs_close(handle);
     oifs_close(handle_wrong);
     fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn test_ffi_version_handshake_compatibility() {
+    let major = oifs_version_major();
+    let minor = oifs_version_minor();
+    let patch = oifs_version_patch();
+    let code = oifs_version_code();
+    let version_str = unsafe { CStr::from_ptr(oifs_version_string()) }
+        .to_str()
+        .unwrap();
+
+    assert_eq!(major, 0);
+    assert_eq!(minor, 1);
+    assert_eq!(patch, 0);
+    assert_eq!(version_str, "0.1.0");
+    assert!(code > 0);
+
+    // Rule: "舊版本 error out (-1)，新版本 warning (1)，預期版本就沒事 (0)"
+
+    // 1. Exact expected version match -> 0 (OK)
+    assert_eq!(
+        oifs_check_version(major, minor, patch),
+        oifs::ffi::OIFS_VERSION_COMPAT_OK,
+        "Exact version must return OK (0)"
+    );
+
+    // 2. Newer library loaded than requested -> 1 (WARN)
+    // Binary requests 0.0.9, loaded library is 0.1.0 (newer)
+    assert_eq!(
+        oifs_check_version(0, 0, 9),
+        oifs::ffi::OIFS_VERSION_COMPAT_WARN,
+        "Newer library must return WARN (1)"
+    );
+    assert_eq!(
+        oifs_check_version(0, 0, 1),
+        oifs::ffi::OIFS_VERSION_COMPAT_WARN,
+        "Newer library must return WARN (1)"
+    );
+
+    // 3. Older library loaded than requested -> -1 (ERR)
+    // Binary requests 0.1.1, loaded library is 0.1.0 (older / outdated)
+    assert_eq!(
+        oifs_check_version(major, minor, patch + 1),
+        oifs::ffi::OIFS_VERSION_COMPAT_ERR,
+        "Outdated library must return ERR (-1)"
+    );
+    assert_eq!(
+        oifs_check_version(major, minor + 1, 0),
+        oifs::ffi::OIFS_VERSION_COMPAT_ERR,
+        "Outdated library must return ERR (-1)"
+    );
+    assert_eq!(
+        oifs_check_version(major + 1, 0, 0),
+        oifs::ffi::OIFS_VERSION_COMPAT_ERR,
+        "Outdated library must return ERR (-1)"
+    );
+
+    // 4. Test oifs_loaded_path returns non-empty path
+    let mut path_buf = vec![0 as std::os::raw::c_char; 1024];
+    let ret = oifs_loaded_path(path_buf.as_mut_ptr(), path_buf.len());
+    assert_eq!(ret, 0, "oifs_loaded_path should succeed");
+    let loaded_path = unsafe { CStr::from_ptr(path_buf.as_ptr()) }
+        .to_str()
+        .unwrap();
+    println!("oifs_loaded_path reported: {}", loaded_path);
+    assert!(!loaded_path.is_empty(), "Loaded path should not be empty");
 }

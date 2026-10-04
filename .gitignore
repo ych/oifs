@@ -6,4 +6,5 @@
 *.swp
 *.master
 .pi/
+*.local.md
 

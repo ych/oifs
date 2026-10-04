@@ -13,7 +13,7 @@ use memmap2::{MmapMut, MmapOptions};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use thiserror::Error;
 
 use serde::{Deserialize, Serialize};
@@ -332,6 +332,8 @@ impl Drop for DiskManagerInner {
 #[derive(Clone)]
 pub struct DiskManager {
     inner: Arc<RwLock<DiskManagerInner>>,
+    /// Dedicated mutex to serialize physical msync calls without blocking readers
+    sync_mutex: Arc<Mutex<()>>,
 }
 
 impl DiskManager {
@@ -444,6 +446,7 @@ impl DiskManager {
 
         let dm = Self {
             inner: Arc::new(RwLock::new(inner)),
+            sync_mutex: Arc::new(Mutex::new(())),
         };
 
         if is_new {
@@ -2157,6 +2160,24 @@ impl DiskManager {
     }
 
     pub fn flush(&self) -> Result<(), DiskManagerError> {
+        // 1. Ensure only 1 flush operation performs msync at any given time (prevents redundant writeback storms)
+        let _sync_guard = self.sync_mutex.lock().unwrap();
+
+        // 2. Acquire shared read lock: prevents concurrent writers, but allows all concurrent readers to proceed!
+        let guard = self.inner.read().unwrap();
+        guard.mmap.flush().map_err(DiskManagerError::Io)
+    }
+
+    /// Asynchronously flushes dirty pages in background without blocking concurrent readers.
+    pub fn flush_async(&self) -> Result<(), DiskManagerError> {
+        let _sync_guard = self.sync_mutex.lock().unwrap();
+        let guard = self.inner.read().unwrap();
+        guard.mmap.flush_async().map_err(DiskManagerError::Io)
+    }
+
+    /// Legacy flush using exclusive write lock (for performance comparison benchmarks).
+    #[doc(hidden)]
+    pub fn flush_exclusive_legacy(&self) -> Result<(), DiskManagerError> {
         let guard = self.inner.write().unwrap();
         guard.mmap.flush().map_err(DiskManagerError::Io)
     }

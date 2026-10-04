@@ -467,3 +467,131 @@ pub extern "C" fn oifs_get_io_backend(handle: *mut OIFSHandle) -> i32 {
     };
     handle_ref.dm.io_backend() as i32
 }
+
+const fn parse_u32(s: &str) -> u32 {
+    let bytes = s.as_bytes();
+    let mut val = 0u32;
+    let mut i = 0;
+    while i < bytes.len() {
+        val = val * 10 + (bytes[i] - b'0') as u32;
+        i += 1;
+    }
+    val
+}
+
+pub const OIFS_VERSION_MAJOR: u32 = parse_u32(env!("CARGO_PKG_VERSION_MAJOR"));
+pub const OIFS_VERSION_MINOR: u32 = parse_u32(env!("CARGO_PKG_VERSION_MINOR"));
+pub const OIFS_VERSION_PATCH: u32 = parse_u32(env!("CARGO_PKG_VERSION_PATCH"));
+pub const OIFS_VERSION_STRING: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
+
+#[inline]
+pub const fn make_version_code(major: u32, minor: u32, patch: u32) -> u64 {
+    ((major as u64) << 32) | ((minor as u64) << 16) | (patch as u64)
+}
+
+pub const OIFS_VERSION_CODE: u64 =
+    make_version_code(OIFS_VERSION_MAJOR, OIFS_VERSION_MINOR, OIFS_VERSION_PATCH);
+
+/// Returns the major version number of the loaded OIFS dynamic library.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_version_major() -> u32 {
+    OIFS_VERSION_MAJOR
+}
+
+/// Returns the minor version number of the loaded OIFS dynamic library.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_version_minor() -> u32 {
+    OIFS_VERSION_MINOR
+}
+
+/// Returns the patch version number of the loaded OIFS dynamic library.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_version_patch() -> u32 {
+    OIFS_VERSION_PATCH
+}
+
+/// Returns the monotonic 64-bit encoded version code: (major << 32) | (minor << 16) | patch.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_version_code() -> u64 {
+    OIFS_VERSION_CODE
+}
+
+/// Returns a null-terminated static C string of the library version (e.g., "0.1.0").
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_version_string() -> *const c_char {
+    OIFS_VERSION_STRING.as_ptr() as *const c_char
+}
+
+pub const OIFS_VERSION_COMPAT_OK: i32 = 0;
+pub const OIFS_VERSION_COMPAT_WARN: i32 = 1;
+pub const OIFS_VERSION_COMPAT_ERR: i32 = -1;
+
+/// Checks whether the loaded dynamic library is compatible with the requested version.
+///
+/// Policy:
+/// - Returns 0 (`OIFS_VERSION_COMPAT_OK`): Expected version match (exact match, all good).
+/// - Returns 1 (`OIFS_VERSION_COMPAT_WARN`): Newer library version (warning, allowed to proceed).
+/// - Returns -1 (`OIFS_VERSION_COMPAT_ERR`): Older library version (error out, blocked).
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_check_version(req_major: u32, req_minor: u32, req_patch: u32) -> i32 {
+    let req_code = make_version_code(req_major, req_minor, req_patch);
+    if OIFS_VERSION_CODE == req_code {
+        OIFS_VERSION_COMPAT_OK
+    } else if OIFS_VERSION_CODE > req_code {
+        OIFS_VERSION_COMPAT_WARN
+    } else {
+        OIFS_VERSION_COMPAT_ERR
+    }
+}
+
+/// Retrieves the absolute filesystem path from which this dynamic library was loaded.
+/// Writes up to `buf_size` bytes into `buf` (including null terminator).
+/// Returns 0 on success, or -1 on failure/truncation.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_loaded_path(buf: *mut c_char, buf_size: usize) -> i32 {
+    if buf.is_null() || buf_size == 0 {
+        return -1;
+    }
+    unsafe {
+        let mut info: libc::Dl_info = std::mem::zeroed();
+        let ret = libc::dladdr(oifs_version_code as *const c_void, &mut info);
+        if ret == 0 || info.dli_fname.is_null() {
+            return -1;
+        }
+        let c_fname = CStr::from_ptr(info.dli_fname);
+        let bytes = c_fname.to_bytes_with_nul();
+        if bytes.len() > buf_size {
+            return -1;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buf, bytes.len());
+        0
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Formally prove that oifs_check_version adheres strictly to the version policy:
+    /// - Returns OIFS_VERSION_COMPAT_OK (0) iff req_code == OIFS_VERSION_CODE
+    /// - Returns OIFS_VERSION_COMPAT_WARN (1) iff req_code < OIFS_VERSION_CODE (newer library)
+    /// - Returns OIFS_VERSION_COMPAT_ERR (-1) iff req_code > OIFS_VERSION_CODE (outdated library)
+    /// - Never overflows or panics for ANY symbolic (req_major, req_minor, req_patch).
+    #[kani::proof]
+    fn proof_oifs_check_version_policy_soundness() {
+        let req_major: u32 = kani::any();
+        let req_minor: u32 = kani::any();
+        let req_patch: u32 = kani::any();
+
+        let res = oifs_check_version(req_major, req_minor, req_patch);
+        let req_code = make_version_code(req_major, req_minor, req_patch);
+
+        if req_code == OIFS_VERSION_CODE {
+            assert_eq!(res, OIFS_VERSION_COMPAT_OK);
+        } else if req_code < OIFS_VERSION_CODE {
+            assert_eq!(res, OIFS_VERSION_COMPAT_WARN);
+        } else {
+            assert_eq!(res, OIFS_VERSION_COMPAT_ERR);
+        }
+    }
+}

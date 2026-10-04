@@ -118,6 +118,75 @@ int32_t oifs_last_error(OIFSHandle *handle, char *buf, uint32_t buf_size);
 int32_t oifs_set_io_backend(OIFSHandle *handle, uint8_t backend);
 int32_t oifs_get_io_backend(OIFSHandle *handle);
 
+/*
+ * Dynamic Library Versioning & Compatibility Handshake
+ *
+ * Policy: "Only block older versions; do NOT block newer versions."
+ *
+ * Compares the compile-time version (embedded in this header) against the
+ * runtime version provided by the loaded liboifs dynamic library.
+ */
+#define OIFS_VERSION_MAJOR 0
+#define OIFS_VERSION_MINOR 1
+#define OIFS_VERSION_PATCH 0
+#define OIFS_VERSION_STRING "0.1.0"
+#define OIFS_VERSION_CODE (((uint64_t)OIFS_VERSION_MAJOR << 32) | ((uint64_t)OIFS_VERSION_MINOR << 16) | (uint64_t)OIFS_VERSION_PATCH)
+
+/*
+ * Dynamic Library Compatibility Status Codes
+ */
+#define OIFS_VERSION_COMPAT_OK       0  /* Exact expected version: fully verified, clean */
+#define OIFS_VERSION_COMPAT_WARN     1  /* Newer version loaded: permitted, but emits warning */
+#define OIFS_VERSION_COMPAT_ERR     -1  /* Older version loaded: incompatible, error out */
+
+uint32_t oifs_version_major(void);
+uint32_t oifs_version_minor(void);
+uint32_t oifs_version_patch(void);
+uint64_t oifs_version_code(void);
+const char* oifs_version_string(void);
+
+/**
+ * Checks compatibility between the application binary and the loaded dynamic library.
+ *
+ * Policy:
+ * - Returns  0 (OIFS_VERSION_COMPAT_OK):   Exact expected version match (clean).
+ * - Returns  1 (OIFS_VERSION_COMPAT_WARN): Newer version loaded (warning, allowed to proceed).
+ * - Returns -1 (OIFS_VERSION_COMPAT_ERR):  Older version loaded (error out, blocked).
+ *
+ * @param req_major Minimum required major version.
+ * @param req_minor Minimum required minor version.
+ * @param req_patch Minimum required patch version.
+ */
+int32_t oifs_check_version(uint32_t req_major, uint32_t req_minor, uint32_t req_patch);
+
+/**
+ * Retrieves the absolute filesystem path on disk from which this dynamic library was loaded.
+ *
+ * @param buf Target buffer to receive null-terminated path.
+ * @param buf_size Size of target buffer in bytes.
+ * @return 0 on success, or -1 on error/truncation.
+ */
+int32_t oifs_loaded_path(char *buf, size_t buf_size);
+
+/**
+ * Convenience macro: Evaluates the loaded dynamic library against compile-time header version.
+ *
+ * Usage pattern:
+ *   int status = OIFS_CHECK_VERSION();
+ *   if (status == OIFS_VERSION_COMPAT_ERR) {
+ *       char path[512] = {0};
+ *       oifs_loaded_path(path, sizeof(path));
+ *       fprintf(stderr, "FATAL [liboifs]: Outdated library '%s' (v%s) loaded! Expected >= v%s.\n",
+ *               path, oifs_version_string(), OIFS_VERSION_STRING);
+ *       abort();
+ *   } else if (status == OIFS_VERSION_COMPAT_WARN) {
+ *       fprintf(stderr, "WARN [liboifs]: Newer library (v%s) loaded than compiled with (v%s).\n",
+ *               oifs_version_string(), OIFS_VERSION_STRING);
+ *   }
+ */
+#define OIFS_CHECK_VERSION() \
+    oifs_check_version(OIFS_VERSION_MAJOR, OIFS_VERSION_MINOR, OIFS_VERSION_PATCH)
+
 #ifdef __cplusplus
 }
 #endif

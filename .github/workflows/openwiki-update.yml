@@ -38,11 +38,12 @@ jobs:
           openwiki code --update --print
           openwiki visualize openwiki --export docs/openwiki-visualizer
         env:
+          NODE_OPTIONS: "--require ${{ github.workspace }}/.github/scripts/openrouter-rate-limit.cjs"
           OPENWIKI_PROVIDER: openrouter
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENWIKI_MODEL_ID: "nvidia/nemotron-3-super-120b-a12b:free"
           OPENWIKI_PAGE_CONCURRENCY: "1"
-          OPENWIKI_PROVIDER_RETRY_ATTEMPTS: "6"
+          OPENWIKI_PROVIDER_RETRY_ATTEMPTS: "10"
           # Optional: also trace this workflow's own OpenWiki run to LangSmith.
           LANGCHAIN_PROJECT: openwiki
           LANGCHAIN_TRACING_V2: "false"

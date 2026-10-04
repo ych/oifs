@@ -11,9 +11,6 @@ sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
 generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T06:56:29.774Z
 ---
 
 # Quickstart

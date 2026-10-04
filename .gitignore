@@ -6,5 +6,6 @@
 *.swp
 *.master
 .pi/
+.pi-lens.json
 *.local.md
 

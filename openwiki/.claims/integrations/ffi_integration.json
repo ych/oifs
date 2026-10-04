@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:94437fe756d6385ba76f199aa73737cbf5a190720dcfbabeb59ee83f05070e75",
+  "claims": [
+    {
+      "id": "claim_952d676d7292426fa11b8fb6abb0068f",
+      "statement": "The OIFS FFI provides a stable C ABI interface for filesystem operations through functions like oifs_open, oifs_close, oifs_read_at, oifs_write_file, etc.",
+      "evidence": [
+        {
+          "resource": "repo://include/oifs.h#L60-L64",
+          "version": "repo-lines-v1:sha256:62215d2a93dc590fb6b23f0cc1fbc04fae079ad493490429c63121670138aedf:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNGZjMDQzNTMwYmVkMGU4MmYzMTEzOTI3YjE2Nzg5ZDcyM2ZiOGI2ZGY4Nzg3ZWJjZDIzNjJlY2YyMzQ5ZDVjYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmM4NTUyZWYxNDYxMGI1ZDY3OTM5NTNiOWFlMGY1ZTQ5NzY3OTM3NTNiMDY3ZjEwZmY0MmQyMmUyMmI2OTM0NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTQ2OWJkZWI5NDNiNzM1ZjY1NjBjZGI5ZTZjZWYyMThkYmI5OGNkNTc0MjQ3M2RkZmYwZDU5YTY0ZTRhMDI3MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmU1NDhjNWQ4MzRjYzFhMTA5OTM4M2QwZDkwMWMyNTBkN2QzOTcxN2ViYzI0Y2FlNzc2NWYxNWY0NDg3YTliMCJ9"
+        },
+        {
+          "resource": "repo://src/ffi.rs#L17-L38",
+          "version": "repo-lines-v1:sha256:473f681d45fa94ca7429045c759896792535a7be06c002dd616a1a90b19bc8fe:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ5ODEzZGJlMDJkNGJiMzcyNDI5YzdiNmU1Zjk1YWFjNTU2ODg5ZDg5Zjk2ZjVkZTZiMTdmZDE1NTgzNmY0ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjZjc3NjQxMGM3YTQyY2Y1ZTM1MzU3ZTg2M2Q2ZTc0OTU4YjM0NDcxOTkzYTcwNTg3Y2IxNmFlOTZmNDhmM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmMTc5ZWMwOTk3ZTA3NjEwYzNhZjE2YmM4NThmZjJlMjU0NWY0NDkzNzZlYjc3YzIwMWQ0YTE4ZTY0ZTUyNjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_06f1dfb4277249869078b619a7c67e19",
+      "statement": "The OIFS shared library is built using Cargo with crate-type = [\"cdylib\", \"rlib\"] producing platform-specific shared libraries (liboifs.so on Linux, liboifs.dylib on macOS, oifs.dll on Windows).",
+      "evidence": [
+        {
+          "resource": "repo://Cargo.toml#L10-L12",
+          "version": "repo-lines-v1:sha256:159af002c7ce0873a2e01c7f9cf087ba2953252ff114b3e6f0bf1f11af676e28:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg0MzVlZjU5NGYzMzcwNzMwN2MxZmU1OWIwMTdmMjExZTllZThhMTVjODJkZDVlYWIxOWI3NjdhNmY3NGJlOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjg1MTI2Nzc4YTgwODM0OTRmMWRmZDJjYjI5ZDc4NDM5MTQwOTViNjUyZjcwZGIxNDBjNDUxM2I0ZmQzNzFiMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQ3NmIxM2EwMjBmNjAyNDhhN2VjODFhOTNlZDA1NDJiZTgyMzQyNmQyYzAyNmFmYjg4YjY0M2RjMDEwYjMyYiJ9"
+        },
+        {
+          "resource": "repo://Cargo.toml#L54-L61",
+          "version": "repo-lines-v1:sha256:b31a50d389f3f98044f97cf3f2e00a08ec9e8cb3643b5c7f008eabc767252cdc:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzcyMTFiNzhlMWFkOWJlNzE0MzEyYmQ4OTJlMGJiOWNjYjJkMTI1MzE2NTgxMmZlOTZkMzMwZTk1YWI1MmJmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYThiMTM3MTA4MDRjMzc1NjBjMDQ5MjBmMzA3NjZlNTAxMjQ2OTVhMDNiYzg4M2Y4Y2NlNGI2NDk0MDQ0NWE4MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDg2ODQ5ZjBkNGM0ZDM4YjBiZmFjM2I0MGViN2QxMzJjOWUyMTcwMTlmZjgzOWFkZTc2NzhjYjJlM2MxZDcwNyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTIwZjRjNzBkMjIwODA0MTJjNTFkMzExMWI2MDUzMWVkNmJiYzYyNjFhODBjZTBlOTk1ZDJkNTI0Y2VkMGJmNCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_cab5b7a20f164bdf81baa46fe0f67e7b",
+      "statement": "Most OIFS functions return 0 on success and a negative value on error, with error messages retrievable via oifs_last_error.",
+      "evidence": [
+        {
+          "resource": "repo://src/ffi.rs#L164-L198",
+          "version": "repo-lines-v1:sha256:ce8008659e9f90a8a4ea96d8fc34dc2fda26695a4ace69884ab190428403f4bf:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViM2JkNTU0Yzg2NDI1OTRiYWI2MzcyN2IwNzJiZjYwNGFlY2ZlODI1MGZlNmU4MjY0NTllN2ExOWUwNmUwODIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhZTA5Y2IxZDJiOTA5ZDFiODJlMzhkN2M3MjRmMzIzMWZlYzQ4YzVlOGZiYzZiNDJhODMwZjI0NTRiYWFjNjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkwNThjNGRjZjVkMDJiZDFlMzlhNjQwMmQ1MWNiODFkNDVhOTMxNzJkNDgwNTk0MjU5N2NjZTQ2NmFlYjU3MWUifQ"
+        },
+        {
+          "resource": "repo://src/ffi.rs#L221-L230",
+          "version": "repo-lines-v1:sha256:6682e1b06803a2a91e17fe2f0766d06761cd2731711b826f8621e08b60bf8377:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0ZmY5MmZhYWI2YjgwM2MwMTIzNzlmNjc3N2FmMDIyODAzZTc1MDAxZDBjYjYyMGM5ZDAzZTFjYjMyOWZmMjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU4NTI0ODk1MGIyZDc2NWNmNjgxYzdhNzgzODJkZDUxYzY4ZjQwMTcwZjRjOTZhYjgzZGM2YmE5MDJhNjdkY2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA0N2JlNGI2YzlkMWNmYzZjNmRiMTFiOWNmZTZjN2IxNjQxZTgyMGMxZDc1ZWZlNWY3MWY1MjBhYzQwN2JjYzIifQ"
+        },
+        {
+          "resource": "repo://src/ffi.rs#L302-L311",
+          "version": "repo-lines-v1:sha256:1b658209e01e8cfde991391ee7126cb8c6370f19e21cfd72d65a9d4d7e503d71:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZGIyMDk3ODg0MzZjMWQ2MzI0OTM1ZjMzMmEyNzIyMGMzYmQyNzJmOTc2YzVjNzkzYTJhZTI1MmFkNmQwZmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjOTY1YThlNmNlNTkxZjI0NDllYTkxYWNjOWU3OWMzNzViYzY0ZWVlMjMwZGZlZjliYzkzN2I2NWE0YzM5MTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhkN2MyY2YyMzdhNjlmN2ZhM2ZlNjQ1ZDRlMzU0MDMzYmFjYWM2MjUyM2M0ZDdkM2ZhMDJlM2ZlM2Q1MGMzYzcifQ"
+        },
+        {
+          "resource": "repo://src/ffi.rs#L414-L445",
+          "version": "repo-lines-v1:sha256:d09c941074b9c01ea57263614097d9889c0de79e705519f560e2f9783624f11e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwMDMzMjI4ZDkyZThkZjAzMzk4YjYwZTIwNzE4NzgxOTY4MGU3ODZhMzg1MTM1NmFjMWU1ODMyM2E1MzY3M2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA0N2JlNGI2YzlkMWNmYzZjNmRiMTFiOWNmZTZjN2IxNjQxZTgyMGMxZDc1ZWZlNWY3MWY1MjBhYzQwN2JjYzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZhYjVmYzI1MmVmNGVkOWFlODk4NjU0NzczODA3ZmE3NmFhODc4ZjY2N2JhYjFmM2I1NjI4ZjcwMDBlM2U0YTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_700025881ea242338b23b68c9e64bd1f",
+      "statement": "OIFS uses semantic versioning with compatibility policy: returns OIFS_VERSION_COMPAT_OK (0) for exact match, OIFS_VERSION_COMPAT_WARN (1) for newer versions (allowed), and OIFS_VERSION_COMPAT_ERR (-1) for older versions (blocked).",
+      "evidence": [
+        {
+          "resource": "repo://include/oifs.h#L138-L140",
+          "version": "repo-lines-v1:sha256:533986c0aaaa8a20b4ddd1b073a24b3d65f4058a489711da55b60eabe1d8be8b:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTE3OTg3OGMzODQ2ZmEzZDMwZWMyMGMzYjZjYmY3ZTg0Yzc5YjNlYmU1ZGM1YzA0MDM1Y2RhYjNmMWY1N2MyYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWEzYjNlMTg2ZTYzYTY5OGFkYWFiZmZiMzUwN2ZmMWU0OTVhOTE4M2Y4NDVkNDQ1OTA4NmVhYjU1N2UyZmI5YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDYxMTkwMmMxYzMwZjc3NjFiNmQ2OTE2Yjk3ODE4ZDk2MmI2OWQ1YWVkNjBkNzIxNzBhMDBiNzg1ZWI5ZmFlZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjA1YjI3MWVjYjU3NDA1MjRiMTIzOTdjNTA2OThkMGZjNDc5YzFlZDNlMzU5ZWFlMmM2NmJjM2U3NTNkMjk4YyJ9"
+        },
+        {
+          "resource": "repo://src/ffi.rs#L525-L545",
+          "version": "repo-lines-v1:sha256:2f74200817ff032ba4edd7e460a97ae8bfefd8ce97ffd1a468bcf75b9b036c3c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0NDIyMjQ4OTVjMTc0ZmE1ODQ1YmJiMjg1YmQ0NjA0OGY2YTg1MzdiNTE3YzhjMjNjOTNjNzFlMGFhYmQzMTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhmZjFjYWIxMzEyZGM5ZWFmZjI4YmVmNWE4NTI0NTQwMjgwNGNiZTk1ZTg3MTJiNTY3MzE1NjE4ODcxZjk1YWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVlODEzODgwYjhhYjUwMmQ2NDllMzM4ZmE4ODM0NTJjZmZhMTA1N2UxZWU4MDBmZDYzMWE1YjgxZmM1MTBiYmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_db8c18150b7d4f25be9abca3ad5a548b",
+      "statement": "The OIFS handle is not thread-safe; each thread requiring filesystem access should open its own handle or implement external synchronization.",
+      "evidence": [
+        {
+          "resource": "repo://src/ffi.rs#L11-L15",
+          "version": "repo-lines-v1:sha256:687372113dcb26ea0ae4669d8c3582a573824995c9f9087eb485053eedd3a38b:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjg5NThjZDU2YjMwZWI0ZDA2MmJkYzhjZGE2YzExYTY0NDA5Yjc0YmJhZGNjNWFkNjYwNzA0ODczZTllODM2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDJhYjM3ODdiNjk5Y2FlMmVjYzBlMzU3NTBhZjJmYTU3NTM4OTJiZDNmYmM4ZjFiNGE4YjU1ODM3M2Y2YmMyNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODYzNWJhMjBhYzY1YjdjZmZiYWQ4YWNlZTI5MWFkMjEyNDVkMjRlYTQ1Mzg0NWIzMzAyNDllODc2OTRmNGNiMSJ9"
+        },
+        {
+          "resource": "repo://src/ffi.rs#L135-L141",
+          "version": "repo-lines-v1:sha256:daf417c3c442ea12bfbaf9d369ee95363f8bfb63cf2454a5894acfe9ca9fdb10:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDk4MTNkYmUwMmQ0YmIzNzI0MjljN2I2ZTVmOTVhYWM1NTY4ODlkODlmOTZmNWRlNmIxN2ZkMTU1ODM2ZjRmNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTllNzYzNTVjZjExOTk0ODBjM2Y5OTgzNmIxNDg2Yzg0MWQ4OTFmYWFkOTA0YzYwOGUwOTMwMjJkMzc1N2FlZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWQ0MjVmNzRhZDQwNGEyYmYxZjEzODYzOGVkYWExMmFkNThkMzZlMmE5ZTkwOTg2ZTljNjJmNjY0N2QyNjA4ZCJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-10-04T10:12:53.730Z"
+  }
+}

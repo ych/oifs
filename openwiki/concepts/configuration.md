@@ -6,6 +6,16 @@ tags: [configuration, features, environment-variables, cli-options, build-flags]
 verified:
   - by: openwiki/0.6.1
     at: 2026-10-04T09:07:50.878Z
+sources:
+  - id: openwiki-source-651d1fb6c9e49916a916ab51
+    resource: repo://Cargo.toml
+  - id: openwiki-source-c4c0d1a8305275c15968c047
+    resource: repo://src/bin/oifs.rs
+  - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
+    resource: repo://src/disk.rs
+  - id: openwiki-source-ea9e30b0c99ad48bf309d4ab
+    resource: repo://src/io_engine.rs
+generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
 ---
 
 OIFS provides multiple configuration mechanisms to tailor functionality for different use cases, from embedded systems to high-performance clusters. Configuration occurs at build time via Cargo features, at runtime via CLI flags and environment variables, and through persistent filesystem properties.
@@ -72,6 +82,7 @@ Determines how defragmentation operations are performed:
 - `InPlace`: Directly modify original image (faster but risks corruption on failure)
 
 #### Durability Mode
+<!-- openwiki: broken internal link [../architecture/async_io_and_engines.md#durability-modes] heading anchor "durability-modes" does not exist in "../architecture/async_io_and_engines.md". Fix the href or restore the target, then delete this comment. -->
 Balances power-loss resilience against write throughput ([detailed explanation](../architecture/async_io_and_engines.md#durability-modes)):
 - `Lazy` (default): Updates mmap/page cache without per-mutation `msync`; survives process crashes; requires explicit `flush()` for power-loss safety
 - `RangeAsync`: Asynchronously flushes only modified byte ranges via `msync(MS_ASYNC)`

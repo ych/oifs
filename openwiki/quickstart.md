@@ -10,7 +10,10 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-04T10:12:53.730Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
 ---
 
 # Quickstart
@@ -138,7 +141,9 @@ OIFS provides military-grade at-rest encryption powered by XChaCha20-Poly1305 AE
 ### Creating an Encrypted Image
 
 ```bash
-./target/release/oifs -i secure.img create --size 20 --password "my-secret-passphrase"
+./target/release/oifs -i secure.img create --size 20 --encrypt
+# 🔒 Enter password: [hidden]
+# 🔒 Confirm password: [hidden]
 ```
 
 ### Accessing Encrypted Images
@@ -203,19 +208,19 @@ Cross-linked Blocks: 0
 
 ## Next Steps & Documentation Links
 
-<!-- openwiki: broken internal link [openwiki/architecture/overview.md] file "openwiki/architecture/overview.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [OIFS Architecture Overview](openwiki/architecture/overview.md) — Subsystem layout, memory-mapped storage engine, and block allocation.
-<!-- openwiki: broken internal link [openwiki/architecture/async_io_and_engines.md] file "openwiki/architecture/async_io_and_engines.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [Asynchronous I/O and Pluggable Engines](openwiki/architecture/async_io_and_engines.md) — Deep dive into Mmap, Pread, Linux io_uring backends, ExtentList coalescing, and kernel gating.
-<!-- openwiki: broken internal link [openwiki/architecture/disk_manager_and_persistence.md] file "openwiki/architecture/disk_manager_and_persistence.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [DiskManager and Persistence Model](openwiki/architecture/disk_manager_and_persistence.md) — Storage engine coordinator, durability policies, and read/write pipelines.
-<!-- openwiki: broken internal link [openwiki/architecture/compression_and_filters.md] file "openwiki/architecture/compression_and_filters.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [Compression and Filters](openwiki/architecture/compression_and_filters.md) — Deep dive into Blosc2 filters, Delta encoding, and Zstd multi-frame streams.
-<!-- openwiki: broken internal link [openwiki/architecture/encryption.md] file "openwiki/architecture/encryption.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [Encryption Subsystem](openwiki/architecture/encryption.md) — Cryptographic design, 192-bit nonces, and deterministic SIV filename privacy.
-<!-- openwiki: broken internal link [openwiki/architecture/ffi_interface.md] file "openwiki/architecture/ffi_interface.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [C FFI Interface](openwiki/architecture/ffi_interface.md) — Shared library bindings, handle lifecycle, and I/O backend selection.
-<!-- openwiki: broken internal link [openwiki/operations/cli_reference.md] file "openwiki/operations/cli_reference.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [CLI Reference](openwiki/operations/cli_reference.md) — Complete manual for all subcommands, options, and JSON pipelines.
-<!-- openwiki: broken internal link [openwiki/operations/testing_and_verification.md] file "openwiki/operations/testing_and_verification.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [Testing and Formal Verification](openwiki/operations/testing_and_verification.md) — Guide to running integration tests, Shuttle concurrency permutations, and Kani proofs.
+<!-- openwiki: broken internal link [../architecture/overview.md] file "../architecture/overview.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [OIFS Architecture Overview](../architecture/overview.md) — Subsystem layout, memory-mapped storage engine, and block allocation.
+<!-- openwiki: broken internal link [../architecture/async_io_and_engines.md] file "../architecture/async_io_and_engines.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [Asynchronous I/O and Pluggable Engines](../architecture/async_io_and_engines.md) — Deep dive into Mmap, Pread, Linux io_uring backends, ExtentList coalescing, and kernel gating.
+<!-- openwiki: broken internal link [../architecture/disk_manager_and_persistence.md] file "../architecture/disk_manager_and_persistence.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [DiskManager and Persistence Model](../architecture/disk_manager_and_persistence.md) — Storage engine coordinator, durability policies, and read/write pipelines.
+<!-- openwiki: broken internal link [../architecture/compression_and_filters.md] file "../architecture/compression_and_filters.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [Compression and Filters](../architecture/compression_and_filters.md) — Deep dive into Blosc2 filters, Delta encoding, and Zstd multi-frame streams.
+<!-- openwiki: broken internal link [../architecture/encryption.md] file "../architecture/encryption.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [Encryption Subsystem](../architecture/encryption.md) — Cryptographic design, 192-bit nonces, and deterministic SIV filename privacy.
+<!-- openwiki: broken internal link [../architecture/ffi_interface.md] file "../architecture/ffi_interface.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [C FFI Interface](../architecture/ffi_interface.md) — Shared library bindings, handle lifecycle, and I/O backend selection.
+<!-- openwiki: broken internal link [../operations/cli_reference.md] file "../operations/cli_reference.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [CLI Reference](../operations/cli_reference.md) — Complete manual for all subcommands, options, and JSON pipelines.
+<!-- openwiki: broken internal link [../operations/testing_and_verification.md] file "../operations/testing_and_verification.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [Testing and Formal Verification](../operations/testing_and_verification.md) — Guide to running integration tests, Shuttle concurrency permutations, and Kani proofs.

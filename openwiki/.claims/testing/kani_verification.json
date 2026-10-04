@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:6c9e91342fa28c923a2948a1bf10b54bba9ab4868d2de5e1a9d68e3be55adebe",
+  "claims": [
+    {
+      "id": "claim_9808e460c6314de5ada2d5186d40afe4",
+      "statement": "Kani proofs in the filters.rs module verify the roundtrip correctness of compression filters, ensuring that encoding followed by decoding returns the original input for all possible byte sequences.",
+      "evidence": [
+        {
+          "resource": "repo://src/filters.rs",
+          "version": "repo-file-v1:sha256:123c59afd0c38d5b84b622647df8c2db3539f1de229c8fa07ec9aa610cab2d13"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-10-04T10:12:53.730Z"
+  }
+}

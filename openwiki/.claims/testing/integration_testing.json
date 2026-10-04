@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:8eb50606aadf681caa3191f6e2bf989dfaf6c6fee8468f39200f87d8c2c38d8a",
+  "claims": [
+    {
+      "id": "claim_bd4bac734c814d41a04e424e00d44b38",
+      "statement": "The integration tests for OIFS validate end-to-end behavior in disk persistence, crash safety, and network synchronization.",
+      "evidence": [
+        {
+          "resource": "repo://tests/crash_safety_test.rs",
+          "version": "repo-file-v1:sha256:e0f36249db06f6770b9942b74d7edb0835e04871f5191d9a9ec2ea16e64987f7"
+        },
+        {
+          "resource": "repo://tests/integration_test.rs",
+          "version": "repo-file-v1:sha256:5b140b8375daa1b39f90ad1e07024353250dbfeb87ecd6d7b9e048752e4fa28f"
+        },
+        {
+          "resource": "repo://tests/network_single_file_sync_test.rs",
+          "version": "repo-file-v1:sha256:1cea01a7c2d037cf559581fe579d0f1ba9a8e198f30422c10a05441e8fd73c30"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-10-04T10:12:53.730Z"
+  }
+}

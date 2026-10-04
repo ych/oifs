@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:79afb54de19c23c50d2a5a2d9dc7befe4ad725f6bdc9440f5da3bacbc651b9f4",
+  "claims": [
+    {
+      "id": "claim_7bff251dd3614961bb258446e0d54fea",
+      "statement": "The 'create' command in OIFS initializes a new filesystem image with optional encryption and size specification.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs.rs#L312-L374",
+          "version": "repo-lines-v1:sha256:4135c51bd7567d67478f745d5e370302f3b7038b1dea6ff6d165d86de4a7389f:eyJzZWxlY3RlZExpbmVDb3VudCI6NjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkNzQwYjA3YmM4MTZmMDRlMDgxNTBhNzA1MjJjYmYzZGYzNDgyYTc3NTNkZjhlMWJmMTY3ZmQwZTMzOTViOTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2YzIxNTA4YWJiMGI2MzNjZDc3NzI0YmRmMzYzZDM0ZjFiYjU0OGM4OWFlY2IwZDJlZDNiMDg0ZTJlOTQ2MTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxOTdkOWYyOWM1OWE0ODNiYTc5YmY1M2I5Zjc0NjJjYzQzYjc1OTQ0MDdmZmJjYzVlNGZlNTRhM2I3NjFmYmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE4YjRhZDI2N2EwZWUyNmMxZjZjYmE2OTI2ZDdjMjkwNmI2YmQxYjFlMWUxMGNmZjJhMzcyZTlhYWM1MGNlYzYifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-10-04T10:12:53.730Z"
+  }
+}

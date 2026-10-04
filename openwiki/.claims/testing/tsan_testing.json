@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:9320139b7fba79a82e647d9e43892ad398ae90f9eacb1ed5d814f505e33ad033",
+  "claims": [
+    {
+      "id": "claim_a6750493d45a4249aff843ec899f04e3",
+      "statement": "The concurrency_stress_test.rs file is designed to detect data races or memory corruption using ThreadSanitizer.",
+      "evidence": [
+        {
+          "resource": "repo://tests/concurrency_stress_test.rs#L1-L5",
+          "version": "repo-lines-v1:sha256:12b1287944474c8556fa7e09b48d6ef212852caf10fd3651fda93d33ece6056a:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjEzZTM2YzM4ZjM5MWI3OTZlY2FhMGZjMGMzNjdlYzgyZmZjMDcyNDNlNDEwN2E2MGJjM2NiMTQ5NjQ3N2RhNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2QyYTYxNWJjZTRiOTViOTU2MzBlY2IwOGQwNWZhNzYyYTczYzllMjBmNDRiZjQ3NWYxMGY1NTA0NTUzM2RiMiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_e3233f959e9f44bdbb6678913fef52d0",
+      "statement": "OIFS employs ThreadSanitizer through its continuous integration pipeline and dedicated stress test binaries.",
+      "evidence": [
+        {
+          "resource": "repo://tests/concurrency_stress_test.rs#L1-L5",
+          "version": "repo-lines-v1:sha256:12b1287944474c8556fa7e09b48d6ef212852caf10fd3651fda93d33ece6056a:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjEzZTM2YzM4ZjM5MWI3OTZlY2FhMGZjMGMzNjdlYzgyZmZjMDcyNDNlNDEwN2E2MGJjM2NiMTQ5NjQ3N2RhNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2QyYTYxNWJjZTRiOTViOTU2MzBlY2IwOGQwNWZhNzYyYTczYzllMjBmNDRiZjQ3NWYxMGY1NTA0NTUzM2RiMiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_821dbe37887e4cdc81e209753e1fc506",
+      "statement": "The concurrency_stress_test.rs file contains three high-stress scenarios for TSan validation: multithreaded read/write integrity, concurrent mutations with live fsck, and indirect block expansion under contention.",
+      "evidence": [
+        {
+          "resource": "repo://tests/concurrency_stress_test.rs#L113-L187",
+          "version": "repo-lines-v1:sha256:636f497e1116c221d350620bd07017b7022466953f0e18e1d222b218bf7d27bb:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQyY2Q0ZGI0OGEzNTBlOGYwYjQ3OTQ0YzQ2ZTNmZmRiYmExMzJkMjI5MGE5MWQ3MDEyYjU2ZWI0NmM4YWI0ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkNGU5ZmRiYzMwYTg4ZTA4NjlkYWRiNDcxNWQ0YjQyYTMyZDNjMGRjMzdhZWI5YTMxNzcyMWFhYmQwOTg0YzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlZjMwMzk1N2E3YWY3ZjA4YjJiOTA4NjRmNDEyN2FkYTk1NTA5ZTdlOTk2NTE2MjgzZjk0YWNiNWIwYmMyMjQifQ"
+        },
+        {
+          "resource": "repo://tests/concurrency_stress_test.rs#L15-L114",
+          "version": "repo-lines-v1:sha256:72fa8d722fa92691d9df778fc3a3ea22f0329996b248145156e3ae5b8dadeba3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkMmNkNGRiNDhhMzUwZThmMGI0Nzk0NGM0NmUzZmZkYmJhMTMyZDIyOTBhOTFkNzAxMmI1NmViNDZjOGFiNGY2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNTk4YzM0MWQ4Yzg0NjFkNjM1NTBhMmQ5NjI2YmMxODJiYWI4OTE0ZGQzNGFkMWNiYzAzOWM3NDY1YzdkMzVmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1MDU2NzM3ODg2NjllMjNmNTg4Y2NkY2RhZWI4OTE0NjNkMzE0OGEzZjgxZTJiMTc4MGY5Yjg2ZWViMzkxMzcxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiOTZlMDMzYTU5NDQ4MDI0ODY4NTgwNjgxYmI4YWM1MjY5MzQwMjMwZmJkZWI5ZjUwOTViODYwMTM4ODNmY2Y2In0"
+        },
+        {
+          "resource": "repo://tests/concurrency_stress_test.rs#L189-L236",
+          "version": "repo-lines-v1:sha256:6fb7ae57db343209d726001785876de73ef4f957076378fd19975a8d665ca76c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEwMzRkZDRiMTY1ODBiMjIwNTA4ODBjNzQ3MWI3OTMzODk4NGVlNDY1MzFiZTk3N2QwMGZhNTNjZTY4YzQ2ZDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4MzdkZTE2OTk5ZWNiOTE0YjNiOGMyMGVmYTUwMmQwOTRhNGNjNjA4NTNkYjBkNGVlYzZjOTVjN2U5YzNhZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkNGU5ZmRiYzMwYTg4ZTA4NjlkYWRiNDcxNWQ0YjQyYTMyZDNjMGRjMzdhZWI5YTMxNzcyMWFhYmQwOTg0YzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc0MDY0MTk3ZTU5ZDFmMjE2ZmFhYjczNjNmYzEyZTI4MzliZDFlNTkwMTVhZmI1NzhhNDk3MjUzNzAyZTM5YzkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bfc64fb2f63b4af599e90af9f3e1d4a5",
+      "statement": "The concurrency_test.rs, rwlock_concurrency_test.rs, and session_ipc_test.rs tests additionally run under ThreadSanitizer in CI to broaden coverage.",
+      "evidence": [
+        {
+          "resource": "repo://tests/concurrency_test.rs",
+          "version": "repo-file-v1:sha256:dc424af6c9b41176cfef08e5a1d180deefb2229ceed3f9d6556440c18654bcf8"
+        },
+        {
+          "resource": "repo://tests/rwlock_concurrency_test.rs",
+          "version": "repo-file-v1:sha256:83b7ea1dfa400e6ace94673c1d55ef0303e31279138c201a0627dbecd56650ee"
+        },
+        {
+          "resource": "repo://tests/session_ipc_test.rs",
+          "version": "repo-file-v1:sha256:cae219c35793b97335734299dcb6c0ee7355a4ce10014753605d66a2ea152121"
+        }
+      ]
+    },
+    {
+      "id": "claim_49ed991f95b04a7baf435509adb77cb2",
+      "statement": "ThreadSanitizer tests can be executed locally using 'cargo test --features tsan --test concurrency_stress'.",
+      "evidence": [
+        {
+          "resource": "repo://tests/concurrency_stress_test.rs",
+          "version": "repo-file-v1:sha256:3e4507310ef53f1da5afb7a873cd327e31179d1d327ac18e857da525dc206c31"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-10-04T10:12:53.730Z"
+  }
+}

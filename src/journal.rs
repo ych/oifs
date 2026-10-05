@@ -23,6 +23,15 @@
 //!   frame fails verification and is discarded during recovery.
 //! * **No new dependencies.** CRC32C is implemented in-crate with a `const fn`
 //!   generated table so it stays verifiable under Kani/CBMC.
+//! * **Every metadata mutation must be journaled.** A transaction left pending in
+//!   the ring becomes *stale* the moment an unjournaled path modifies the same
+//!   metadata: recovery would replay the old post-image over the newer change and
+//!   silently roll it back (observed in practice when a create's zeroed inode
+//!   post-image overwrote the size and block pointer a later write had set, leaving
+//!   files that read back empty). `create_file`/`mkdir`, `delete_file` and
+//!   `write_data` therefore all stage through `AllocSim` and commit a transaction.
+//!   Any future path that mutates metadata must do the same, or drain the ring
+//!   first.
 
 use crate::superblock::SuperBlock;
 use thiserror::Error;

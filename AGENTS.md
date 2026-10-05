@@ -34,7 +34,7 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **FFI Dynamic Library Handshake**: 3-state runtime version & path verification (`oifs_check_version`, `oifs_loaded_path`): 0=OK, 1=WARN (newer), -1=ERR (older).
 - **Formal Verification**: 59 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, and bounds safety.
 - **On-Disk Format v2**: Fixed 256-byte inode records with explicit little-endian fields, a 1-byte file-type tag, and zeroed reserved space. Deterministic, reproducible, leak-free. Legacy v1 images stay fully readable and writable; `oifs migrate` upgrades them in place.
-- **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Recovery runs automatically at mount, so a power loss no longer requires a full-image `fsck`.
+- **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file`/`write_data` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Payload data is *not* journaled — it is flushed before the metadata commit (ordered mode), so WAL traffic stays proportional to metadata, not file size. Recovery runs automatically at mount, so a power loss no longer requires a full-image `fsck`.
 
 ---
 
@@ -98,7 +98,8 @@ An inode stores:
    - `DiskManager` wraps `Arc<RwLock<DiskManagerInner>>` and a dedicated `sync_mutex: Arc<Mutex<()>>`.
    - Read operations (`read_data`, `read_at`, `lookup`, `stat`, `list_dir`, `resolve_path`, `flush`, `flush_async`) acquire `.read()` locks.
    - Flush operations (`flush`, `flush_async`) hold `sync_mutex` to serialize physical `msync` calls, but only hold `inner.read()`, allowing all concurrent readers to proceed without latency spikes.
-   - Write operations (`create_file`, `write_data`, `delete_file`) acquire `.write()` locks.
+   - Write operations (`create_file`, `mkdir`, `delete_file`, `write_data`) hold `inner.write()`.
+   - **Every metadata mutation must be journaled on a journaled image.** A transaction left pending in the ring becomes stale the moment an unjournaled path touches the same metadata, and recovery will replay the old post-image over the newer change. All four paths stage through `AllocSim` (run the real allocator against copied bitmaps) so every allocated id is known before the image is touched.
    - Inside `DiskManagerInner`, `inode_cache` and `dir_cache` have their own fine-grained `RwLock`s.
    - **Rule**: Never hold an inner write lock while requesting an outer lock (prevent deadlocks).
 2. **Zero-Copy Inode & Directory Caching**:

@@ -1736,29 +1736,6 @@ impl DiskManager {
         Ok(())
     }
 
-    /// Prepare for a metadata mutation that is **not** covered by the WAL.
-    ///
-    /// While `write_data` and friends are still on the in-place path, a journaled
-    /// transaction left pending in the ring would become *stale*: recovery would
-    /// replay its old post-image over whatever the in-place path wrote afterwards,
-    /// silently rolling the file back (e.g. a create's zeroed inode overwriting the
-    /// size and block pointer that a later write had set).
-    ///
-    /// Dropping those transactions before the mutation is safe precisely because the
-    /// journaled paths apply their ops under the same write lock and complete
-    /// atomically: by the time this runs, every committed transaction has already
-    /// been applied in place. Once every metadata path is journaled this becomes a
-    /// no-op and can be removed.
-    fn prepare_non_journaled_mutation(
-        guard: &mut DiskManagerInner,
-    ) -> Result<(), DiskManagerError> {
-        let sb = guard.superblock;
-        if !sb.has_journal_layout() {
-            return Ok(());
-        }
-        Self::checkpoint_journal(&mut guard.mmap, &sb)
-    }
-
     fn create_entry_journaled(
         guard: &mut DiskManagerInner,
         parent_inode_id: u64,
@@ -2563,6 +2540,443 @@ impl DiskManager {
         Ok(current_offset)
     }
 
+    /// Stage a payload write into the file described by `inode`.
+    ///
+    /// Allocates through `sim` so every id is known before the bitmaps are touched,
+    /// and records each metadata change in `ops` (bitmap bits, indirect pointer writes).
+    /// `used` collects the physical blocks touched, so the caller can free orphans and
+    /// flush exactly the right ranges.
+    ///
+    /// Payload bytes are written straight into the mapping and are deliberately **not**
+    /// recorded as ops: journaling user data would multiply WAL traffic by the file size
+    /// and defeat the point of a metadata journal. Durability instead comes from
+    /// ordering — the caller flushes these blocks *before* committing the metadata
+    /// transaction, so recovery never exposes an allocated-but-empty block.
+    fn stage_payload_write(
+        guard: &mut DiskManagerInner,
+        inode: &mut Inode,
+        phys_off: u64,
+        buf: &[u8],
+        sim: &mut AllocSim,
+        ops: &mut Vec<crate::journal::MetadataOp>,
+        used: &mut Vec<u64>,
+    ) -> Result<(), DiskManagerError> {
+        let mut written = 0usize;
+        let mut cur = phys_off;
+        while written < buf.len() {
+            let blk_idx = (cur / BLOCK_SIZE as u64) as usize;
+            let in_blk_off = (cur % BLOCK_SIZE as u64) as usize;
+            let n = std::cmp::min(buf.len() - written, BLOCK_SIZE - in_blk_off);
+
+            let phys = sim_get_or_alloc_block(&guard.mmap, inode, blk_idx, sim, ops)?;
+            if phys != 0 && !used.contains(&phys) {
+                used.push(phys);
+            }
+            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, phys) {
+                slice[in_blk_off..in_blk_off + n].copy_from_slice(&buf[written..written + n]);
+            }
+            written += n;
+            cur += n as u64;
+        }
+        Ok(())
+    }
+
+    /// Clear block pointers at or beyond the file's new logical length.
+    ///
+    /// When a file shrinks, the indirect pointer blocks keep stale entries pointing at
+    /// blocks that are no longer used. Those blocks are freed by the caller, so leaving
+    /// the pointers behind would leave the inode referencing blocks the bitmap says are
+    /// free — an inconsistency `fsck` reports as `missing_blocks`.
+    ///
+    /// Direct pointers live in the inode and are captured by the `WriteInode` op;
+    /// indirect entries are recorded as zeroing `WriteBlockSlice` ops so the change is
+    /// part of the same transaction.
+    fn prune_stale_pointers(
+        guard: &mut DiskManagerInner,
+        inode: &mut Inode,
+        first_stale: usize,
+        ops: &mut Vec<crate::journal::MetadataOp>,
+    ) -> Result<(), DiskManagerError> {
+        const POINTERS_PER_BLOCK: usize = 512; // 4096 / 8
+
+        if first_stale == 0 {
+            return Ok(());
+        }
+
+        // Direct pointers.
+        for i in first_stale.min(10)..10 {
+            inode.blocks[i] = 0;
+        }
+        if first_stale <= 10 {
+            // The whole single-indirect block is unreachable; drop the pointer so it is
+            // freed with the rest of the orphans.
+            inode.blocks[10] = 0;
+            return Ok(());
+        }
+
+        // Single indirect.
+        let sib = inode.blocks[10];
+        if sib != 0 {
+            let start = first_stale - 10;
+            if start < POINTERS_PER_BLOCK {
+                for idx in start..POINTERS_PER_BLOCK {
+                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                        block_id: sib,
+                        offset: (idx * 8) as u32,
+                        data: vec![0u8; 8],
+                    });
+                }
+            }
+            if first_stale <= 10 + POINTERS_PER_BLOCK {
+                return Ok(());
+            }
+        }
+
+        // Double indirect: clear whole second-level blocks beyond the new length.
+        let dib = inode.blocks[11];
+        if dib != 0 {
+            let start = first_stale - 10 - POINTERS_PER_BLOCK;
+            for a in start.min(POINTERS_PER_BLOCK)..POINTERS_PER_BLOCK {
+                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                    block_id: dib,
+                    offset: (a * 8) as u32,
+                    data: vec![0u8; 8],
+                });
+            }
+            for a in start.min(POINTERS_PER_BLOCK)..POINTERS_PER_BLOCK {
+                let sib2 = DiskManager::read_block_ptr(&guard.mmap, dib, a);
+                if sib2 == 0 {
+                    continue;
+                }
+                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                    block_id: sib2,
+                    offset: 0,
+                    data: vec![0u8; BLOCK_SIZE],
+                });
+            }
+            if first_stale <= 10 + POINTERS_PER_BLOCK * (1 + POINTERS_PER_BLOCK) {
+                return Ok(());
+            }
+        }
+
+        // Triple indirect: clear whole third-level blocks beyond the new length.
+        let tib = inode.triple_indirect;
+        if tib != 0 {
+            let span = 10 + POINTERS_PER_BLOCK * (1 + POINTERS_PER_BLOCK);
+            if first_stale > span && tib != 0 {
+                let start = first_stale - span;
+                let max_b = POINTERS_PER_BLOCK;
+                for b in start.min(max_b)..max_b {
+                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                        block_id: tib,
+                        offset: (b * 8) as u32,
+                        data: vec![0u8; 8],
+                    });
+                    let dib2 = DiskManager::read_block_ptr(&guard.mmap, tib, b);
+                    if dib2 == 0 {
+                        continue;
+                    }
+                    for c in 0..POINTERS_PER_BLOCK {
+                        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                            block_id: dib2,
+                            offset: (c * 8) as u32,
+                            data: vec![0u8; 8],
+                        });
+                        let sib3 = DiskManager::read_block_ptr(&guard.mmap, dib2, c);
+                        if sib3 == 0 {
+                            continue;
+                        }
+                        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                            block_id: sib3,
+                            offset: 0,
+                            data: vec![0u8; BLOCK_SIZE],
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Journaled counterpart of [`Self::write_data_with_filters`].
+    ///
+    /// Same four cases as the in-place path, but staged through [`AllocSim`] and
+    /// committed as one metadata transaction.
+    ///
+    /// # Ordering (why this is crash-safe)
+    ///
+    /// 1. **Stage** — payload written into blocks whose bitmap bits are still clear.
+    ///    A crash here leaves garbage in free blocks, which is harmless.
+    /// 2. **Flush payload** — the touched blocks reach stable storage.
+    /// 3. **Commit** — the metadata transaction (bitmap + inode) is appended and
+    ///    `msync`ed. This is the atomic commit point.
+    /// 4. **Apply** — metadata ops are replayed in place.
+    ///
+    /// The ordering is what makes step 3 safe: metadata can only ever become durable
+    /// after the data it references is durable, so recovery never publishes a block
+    /// that has not been filled.
+    fn write_data_journaled(
+        guard: &mut DiskManagerInner,
+        inode_id: u64,
+        file_offset: u64,
+        data: &[u8],
+        compression_mode: CompressionMode,
+        filter_config: crate::filters::FilterConfig,
+    ) -> Result<(), DiskManagerError> {
+        let mut inode = Self::read_inode_internal(guard, inode_id)?;
+        let old_size = inode.size;
+        let old_compressed = inode.compressed_size;
+        let old_logical = {
+            let p = std::cmp::max(old_compressed, old_size);
+            (p / BLOCK_SIZE as u64) as usize + usize::from(p % BLOCK_SIZE as u64 != 0)
+        };
+        let old_blocks = Self::collect_inode_blocks(&guard.mmap, &inode);
+
+        let mut sim = AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
+        let mut ops: Vec<crate::journal::MetadataOp> = Vec::new();
+        let mut used: Vec<u64> = Vec::new();
+
+        // Final physical offset, buffer, logical size and physical size for every case,
+        // mirroring the in-place path exactly.
+        //
+        // Sizes must match the legacy implementation byte for byte: the same image
+        // content has to be produced whether or not journaling is enabled, otherwise
+        // enabling `--journal` would silently change filesystem semantics.
+        let (phys_off, buffer, new_size, new_compressed_size): (u64, Vec<u8>, u64, u64) = {
+            let is_full_overwrite = old_size == 0
+                || data.len() as u64 >= old_size
+                || inode.compressed_size > 0
+                || inode.encrypted
+                || filter_config.is_active();
+
+            if file_offset == 0 && is_full_overwrite {
+                let (buf, compressed) = Self::build_full_overwrite_buffer(
+                    guard,
+                    &mut inode,
+                    data,
+                    compression_mode,
+                    &filter_config,
+                )?;
+                let logical = if compressed {
+                    data.len() as u64
+                } else {
+                    buf.len() as u64
+                };
+                let logical = if compressed {
+                    logical
+                } else {
+                    std::cmp::max(old_size, logical)
+                };
+                let physical = if compressed { buf.len() as u64 } else { 0 };
+                (0u64, buf, logical, physical)
+            } else if inode.compressed_size > 0 {
+                let fast_append = file_offset == inode.size
+                    && !inode.encrypted
+                    && !filter_config.is_active()
+                    && inode.filter_typesize == 0
+                    && guard.encryption_key.is_none();
+                if fast_append {
+                    let frame = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
+                        .map_err(DiskManagerError::Io)?;
+                    let size = old_size.saturating_add(frame.len() as u64);
+                    let physical = inode.compressed_size + frame.len() as u64;
+                    (inode.compressed_size, frame, size, physical)
+                } else {
+                    // Read-modify-recompress: splice into the decoded image and rewrite
+                    // from offset 0. The legacy path resets the sizes before rewriting,
+                    // so `old_size` plays no part here.
+                    let mut full = Self::read_data_internal(guard, &inode)?;
+                    let end = (file_offset as usize).saturating_add(data.len());
+                    if full.len() < end {
+                        full.resize(end, 0);
+                    }
+                    full[file_offset as usize..end].copy_from_slice(data);
+                    let effective = Self::effective_filter(&inode, &filter_config);
+                    let (buf, compressed) = Self::build_full_overwrite_buffer(
+                        guard,
+                        &mut inode,
+                        &full,
+                        compression_mode,
+                        &effective,
+                    )?;
+                    let logical = if compressed {
+                        full.len() as u64
+                    } else {
+                        buf.len() as u64
+                    };
+                    let physical = if compressed { buf.len() as u64 } else { 0 };
+                    (0u64, buf, logical, physical)
+                }
+            } else {
+                // Raw append or random write.
+                let logical = std::cmp::max(old_size, file_offset + data.len() as u64);
+                (file_offset, data.to_vec(), logical, 0)
+            }
+        };
+
+        // 1. Stage payload (bitmap bits still clear).
+        Self::stage_payload_write(
+            guard, &mut inode, phys_off, &buffer, &mut sim, &mut ops, &mut used,
+        )?;
+
+        // A shrinking write orphans both data blocks and the pointers that reference
+        // them; both halves must go, or the inode ends up pointing at free blocks.
+        // Use the sizes computed above rather than reading back from `inode`, which
+        // still holds the pre-write values at this point.
+        let new_physical = std::cmp::max(new_compressed_size, new_size);
+        if file_offset == 0 && phys_off == 0 {
+            let needed_logical = (new_physical / BLOCK_SIZE as u64) as usize
+                + usize::from(new_physical % BLOCK_SIZE as u64 != 0);
+            if needed_logical < old_logical {
+                Self::prune_stale_pointers(guard, &mut inode, needed_logical, &mut ops)?;
+            }
+        }
+
+        inode.size = new_size;
+        inode.compressed_size = new_compressed_size;
+        if new_compressed_size > 0 {
+            inode.filter_typesize = filter_config.typesize;
+            inode.filter_delta = filter_config.delta;
+            inode.filter_shuffle = filter_config.shuffle;
+            inode.filter_bitshuffle = filter_config.bitshuffle;
+        }
+        inode.modified_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // 2. Free blocks the new layout no longer references.
+        for blk in &old_blocks {
+            if !used.contains(blk) {
+                ops.push(crate::journal::MetadataOp::SetDataBitmap {
+                    block_id: *blk,
+                    allocated: false,
+                });
+            }
+        }
+        ops.push(crate::journal::MetadataOp::WriteInode {
+            inode_id,
+            inode_bytes: Box::new(Self::build_inode_post_image(guard, inode_id, &inode)?),
+        });
+
+        // 3. Payload durability BEFORE the metadata commit.
+        let payload_ranges: Vec<(usize, usize)> =
+            used.iter().map(|b| guard.block_byte_range(*b)).collect();
+        if guard.durability_mode() == DurabilityMode::Strict {
+            for &(off, len) in &payload_ranges {
+                let mmap_len = guard.mmap.len();
+                if len > 0 && off < mmap_len {
+                    let actual = len.min(mmap_len - off);
+                    guard.mmap.flush_range(off, actual)?;
+                }
+            }
+        } else {
+            for &(off, len) in &payload_ranges {
+                let mmap_len = guard.mmap.len();
+                if len > 0 && off < mmap_len {
+                    let actual = len.min(mmap_len - off);
+                    let _ = guard.mmap.flush_async_range(off, actual);
+                }
+            }
+        }
+
+        // 4. Commit point.
+        Self::commit_journal_tx(guard, &ops)?;
+
+        // 5. Apply.
+        Self::apply_journal_ops(guard, &ops)?;
+
+        guard.free_inode_hint = sim.free_inode_hint;
+        guard.free_block_hint = sim.free_block_hint;
+        {
+            let mut ic = guard.inode_cache.write().unwrap();
+            ic.insert(inode_id, inode);
+        }
+
+        let mut ranges = vec![
+            guard.data_bitmap_byte_range(),
+            guard.inode_byte_range(inode_id),
+        ];
+        ranges.extend(payload_ranges);
+        for blk in &sim.fresh_blocks {
+            ranges.push(guard.block_byte_range(*blk));
+        }
+        if guard.durability_mode().is_range_based() {
+            guard.sync_mutation_ranges(&ranges)?;
+        } else {
+            guard.sync_mutation_ranges(&[])?;
+        }
+        Ok(())
+    }
+
+    /// Build the final on-disk buffer for a full (offset 0) overwrite: filter, then
+    /// compress, then encrypt. Mirrors [`Self::write_data_from_start_internal`] exactly.
+    ///
+    /// Returns `(buffer, is_compressed)`. The flag matters: the caller must record it
+    /// in the inode, otherwise a compressed payload would be tagged as uncompressed and
+    /// read back as garbage.
+    fn build_full_overwrite_buffer(
+        guard: &mut DiskManagerInner,
+        inode: &mut Inode,
+        data: &[u8],
+        compression_mode: CompressionMode,
+        filter_config: &crate::filters::FilterConfig,
+    ) -> Result<(Vec<u8>, bool), DiskManagerError> {
+        let filtered = crate::filters::apply_filters_cow(data, filter_config);
+        let working: &[u8] = &filtered;
+
+        let should_compress = match compression_mode {
+            CompressionMode::Always => true,
+            CompressionMode::Never => false,
+            CompressionMode::Auto => working.len() >= 8192,
+        };
+
+        let (final_data, is_compressed): (std::borrow::Cow<[u8]>, bool) = if should_compress {
+            let compressed = zstd::stream::encode_all(std::io::Cursor::new(working), 0)
+                .map_err(DiskManagerError::Io)?;
+            match compression_mode {
+                CompressionMode::Always => (std::borrow::Cow::Owned(compressed), true),
+                CompressionMode::Auto => {
+                    if compressed.len() < working.len() {
+                        (std::borrow::Cow::Owned(compressed), true)
+                    } else {
+                        (filtered, false)
+                    }
+                }
+                CompressionMode::Never => (filtered, false),
+            }
+        } else {
+            (filtered, false)
+        };
+
+        if let Some(key) = &guard.encryption_key {
+            let nonce = crate::encryption::generate_nonce();
+            let enc = crate::encryption::encrypt_data(final_data.as_ref(), key, &nonce)?;
+            inode.encrypted = true;
+            inode.encryption_nonce = nonce;
+            return Ok((enc, is_compressed));
+        }
+        Ok((final_data.into_owned(), is_compressed))
+    }
+
+    /// Filters to apply on a recompression path: the caller's when active, otherwise
+    /// whatever the inode already records.
+    fn effective_filter(
+        inode: &Inode,
+        filter_config: &crate::filters::FilterConfig,
+    ) -> crate::filters::FilterConfig {
+        if filter_config.is_active() {
+            *filter_config
+        } else {
+            crate::filters::FilterConfig {
+                typesize: inode.filter_typesize,
+                delta: inode.filter_delta,
+                shuffle: inode.filter_shuffle,
+                bitshuffle: inode.filter_bitshuffle,
+            }
+        }
+    }
+
     fn write_data_from_start_internal(
         guard: &mut DiskManagerInner,
         inode_id: u64,
@@ -2696,9 +3110,18 @@ impl DiskManager {
             )));
         }
 
-        // This path is not journaled yet; drop any pending WAL transaction first so
-        // recovery cannot replay a stale post-image over the mutation below.
-        Self::prepare_non_journaled_mutation(&mut guard)?;
+        // M3: journaled images stage the write through AllocSim and commit one
+        // metadata transaction; legacy images keep the in-place implementation.
+        if guard.superblock.has_journal_layout() {
+            return Self::write_data_journaled(
+                &mut guard,
+                inode_id,
+                file_offset,
+                data,
+                compression_mode,
+                filter_config,
+            );
+        }
 
         // Case 1: Writing from offset 0
         // Determine if this is a true full overwrite (initial write or complete replacement)

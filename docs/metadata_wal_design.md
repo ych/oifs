@@ -342,9 +342,39 @@ pub fn recover_from_journal(mmap: &mut MmapMut, sb: &mut SuperBlock) -> Result<u
 * 非空目錄需明確加 `-r`，否則報錯（避免誤刪資料）。
 * `-r` 以深度優先逐層刪除子項，確保每個子節點在被刪除時確實存在。
 
-### 8.9 驗證結果
+### 8.10 已完成：M6 `write_data` 日誌化
 
-* **整合測試 29 項**（`tests/journal_test.rs`）：涵蓋 mkdir、重複名稱拒絕、**3000 筆檔案的單層間接指標目錄成長**、journaled 與 legacy 的區塊消耗幾何一致性（`used_blocks` 相同）、checkpoint 捨棄數量正確且可重複呼叫、Strict 模式每筆交易後回收環狀緩衝、checkpoint 後復原為 no-op 且內容完好、刪除後 inode 重用、四執行緒並行 create/delete 後 fsck CLEAN。
-* **CLI 測試 10 項**（`tests/cli_rm_test.rs`）：legacy 與 journaled 映像檔刪除、遺失路徑失敗、拒絕根目錄、空目錄可刪、非空需 `-r`、巢狀遞迴刪除後 fsck CLEAN、JSON 輸出、`--journal` 旗標確認預留區塊、刪除後同名重建可讀取、刪除後其餘檔案仍可讀取。
-* **Kani 證明 59 項全數通過**（新增 6 項）：環狀游標永不越界、checkpoint 必使環狀緩衝歸零、**CRC32C 必能偵測任意單一位元翻轉**（GF(2) 線性）、CRC 輸入區域為純函式且編解碼器一致、框架長度溢位在讀取前被拒、區塊切片邊界在寫入前被檢查。
-* 全數 **46 個測試套件**、clippy（`-D warnings`）、fmt、Shuttle 隨機化並發測試皆通過。
+先前 `write_data` 會先呼叫 `prepare_non_journaled_mutation()` 清空環狀緩衝作為繞過；現已全面日誌化，該 workaround 已移除。
+
+**關鍵設計：payload 不進 journal，改用 ordered 語義。**
+
+若把使用者資料也寫入 journal，WAL 流量會隨檔案大小暴增（一個 300KB 的檔案每次寫入就要 30 萬筆位元組進 128KB 的環狀緩衝）。因此：
+
+1. **Stage** — 透過 `AllocSim` 配置，payload 直接寫入區塊，此時這些區塊的 bitmap 位元**仍是空的**。
+2. **Flush payload** — 上述區塊落到穩定儲存。
+3. **Commit** — metadata 交易（bitmap + inode + 間接指標）append 並 `msync`。這是原子提交點。
+4. **Apply** — 在原地重播 metadata op。
+
+順序正是安全性的來源：**metadata 只可能在它所參照的資料持久化之後才變得持久化**，因此復原永遠不會釋出一個尚未填入內容的區塊。若在此刻崩潰，留下的只是空閒區塊裡的垃圾——無害。
+
+**縮容時必須同時清理指標。** 這是實測抓到的真實 bug：檔案縮小會讓間接指標區塊殘留指向已回收區塊的 pointer，造成 `fsck` 回報 `missing_blocks`（inode 有映射但 bitmap 標為空閒）。`prune_stale_pointers()` 會把越過新長度的指標項歸零，並把這些歸零一併納入同一筆交易。
+
+**四種情形皆已涵蓋**，且大小計算刻意與 legacy 路徑逐位元組一致（啟用 journal 不得改變檔案系統語意）：
+
+| 情形 | 處理 |
+|------|------|
+| offset 0 全量覆寫 | filter → compress → encrypt → 從 phys 0 寫入 |
+| 壓縮檔 EOF append | 新的 Zstd frame 直接附加在實體尾端 |
+| 壓縮檔其他寫入 | 解壓 → splice → 從 0 重寫 |
+| raw append / 隨機寫入 | 直接寫入指定偏移 |
+
+**已移除的 workaround**：`prepare_non_journaled_mutation()`。其教訓已寫入 `src/journal.rs` 模組說明——未來任何 metadata 變更路徑都必須同樣日誌化，否則會重現「復原把舊後映像蓋掉新資料」的無聲回滾。
+
+### 8.11 累計驗證結果
+
+* **整合測試 38 項**（`tests/journal_test.rs`）：mkdir、重複名稱拒絕、**3000 筆檔案的單層間接指標目錄成長**、journaled 與 legacy 的區塊消耗幾何一致性、checkpoint 捨棄數量與冪等性、Strict 模式即時回收環狀緩衝、四執行緒並行 create/delete 後 fsck CLEAN；以及 M6 新增的 9 項：每次寫入恰好一筆交易、40KB 跨間接區塊、壓縮縮容釋放區塊、**offset-0 局部寫入與 legacy 逐位元組一致**、壓縮檔 append、隨機偏移寫入、區塊帳目一致、刪除後無洩漏。
+* **CLI 測試 10 項**（`tests/cli_rm_test.rs`）：legacy 與 journaled 映像檔刪除、遺失路徑失敗、拒絕根目錄、空目錄可刪、非空需 `-r`、巢狀遞迴刪除後 fsck CLEAN、JSON 輸出、`--journal` 旗標確認預留區塊、刪除後同名重建、刪除後其餘檔案仍可讀取。（這些測試在測試檔內以 mutex 序列化：每項會啟動多個真實 CLI 行程，其 session rendezvous 在測試並行下會非確定性競爭。）
+* **格式遷移測試 10 項**（`tests/format_migration_test.rs`）：v1 映像檔可完整讀寫與重開、fsck CLEAN、v1 記錄不可被 v2 解碼器誤讀、遷移就地完成且冪等、**中斷遷移的游標讓混合格式映像檔仍可正確讀取**。
+* **Kani 證明 59 項全數通過**，其中日誌相關 6 項：環狀游標永不越界、checkpoint 必使環狀緩衝歸零、**CRC32C 必能偵測任意單一位元翻轉**（GF(2) 線性）、CRC 輸入區域為純函式且編解碼器一致、框架長度溢位在讀取前被拒、區塊切片邊界在寫入前被檢查。
+* 實機驗證：journaled 映像檔寫入 300KB 隨機資料後讀回**位元組完全一致**（`cmp` 驗證）；`fsck` CLEAN；300KB 寫入後刪除回到 3 blocks，無洩漏。
+* 全數 **47 個測試套件**、clippy（`-D warnings`）、fmt、Shuttle 隨機化並發測試皆通過。

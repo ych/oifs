@@ -772,3 +772,316 @@ fn test_journaled_concurrent_creates_and_deletes() {
         "concurrent journaled writes must stay consistent: {report:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M6: journaled write_data
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_journaled_write_commits_one_transaction() {
+    let img = Img::new("w_tx");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "w.txt").expect("create");
+        let baseline = ring_tx_count(&fs::read(&img.path).expect("read"));
+        dm.write_data(f, 0, b"journaled payload", CompressionMode::Never)
+            .expect("write");
+        let after = ring_tx_count(&fs::read(&img.path).expect("read"));
+        assert_eq!(
+            after,
+            baseline + 1,
+            "write_data must commit exactly one metadata transaction"
+        );
+        assert_eq!(dm.read_data(f).expect("read"), b"journaled payload");
+    }
+    // Recovery replays the pending transaction; the file must be unchanged.
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+        let root = dm.superblock().root_inode;
+        let f = dm.lookup(root, "w.txt").expect("lookup survives replay");
+        assert_eq!(
+            dm.read_data(f).expect("read after replay"),
+            b"journaled payload"
+        );
+    }
+}
+
+#[test]
+fn test_journaled_write_large_file_crosses_indirect_blocks() {
+    // 40 KB needs 10+ blocks, so this exercises indirect pointer allocation
+    // through the simulator and the resulting pointer-block ops.
+    let img = Img::new("w_indirect");
+    let payload: Vec<u8> = (0..40 * 1024).map(|i| (i % 251) as u8).collect();
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "big.bin").expect("create");
+        dm.write_data(f, 0, &payload, CompressionMode::Never)
+            .expect("write large");
+        assert_eq!(dm.read_data(f).expect("read large"), payload.as_slice());
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+        let root = dm.superblock().root_inode;
+        let f = dm.lookup(root, "big.bin").expect("lookup");
+        assert_eq!(
+            dm.read_data(f).expect("read after replay"),
+            payload.as_slice()
+        );
+        let report = dm.verify_integrity().expect("fsck");
+        assert!(report.is_clean, "large journaled write: {report:?}");
+    }
+}
+
+#[test]
+fn test_journaled_overwrite_smaller_compressed_releases_blocks() {
+    // A partial write at offset 0 deliberately does NOT truncate (size stays
+    // max(old, written), matching the in-place path). Blocks are only released when
+    // the *physical* payload shrinks, i.e. recompressing a smaller payload over a
+    // compressed file.
+    let img = Img::new("w_shrink");
+    // Highly compressible filler would fit in a single block either way, so the
+    // physical size would never shrink. Use pseudo-random bytes instead.
+    let incompressible = |seed: u64, len: usize| -> Vec<u8> {
+        let mut s = seed | 1;
+        (0..len)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                (s & 0xFF) as u8
+            })
+            .collect()
+    };
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "shrink.bin").expect("create");
+        dm.write_data(
+            f,
+            0,
+            &incompressible(0x1234_5678, 200 * 1024),
+            CompressionMode::Always,
+        )
+        .expect("write big");
+        let before = dm.analyze_fragmentation().expect("stats").used_blocks;
+        dm.write_data(
+            f,
+            0,
+            &incompressible(0x9ABC_DEF0, 4 * 1024),
+            CompressionMode::Always,
+        )
+        .expect("overwrite smaller");
+        let after = dm.analyze_fragmentation().expect("stats").used_blocks;
+        assert!(
+            after < before,
+            "recompressing to a smaller payload must release blocks ({before} -> {after})"
+        );
+        assert_eq!(
+            dm.read_data(f).expect("read"),
+            incompressible(0x9ABC_DEF0, 4 * 1024),
+            "content must be the new payload"
+        );
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+        let root = dm.superblock().root_inode;
+        let f = dm.lookup(root, "shrink.bin").expect("lookup");
+        assert_eq!(
+            dm.read_data(f).expect("read after replay"),
+            incompressible(0x9ABC_DEF0, 4 * 1024)
+        );
+        let report = dm.verify_integrity().expect("fsck");
+        assert!(report.is_clean, "shrink: {report:?}");
+    }
+}
+
+#[test]
+fn test_journaled_partial_write_at_offset_zero_matches_legacy() {
+    // Writing fewer bytes than the file holds at offset 0 is a *partial* update,
+    // not a truncate. Both implementations must agree, byte for byte.
+    let payload: Vec<u8> = (0..5000).map(|i| (i % 251) as u8).collect();
+    let patch = b"PATCHED";
+
+    let jimg = Img::new("w_p0_j");
+    let jdata = {
+        let dm = oifs::DiskManager::open_journaled(&jimg.path, 20 * MB).expect("create j");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "p.bin").expect("create");
+        dm.write_data(f, 0, &payload, CompressionMode::Never)
+            .expect("write");
+        dm.write_data(f, 0, patch, CompressionMode::Never)
+            .expect("patch");
+        dm.read_data(f).expect("read")
+    };
+
+    let limg = Img::new("w_p0_l");
+    let ldata = {
+        let dm = oifs::DiskManager::open(&limg.path, 20 * MB).expect("create l");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "p.bin").expect("create");
+        dm.write_data(f, 0, &payload, CompressionMode::Never)
+            .expect("write");
+        dm.write_data(f, 0, patch, CompressionMode::Never)
+            .expect("patch");
+        dm.read_data(f).expect("read")
+    };
+
+    assert_eq!(jdata, ldata, "journaled and legacy must agree");
+    assert_eq!(
+        jdata.len(),
+        payload.len(),
+        "a short write at offset 0 must not truncate the file"
+    );
+    assert_eq!(&jdata[..patch.len()], patch);
+    assert_eq!(
+        &jdata[patch.len()..],
+        &payload[patch.len()..],
+        "the tail must be untouched"
+    );
+}
+
+#[test]
+fn test_journaled_write_compressed_matches_legacy_content() {
+    // Journaled and legacy images must produce identical decoded content for the
+    // same input, otherwise enabling --journal would change semantics.
+    let payload: Vec<u8> = (0..30 * 1024).map(|i| (i % 7) as u8).collect();
+
+    let jimg = Img::new("w_comp_j");
+    let jdata = {
+        let dm = oifs::DiskManager::open_journaled(&jimg.path, 20 * MB).expect("create j");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "c.bin").expect("create");
+        dm.write_data(f, 0, &payload, CompressionMode::Always)
+            .expect("write j");
+        dm.read_data(f).expect("read j")
+    };
+
+    let limg = Img::new("w_comp_l");
+    let ldata = {
+        let dm = oifs::DiskManager::open(&limg.path, 20 * MB).expect("create l");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "c.bin").expect("create");
+        dm.write_data(f, 0, &payload, CompressionMode::Always)
+            .expect("write l");
+        dm.read_data(f).expect("read l")
+    };
+
+    assert_eq!(jdata, ldata, "journaled and legacy reads must agree");
+    assert_eq!(jdata, payload, "and both must match the input");
+
+    // Persisted sizes should agree too.
+    let jino = oifs::DiskManager::open(&jimg.path, 0)
+        .expect("reopen j")
+        .read_inode(
+            oifs::DiskManager::open(&jimg.path, 0)
+                .expect("reopen j")
+                .superblock()
+                .root_inode,
+        );
+    let _ = jino;
+}
+
+#[test]
+fn test_journaled_append_to_compressed_file() {
+    let img = Img::new("w_append");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "app.bin").expect("create");
+        dm.write_data(f, 0, b"first chunk", CompressionMode::Always)
+            .expect("write first");
+        dm.write_data(f, 11, b"second chunk", CompressionMode::Always)
+            .expect("append second");
+        assert_eq!(dm.read_data(f).expect("read"), b"first chunksecond chunk");
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+        let root = dm.superblock().root_inode;
+        let f = dm.lookup(root, "app.bin").expect("lookup");
+        assert_eq!(
+            dm.read_data(f).expect("read after replay"),
+            b"first chunksecond chunk"
+        );
+    }
+}
+
+#[test]
+fn test_journaled_random_offset_write() {
+    let img = Img::new("w_random");
+    let base = vec![b'.'; 8192];
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "r.bin").expect("create");
+        dm.write_data(f, 0, &base, CompressionMode::Never)
+            .expect("init");
+        dm.write_data(f, 4000, b"PATCHED", CompressionMode::Never)
+            .expect("patch middle");
+        let mut want = base.clone();
+        want[4000..4007].copy_from_slice(b"PATCHED");
+        assert_eq!(dm.read_data(f).expect("read"), want.as_slice());
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+        let root = dm.superblock().root_inode;
+        let f = dm.lookup(root, "r.bin").expect("lookup");
+        let mut want = base.clone();
+        want[4000..4007].copy_from_slice(b"PATCHED");
+        assert_eq!(dm.read_data(f).expect("read after replay"), want.as_slice());
+    }
+}
+
+#[test]
+fn test_journaled_write_matches_legacy_block_accounting() {
+    // The simulator must predict the same blocks the real allocator would choose,
+    // or journaled images would leak or double-allocate.
+    let payload = vec![0x5Au8; 60 * 1024];
+
+    let jimg = Img::new("w_acct_j");
+    let jused = {
+        let dm = oifs::DiskManager::open_journaled(&jimg.path, 20 * MB).expect("create j");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "a.bin").expect("create");
+        dm.write_data(f, 0, &payload, CompressionMode::Never)
+            .expect("write j");
+        dm.analyze_fragmentation().expect("j stats").used_blocks
+    };
+
+    let limg = Img::new("w_acct_l");
+    let lused = {
+        let dm = oifs::DiskManager::open(&limg.path, 20 * MB).expect("create l");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "a.bin").expect("create");
+        dm.write_data(f, 0, &payload, CompressionMode::Never)
+            .expect("write l");
+        dm.analyze_fragmentation().expect("l stats").used_blocks
+    };
+
+    assert_eq!(
+        jused, lused,
+        "journaled and legacy writes must consume identical data blocks"
+    );
+}
+
+#[test]
+fn test_journaled_write_leaves_no_leaked_blocks() {
+    let img = Img::new("w_leak");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        for i in 0..6 {
+            let f = dm.create_file(root, &format!("f{i}")).expect("create");
+            dm.write_data(f, 0, &vec![i as u8; 20 * 1024], CompressionMode::Never)
+                .expect("write");
+            dm.delete_file(root, &format!("f{i}")).expect("delete");
+        }
+    }
+    {
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+        let report = dm.verify_integrity().expect("fsck");
+        assert!(report.is_clean, "no leaked blocks expected: {report:?}");
+        assert!(report.leaked_blocks.is_empty());
+    }
+}

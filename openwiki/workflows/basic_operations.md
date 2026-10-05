@@ -3,13 +3,13 @@ type: workflow
 title: Basic File Operations Workflow
 description: End-to-end guide for creating images, importing files, directory operations, and common filesystem tasks in OIFS.
 tags: [filesystem, cli, tutorial, basic-operations]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
 generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-05T16:55:45.523Z
 ---
 # Basic File Operations Workflow
 

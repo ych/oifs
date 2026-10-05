@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b13f97467b8e2a03b74d0af1ba741ad02aa4ea00cb1924a9e015bedbe5061cd2",
+  "pageVersion": "sha256:7cefac705c5da7f5cd2c49455d7acc47ca465ad7aa54fa0cb144b38157fcea21",
   "claims": [
     {
       "id": "claim_e845d187861a403f8d664437f6a7bf03",
       "statement": "SuperBlock defines the root on-disk metadata header at block 0, validating filesystem identity with magic number 0x4F494653 ('OIFS').",
       "evidence": [
         {
-          "resource": "repo://src/superblock.rs#L21-L56",
-          "version": "repo-lines-v1:sha256:e299be29c4bf0bb7c1dbe882bdb0e12e445efc946713fef8b253661acb40ccc4:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlYjNhN2E2Y2MzODZhMGM4NzNjOGIyYWI4ZjliMGEyNDE2MDVjZDU3NmNiZGI0MGEzMmZhM2YyOWNhZjU0MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkOTgwNTA5Y2ZjMjE2N2NmMDI3YWIyYjBiZDNmZGE1ZmM3ZDZjNjRiZmQxZTQ5MTA5M2ZlNmU2NWQ0ZWY5ZDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEwMWI0MmYxODk2ZGY1MWUzYTY5Yzc2MzZmYTZiZThmYWFhOGM1NzgxNWYyY2E5MDI2ZWNjMTc1NThlZjk1OGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjZGQ5MWI3ZjQ0MmQzZjVjYmU4MjI0NmU1MjY2NDBhYTBiMjFhMzg1NWEwZmM3YjczOWRiYmRlYmRmZGRiMzMifQ"
+          "resource": "repo://src/superblock.rs#L21-L128",
+          "version": "repo-lines-v1:sha256:c78da153000ff267da5b65bd42e5d65ba49771a5669f3fb62c67a2127bdca865:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2ZWIzYTdhNmNjMzg2YTBjODczYzhiMmFiOGY5YjBhMjQxNjA1Y2Q1NzZjYmRiNDBhMzJmYTNmMjljYWY1NDJiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ZDk4MDUwOWNmYzIxNjdjZjAyN2FiMmIwYmQzZmRhNWZjN2Q2YzY0YmZkMWU0OTEwOTNmZTZlNjVkNGVmOWQwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhMDFiNDJmMTg5NmRmNTFlM2E2OWM3NjM2ZmE2YmU4ZmFhYThjNTc4MTVmMmNhOTAyNmVjYzE3NTU4ZWY5NThmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3Y2RkOTFiN2Y0NDJkM2Y1Y2JlODIyNDZlNTI2NjQwYWEwYjIxYTM4NTVhMGZjN2I3MzlkYmJkZWJkZmRkYjMzIn0"
         }
       ]
     },
@@ -17,8 +17,12 @@
       "statement": "SuperBlock::new enforces a minimum of 5 blocks, allocates fixed blocks 1 and 2 for the inode and data bitmaps, and provisions a standard inode table sized for a 1024-block inode region.",
       "evidence": [
         {
-          "resource": "repo://src/superblock.rs#L68-L110",
-          "version": "repo-lines-v1:sha256:2f2d754b65e9baa1d9091da3965d2b5a5dd736f57e70b4730fede68c389ff21a:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1NjhmMTVjYTA5NDVjYjU0YWMwMDI4MWJmNzFkOGIzMmMyMDVhODUyZTJkNzE0MGFlN2I1YmU1ZjlkOWM3OTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkZGIyNmVjMzBhMmY1ZDE0YWZhNDdmODhlOWM4YzQ4YWQ1OTZlMzA3NmYzMWRhZjczNTgwNTYxNzgyM2VlY2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwZGNlZWZjZjQxMGUyNGJjZmNmZTY5MDQ5YzMxYjZhODAxM2ZhOTNjZGJkM2ZhODMzYmViY2UwZjM0ZTI5YjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI2NzIxMTgyMzczNDg0ZDNlZGMzMDlmZjhkYTEzYThmOWM2OGU2YTE4ZjFlMzkyNDUyZjdjOTFhZTUxY2FjNDMifQ"
+          "resource": "repo://src/superblock.rs#L140-L141",
+          "version": "repo-lines-v1:sha256:2b0983f1d7435efc5f09ee5e1c7b2a3ad74bd605ec3657f108ba80d1ef0d6983:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTU2OGYxNWNhMDk0NWNiNTRhYzAwMjgxYmY3MWQ4YjMyYzIwNWE4NTJlMmQ3MTQwYWU3YjViZTVmOWQ5Yzc5NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTY3MWI3Y2NhNjNiZmI5OGE1ZjNmNjE5MWY2N2YxMmFiYWQ0NjZkYTYyNTQ3N2M4Njg4YzVlYzgyMGQxMjg2MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDBkY2VlZmNmNDEwZTI0YmNmY2ZlNjkwNDljMzFiNmE4MDEzZmE5M2NkYmQzZmE4MzNiZWJjZTBmMzRlMjliNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTc4YzhjOWVjMDRhNmM0Yzk3YzliMDUxMWEyMTU1YWYyOGEwMGY3OGRhODA0Y2RmODZhNDcxNDlhMjgyMzhlMSJ9"
+        },
+        {
+          "resource": "repo://src/superblock.rs#L152-L204",
+          "version": "repo-lines-v1:sha256:b0cd12eb5ee6339fe26c060a65761cf4ea7dd7e6e0d79216f93920238f4466dc:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxZTA5ZDdmZmRiMDc5ZDcyMTRlYTQwODI0ZjA2MmMxYTJkMjM2MThhMTU2MjFhZGY5OTQ4N2Y4ODY5OGIzM2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5NTkzZTc2ODViZjAwMDRlNmRhZGU4Yjg2MmNiNzkyMzc4MmZkNGUwZTdlYTgwNWFiN2UwMWIxZDdjNDY3Y2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5NzZhMmExMGNlNTNhZTQ1OGQ2MmY4OTlkODVhNjdjNzc5NjM1MDNjNTc4MWYxYzAyNWE4ZTVkZGVmYmQ2MjUifQ"
         }
       ]
     },
@@ -27,7 +31,7 @@
       "statement": "For small filesystem images with fewer than 1028 blocks, SuperBlock dynamically scales down the inode table to preserve backward compatibility while guaranteeing at least one data block.",
       "evidence": [
         {
-          "resource": "repo://src/superblock.rs#L90-L98",
+          "resource": "repo://src/superblock.rs#L177-L185",
           "version": "repo-lines-v1:sha256:0773433298e1910ac0cfbf989598ac7cfee4717191eb56e16aeda63c5c389218:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjM1N2RhMjA1ODg5YmE2ZDdjZmNkNTNhZmYxMTU5MTBmNGJlNDUxNjgxNDI1ZjU5NDlmMDJiMjQxN2IyNWIzZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNWE4ZWZkOGYyNzc4Y2VmM2YyMGMyMDkxNGU2OTY3OTAxZTlkZWE3ODMyOTMyZGFhMzFjZGQ1MTA0MjA5YzFjZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjRmNmY2ZjE4NGJmMGE2OWE0N2JiZjE2NmY5ZmI0MzQyM2I1M2FkZjJjM2QxM2Q5NDU3ZjYyMzlmZTI1ZDY3NSJ9"
         }
       ]
@@ -37,7 +41,7 @@
       "statement": "Kani formal proofs verify SuperBlock layout ordering guarantees superblock(0) < inode_bitmap(1) < data_bitmap(2) < inode_table <= data_block_start and that data never overruns the image.",
       "evidence": [
         {
-          "resource": "repo://src/superblock.rs#L118-L148",
+          "resource": "repo://src/superblock.rs#L225-L255",
           "version": "repo-lines-v1:sha256:a9419f833497fc4cf3f387925c70f1ff190bedee598878807bd5e7ef34654ee8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZTZkMTBjMTFkNmJiM2M4NGY1YzRiMjVmZjcxNTI5ODk4NzA2ZDk1MWEzZWMzMzFmNjdhMDMzZjBlN2E4NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3NjI4Y2FhZDg0OWZjYmE0MDAzNTkwZDhhM2MyYjYwNzg4ZjVmOGUyMzgwZDc1MjY5ZDg1ZmUxNjMyMGVmMDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzMjU4NmExYmQzYWU3YzVjZTU0NjBiMjMxNjk3NTRjY2ZmY2Q4MDgxODQyMmEwYjg1YmQwMzM1NGFhZjA0NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4NTI0NTBjODYxMjQwZTQ0M2ExOTQ2YTMwMGU3OTdmNTMyNmY0ZWE2NjVkN2NhZWE2NWI5YzU5YWFmZTBmNzIifQ"
         }
       ]
@@ -45,6 +49,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-03T08:18:49.684Z"
+    "at": "2026-10-05T16:55:45.523Z"
   }
 }

@@ -11,9 +11,6 @@ sources:
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
 generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T06:56:29.774Z
 ---
 
 ## Responsibility and ownership

@@ -3,9 +3,6 @@ type: concept
 title: Configuration and Features
 description: Build-time features (mpi, compression, encryption), runtime options (durability mode, io backend selection), and environment variables affecting OIFS behavior.
 tags: [configuration, features, environment-variables, cli-options, build-flags]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T09:07:50.878Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -16,6 +13,9 @@ sources:
   - id: openwiki-source-ea9e30b0c99ad48bf309d4ab
     resource: repo://src/io_engine.rs
 generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-05T16:55:45.523Z
 ---
 
 OIFS provides multiple configuration mechanisms to tailor functionality for different use cases, from embedded systems to high-performance clusters. Configuration occurs at build time via Cargo features, at runtime via CLI flags and environment variables, and through persistent filesystem properties.

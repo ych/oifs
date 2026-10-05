@@ -267,6 +267,7 @@ fn test_stress_large_file_indirect_block_expansion() {
 /// - T1: [16KB..32KB]
 /// - T2: [32KB..48KB]
 /// - T3: [48KB..64KB]
+///
 /// Monitors under TSan that disjoint block assignments to the same inode do not cause data races.
 #[test]
 fn test_stress_concurrent_disjoint_slices_same_file() {

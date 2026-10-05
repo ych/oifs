@@ -783,6 +783,11 @@ impl IpcClient {
 
     /// Sends an IPC request to the Master and waits for response
     pub fn send(&self, req: IpcRequest) -> Result<IpcResponseData, io::Error> {
+        // Deliberately NOT `lock_unpoisoned`: a panic between `write_framed` and
+        // `read_framed` leaves a partially written frame in the stream, so the peer
+        // is now out of step. Recovering the lock would let the next caller write
+        // into a desynchronized stream and silently corrupt the protocol, which is
+        // far worse than propagating the panic.
         let mut guard = self.stream.lock().unwrap();
         write_framed(&mut *guard, &req)?;
         let resp: IpcResponse = read_framed(&mut *guard)?;

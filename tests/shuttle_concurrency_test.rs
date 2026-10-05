@@ -169,6 +169,7 @@ fn test_shuttle_concurrent_create_delete() {
 /// - T1: [0..1024] = 0x11
 /// - T2: [512..1536] = 0x22
 /// - T3: [1024..2048] = 0x33
+///
 /// Checks that non-overlapping portions are pure, overlapping portions are either value,
 /// and no byte is uninitialized or torn.
 #[test]
@@ -288,8 +289,8 @@ fn test_shuttle_concurrent_compression_and_decompression_race() {
                 let data = dm_reader.read_data(file_id).expect("Read failed");
                 if !data.is_empty() {
                     assert_eq!(data.len(), 16384, "Decompressed length mismatch");
-                    for i in 0..16384 {
-                        assert_eq!(data[i], (i % 16) as u8);
+                    for (i, b) in data.iter().enumerate() {
+                        assert_eq!(*b, (i % 16) as u8);
                     }
                 }
             });

@@ -632,10 +632,10 @@ mod prune_pointer_tests {
         mmap[off..off + 8].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn ops_targeting<'a>(
-        ops: &'a [crate::journal::MetadataOp],
+    fn ops_targeting(
+        ops: &[crate::journal::MetadataOp],
         block: u64,
-    ) -> Vec<&'a crate::journal::MetadataOp> {
+    ) -> Vec<&crate::journal::MetadataOp> {
         ops.iter()
             .filter(|op| matches!(op, crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } if *block_id == block))
             .collect()
@@ -708,7 +708,7 @@ mod prune_pointer_tests {
             .expect("prune");
 
         // The dib entry is zeroed and the whole sib2 block is wiped.
-        assert!(ops_targeting(&ops, DIB).len() >= 1, "dib entry zeroed");
+        assert!(!ops_targeting(&ops, DIB).is_empty(), "dib entry zeroed");
         let sib2_ops = ops_targeting(&ops, SIB2);
         assert_eq!(sib2_ops.len(), 1, "whole second-level block wiped");
         match sib2_ops[0] {
@@ -3913,7 +3913,7 @@ impl DiskManager {
 
     pub fn flush(&self) -> Result<(), DiskManagerError> {
         // 1. Ensure only 1 flush operation performs msync at any given time (prevents redundant writeback storms)
-        let _sync_guard = self.sync_mutex.lock().unwrap();
+        let _sync_guard = crate::lock_unpoisoned(&self.sync_mutex);
 
         // 2. Snapshot the ring head under the shared lock, *before* the flush.
         //
@@ -3976,7 +3976,7 @@ impl DiskManager {
 
     /// Asynchronously flushes dirty pages in background without blocking concurrent readers.
     pub fn flush_async(&self) -> Result<(), DiskManagerError> {
-        let _sync_guard = self.sync_mutex.lock().unwrap();
+        let _sync_guard = crate::lock_unpoisoned(&self.sync_mutex);
         let guard = self.inner.read().unwrap();
         // WAL first, then the rest of the mapping, so a sync point never lets the
         // image reach disk ahead of the log describing it.

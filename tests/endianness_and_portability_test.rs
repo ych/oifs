@@ -6,10 +6,10 @@ use oifs::filters::{
 /// Reference bit-by-bit transposition implementation from original scalar algorithm
 fn reference_bit_transpose(bytes: &[u8; 8]) -> [u8; 8] {
     let mut out = [0u8; 8];
-    for i in 0..8 {
-        for j in 0..8 {
-            let bit = (bytes[i] >> j) & 1;
-            out[j] |= bit << i;
+    for (i, byte) in bytes.iter().enumerate() {
+        for (j, slot) in out.iter_mut().enumerate() {
+            let bit = (byte >> j) & 1;
+            *slot |= bit << i;
         }
     }
     out
@@ -43,8 +43,8 @@ fn test_transpose_8x8_reference_parity_and_involution() {
 
     // 3. Diagonal identity matrix: byte i has bit i set
     let mut diag_bytes = [0u8; 8];
-    for i in 0..8 {
-        diag_bytes[i] = 1 << i;
+    for (i, slot) in diag_bytes.iter_mut().enumerate() {
+        *slot = 1 << i;
     }
     let diag_word = u64::from_le_bytes(diag_bytes);
     assert_eq!(
@@ -55,8 +55,8 @@ fn test_transpose_8x8_reference_parity_and_involution() {
 
     // 4. Anti-diagonal matrix: byte i has bit (7-i) set
     let mut anti_diag = [0u8; 8];
-    for i in 0..8 {
-        anti_diag[i] = 1 << (7 - i);
+    for (i, slot) in anti_diag.iter_mut().enumerate() {
+        *slot = 1 << (7 - i);
     }
     let anti_word = u64::from_le_bytes(anti_diag);
     let anti_transposed = transpose_8x8_u64(anti_word).to_le_bytes();
@@ -127,8 +127,10 @@ fn test_delta_filter_endian_invariance() {
     delta_encode_inplace(&mut le_u16, 2);
     delta_decode_inplace(&mut le_u16, 2);
     let roundtrip_u16: Vec<u16> = le_u16
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     assert_eq!(roundtrip_u16, vals_u16);
 
@@ -138,8 +140,10 @@ fn test_delta_filter_endian_invariance() {
     delta_encode_inplace(&mut le_u32, 4);
     delta_decode_inplace(&mut le_u32, 4);
     let roundtrip_u32: Vec<u32> = le_u32
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect();
     assert_eq!(roundtrip_u32, vals_u32);
 
@@ -149,8 +153,10 @@ fn test_delta_filter_endian_invariance() {
     delta_encode_inplace(&mut le_u64, 8);
     delta_decode_inplace(&mut le_u64, 8);
     let roundtrip_u64: Vec<u64> = le_u64
-        .chunks_exact(8)
-        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| u64::from_le_bytes(*c))
         .collect();
     assert_eq!(roundtrip_u64, vals_u64);
 }

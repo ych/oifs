@@ -28,12 +28,11 @@ fn old_find_first_free(data: &[u8]) -> Option<usize> {
 }
 
 fn new_find_first_free(data: &[u8]) -> Option<usize> {
-    let chunks = data.chunks_exact(8);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = data.as_chunks::<8>();
     let chunk_count = chunks.len();
 
-    for (chunk_idx, chunk) in chunks.enumerate() {
-        let word = u64::from_le_bytes(chunk.try_into().unwrap());
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        let word = u64::from_le_bytes(*chunk);
         if word != u64::MAX {
             let bit = (!word).trailing_zeros() as usize;
             return Some(chunk_idx * 64 + bit);
@@ -411,14 +410,16 @@ fn bench_comprehensive_performance_proof() {
     let start = Instant::now();
     for _ in 0..alloc_iters {
         let mut buf = vec![0u8; 4096];
-        black_box(old_sequential_allocate(&mut buf, alloc_count));
+        old_sequential_allocate(&mut buf, alloc_count);
+        black_box(());
     }
     let old_time = start.elapsed();
 
     let start = Instant::now();
     for _ in 0..alloc_iters {
         let mut buf = vec![0u8; 4096];
-        black_box(new_sequential_allocate(&mut buf, alloc_count));
+        new_sequential_allocate(&mut buf, alloc_count);
+        black_box(());
     }
     let new_time = start.elapsed();
 

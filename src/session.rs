@@ -201,7 +201,7 @@ impl OifsSession {
     ) -> Result<Self, SessionError> {
         let canon_key = canonicalize_path(path.as_ref());
         let registry = session_registry();
-        let mut guard = registry.lock().unwrap();
+        let mut guard = crate::lock_unpoisoned(registry);
 
         if let Some(session) = guard.get(&canon_key) {
             return Ok(session.clone());
@@ -217,14 +217,14 @@ impl OifsSession {
     pub fn unregister_from_registry<P: AsRef<Path>>(path: P) -> Option<OifsSession> {
         let canon_key = canonicalize_path(path.as_ref());
         let registry = session_registry();
-        let mut guard = registry.lock().unwrap();
+        let mut guard = crate::lock_unpoisoned(registry);
         guard.remove(&canon_key)
     }
 
     /// Clears all cached sessions from the process-wide registry.
     pub fn clear_registry() {
         let registry = session_registry();
-        let mut guard = registry.lock().unwrap();
+        let mut guard = crate::lock_unpoisoned(registry);
         guard.clear();
     }
 
@@ -473,7 +473,7 @@ impl OifsSession {
     pub fn take_event_receiver(&self) -> Option<Receiver<SessionEvent>> {
         match self {
             OifsSession::Direct { event_rx, .. } => {
-                let mut guard = event_rx.lock().unwrap();
+                let mut guard = crate::lock_unpoisoned(event_rx);
                 guard.take()
             }
             OifsSession::Remote { .. } => None,
@@ -495,7 +495,7 @@ impl OifsSession {
             } => {
                 // 1. If we already fell back to a local DiskManager:
                 {
-                    let guard = dm_fallback.lock().unwrap();
+                    let guard = crate::lock_unpoisoned(dm_fallback);
                     if let Some(ref local_dm) = *guard {
                         return IpcServer::handle_request(local_dm, req)
                             .map_err(SessionError::DiskManager);
@@ -525,7 +525,7 @@ impl OifsSession {
 
                             match retry_session {
                                 OifsSession::Direct { dm, .. } => {
-                                    let mut guard = dm_fallback.lock().unwrap();
+                                    let mut guard = crate::lock_unpoisoned(dm_fallback);
                                     *guard = Some(dm.clone());
                                     return IpcServer::handle_request(&dm, req)
                                         .map_err(SessionError::DiskManager);

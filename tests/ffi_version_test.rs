@@ -181,7 +181,9 @@ int main(void) {
 
     let compile_status = Command::new("clang")
         .args([
-            "-Iinclude",
+            // Split so it is not mistaken for a single "-Iinclude" token.
+            "-I",
+            "include",
             c_file.to_str().unwrap(),
             dylib_path,
             "-o",
@@ -189,20 +191,20 @@ int main(void) {
         ])
         .status();
 
-    if let Ok(status) = compile_status {
-        if status.success() {
-            let run_output = Command::new(&bin_file)
-                .output()
-                .expect("execute compiled C test binary");
-            assert!(
-                run_output.status.success(),
-                "C test binary failed: {}",
-                String::from_utf8_lossy(&run_output.stderr)
-            );
-            println!(
-                "C Test Output:\n{}",
-                String::from_utf8_lossy(&run_output.stdout)
-            );
-        }
+    if let Ok(status) = compile_status
+        && status.success()
+    {
+        let run_output = Command::new(&bin_file)
+            .output()
+            .expect("execute compiled C test binary");
+        assert!(
+            run_output.status.success(),
+            "C test binary failed: {}",
+            String::from_utf8_lossy(&run_output.stderr)
+        );
+        println!(
+            "C Test Output:\n{}",
+            String::from_utf8_lossy(&run_output.stdout)
+        );
     }
 }

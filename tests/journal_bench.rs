@@ -121,8 +121,8 @@ fn report(a: &Row, b: &Row) {
 fn bench_journal_vs_legacy() {
     println!("\n=== metadata journal: journaled vs legacy (Lazy mode, default) ===");
     println!(
-        "  {:>16} | {:>9} | {:>9} | {}",
-        "case", "create/s", "write/s", "write"
+        "  {:>16} | {:>9} | {:>9} | write",
+        "case", "create/s", "write/s"
     );
     for (name, n, size) in [
         ("small", 500usize, 512usize),

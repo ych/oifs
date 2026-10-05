@@ -1090,16 +1090,6 @@ fn test_journaled_write_leaves_no_leaked_blocks() {
 // Gap 1: encrypted journaled files
 // ---------------------------------------------------------------------------
 
-fn seeded(img: &Img, password: &str, files: &[(&str, &[u8])]) {
-    let dm = oifs::DiskManager::create_encrypted(&img.path, 20 * MB, password).expect("create enc");
-    let root = dm.superblock().root_inode;
-    for (name, body) in files {
-        let f = dm.create_file(root, name).expect("create");
-        dm.write_data(f, 0, body, CompressionMode::Never)
-            .expect("write");
-    }
-}
-
 #[test]
 fn test_journaled_encrypted_roundtrip() {
     let img = Img::new("enc_round");

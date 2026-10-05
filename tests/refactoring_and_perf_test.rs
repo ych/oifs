@@ -150,7 +150,7 @@ fn test_trunc_precision_inplace_logic() {
     assert_eq!(bits & mask, 0, "Lower mantissa bits must be zeroed");
 
     // f64 test
-    let f64_val = 3.141592653589793f64;
+    let f64_val = std::f64::consts::PI;
     let mut buf64 = f64_val.to_le_bytes().to_vec();
     trunc_precision_encode_inplace(&mut buf64, 8, 20);
     let truncated64 = f64::from_le_bytes(buf64[..8].try_into().unwrap());

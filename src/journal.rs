@@ -1365,7 +1365,7 @@ mod tests {
         )
         .expect("set inode bit");
         let inode_bm = sb.inode_bitmap_block as usize * bs as usize;
-        assert_eq!(image[inode_bm + 0] & (1 << 5), 1 << 5);
+        assert_eq!(image[inode_bm] & (1 << 5), 1 << 5);
 
         let blk = sb.data_block_start + 9;
         apply_op_in_place(

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a5140eba147ef6cfcf57ab39f4eed5382b9ae952f797f62e8400bfabb9738a99",
+  "pageVersion": "sha256:bd37d2ffc328ab44ac5486669c1cf2e486d80d911d6c42bbd330bb0c4756bb97",
   "claims": [
     {
       "id": "claim_8eccbc7a648e4c478605801185ff08b1",
@@ -17,7 +17,7 @@
       "statement": "Cargo.toml configures crate-type cdylib to produce an unmangled C dynamic shared library (liboifs.so/dylib) for the FFI, alongside rlib for library use.",
       "evidence": [
         {
-          "resource": "repo://Cargo.toml#L10-L12",
+          "resource": "repo://Cargo.toml#L12-L14",
           "version": "repo-lines-v1:sha256:159af002c7ce0873a2e01c7f9cf087ba2953252ff114b3e6f0bf1f11af676e28:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg0MzVlZjU5NGYzMzcwNzMwN2MxZmU1OWIwMTdmMjExZTllZThhMTVjODJkZDVlYWIxOWI3NjdhNmY3NGJlOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjg1MTI2Nzc4YTgwODM0OTRmMWRmZDJjYjI5ZDc4NDM5MTQwOTViNjUyZjcwZGIxNDBjNDUxM2I0ZmQzNzFiMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQ3NmIxM2EwMjBmNjAyNDhhN2VjODFhOTNlZDA1NDJiZTgyMzQyNmQyYzAyNmFmYjg4YjY0M2RjMDEwYjMyYiJ9"
         }
       ]
@@ -27,15 +27,15 @@
       "statement": "The Model Context Protocol (MCP) server dependencies and the oifs_mcp binary are gated behind the optional mcp feature flag, keeping the core CLI buildable without async runtime deps.",
       "evidence": [
         {
-          "resource": "repo://Cargo.toml#L35-L38",
+          "resource": "repo://Cargo.toml#L37-L40",
           "version": "repo-lines-v1:sha256:8b8b0771246deb484f9fa15eff0c482582a2733481d51f92af2d0688b996568a:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmM0N2MwNmMwOWNjODYyZDUxZWJhMDM4ZDJkNzMwYjkzM2QxYzAxNDgzNzcxMmNjMzIyZDdiY2UyNDE1MjNhMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDhhMTBjOGZlNTI4NGY2Zjc3NTEzZjUzOWI3ZDE5YmZjNjFmZjRiZjMxODIzNjI4YzlkYzZmNGE2MWZmNjRmNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2JkYWVhMDA5Zjc4MDE4ODAyMDVlNzVlOGQ4YjBkM2FlMmZkNWQ0ZTI5NDU0MmUyZjBkNzNmNWMzNjJiMThhMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTQxYzhjNjU3NTExZWY3YTQwOGE5OWE0MWEzZDNhMTY0ODQ3N2UwYjUzYTUzZmMzYTc2MGRhZGU1NjEwY2MyYSJ9"
         },
         {
-          "resource": "repo://Cargo.toml#L49-L49",
+          "resource": "repo://Cargo.toml#L51-L51",
           "version": "repo-lines-v1:sha256:b6f6c1c73e4685b6f55792ae5392553ff79d3cc067b0b74e068698f6b2c76b82:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjZmNmMxYzczZTQ2ODViNmY1NTc5MmFlNTM5MjU1M2ZmNzlkM2NjMDY3YjBiNzRlMDY4Njk4ZjZiMmM3NmI4MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjZmNmMxYzczZTQ2ODViNmY1NTc5MmFlNTM5MjU1M2ZmNzlkM2NjMDY3YjBiNzRlMDY4Njk4ZjZiMmM3NmI4MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODY0ZjY4YWY1MmRjZTY0ZDE3ZWUwNmYxMzk2YzAyZTUzOTNlNzI2MWIyZTU3MzM0MWM5NTI4MDI0YmJlZTVhYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmU5YjY1M2ZjZWY1ZmI1N2E3MjIxNDc3MDcwYWJmNjdkODgzNDIyYmM0NWM1YmRjZTc2ZDQ0YTVhZDZiODc4NiJ9"
         },
         {
-          "resource": "repo://Cargo.toml#L56-L59",
+          "resource": "repo://Cargo.toml#L58-L61",
           "version": "repo-lines-v1:sha256:fc1b6d294ce7f5d4c2634789855cf7a27eb23f72dcd8abaa507c44b7104e2ecb:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWZkNTQzNTU4ZGI5MTJjN2MwM2JjNDZiM2M2Y2Q3YTUzNzUzNzg4NjkyYzhiYmMyMGFiN2MxOGEzODM3ZjIwZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzU5YTc1YjE2M2U3ZTM2MTUwM2U5YmU0NThkNjg3ODBjNDdhNTQ5ZDgxNjBhOGJhMDg2YTU3YTI1OGEzZWNmMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjZlMDlhZGFiZTRhYmE1NTE0OWZiNTc2MTRmZDNiMTE3MWRhMWQ0MWJkNWM5Yzk2ODVlZDc1ODU1NDk2OWFhMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWE0ODRjOWFiMTU5N2UyYTYyN2Y1MWZjZmM4NjlhNDhjZjBlMTM3ZWY3YzE4YzdhZTFhZmM3NTdjZjc2YmI1ZiJ9"
         }
       ]
@@ -45,14 +45,14 @@
       "statement": "OIFS implements an inode-based filesystem with large file support up to 513GB, authenticated encryption, online defragmentation, and multiple access frontends (CLI, FFI, MCP).",
       "evidence": [
         {
-          "resource": "repo://README.md#L5-L54",
-          "version": "repo-lines-v1:sha256:dcde1e09378b20aad26ab07db4b808dee9f66d291fe3a31fd535c460940fc10a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiYzE3NTZlMzZkNmZhMTFmODE3MmUzMWM5NTgxM2UxMTVjYzFjMDA5ZTAyYmFkODg4YzhiOWZlNDRkZTkxOTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MmQ3MTExMDNkNTBhNDM3ODMwYzZmYmNkMDRmYjRiYWI0OWEwZjgyZjZkMjZkMWM3OTFjNmU4NDg4ZGQwOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjMzM1MjU5ZDY5NzliNGVmZWIzZjJmYjIxNTZmYzdiMzJjNDQyYmEzZTVhNTMwODA1YzMwY2JjODI4M2YyNDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY1ZTk4Y2Y5ZWQ5MGNlZjBlMTJiOTEzOGM0MWM5MTUyNGRhODMwYzkyZjc0Zjg4NmQ1MGVmZjRjYjMyNWMwOGMifQ"
+          "resource": "repo://README.md#L8-L15",
+          "version": "repo-lines-v1:sha256:2c7099a465beddb16e4503728229c1097e043357bf28716ccea7087118cc7245:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWJjMTc1NmUzNmQ2ZmExMWY4MTcyZTMxYzk1ODEzZTExNWNjMWMwMDllMDJiYWQ4ODhjOGI5ZmU0NGRlOTE5OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTJmOTc1NzYwYWI4YmIzODg0YWM4Yjg3Y2Q0ZmM1NDU0ODBmZDlhOTE3MTc4MzBjOTlkMWExODc3OTVhYjgwNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzU2NzcyMDE5N2M2YTQ4MjZiNjYwYjMwOWM2NGVkODY5YTM5OGNkNmJmOWU2ZGUzZmM1ZmJjNDNlODg3ODBkMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTZiMGE2ZTExOTk3NmNhNmRjYjNiYjQxMjY4MmU4YTAwMGQ3MzU3YzBjMzU1ZmFhYWViMzNkNjQwZGNkMjI1NCJ9"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-03T11:29:24.571Z"
+    "at": "2026-10-04T13:48:44.224Z"
   }
 }

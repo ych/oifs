@@ -3,9 +3,6 @@ type: architecture
 title: OIFS Architecture Overview
 description: High-level architectural overview of OIFS (O's Inode File System), detailing its single-file on-disk image model, module layout, multi-target crate compilation, and subsystem interactions across CLI, C FFI, and MCP entry points.
 tags: [architecture, overview, modules, crate-type, mcp-feature, subsystems, block-size, io_engine]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-03T11:29:24.571Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -13,108 +10,118 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-ed8bf05e307c6278442542c2
     resource: repo://src/lib.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-04T13:48:44.224Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-04T13:48:44.224Z
 ---
 
 # OIFS Architecture Overview
 
-<!-- openwiki: broken internal link [src/lib.rs] file "src/lib.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-**OIFS (O's Inode File System)** is a high-performance, single-file containerized Unix-like inode filesystem implemented in Rust ([`src/lib.rs`](src/lib.rs)).
+OIFS (O's Inode File System) is a Rust-based inode filesystem that packages an entire hierarchical filesystem into a single portable `.img` container file. It combines traditional Unix-like semantics with advanced features for large-scale data management, security, and extensibility.
 
-It packages an entire structured filesystem into a standalone `.img` container file, combining traditional filesystem durability with modern data processing and AI capabilities:
-- **Single-Image Container Model**: Files, directories, inodes, and bitmaps are stored contiguously in a single host file mapped directly into memory via `memmap2`.
+## Core Design Principles
+
+- **Single-Image Container**: All filesystem metadata (superblock, inodes, directories, bitmaps) and file data are stored contiguously in one host file, memory-mapped for efficient access.
+- **Block-Oriented Layout**: Fixed 4KB block size with extent-based indexing (direct, single/double/triple indirect) supports files up to 513GB.
+- **Pluggable I/O Engine**: Decouples block access from memory mapping via configurable backends (`mmap`, `pread`, Linux `io_uring`).
+- **Multi-Process Concurrency**: Dynamic Master-Proxy architecture coordinates shared access via IPC (Unix domain sockets or TCP).
+- **Layered Security**: Transparent at-rest encryption (XChaCha20-Poly1305 AEAD) with Argon2id key derivation and deterministic filename privacy.
+- **Consumer Surfaces**: Unified access through CLI, C FFI library, and MCP server for AI agent integration.
+
+## Module Layout
+
+The core library (`src/lib.rs`) organizes functionality into 12 specialized modules:
+
+```mermaid
+graph TD
+    subgraph ConsumerSurfaces
+        CLI[CLI] -->|uses| Core
+        FFI[C FFI] -->|uses| Core
+        MCP[MCP Server] -->|uses| Core
+    end
+
+    subgraph Core
+        IPC[Multi-Process IPC] --> Session[Session Registry]
+        Session --> DiskManager[DiskManager]
+    end
+
+    subgraph Storage
+        DiskManager --> SB[Superblock]
+        DiskManager --> Alloc[Block Allocator]
+        DiskManager --> InodeDir[Inode & Directory]
+        DiskManager --> Filters[Data Filters]
+        DiskManager --> Encrypt[Encryption]
+    end
+
+    subgraph IOEngine
+        IO[Pluggable I/O Engine]
+    end
+
+    DiskManager --> IO
+    IO --> |reads/writes| Storage
+```
+
+* **allocator** (`src/allocator.rs`): Sequential hint-based block and inode allocator.
+* **bitmap** (`src/bitmap.rs`): Hardware-accelerated free-block scanning via `tzcnt`.
+* **directory** (`src/directory.rs`): Variable-length entries with memory-indexed lookups (`DirIndex`).
+* **disk** (`src/disk.rs`): Central `DiskManager` handling mmap lifecycle, concurrency (`RwLock`), durability, and defragmentation.
+* **encryption** (`src/encryption.rs`): XChaCha20-Poly1305 AEAD, Argon2id KDF, SIV filename encryption.
+* **ffi** (`src/ffi.rs`): C ABI surface with `OIFSHandle`, backend selection, and thread-isolated errors.
+* **filters** (`src/filters.rs`): Pre-compression transformations (Delta, ByteShuffle, BitShuffle, TruncPrecision) and pipeline optimization.
+* **inode** (`src/inode.rs`): 256-byte inode structure, block pointers, and formal verification via Kani.
+* **io_engine** (`src/io_engine.rs`): Pluggle I/O backends with ExtentList coalescing and kernel gating.
+* **ipc** (`src/ipc.rs`): Master-Proxy protocol, UDS/TCP rendezvous, length-prefixed framing.
+* **session** (`src/session.rs`): Process-wide session registry with reference counting and failover.
+* **superblock** (`src/superblock.rs`): On-disk superblock magic (`OIFS`), geometry, and compatibility.
+
+## Consumer Surfaces
+
+OIFS exposes three distinct access paths to the same underlying library:
+
+1. **Command Line Interface** (`src/bin/oifs.rs`): Full-featured CLI for filesystem creation, manipulation, inspection, and maintenance.
+2. **C Foreign Function Interface** (`src/ffi.rs`): Stable C API (`liboifs.so/dylib`) enabling integration with C/C++ applications.
+3. **Model Context Protocol Server** (`src/bin/oifs_mcp.rs`): JSON-RPC server allowing AI agents and IDEs to inspect and modify OIFS images via standardized tools.
+
+The MCP server and its async dependencies (`tokio`, `rmcp`) are gated behind the optional `mcp` feature flag, permitting lightweight builds without async runtimes.
+
+## Key Features
+
+* **Inode-Based Architecture**: Traditional Unix metadata model supporting files, directories, hard links, and timestamps.
 <!-- openwiki: broken internal link [src/lib.rs#L20] file "src/lib.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- **Large Dataset Scalability**: Multi-tier block indexing (direct, single indirect, double indirect, and triple indirect) scales individual files up to **513 GB** while retaining 4KB block granularity ([`BLOCK_SIZE = 4096`](src/lib.rs#L20)).
-- **Pluggable Async I/O Engine**: Decouples data block reading from memory-mapped page faults via `Mmap`, `Pread`, and Linux `io_uring` backends (P3.2).
-- **Extreme Compression Ratios**: Combines Blosc2-style pre-compression data filters (Delta, ByteShuffle, BitShuffle) with Zstandard to collapse Shannon entropy on numerical and tabular data before compression.
-- **At-Rest Authenticated Cryptography**: End-to-end encryption with XChaCha20-Poly1305 AEAD, Argon2id password key derivation, and deterministic SIV filename encryption.
-- **Multi-Process Concurrency**: Dynamic Master-Proxy IPC architecture that coordinates concurrent processes sharing a single image over local Unix domain sockets or network TCP.
-- **Three Unified Consumer Surfaces**: The engine is exposed via a full-featured CLI binary, a standard C dynamic library (`liboifs.so`), and a Model Context Protocol (MCP) server for AI agents.
+* **Large File Support**: 513GB maximum file size via triple-indirect block indexing ([`BLOCK_SIZE = 4096`](src/lib.rs#L20)).
+* **Authenticated Encryption**: XChaCha20-Poly1305 AEAD with per-file nonces, Argon2id key derivation, and synthetic IV filename privacy.
+* **Online Defragmentation**: Atomic 3-step replacement preserving metadata, compression, and encryption during live operation.
+* **Pluggable I/O Engine**: Runtime-selectable backends (`mmap` for simplicity, `pread` for compatibility, `io_uring` for high-performance async I/O on Linux).
+* **Extreme Compression**: Blosc2-style pre-processing filters (Delta, ByteShuffle, BitShuffle, TruncPrecision) combined with Zstandard for up to 390x compression ratios on numerical data.
+* **Multi-Process Safety**: Master-Proxy arbitration via `flock`, disjoint byte-range merging, and POSIX `pwrite` semantics for overlapping writes.
+* **Zero-Allocation Optimizations**: Hardware-accelerated bitmap scanning, zero-copy directory lookups, and filter pipelines using `Cow<'a, [u8]>`.
+* **Formal Verification**: 50+ Kani proofs across modules ensuring memory safety, arithmetic correctness, and filesystem invariants.
+* **Rigorous Concurrency Testing**: Shuttle randomized thread-schedule permutations and ThreadSanitizer stress tests.
 
-## Top-Level Module Layout
+## On-Disk Format
 
-<!-- openwiki: broken internal link [src/lib.rs#L1-L12] file "src/lib.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-The codebase is organized into 12 specialized modules declared in [`src/lib.rs#L1-L12`](src/lib.rs#L1-L12):
+The `.img` container begins with a 512-byte superblock, followed by:
+- Allocation bitmaps (inode and data blocks)
+- Inode table (fixed-size 256-byte entries)
+- Directory hierarchies (variable-length entries)
+- Data blocks (compressed and/or encrypted as specified by inode attributes)
 
-```
-                                  ┌───────────────────────────┐
-                                  │      Client Surfaces      │
-                                  │  CLI  │  C FFI  │ MCP Ser │
-                                  └─────┬───────┬───────┬─────┘
-                                        │       │       │
-                                        ▼       ▼       ▼
-┌───────────────────────────┐     ┌───────────────────────────┐
-│     Multi-Process IPC     │<───>│      Session Registry     │
-│       (src/ipc.rs)        │     │     (src/session.rs)      │
-└───────────────────────────┘     └─────────────┬─────────────┘
-                                                │
-                                                ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         DiskManager (src/disk.rs)                           │
-│              Protected by Arc<RwLock<DiskManagerInner>> / mmap              │
-└───────┬──────────────┬──────────────┬──────────────┬──────────────┬─────────┘
-        │              │              │              │              │
-        ▼              ▼              ▼              ▼              ▼
-┌──────────────┐┌──────────────┐┌──────────────┐┌──────────────┐┌─────────────┐
-│  Superblock  ││  Allocators  ││ Inode & Dirs ││ Data Filters ││ Encryption  │
-│(superblock.rs││ (allocator.rs││ (inode.rs    ││ (filters.rs) ││(encryption. │
-│              ││  bitmap.rs)  ││  directory.rs││              ││   rs)       │
-└──────────────┘└──────────────┘└──────┬───────┘└──────────────┘└─────────────┘
-                                       │
-                                       ▼
-                        ┌──────────────────────────────┐
-                        │      Pluggable I/O Engine    │
-                        │      (src/io_engine.rs)      │
-                        │ Mmap │ Pread │ Linux io_uring│
-                        └──────────────────────────────┘
-```
+All multi-byte integers are stored in little-endian byte order. The format is backward-compatible; new feature flags are tolerated by older versions.
 
-<!-- openwiki: broken internal link [src/allocator.rs] file "src/allocator.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-1. [`allocator`](src/allocator.rs): `SimpleBlockAllocator` providing sequential hint-based $O(1)$ block and inode allocation.
-<!-- openwiki: broken internal link [src/bitmap.rs] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-2. [`bitmap`](src/bitmap.rs): Mutable `Bitmap` and zero-allocation `BitmapRef` with 64-bit hardware `tzcnt` word scanning.
-<!-- openwiki: broken internal link [src/directory.rs] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-3. [`directory`](src/directory.rs): Variable-length `DirectoryEntry`, `DirectoryIterator`, and memory-indexed directory lookups (`DirIndex`).
-<!-- openwiki: broken internal link [src/disk.rs] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-4. [`disk`](src/disk.rs): Core `DiskManager` storage coordinator, mmap lifecycle, `RwLock` concurrency, durability flushes, and defragmentation.
-<!-- openwiki: broken internal link [src/encryption.rs] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-5. [`encryption`](src/encryption.rs): Authenticated AEAD payload encryption, Argon2id KDF, memory zeroization (`ZeroizeOnDrop`), and deterministic SIV filename privacy.
-<!-- openwiki: broken internal link [src/ffi.rs] file "src/ffi.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-6. [`ffi`](src/ffi.rs): C-compatible ABI surface, boxed `OIFSHandle`, callback-based listing, I/O backend selection, and thread-isolated error reporting.
-<!-- openwiki: broken internal link [src/filters.rs] file "src/filters.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-7. [`filters`](src/filters.rs): Pre-compression transformations (Delta, ByteShuffle, BitShuffle, TruncPrecision), Shannon entropy analysis, and pipeline recommendations.
-<!-- openwiki: broken internal link [src/inode.rs] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-8. [`inode`](src/inode.rs): Fixed 256-byte `Inode` metadata layout, `FileType`, block pointers up to 513GB, and Kani formal proofs.
-<!-- openwiki: broken internal link [src/io_engine.rs] file "src/io_engine.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-9. [`io_engine`](src/io_engine.rs): Pluggable data-block read engine supporting Mmap, Pread, and Linux `io_uring` with ExtentList coalescing and kernel gating (P3.2).
-<!-- openwiki: broken internal link [src/ipc.rs] file "src/ipc.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-10. [`ipc`](src/ipc.rs): Master-Proxy IPC protocol, UDS / TCP rendezvous discovery, worker threads, and length-prefixed framing.
-<!-- openwiki: broken internal link [src/session.rs] file "src/session.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-11. [`session`](src/session.rs): Process-wide `OifsSession` registry, reference-counted session reuse, and automatic client-to-master failover.
-<!-- openwiki: broken internal link [src/superblock.rs] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-12. [`superblock`](src/superblock.rs): `SuperBlock` magic validation (`OIFS`), geometry definitions, and backward compatibility.
+## Related Topics
 
-## Crate Configuration and Target Outputs
-
-In `Cargo.toml`, OIFS configures dual compilation targets:
-
-```toml
-[lib]
-crate-type = ["cdylib", "rlib"]
-```
-
-- **`cdylib` (C Dynamic Library)**: Compiles `liboifs.so` (Linux) or `liboifs.dylib` (macOS). Strips Rust-specific metadata and exports only `#[unsafe(no_mangle)] pub extern "C"` symbols, allowing direct linking from C, C++, Python, or Go.
-- **`rlib` (Rust Library)**: Produces standard Rust library artifacts consumed by the binary targets (`src/bin/oifs.rs`, `src/bin/oifs_mcp.rs`) and integration test suites.
-
-### The `mcp` Optional Feature Flag
-
-To maintain lightweight compilation for CLI-only or embedded environments, the Model Context Protocol server dependencies are gated behind an optional feature flag in `Cargo.toml`:
-
-```toml
-[features]
-default = []
-mcp = ["dep:rmcp", "dep:tokio", "dep:anyhow", "dep:schemars"]
-```
-
-- Building standard `oifs` CLI avoids compiling Tokio and the async web stack.
-- Passing `--features mcp` pulls in `rmcp`, `tokio`, and `schemars` to build the `oifs_mcp` executable.
+* [Block Allocation](./block_allocation.md)
+* [Compression and Filters](./compression_and_filters.md)
+* [Concurrency and Session](./concurrency_and_session.md)
+* [Disk Manager and Persistence](./disk_manager_and_persistence.md)
+* [Encryption](./encryption.md)
+* [FFI Interface](./ffi_interface.md)
+* [Inode and Directory](./inode_and_directory.md)
+* [MCP Server](./mcp_server.md)
+* [Superblock and Layout](./superblock_and_layout.md)
+* [Configuration](../concepts/configuration.md)
+* [FFI Integration](../integrations/ffi_integration.md)
+* [MCP Integration](../integrations/mcp_integration.md)
+* [CLI Reference](../operations/cli_reference.md)
+* [Basic Operations](../workflows/basic_operations.md)

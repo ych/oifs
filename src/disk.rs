@@ -903,6 +903,194 @@ pub struct MigrationStats {
     pub already_current: bool,
 }
 
+/// Which of the four write cases applies to a `write_data` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteCase {
+    /// `file_offset == 0` and the whole file is being replaced (re-filtered,
+    /// recompressed and re-encrypted as one unit).
+    FullOverwrite,
+    /// Appending a fresh Zstd frame at the physical end of a compressed stream.
+    CompressedAppend,
+    /// Decompress, splice, and rewrite contiguously from offset 0.
+    Recompress,
+    /// Plain append or random file write into an uncompressed file.
+    Raw,
+}
+
+impl WriteCase {
+    /// Whether this case re-runs the filter pipeline over the whole file.
+    ///
+    /// When it does, the caller must persist the filter metadata into the inode.
+    /// Missing that leaves the stored payload still filtered while the reader
+    /// believes it is raw, which silently returns corrupted data. This is the rule
+    /// the in-place path has always followed.
+    fn rewrites_filter_metadata(&self) -> bool {
+        matches!(self, WriteCase::FullOverwrite | WriteCase::Recompress)
+    }
+
+    /// Whether the in-place path must release every previously allocated block first.
+    ///
+    /// Only `Recompress` did so historically. `FullOverwrite` overwrites from block
+    /// 0 and leaves any surplus blocks allocated, so that behaviour is preserved
+    /// rather than quietly "improved" in a change meant to be a pure refactor.
+    fn frees_previous_blocks(&self) -> bool {
+        matches!(self, WriteCase::Recompress)
+    }
+}
+
+/// The decision half of a write: what bytes land where, and what the inode becomes.
+///
+/// Both the in-place and the journaled write paths consume this, so the four cases
+/// and their size arithmetic exist exactly once. They previously lived in two
+/// parallel implementations that had already drifted: the in-place path added
+/// `data.len()` (logical) for a compressed append while the journaled path added
+/// `frame.len()` (physical), so the same append produced two different file sizes.
+struct WritePlan {
+    case: WriteCase,
+    /// Byte offset in the file's payload where `buffer` begins.
+    phys_off: u64,
+    /// Exact bytes to store on disk (filtered, compressed and encrypted).
+    buffer: Vec<u8>,
+    /// New logical size.
+    new_size: u64,
+    /// New physical size; `0` when the payload is stored raw.
+    new_compressed_size: u64,
+}
+
+impl WritePlan {}
+
+/// Decide which of the four write cases applies and compute the exact bytes and
+/// sizes that result.
+///
+/// `inode` is read for its current state and **mutated only for the encryption
+/// fields** (`encrypted`, `encryption_nonce`), which a caller must persist
+/// regardless of which apply path it takes.
+///
+/// This is the single source of truth for write semantics. The in-place and
+/// journaled paths differ only in *how* the returned plan is applied, which is what
+/// keeps them from drifting: they previously carried two parallel copies of this
+/// decision and had already disagreed about a compressed append's logical size.
+fn plan_write(
+    guard: &mut DiskManagerInner,
+    inode: &mut Inode,
+    file_offset: u64,
+    data: &[u8],
+    compression_mode: CompressionMode,
+    filter_config: &crate::filters::FilterConfig,
+) -> Result<WritePlan, DiskManagerError> {
+    let old_size = inode.size;
+    let old_compressed_size = inode.compressed_size;
+
+    // A write at offset 0 only replaces the whole file when it is at least as long
+    // as the current one, or when compression/encryption/filters force a rewrite.
+    let is_full_overwrite = file_offset == 0
+        && (old_size == 0
+            || data.len() as u64 >= old_size
+            || old_compressed_size > 0
+            || inode.encrypted
+            || filter_config.is_active());
+
+    if is_full_overwrite {
+        let (buffer, compressed) = DiskManager::build_full_overwrite_buffer(
+            guard,
+            inode,
+            data,
+            compression_mode,
+            filter_config,
+        )?;
+        // A compressed payload keeps its logical length in `size`; an uncompressed
+        // one never shrinks, matching the in-place path's `max` behaviour.
+        let new_size = if compressed {
+            data.len() as u64
+        } else {
+            std::cmp::max(old_size, buffer.len() as u64)
+        };
+        let new_compressed_size = if compressed { buffer.len() as u64 } else { 0 };
+        return Ok(WritePlan {
+            case: WriteCase::FullOverwrite,
+            phys_off: 0,
+            buffer,
+            new_size,
+            new_compressed_size,
+        });
+    }
+
+    if old_compressed_size > 0 {
+        // Fast path: append a fresh Zstd frame at the physical end of the stream.
+        // `encryption_key.is_none()` is belt-and-braces -- on an encrypted image
+        // every file is already marked `encrypted`, so `!inode.encrypted` should
+        // already imply it. Guarding it here keeps both paths provably identical.
+        let fast_append = file_offset == inode.size
+            && !inode.encrypted
+            && !filter_config.is_active()
+            && inode.filter_typesize == 0
+            && guard.encryption_key.is_none();
+        if fast_append && data.is_empty() {
+            // The in-place path treated an empty append as a no-op; emitting an empty
+            // Zstd frame instead would grow the file's physical size for no reason.
+            return Ok(WritePlan {
+                case: WriteCase::CompressedAppend,
+                phys_off: old_compressed_size,
+                new_size: old_size,
+                new_compressed_size: old_compressed_size,
+                buffer: Vec::new(),
+            });
+        }
+        if fast_append {
+            let frame = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
+                .map_err(DiskManagerError::Io)?;
+            // The logical size grows by the *uncompressed* bytes; only the physical
+            // stream grows by the frame length.
+            return Ok(WritePlan {
+                case: WriteCase::CompressedAppend,
+                phys_off: old_compressed_size,
+                new_size: old_size.saturating_add(data.len() as u64),
+                new_compressed_size: old_compressed_size + frame.len() as u64,
+                buffer: frame,
+            });
+        }
+
+        // Read-modify-recompress: splice into the decoded image and rewrite from 0.
+        let mut full = DiskManager::read_data_internal(guard, inode)?;
+        let end = (file_offset as usize).saturating_add(data.len());
+        if full.len() < end {
+            full.resize(end, 0);
+        }
+        full[file_offset as usize..end].copy_from_slice(data);
+
+        let effective = DiskManager::effective_filter(inode, filter_config);
+        let (buffer, compressed) = DiskManager::build_full_overwrite_buffer(
+            guard,
+            inode,
+            &full,
+            compression_mode,
+            &effective,
+        )?;
+        let new_size = if compressed {
+            full.len() as u64
+        } else {
+            buffer.len() as u64
+        };
+        let new_compressed_size = if compressed { buffer.len() as u64 } else { 0 };
+        return Ok(WritePlan {
+            case: WriteCase::Recompress,
+            phys_off: 0,
+            buffer,
+            new_size,
+            new_compressed_size,
+        });
+    }
+
+    // Plain append or random write into an uncompressed file.
+    Ok(WritePlan {
+        case: WriteCase::Raw,
+        phys_off: file_offset,
+        new_size: std::cmp::max(old_size, file_offset + data.len() as u64),
+        new_compressed_size: 0,
+        buffer: data.to_vec(),
+    })
+}
+
 impl DiskManager {
     /// Open an existing OIFS image or create a new one if it doesn't exist.
     /// `size`: Total size in bytes (only used when creating a new file).
@@ -2997,83 +3185,21 @@ impl DiskManager {
         let mut ops: Vec<crate::journal::MetadataOp> = Vec::new();
         let mut used: Vec<u64> = Vec::new();
 
-        // Final physical offset, buffer, logical size and physical size for every case,
-        // mirroring the in-place path exactly.
-        //
-        // Sizes must match the legacy implementation byte for byte: the same image
-        // content has to be produced whether or not journaling is enabled, otherwise
-        // enabling `--journal` would silently change filesystem semantics.
-        let (phys_off, buffer, new_size, new_compressed_size): (u64, Vec<u8>, u64, u64) = {
-            let is_full_overwrite = old_size == 0
-                || data.len() as u64 >= old_size
-                || inode.compressed_size > 0
-                || inode.encrypted
-                || filter_config.is_active();
-
-            if file_offset == 0 && is_full_overwrite {
-                let (buf, compressed) = Self::build_full_overwrite_buffer(
-                    guard,
-                    &mut inode,
-                    data,
-                    compression_mode,
-                    &filter_config,
-                )?;
-                let logical = if compressed {
-                    data.len() as u64
-                } else {
-                    buf.len() as u64
-                };
-                let logical = if compressed {
-                    logical
-                } else {
-                    std::cmp::max(old_size, logical)
-                };
-                let physical = if compressed { buf.len() as u64 } else { 0 };
-                (0u64, buf, logical, physical)
-            } else if inode.compressed_size > 0 {
-                let fast_append = file_offset == inode.size
-                    && !inode.encrypted
-                    && !filter_config.is_active()
-                    && inode.filter_typesize == 0
-                    && guard.encryption_key.is_none();
-                if fast_append {
-                    let frame = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
-                        .map_err(DiskManagerError::Io)?;
-                    let size = old_size.saturating_add(frame.len() as u64);
-                    let physical = inode.compressed_size + frame.len() as u64;
-                    (inode.compressed_size, frame, size, physical)
-                } else {
-                    // Read-modify-recompress: splice into the decoded image and rewrite
-                    // from offset 0. The legacy path resets the sizes before rewriting,
-                    // so `old_size` plays no part here.
-                    let mut full = Self::read_data_internal(guard, &inode)?;
-                    let end = (file_offset as usize).saturating_add(data.len());
-                    if full.len() < end {
-                        full.resize(end, 0);
-                    }
-                    full[file_offset as usize..end].copy_from_slice(data);
-                    let effective = Self::effective_filter(&inode, &filter_config);
-                    let (buf, compressed) = Self::build_full_overwrite_buffer(
-                        guard,
-                        &mut inode,
-                        &full,
-                        compression_mode,
-                        &effective,
-                    )?;
-                    let logical = if compressed {
-                        full.len() as u64
-                    } else {
-                        buf.len() as u64
-                    };
-                    let physical = if compressed { buf.len() as u64 } else { 0 };
-                    (0u64, buf, logical, physical)
-                }
-            } else {
-                // Raw append or random write.
-                let logical = std::cmp::max(old_size, file_offset + data.len() as u64);
-                (file_offset, data.to_vec(), logical, 0)
-            }
-        };
+        // Single source of truth for the write semantics; see `plan_write`.
+        let WritePlan {
+            case,
+            phys_off,
+            buffer,
+            new_size,
+            new_compressed_size,
+        } = plan_write(
+            guard,
+            &mut inode,
+            file_offset,
+            data,
+            compression_mode,
+            &filter_config,
+        )?;
 
         // 1. Stage payload (bitmap bits still clear).
         Self::stage_payload_write(
@@ -3095,7 +3221,11 @@ impl DiskManager {
 
         inode.size = new_size;
         inode.compressed_size = new_compressed_size;
-        if new_compressed_size > 0 {
+        // Persist filter metadata whenever the pipeline re-ran over the whole file,
+        // compressed or not. Gating this on `compressed_size > 0` silently corrupted
+        // uncompressed filtered writes: the payload stayed filtered on disk while the
+        // inode claimed it was raw, so the reader returned filtered bytes verbatim.
+        if case.rewrites_filter_metadata() {
             inode.filter_typesize = filter_config.typesize;
             inode.filter_delta = filter_config.delta;
             inode.filter_shuffle = filter_config.shuffle;
@@ -3183,7 +3313,7 @@ impl DiskManager {
     }
 
     /// Build the final on-disk buffer for a full (offset 0) overwrite: filter, then
-    /// compress, then encrypt. Mirrors [`Self::write_data_from_start_internal`] exactly.
+    /// compress, then encrypt, for a write that replaces the whole file.
     ///
     /// Returns `(buffer, is_compressed)`. The flag matters: the caller must record it
     /// in the inode, otherwise a compressed payload would be tagged as uncompressed and
@@ -3250,104 +3380,6 @@ impl DiskManager {
         }
     }
 
-    fn write_data_from_start_internal(
-        guard: &mut DiskManagerInner,
-        inode_id: u64,
-        inode: &mut Inode,
-        data: &[u8],
-        compression_mode: CompressionMode,
-        filter_config: crate::filters::FilterConfig,
-    ) -> Result<(), DiskManagerError> {
-        // === PRE-COMPRESSION FILTER STEP ===
-        let filtered_data = crate::filters::apply_filters_cow(data, &filter_config);
-        let working_data: &[u8] = &filtered_data;
-
-        let final_data: std::borrow::Cow<[u8]>;
-        let mut is_compressed = false;
-
-        let should_compress = match compression_mode {
-            CompressionMode::Always => true,
-            CompressionMode::Never => false,
-            CompressionMode::Auto => working_data.len() >= 8192,
-        };
-
-        if should_compress {
-            let compressed = zstd::stream::encode_all(std::io::Cursor::new(working_data), 0)
-                .map_err(DiskManagerError::Io)?;
-
-            match compression_mode {
-                CompressionMode::Always => {
-                    final_data = std::borrow::Cow::Owned(compressed);
-                    is_compressed = true;
-                }
-                CompressionMode::Auto => {
-                    if compressed.len() < working_data.len() {
-                        final_data = std::borrow::Cow::Owned(compressed);
-                        is_compressed = true;
-                    } else {
-                        final_data = filtered_data;
-                    }
-                }
-                CompressionMode::Never => {
-                    final_data = filtered_data;
-                }
-            }
-        } else {
-            final_data = filtered_data;
-        }
-
-        // === ENCRYPTION STEP ===
-        let final_encrypted: Vec<u8>;
-        let write_buffer: &[u8] = if let Some(encryption_key) = &guard.encryption_key {
-            let nonce = crate::encryption::generate_nonce();
-            final_encrypted =
-                crate::encryption::encrypt_data(final_data.as_ref(), encryption_key, &nonce)?;
-            inode.encrypted = true;
-            inode.encryption_nonce = nonce;
-            &final_encrypted
-        } else {
-            final_data.as_ref()
-        };
-
-        let mut touched = if guard.durability_mode().is_range_based() {
-            Some(Vec::new())
-        } else {
-            None
-        };
-        Self::write_buffer_at_offset(guard, inode, 0, write_buffer, touched.as_mut())?;
-
-        if is_compressed {
-            inode.size = data.len() as u64; // Logical size
-            inode.compressed_size = write_buffer.len() as u64; // Physical size
-        } else {
-            inode.size = std::cmp::max(inode.size, write_buffer.len() as u64);
-            inode.compressed_size = 0;
-        }
-
-        inode.filter_typesize = filter_config.typesize;
-        inode.filter_delta = filter_config.delta;
-        inode.filter_shuffle = filter_config.shuffle;
-        inode.filter_bitshuffle = filter_config.bitshuffle;
-
-        inode.modified_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        Self::write_inode_internal(guard, inode_id, inode)?;
-        if let Some(tb) = touched {
-            let mut ranges = Vec::with_capacity(tb.len() + 2);
-            ranges.push(guard.data_bitmap_byte_range());
-            ranges.push(guard.inode_byte_range(inode_id));
-            for blk in tb {
-                ranges.push(guard.block_byte_range(blk));
-            }
-            guard.sync_mutation_ranges(&ranges)?;
-        } else {
-            guard.sync_mutation_ranges(&[])?;
-        }
-        Ok(())
-    }
-
     /// Writes data to a file with custom pre-compression filters
     ///
     /// # Arguments
@@ -3396,125 +3428,36 @@ impl DiskManager {
             );
         }
 
-        // Case 1: Writing from offset 0
-        // Determine if this is a true full overwrite (initial write or complete replacement)
-        // vs a partial write at the beginning of the file.
-        let is_full_overwrite = file_offset == 0
-            && (inode.size == 0
-                || data.len() as u64 >= inode.size
-                || inode.compressed_size > 0
-                || inode.encrypted
-                || filter_config.is_active());
+        // Decide once, apply in place. `plan_write` holds the four-case logic and the
+        // size arithmetic that used to be duplicated between this path and the
+        // journaled one.
+        let plan = plan_write(
+            &mut guard,
+            &mut inode,
+            file_offset,
+            data,
+            compression_mode,
+            &filter_config,
+        )?;
 
-        if is_full_overwrite {
-            return Self::write_data_from_start_internal(
-                &mut guard,
-                inode_id,
-                &mut inode,
-                data,
-                compression_mode,
-                filter_config,
-            );
-        }
-
-        // Case 1b: Partial write at offset 0 on uncompressed, unencrypted file
-        // Fall through to Case 3 (raw file write) for zero-copy partial update.
-        if file_offset == 0
-            && inode.compressed_size == 0
-            && !inode.encrypted
-            && !filter_config.is_active()
-        {
-            // Continue to Case 3 below
-        } else if file_offset == 0 {
-            // This shouldn't happen due to is_full_overwrite check, but safety fallback
-            return Self::write_data_from_start_internal(
-                &mut guard,
-                inode_id,
-                &mut inode,
-                data,
-                compression_mode,
-                filter_config,
-            );
-        }
-
-        // Case 2: Append or random write to an already-compressed file
-        if inode.compressed_size > 0 {
-            // Fast Path: Zstd Multi-Frame Append
-            // When appending strictly at EOF to an unencrypted file with no active pre-compression filters,
-            // we directly compress `data` as a new independent Zstd Frame and append it to the physical
-            // compressed stream. Zstd decoders (such as zstd::stream::decode_all) naturally decompress concatenated
-            // multi-frame streams seamlessly without needing to decompress previous blocks.
-            if file_offset == inode.size
-                && !inode.encrypted
-                && !filter_config.is_active()
-                && inode.filter_typesize == 0
-            {
-                if data.is_empty() {
-                    return Ok(());
-                }
-                let new_frame = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
-                    .map_err(DiskManagerError::Io)?;
-
-                let mut touched = if guard.durability_mode().is_range_based() {
-                    Some(Vec::new())
-                } else {
-                    None
-                };
-                let append_offset = inode.compressed_size;
-                Self::write_buffer_at_offset(
-                    &mut guard,
-                    &mut inode,
-                    append_offset,
-                    &new_frame,
-                    touched.as_mut(),
-                )?;
-
-                inode.size += data.len() as u64;
-                inode.compressed_size += new_frame.len() as u64;
-                inode.modified_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                Self::write_inode_internal(&mut guard, inode_id, &inode)?;
-                if let Some(tb) = touched {
-                    let mut ranges = Vec::with_capacity(tb.len() + 2);
-                    ranges.push(guard.data_bitmap_byte_range());
-                    ranges.push(guard.inode_byte_range(inode_id));
-                    for blk in tb {
-                        ranges.push(guard.block_byte_range(blk));
-                    }
-                    guard.sync_mutation_ranges(&ranges)?;
-                } else {
-                    guard.sync_mutation_ranges(&[])?;
-                }
-                return Ok(());
-            }
-
-            // Fallback: Read-Modify-Recompress
-            // For encrypted files, middle-offset random writes, or files with active filters,
-            // transparently decompress the existing payload, splice in the new data, and re-write from offset 0.
-            let mut full_data = Self::read_data_internal(&guard, &inode)?;
-            let end_offset = (file_offset as usize) + data.len();
-            if full_data.len() < file_offset as usize {
-                full_data.resize(file_offset as usize, 0);
-            }
-            if full_data.len() < end_offset {
-                full_data.resize(end_offset, 0);
-            }
-            full_data[file_offset as usize..end_offset].copy_from_slice(data);
-
-            // Free previous blocks
+        // A recompression rebuilds the whole stream, so the previous blocks are dead
+        // weight. `FullOverwrite` historically left surplus blocks allocated and
+        // still does; changing that here would be a behaviour change disguised as a
+        // refactor.
+        if plan.case.frees_previous_blocks() {
             let old_blocks = Self::collect_inode_blocks(&guard.mmap, &inode);
             let mut min_freed_blk = u64::MAX;
             {
                 let db_blk = guard.superblock.data_bitmap_block;
                 let db_start = guard.superblock.data_block_start;
-                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, db_blk) {
-                    let mut da = SimpleBlockAllocator::new(slice, db_start);
-                    for blk in old_blocks {
-                        let _ = da.free(blk);
-                        min_freed_blk = min_freed_blk.min(blk);
-                    }
+                let slice =
+                    Self::get_block_mut_from_map(&mut guard.mmap, db_blk).ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
+                    })?;
+                let mut da = SimpleBlockAllocator::new(slice, db_start);
+                for blk in old_blocks {
+                    da.free(blk)?;
+                    min_freed_blk = min_freed_blk.min(blk);
                 }
             }
             if min_freed_blk < guard.free_block_hint {
@@ -3522,60 +3465,50 @@ impl DiskManager {
             }
             inode.blocks = [0; 12];
             inode.triple_indirect = 0;
-            inode.size = 0;
-            inode.compressed_size = 0;
-
-            let effective_filter = if filter_config.is_active() {
-                filter_config
-            } else {
-                crate::filters::FilterConfig {
-                    typesize: inode.filter_typesize,
-                    delta: inode.filter_delta,
-                    shuffle: inode.filter_shuffle,
-                    bitshuffle: inode.filter_bitshuffle,
-                }
-            };
-
-            return Self::write_data_from_start_internal(
-                &mut guard,
-                inode_id,
-                &mut inode,
-                &full_data,
-                compression_mode,
-                effective_filter,
-            );
         }
 
-        // Case 3: Raw (uncompressed) file append or random write
         let mut touched = if guard.durability_mode().is_range_based() {
             Some(Vec::new())
         } else {
             None
         };
-        let final_offset = Self::write_buffer_at_offset(
+        Self::write_buffer_at_offset(
             &mut guard,
             &mut inode,
-            file_offset,
-            data,
+            plan.phys_off,
+            &plan.buffer,
             touched.as_mut(),
         )?;
-        inode.size = std::cmp::max(inode.size, final_offset);
+
+        inode.size = plan.new_size;
+        inode.compressed_size = plan.new_compressed_size;
+        if plan.case.rewrites_filter_metadata() {
+            inode.filter_typesize = filter_config.typesize;
+            inode.filter_delta = filter_config.delta;
+            inode.filter_shuffle = filter_config.shuffle;
+            inode.filter_bitshuffle = filter_config.bitshuffle;
+        }
         inode.modified_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
         Self::write_inode_internal(&mut guard, inode_id, &inode)?;
-        if let Some(tb) = touched {
-            let mut ranges = Vec::with_capacity(tb.len() + 2);
-            ranges.push(guard.data_bitmap_byte_range());
-            ranges.push(guard.inode_byte_range(inode_id));
-            for blk in tb {
-                ranges.push(guard.block_byte_range(blk));
+
+        if guard.durability_mode().is_range_based() {
+            let mut ranges = vec![
+                guard.data_bitmap_byte_range(),
+                guard.inode_byte_range(inode_id),
+            ];
+            if let Some(tb) = touched {
+                for blk in tb {
+                    ranges.push(guard.block_byte_range(blk));
+                }
             }
             guard.sync_mutation_ranges(&ranges)?;
         } else {
             guard.sync_mutation_ranges(&[])?;
         }
+
         Ok(())
     }
 
@@ -4781,7 +4714,7 @@ mod verification {
         }
     }
 
-    /// Prove that write_data_from_start_internal maintains size invariant on full overwrite.
+    /// Prove that a full overwrite maintains the file-size invariant.
     /// When overwriting a file at offset 0 with smaller data on a full overwrite,
     /// the file size MUST be truncated to the new data size (not max(old, new)).
     /// This proof verifies the logic branch that decides whether to truncate.

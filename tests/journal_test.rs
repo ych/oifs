@@ -1497,3 +1497,159 @@ fn test_concurrent_writes_and_flush_keep_ring_consistent() {
     let report = dm.verify_integrity().expect("fsck");
     assert!(report.is_clean, "concurrent flush + writes: {report:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Write-plan parity: journaled and in-place must agree exactly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_compressed_append_reports_logical_size() {
+    // Regression: the journaled fast-append path grew `size` by the *compressed*
+    // frame length while the in-place path grew it by the uncompressed bytes, so the
+    // same append produced two different file sizes.
+    let img = Img::new("append_size");
+    let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+    let root = dm.superblock().root_inode;
+    let f = dm.create_file(root, "a").expect("create");
+
+    let first = vec![b'x'; 4000];
+    let second = vec![b'y'; 4000];
+    dm.write_data(f, 0, &first, CompressionMode::Always)
+        .expect("write 1");
+    dm.write_data(f, 4000, &second, CompressionMode::Always)
+        .expect("append 2");
+
+    let ino = dm.read_inode(f).expect("inode");
+    assert_eq!(
+        ino.size, 8000,
+        "logical size must be the sum of uncompressed bytes"
+    );
+    assert!(
+        ino.compressed_size > 0 && ino.compressed_size < 8000,
+        "the payload really is compressed (physical {} vs logical {})",
+        ino.compressed_size,
+        ino.size
+    );
+    assert_eq!(dm.read_data(f).expect("read").len(), 8000);
+}
+
+#[test]
+fn test_write_plan_parity_journaled_vs_legacy() {
+    // The whole point of the shared planner: identical inputs must produce an
+    // identical filesystem on both paths, for every one of the four cases.
+    struct Case {
+        name: &'static str,
+        run: fn(&oifs::DiskManager, u64),
+    }
+
+    let cases: Vec<Case> = vec![
+        Case {
+            name: "full_overwrite_uncompressed",
+            run: |dm, root| {
+                let f = dm.create_file(root, "f").expect("create");
+                dm.write_data(f, 0, b"seed content", CompressionMode::Never)
+                    .expect("seed");
+                dm.write_data(
+                    f,
+                    0,
+                    b"a much longer replacement payload",
+                    CompressionMode::Never,
+                )
+                .expect("overwrite");
+            },
+        },
+        Case {
+            name: "full_overwrite_compressed",
+            run: |dm, root| {
+                let f = dm.create_file(root, "f").expect("create");
+                dm.write_data(f, 0, &vec![b'a'; 9000], CompressionMode::Always)
+                    .expect("seed");
+                dm.write_data(f, 0, &vec![b'b'; 20000], CompressionMode::Always)
+                    .expect("overwrite");
+            },
+        },
+        Case {
+            name: "compressed_append",
+            run: |dm, root| {
+                let f = dm.create_file(root, "f").expect("create");
+                dm.write_data(f, 0, &vec![b'p'; 5000], CompressionMode::Always)
+                    .expect("seed");
+                dm.write_data(f, 5000, &vec![b'q'; 6000], CompressionMode::Always)
+                    .expect("append");
+            },
+        },
+        Case {
+            name: "recompress_middle_write",
+            run: |dm, root| {
+                let f = dm.create_file(root, "f").expect("create");
+                dm.write_data(f, 0, &vec![b'r'; 5000], CompressionMode::Always)
+                    .expect("seed");
+                dm.write_data(f, 100, b"PATCH", CompressionMode::Always)
+                    .expect("middle patch");
+            },
+        },
+        Case {
+            name: "raw_random_write",
+            run: |dm, root| {
+                let f = dm.create_file(root, "f").expect("create");
+                dm.write_data(f, 0, &vec![b's'; 8192], CompressionMode::Never)
+                    .expect("seed");
+                dm.write_data(f, 4000, b"HOLE", CompressionMode::Never)
+                    .expect("patch");
+            },
+        },
+        Case {
+            name: "raw_append",
+            run: |dm, root| {
+                let f = dm.create_file(root, "f").expect("create");
+                dm.write_data(f, 0, b"one", CompressionMode::Never)
+                    .expect("seed");
+                dm.write_data(f, 3, b"two", CompressionMode::Never)
+                    .expect("append");
+            },
+        },
+        Case {
+            name: "filtered_write",
+            run: |dm, root| {
+                let f = dm.create_file(root, "f").expect("create");
+                let vals: Vec<u8> = (0..64u16).flat_map(|v| v.to_le_bytes()).collect();
+                dm.write_data_with_filters(
+                    f,
+                    0,
+                    &vals,
+                    CompressionMode::Never,
+                    oifs::filters::FilterConfig::numeric(2),
+                )
+                .expect("filtered write");
+            },
+        },
+    ];
+
+    for case in &cases {
+        let limg = Img::new(&format!("parity_l_{}", case.name));
+        let jimg = Img::new(&format!("parity_j_{}", case.name));
+
+        let ldm = oifs::DiskManager::open(&limg.path, 20 * MB).expect("legacy");
+        (case.run)(&ldm, ldm.superblock().root_inode);
+        let lf = ldm.lookup(ldm.superblock().root_inode, "f").expect("f");
+        let lino = ldm.read_inode(lf).expect("inode");
+        let ldata = ldm.read_data(lf).expect("read");
+        drop(ldm);
+
+        let jdm = oifs::DiskManager::open_journaled(&jimg.path, 20 * MB).expect("journaled");
+        (case.run)(&jdm, jdm.superblock().root_inode);
+        let jf = jdm.lookup(jdm.superblock().root_inode, "f").expect("f");
+        let jino = jdm.read_inode(jf).expect("inode");
+        let jdata = jdm.read_data(jf).expect("read");
+        drop(jdm);
+
+        assert_eq!(jino.size, lino.size, "{}: logical size", case.name);
+        assert_eq!(
+            jino.compressed_size, lino.compressed_size,
+            "{}: physical size",
+            case.name
+        );
+        assert_eq!(jino.mode, lino.mode, "{}: file type", case.name);
+        assert_eq!(jdata, ldata, "{}: content", case.name);
+    }
+}

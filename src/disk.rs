@@ -324,6 +324,15 @@ const DIR_INDEX_BUILD_AFTER_SCANS: u32 = 8;
 
 impl Drop for DiskManagerInner {
     fn drop(&mut self) {
+        // The journal region goes out first: on shutdown the log describing pending
+        // metadata must not lag behind the metadata itself.
+        if self.superblock.has_journal_layout() {
+            let bs = self.superblock.block_size as u64;
+            if let Some(start) = DiskManager::journal_region_start(bs) {
+                let len = DiskManager::journal_region_len(bs).min(self.mmap.len() - start);
+                let _ = self.mmap.flush_range(start, len);
+            }
+        }
         // Flush any pending changes to disk when dropped
         let _ = self.mmap.flush();
     }
@@ -1612,7 +1621,26 @@ impl DiskManager {
             ring.last_write()
         };
 
-        // Flush the frame bytes *and* the header block that advances `head`.
+        // The WAL must reach stable storage *before* the metadata it describes, or a
+        // power loss can leave the image with partially applied metadata that recovery
+        // has no record of.
+        //
+        // How urgently that must happen is exactly a durability-policy question, so
+        // the same mode that governs metadata governs the WAL:
+        //
+        // * `Strict` — flush the frame *and* the header that advances `head` before
+        //   the caller applies anything. Two `msync` calls per transaction, which is
+        //   what buys the power-loss guarantee.
+        // * `Lazy` / `RangeAsync` / `LegacyWholeMmapAsync` — the image bytes live in
+        //   the page cache, which already survives a *process* crash; these modes
+        //   never promise power-loss safety for metadata either. Forcing a per-
+        //   transaction barrier on the WAL would impose a full power-loss cost on
+        //   users who explicitly opted out of it, so the WAL is left to be written
+        //   back with the rest of the mapping by `flush()` / drop.
+        if guard.durability_mode() != DurabilityMode::Strict {
+            return Ok(());
+        }
+
         // Without the header flush the cursor update could be reordered after the
         // frame, and recovery would never see the transaction.
         let start = Self::journal_region_start(bs).unwrap_or(0);
@@ -1631,6 +1659,26 @@ impl DiskManager {
             .min(crate::journal::JOURNAL_HEADER_LEN);
         if header_len > 0 {
             guard.mmap.flush_range(start, header_len)?;
+        }
+        Ok(())
+    }
+
+    /// Write out the whole journal region, WAL before anything else.
+    ///
+    /// Used by `flush()`/`flush_async()` so that a caller-driven sync point preserves
+    /// the ordering invariant even when individual transactions skipped their own
+    /// barrier.
+    fn sync_journal_region(guard: &DiskManagerInner) -> Result<(), DiskManagerError> {
+        let sb = guard.superblock;
+        if !sb.has_journal_layout() {
+            return Ok(());
+        }
+        let bs = sb.block_size as u64;
+        let start = Self::journal_region_start(bs).unwrap_or(0);
+        let len = Self::journal_region_len(bs);
+        let end = start.saturating_add(len).min(guard.mmap.len());
+        if end > start {
+            guard.mmap.flush_range(start, end - start)?;
         }
         Ok(())
     }
@@ -3073,24 +3121,36 @@ impl DiskManager {
         });
 
         // 3. Payload durability BEFORE the metadata commit.
+        //
+        // Same durability-policy reasoning as the WAL barrier in
+        // `commit_journal_tx`: only `Strict` promises the data reached disk before
+        // the metadata referencing it, so only `Strict` pays for a barrier. The
+        // process-crash-safe modes leave the payload in the page cache, exactly as
+        // they already do for metadata — and `flush_async_range` is still a syscall
+        // per block, so issuing it there bought latency without adding a guarantee.
         let payload_ranges: Vec<(usize, usize)> =
             used.iter().map(|b| guard.block_byte_range(*b)).collect();
-        if guard.durability_mode() == DurabilityMode::Strict {
-            for &(off, len) in &payload_ranges {
-                let mmap_len = guard.mmap.len();
-                if len > 0 && off < mmap_len {
-                    let actual = len.min(mmap_len - off);
-                    guard.mmap.flush_range(off, actual)?;
+        match guard.durability_mode() {
+            DurabilityMode::Strict => {
+                for &(off, len) in &payload_ranges {
+                    let mmap_len = guard.mmap.len();
+                    if len > 0 && off < mmap_len {
+                        let actual = len.min(mmap_len - off);
+                        guard.mmap.flush_range(off, actual)?;
+                    }
                 }
             }
-        } else {
-            for &(off, len) in &payload_ranges {
-                let mmap_len = guard.mmap.len();
-                if len > 0 && off < mmap_len {
-                    let actual = len.min(mmap_len - off);
-                    let _ = guard.mmap.flush_async_range(off, actual);
+            DurabilityMode::RangeAsync => {
+                for &(off, len) in &payload_ranges {
+                    let mmap_len = guard.mmap.len();
+                    if len > 0 && off < mmap_len {
+                        let actual = len.min(mmap_len - off);
+                        let _ = guard.mmap.flush_async_range(off, actual);
+                    }
                 }
             }
+            // Lazy and LegacyWholeMmapAsync promise nothing about writeback timing.
+            DurabilityMode::Lazy | DurabilityMode::LegacyWholeMmapAsync => {}
         }
 
         // 4. Commit point.
@@ -3883,6 +3943,10 @@ impl DiskManager {
         // concurrent readers to proceed.
         {
             let guard = self.inner.read().unwrap();
+            // WAL first: a sync point must never let image bytes reach disk ahead of
+            // the log describing them, even when individual transactions skipped
+            // their own barrier because of a non-Strict durability mode.
+            Self::sync_journal_region(&guard)?;
             guard.mmap.flush().map_err(DiskManagerError::Io)?;
         }
 
@@ -3914,6 +3978,15 @@ impl DiskManager {
     pub fn flush_async(&self) -> Result<(), DiskManagerError> {
         let _sync_guard = self.sync_mutex.lock().unwrap();
         let guard = self.inner.read().unwrap();
+        // WAL first, then the rest of the mapping, so a sync point never lets the
+        // image reach disk ahead of the log describing it.
+        if guard.superblock.has_journal_layout() {
+            let bs = guard.superblock.block_size as u64;
+            if let Some(start) = Self::journal_region_start(bs) {
+                let len = Self::journal_region_len(bs).min(guard.mmap.len() - start);
+                let _ = guard.mmap.flush_async_range(start, len);
+            }
+        }
         guard.mmap.flush_async().map_err(DiskManagerError::Io)
     }
 

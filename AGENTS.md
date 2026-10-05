@@ -35,6 +35,7 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **Formal Verification**: 59 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, and bounds safety.
 - **On-Disk Format v2**: Fixed 256-byte inode records with explicit little-endian fields, a 1-byte file-type tag, and zeroed reserved space. Deterministic, reproducible, leak-free. Legacy v1 images stay fully readable and writable; `oifs migrate` upgrades them in place.
 - **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file`/`write_data` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Payload data is *not* journaled — it is flushed before the metadata commit (ordered mode), so WAL traffic stays proportional to metadata, not file size. Recovery runs automatically at mount, so a power loss no longer requires a full-image `fsck`.
+- **Durability governs the journal too**: only `DurabilityMode::Strict` pays the per-transaction `msync` barriers (WAL + payload); the process-crash-safe modes rely on the page cache and sync at `flush()`/`Drop`, with the WAL always written before the image.
 
 ---
 
@@ -131,6 +132,9 @@ cargo test --release
 
 # 3. Run multi-block directory performance benchmark
 cargo test --release --test dir_bench -- --ignored --nocapture
+
+# 3b. Run the metadata WAL benchmarks (journaled vs legacy, durability-mode cost, flush cost)
+cargo test --release --test journal_bench -- --ignored --nocapture -- --test-threads=1
 
 # 4. Run Shuttle randomized concurrency permutation tests
 cargo test --test shuttle_concurrency_test

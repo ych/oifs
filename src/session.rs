@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::directory::DirectoryEntry;
 use crate::disk::{
     CompressionMode, DefragMode, DefragStats, DiskManager, DiskManagerError, FragmentationStats,
-    FsckReport,
+    FsckReport, MigrationStats,
 };
 use crate::inode::Inode;
 use crate::ipc::{
@@ -776,6 +776,33 @@ impl OifsSession {
 
                 match resp {
                     IpcResponseData::Superblock(sb) => Ok(sb),
+                    _ => Err(SessionError::UnexpectedResponse),
+                }
+            }
+        }
+    }
+
+    /// `true` when this image still uses the legacy inode format.
+    pub fn needs_migration(&self) -> Result<bool, SessionError> {
+        Ok(self.superblock()?.is_legacy_inode_format())
+    }
+
+    /// `true` when a previous format migration was interrupted.
+    pub fn migration_in_progress(&self) -> Result<bool, SessionError> {
+        Ok(self.superblock()?.is_migration_in_progress())
+    }
+
+    /// Upgrade a legacy image to the current inode format, in place.
+    ///
+    /// Idempotent and resumable; see [`crate::disk::DiskManager::migrate`] for the
+    /// crash-safety argument.
+    pub fn migrate(&self) -> Result<MigrationStats, SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.migrate()?),
+            OifsSession::Remote { .. } => {
+                let resp = self.send_request(IpcRequest::Migrate)?;
+                match resp {
+                    IpcResponseData::Migration(stats) => Ok(stats),
                     _ => Err(SessionError::UnexpectedResponse),
                 }
             }

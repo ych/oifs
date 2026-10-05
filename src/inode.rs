@@ -28,7 +28,7 @@ pub enum FileType {
 /// Files ≥ 8KB may be compressed using zstd:
 /// - `size`: Logical (uncompressed) size
 /// - `compressed_size`: Physical size on disk (0 if not compressed)
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub struct Inode {
     /// Type of this inode (File or Directory)

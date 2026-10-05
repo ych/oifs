@@ -32,7 +32,9 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **Pre-compression Filters**: Integrated Blosc2 filters (Delta, Byte Shuffle, BitShuffle with Hacker's Delight 8x8 transposition, TruncPrecision) followed by Zstandard.
 - **Encryption**: XChaCha20-Poly1305 with Argon2id KDF and parent-inode tweaked deterministic SIV filename encryption (`_e_...`).
 - **FFI Dynamic Library Handshake**: 3-state runtime version & path verification (`oifs_check_version`, `oifs_loaded_path`): 0=OK, 1=WARN (newer), -1=ERR (older).
-- **Formal Verification**: 49 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, version policy soundness, and bounds safety.
+- **Formal Verification**: 59 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, and bounds safety.
+- **On-Disk Format v2**: Fixed 256-byte inode records with explicit little-endian fields, a 1-byte file-type tag, and zeroed reserved space. Deterministic, reproducible, leak-free. Legacy v1 images stay fully readable and writable; `oifs migrate` upgrades them in place.
+- **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Recovery runs automatically at mount, so a power loss no longer requires a full-image `fsck`.
 
 ---
 
@@ -69,9 +71,11 @@ An inode stores:
 | `src/lib.rs` | Public re-exports, module tree, and `BLOCK_SIZE = 4096`. |
 | `src/superblock.rs` | `SuperBlock` definition, layout geometry calculation, Kani proofs. |
 | `src/inode.rs` | `Inode` (256B `#[repr(C)]`), `FileType`, `BlockPath` tier resolver. |
-| `src/disk.rs` | Core storage engine: `DiskManager`, `DiskManagerInner`, `DurabilityMode`, caches. |
+| `src/inode_format.rs` | On-disk inode encoding: fixed 256B v2 record, legacy `bincode` v1 decoder, version dispatch. |
+| `src/disk.rs` | Core storage engine: `DiskManager`, `DiskManagerInner`, `DurabilityMode`, caches, bounded inode cache, journaled write paths. |
 | `src/directory.rs` | `DirectoryEntry`, multi-block directory iteration, 64-bit SipHash filename hashing. |
 | `src/io_engine.rs` | `IoEngine`, `IoBackend` (`Mmap`, `Pread`, `IoUring`), `ExtentList`, extent merging. |
+| `src/journal.rs` | Optional Metadata WAL: CRC32C, transaction frames, `MetadataOp`, `JournalRing`, idempotent redo. |
 | `src/bitmap.rs` | `BitmapRef`, fast 64-bit chunk `tzcnt` free-bit scanner, set-bit iterator. |
 | `src/allocator.rs` | `SimpleBlockAllocator`, sequential block/inode allocation with hint. |
 | `src/filters.rs` | Blosc2 filters: Delta, Shuffle, BitShuffle (delta-swap ILP), TruncPrecision. |
@@ -81,8 +85,9 @@ An inode stores:
 | `src/ffi.rs` | C-compatible dynamic library bindings (`include/oifs.h`). |
 | `src/bin/oifs.rs` | CLI application entry point (`clap`-based). |
 | `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling. |
-| `tests/` | 38 comprehensive integration, stress, crash-safety, and concurrency tests. |
+| `tests/` | 46 integration, stress, crash-safety, concurrency, journal, and CLI test suites. |
 | `docs/optimization_roadmap.md` | Detailed changelog and benchmarks for P0, P1, P2, and P3 optimizations. |
+| `docs/metadata_wal_design.md` | Metadata WAL specification and implementation status (M1–M5 complete). |
 | `docs/performance_and_verification_research.md` | In-depth audit of performance bottlenecks, safety vulnerabilities, and Kani blueprints. |
 
 ---
@@ -97,12 +102,15 @@ An inode stores:
    - Inside `DiskManagerInner`, `inode_cache` and `dir_cache` have their own fine-grained `RwLock`s.
    - **Rule**: Never hold an inner write lock while requesting an outer lock (prevent deadlocks).
 2. **Zero-Copy Inode & Directory Caching**:
-   - `inode_cache`: Caches `Inode` values in memory to avoid parsing disk blocks during path traversal.
+   - `inode_cache`: Bounded `BoundedInodeCache` (`FxHashMap` + FIFO order, capacity 2048). Eviction drops **one** oldest entry; it never clears the whole cache, which would cause a cache stampede.
    - `dir_cache`: `DirIndex` stores per-directory entry name-to-inode mappings. Negative lookups trigger complete indexing.
+   - **Note**: inodes are persisted through `src::inode_format`, not by casting `#[repr(C)]` bytes. `bincode`'s 169-byte packed output does **not** match the 176-byte in-memory layout (which contains uninitialized padding), so raw casting would misparse every existing image and leak stack memory to disk. Format v2 fixes this with an explicit layout.
 3. **Master-Proxy Session Architecture**:
    - Always prefer `OifsSession::get_or_open(...)` in multi-threaded code. It canonicalizes paths, coordinates flocking, and shares Master instances within the same process.
 4. **Backward Compatibility**:
    - OIFS images created under v1 (single-block directories where `inode.size == 0`) must remain transparently readable and upgrade on the fly to multi-block format.
+   - **Inode format v1** (packed `bincode` records) images remain readable *and writable*; they keep writing v1 until `oifs migrate` upgrades them, so an image never holds a mix of encodings by accident.
+   - `SuperBlock.format_version` selects the inode decoder family. `migration_cursor` makes a partially-applied migration an explicit, resumable state rather than an ambiguous one.
 
 ---
 
@@ -117,7 +125,7 @@ An inode stores:
 cargo build
 cargo build --release
 
-# 2. Run all standard unit and integration tests (38 test suites)
+# 2. Run all standard unit and integration tests (46 test suites)
 cargo test --release
 
 # 3. Run multi-block directory performance benchmark
@@ -126,7 +134,7 @@ cargo test --release --test dir_bench -- --ignored --nocapture
 # 4. Run Shuttle randomized concurrency permutation tests
 cargo test --test shuttle_concurrency_test
 
-# 5. Run Kani formal verification proofs (all 48 proofs)
+# 5. Run Kani formal verification proofs (all 59 proofs)
 cargo kani
 
 # 6. Run a specific Kani proof harness

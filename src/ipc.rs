@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::directory::DirectoryEntry;
 use crate::disk::{
     CompressionMode, DefragMode, DefragStats, DiskManager, DiskManagerError, FragmentationStats,
-    FsckReport,
+    FsckReport, MigrationStats,
 };
 use crate::inode::Inode;
 use crate::superblock::SuperBlock;
@@ -220,6 +220,8 @@ pub enum IpcRequest {
         output_path: Option<String>,
     },
     VerifyIntegrity,
+    /// Upgrade a legacy (v1) image to the current inode format.
+    Migrate,
     GetBlockCopy {
         block_id: u64,
     },
@@ -245,6 +247,7 @@ impl IpcRequest {
             IpcRequest::AnalyzeFragmentation => "AnalyzeFragmentation",
             IpcRequest::Defragment { .. } => "Defragment",
             IpcRequest::VerifyIntegrity => "VerifyIntegrity",
+            IpcRequest::Migrate => "Migrate",
             IpcRequest::GetBlockCopy { .. } => "GetBlockCopy",
         }
     }
@@ -264,6 +267,7 @@ pub enum IpcResponseData {
     Fragmentation(FragmentationStats),
     Defrag(DefragStats),
     Fsck(FsckReport),
+    Migration(MigrationStats),
     BlockCopy(Option<Vec<u8>>),
 }
 
@@ -732,6 +736,10 @@ impl IpcServer {
             IpcRequest::VerifyIntegrity => {
                 let report = dm.verify_integrity()?;
                 Ok(IpcResponseData::Fsck(report))
+            }
+            IpcRequest::Migrate => {
+                let stats = dm.migrate()?;
+                Ok(IpcResponseData::Migration(stats))
             }
             IpcRequest::GetBlockCopy { block_id } => {
                 let copy = dm.get_block_copy(block_id);

@@ -10,11 +10,13 @@ use crate::inode::Inode;
 use crate::io_engine::{ExtentList, IoBackend, IoEngine, ReadTarget};
 use crate::superblock::SuperBlock;
 use memmap2::{MmapMut, MmapOptions};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 use thiserror::Error;
+
+use rustc_hash::FxHashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +47,9 @@ pub enum DiskManagerError {
     /// Metadata WAL / journal error
     #[error("Journal error: {0}")]
     Journal(#[from] crate::journal::JournalError),
+    /// On-disk inode record could not be encoded or decoded
+    #[error("Inode format error: {0}")]
+    InodeFormat(#[from] crate::inode_format::InodeFormatError),
     /// Password required for encrypted filesystem
     #[error("Password required to access encrypted filesystem")]
     PasswordRequired,
@@ -206,7 +211,7 @@ struct DiskManagerInner {
     /// Search hint for sequential O(1) inode allocation
     pub free_inode_hint: u64,
     /// Inode cache for zero-copy metadata access (P2.2)
-    pub inode_cache: RwLock<HashMap<u64, Inode>>,
+    pub inode_cache: RwLock<BoundedInodeCache>,
     /// Per-directory name index: dir_inode_id -> DirIndex (P3.1)
     pub dir_cache: RwLock<HashMap<u64, DirIndex>>,
     /// Durability policy governing mmap msync behavior on mutations (P3.3)
@@ -513,6 +518,191 @@ fn sim_get_or_alloc_block(
     }
 }
 
+/// Maximum number of inodes kept in the in-memory inode cache.
+///
+/// Reaching this limit evicts a single entry; it no longer wipes the whole cache.
+pub const INODE_CACHE_CAPACITY: usize = 2048;
+
+/// Bounded inode cache with FIFO eviction.
+///
+/// The previous policy cleared the *entire* cache whenever it hit 2048 entries,
+/// which turned a single overflow into a cache stampede of up to 2048 synchronous
+/// inode-table reads. Eviction now removes exactly one entry in O(1), so the cost
+/// of an overflow is one miss instead of a full cache.
+///
+/// Lookup uses a fast integer hasher (`FxHashMap`) because keys are dense `u64`
+/// inode ids; SipHash spends most of its time on entropy mixing that buys nothing
+/// for this access pattern.
+struct BoundedInodeCache {
+    map: FxHashMap<u64, Inode>,
+    /// Inode ids in insertion order; the front is the next eviction victim.
+    order: VecDeque<u64>,
+    capacity: usize,
+}
+
+impl BoundedInodeCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            map: FxHashMap::default(),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn get(&self, inode_id: u64) -> Option<Inode> {
+        self.map.get(&inode_id).copied()
+    }
+
+    fn insert(&mut self, inode_id: u64, inode: Inode) {
+        // Re-inserting an existing id must not queue a second eviction slot.
+        if self.map.insert(inode_id, inode).is_none() {
+            self.order.push_back(inode_id);
+        }
+        while self.order.len() > self.capacity {
+            if let Some(victim) = self.order.pop_front() {
+                self.map.remove(&victim);
+            }
+        }
+    }
+
+    fn remove(&mut self, inode_id: u64) {
+        self.map.remove(&inode_id);
+        // Drop the queue slot too, otherwise a later re-insert of the same id would
+        // evict the *new* entry prematurely via a stale queue entry.
+        self.order.retain(|id| *id != inode_id);
+    }
+
+    /// Drop every cached inode.
+    ///
+    /// Used by a format migration, which rewrites every slot underneath the cache.
+    fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
+#[cfg(test)]
+mod inode_cache_tests {
+    use super::*;
+
+    fn ino(mode: crate::inode::FileType) -> Inode {
+        Inode::new(mode)
+    }
+
+    #[test]
+    fn test_cache_evicts_single_oldest_entry_not_all() {
+        // This is the regression the bounded cache exists for: the old policy wiped
+        // every entry, turning one overflow into a full cache stampede.
+        let mut c = BoundedInodeCache::with_capacity(4);
+        for i in 0..4u64 {
+            c.insert(i, ino(crate::inode::FileType::File));
+        }
+        assert_eq!(c.len(), 4);
+
+        c.insert(4, ino(crate::inode::FileType::File));
+        assert_eq!(c.len(), 4, "capacity must be respected");
+        assert!(c.get(0).is_none(), "oldest entry must be evicted");
+        for i in 1..=4u64 {
+            assert!(c.get(i).is_some(), "recent entry {i} must survive");
+        }
+    }
+
+    #[test]
+    fn test_cache_reinsert_does_not_queue_duplicate_eviction() {
+        let mut c = BoundedInodeCache::with_capacity(3);
+        for i in 0..3u64 {
+            c.insert(i, ino(crate::inode::FileType::File));
+        }
+        // Re-writing an already-cached id must not consume an extra queue slot.
+        c.insert(1, ino(crate::inode::FileType::Directory));
+        c.insert(3, ino(crate::inode::FileType::File));
+        // Eviction order must still be 0 then 1.
+        assert!(c.get(0).is_none(), "0 is oldest and must go first");
+        assert!(
+            c.get(1).is_some(),
+            "1 was refreshed, must survive 0's eviction"
+        );
+        assert!(c.get(3).is_some());
+    }
+
+    #[test]
+    fn test_cache_remove_then_reinsert_evicts_correct_entry() {
+        // A stale queue slot left by remove() would evict the *new* entry.
+        let mut c = BoundedInodeCache::with_capacity(3);
+        c.insert(10, ino(crate::inode::FileType::File));
+        c.insert(11, ino(crate::inode::FileType::File));
+        c.insert(12, ino(crate::inode::FileType::File));
+
+        c.remove(11);
+        c.insert(11, ino(crate::inode::FileType::Directory));
+        c.insert(13, ino(crate::inode::FileType::File));
+
+        assert!(
+            c.get(11).is_some(),
+            "re-inserted id must not be evicted by its stale queue entry"
+        );
+        assert!(c.get(10).is_none(), "10 is now oldest and must be evicted");
+    }
+
+    #[test]
+    fn test_cache_remove_drops_queue_slot() {
+        let mut c = BoundedInodeCache::with_capacity(2);
+        c.insert(1, ino(crate::inode::FileType::File));
+        c.insert(2, ino(crate::inode::FileType::File));
+        c.remove(1);
+        c.insert(3, ino(crate::inode::FileType::File));
+        // Only 2 and 3 remain; 1 must not linger as an eviction victim.
+        assert_eq!(c.len(), 2);
+        assert!(c.get(1).is_none());
+        assert!(c.get(2).is_some());
+        assert!(c.get(3).is_some());
+    }
+
+    #[test]
+    fn test_cache_clear_resets_both_structures() {
+        let mut c = BoundedInodeCache::with_capacity(4);
+        for i in 0..4u64 {
+            c.insert(i, ino(crate::inode::FileType::File));
+        }
+        c.clear();
+        assert_eq!(c.len(), 0);
+        assert!(c.get(0).is_none());
+        // Must still work after a clear.
+        c.insert(9, ino(crate::inode::FileType::File));
+        assert!(c.get(9).is_some());
+    }
+
+    #[test]
+    fn test_cache_insert_returns_stored_inode() {
+        let mut c = BoundedInodeCache::with_capacity(2);
+        let mut i = ino(crate::inode::FileType::File);
+        i.size = 4242;
+        c.insert(5, i);
+        assert_eq!(c.get(5).expect("present").size, 4242);
+        assert!(c.get(6).is_none());
+    }
+}
+
+/// Outcome of an on-disk format migration.
+///
+/// Returned by [`DiskManager::migrate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrationStats {
+    /// Inode record version the image used before migrating.
+    pub from_version: u32,
+    /// Inode record version the image uses after migrating.
+    pub to_version: u32,
+    /// Number of allocated inodes rewritten in this call.
+    pub inodes_rewritten: u64,
+    /// `true` when the image was already current and nothing was rewritten.
+    pub already_current: bool,
+}
+
 impl DiskManager {
     /// Open an existing OIFS image or create a new one if it doesn't exist.
     /// `size`: Total size in bytes (only used when creating a new file).
@@ -651,7 +841,7 @@ impl DiskManager {
             encryption_key,
             free_block_hint,
             free_inode_hint: 0,
-            inode_cache: RwLock::new(HashMap::with_capacity(1024)),
+            inode_cache: RwLock::new(BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY)),
             dir_cache: RwLock::new(HashMap::new()),
             durability_mode: std::sync::atomic::AtomicU8::new(DurabilityMode::Lazy as u8),
             io_engine: IoEngine::new(IoBackend::from_env().unwrap_or_default()),
@@ -1179,41 +1369,10 @@ impl DiskManager {
         guard: &DiskManagerInner,
         inode_id: u64,
         inode: &Inode,
-    ) -> Result<[u8; 256], DiskManagerError> {
-        let mut out = [0u8; 256];
-        let bs = guard.superblock.block_size as u64;
-        let base = usize::try_from(guard.superblock.inode_table_block)
-            .ok()
-            .and_then(|t| t.checked_mul(usize::try_from(bs).ok()?))
-            .and_then(|b| {
-                usize::try_from(inode_id)
-                    .ok()
-                    .and_then(|id| id.checked_mul(256))
-                    .and_then(|o| b.checked_add(o))
-            })
-            .ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Offset overflow",
-                ))
-            })?;
-        let end = base.checked_add(256).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Offset overflow",
-            ))
-        })?;
-        if end <= guard.mmap.len() {
-            out.copy_from_slice(&guard.mmap[base..end]);
-        }
-        let bytes = bincode::serialize(inode)?;
-        if bytes.len() > 256 {
-            return Err(DiskManagerError::Serialization(Box::new(
-                bincode::ErrorKind::SizeLimit,
-            )));
-        }
-        out[..bytes.len()].copy_from_slice(&bytes);
-        Ok(out)
+    ) -> Result<[u8; crate::inode_format::INODE_SLOT_SIZE], DiskManagerError> {
+        // Shares the encoder with the in-place writer, so the bytes replayed by the
+        // journal are exactly the bytes a clean mount would have written.
+        Self::encode_inode_slot(guard, inode_id, inode)
     }
 
     /// Write a metadata transaction to the WAL and flush it to stable storage.
@@ -1462,6 +1621,119 @@ impl DiskManager {
             guard.mmap.flush_range(start, header_len)?;
         }
         Ok(discarded)
+    }
+
+    /// `true` when this image still stores inodes in the legacy format and would
+    /// benefit from [`Self::migrate`].
+    pub fn needs_migration(&self) -> bool {
+        self.inner
+            .read()
+            .unwrap()
+            .superblock
+            .is_legacy_inode_format()
+    }
+
+    /// `true` when a previous migration was interrupted and is resumable.
+    pub fn migration_in_progress(&self) -> bool {
+        self.inner
+            .read()
+            .unwrap()
+            .superblock
+            .is_migration_in_progress()
+    }
+
+    /// Upgrade a legacy (v1) image to the current inode format, in place.
+    ///
+    /// # Crash safety
+    ///
+    /// Inodes are rewritten one at a time, so a crash can leave an image holding
+    /// both encodings. That intermediate state is *recorded* rather than ambiguous:
+    /// the superblock keeps advertising the legacy version while
+    /// [`SuperBlock::migration_cursor`] marks how far the rewrite has progressed,
+    /// and readers decode each slot according to its position (see
+    /// [`SuperBlock::inode_record_version_for`]). A crash therefore leaves a
+    /// readable, resumable image rather than a corrupt one.
+    ///
+    /// The journal is checkpointed first: a pending `WriteInode` op encoded in the
+    /// outgoing format would otherwise be replayed into a rewritten slot and destroy
+    /// the record.
+    ///
+    /// Idempotent — safe to call on an already-current image (returns zero work) and
+    /// safe to call again after an interrupted migration.
+    pub fn migrate(&self) -> Result<MigrationStats, DiskManagerError> {
+        let mut guard = self.inner.write().unwrap();
+        let from_version = guard.superblock.inode_record_version();
+        if !guard.superblock.is_legacy_inode_format() {
+            return Ok(MigrationStats {
+                from_version,
+                to_version: from_version,
+                inodes_rewritten: 0,
+                already_current: true,
+            });
+        }
+
+        // Must precede any rewrite: see the doc comment.
+        let sb = guard.superblock;
+        Self::checkpoint_journal(&mut guard.mmap, &sb)?;
+
+        // Snapshot the allocation bitmap so we know which slots are in use.
+        let inode_bitmap = Self::get_block_from_map(&guard.mmap, sb.inode_bitmap_block)
+            .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("inode bitmap not found")))?
+            .to_vec();
+
+        let mut cursor = guard.superblock.migration_cursor;
+        let mut rewritten = 0u64;
+
+        while cursor < sb.inode_count {
+            let inode_id = cursor;
+            let bit = inode_id as usize;
+            let allocated = inode_bitmap[bit / 8] & (1 << (bit % 8)) != 0;
+
+            if allocated {
+                // Decode with the *outgoing* format regardless of the cursor: a slot
+                // at the cursor has not been rewritten yet.
+                let (start, end) = Self::inode_slot_range(&guard, inode_id)?;
+                let inode = crate::inode_format::decode_v1(&guard.mmap[start..end])?;
+                let slot = crate::inode_format::encode_v2(&inode);
+                guard.mmap[start..end].copy_from_slice(&slot);
+                rewritten += 1;
+            }
+
+            cursor += 1;
+            // Persist progress periodically so an interrupted migration resumes near
+            // where it stopped instead of from zero.
+            if cursor.is_multiple_of(256) {
+                guard.superblock.migration_cursor = cursor;
+                Self::persist_superblock(&mut guard)?;
+                guard.mmap.flush()?;
+            }
+        }
+
+        // All slots rewritten: advertise the new format and clear the cursor.
+        guard.superblock.migration_cursor = 0;
+        guard.superblock.format_version = SuperBlock::FORMAT_VERSION_FIXED_INODE;
+        Self::persist_superblock(&mut guard)?;
+        guard.mmap.flush()?;
+        guard.inode_cache.write().unwrap().clear();
+
+        Ok(MigrationStats {
+            from_version,
+            to_version: SuperBlock::FORMAT_VERSION_FIXED_INODE,
+            inodes_rewritten: rewritten,
+            already_current: false,
+        })
+    }
+
+    /// Write the in-memory superblock back into block 0.
+    fn persist_superblock(guard: &mut DiskManagerInner) -> Result<(), DiskManagerError> {
+        let bytes = bincode::serialize(&guard.superblock)?;
+        if bytes.len() > BLOCK_SIZE {
+            return Err(DiskManagerError::Serialization(Box::new(
+                bincode::ErrorKind::SizeLimit,
+            )));
+        }
+        guard.mmap[0..bytes.len()].copy_from_slice(&bytes);
+        Ok(())
     }
 
     /// Prepare for a metadata mutation that is **not** covered by the WAL.
@@ -2612,58 +2884,94 @@ impl DiskManager {
     }
 
     // Internal Helpers working on guards
-    fn read_inode_internal(
+    /// Byte range of the 256-byte inode slot for `inode_id` within the image.
+    fn inode_slot_range(
         guard: &DiskManagerInner,
         inode_id: u64,
-    ) -> Result<Inode, DiskManagerError> {
-        // Fast path: check in-memory inode cache (P2.2)
-        if let Some(cached) = guard.inode_cache.read().unwrap().get(&inode_id) {
-            return Ok(*cached);
-        }
-
-        let inode_size = 256u64;
+    ) -> Result<(usize, usize), DiskManagerError> {
+        let inode_size = crate::inode_format::INODE_SLOT_SIZE as u64;
+        let overflow = || {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Offset overflow",
+            ))
+        };
         let base = guard
             .superblock
             .inode_table_block
             .checked_mul(BLOCK_SIZE as u64)
-            .ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Offset overflow",
-                ))
-            })?;
-        let id_off = inode_id.checked_mul(inode_size).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Offset overflow",
-            ))
-        })?;
-        let offset = base.checked_add(id_off).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Offset overflow",
-            ))
-        })?;
-        let end = offset.checked_add(inode_size).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Offset overflow",
-            ))
-        })?;
+            .ok_or_else(overflow)?;
+        let id_off = inode_id.checked_mul(inode_size).ok_or_else(overflow)?;
+        let offset = base.checked_add(id_off).ok_or_else(overflow)?;
+        let end = offset.checked_add(inode_size).ok_or_else(overflow)?;
         if end > guard.mmap.len() as u64 {
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "Bounds",
             )));
         }
-        let slice = &guard.mmap[offset as usize..end as usize];
-        let inode: Inode = bincode::deserialize(slice)?;
+        Ok((offset as usize, end as usize))
+    }
 
-        let mut cache = guard.inode_cache.write().unwrap();
-        if cache.len() >= 2048 {
-            cache.clear();
+    /// Build the exact bytes that will be stored in `inode_id`'s 256-byte slot.
+    ///
+    /// The write path and the journal's post-image path both go through here so they
+    /// cannot drift apart — the journal replays a full 256-byte record, so if the
+    /// in-place writer produced something different, recovery would diverge from a
+    /// clean mount.
+    ///
+    /// Format v2 writes the whole fixed record, giving deterministic, zero-padded,
+    /// byte-identical output. Format v1 keeps the historical behaviour of overlaying
+    /// only the `bincode` prefix on top of the slot's existing bytes, so an
+    /// unmigrated image is never rewritten in a way that differs from before.
+    fn encode_inode_slot(
+        guard: &DiskManagerInner,
+        inode_id: u64,
+        inode: &Inode,
+    ) -> Result<[u8; crate::inode_format::INODE_SLOT_SIZE], DiskManagerError> {
+        let mut slot = [0u8; crate::inode_format::INODE_SLOT_SIZE];
+
+        let version = guard.superblock.inode_record_version_for(inode_id);
+        if version < SuperBlock::FORMAT_VERSION_FIXED_INODE {
+            if let Ok((start, end)) = Self::inode_slot_range(guard, inode_id) {
+                slot.copy_from_slice(&guard.mmap[start..end]);
+            }
+            let payload = crate::inode_format::encode_v1_payload(inode)?;
+            if payload.len() > crate::inode_format::INODE_SLOT_SIZE {
+                return Err(DiskManagerError::Serialization(Box::new(
+                    bincode::ErrorKind::SizeLimit,
+                )));
+            }
+            slot[..payload.len()].copy_from_slice(&payload);
+            return Ok(slot);
         }
-        cache.insert(inode_id, inode);
+
+        slot = crate::inode_format::encode_v2(inode);
+        Ok(slot)
+    }
+
+    fn read_inode_internal(
+        guard: &DiskManagerInner,
+        inode_id: u64,
+    ) -> Result<Inode, DiskManagerError> {
+        // Fast path: check in-memory inode cache (P2.2)
+        if let Some(cached) = guard.inode_cache.read().unwrap().get(inode_id) {
+            return Ok(cached);
+        }
+
+        let (offset, end) = Self::inode_slot_range(guard, inode_id)?;
+        let slice = &guard.mmap[offset..end];
+        let inode = crate::inode_format::decode_for(
+            slice,
+            guard.superblock.inode_record_version_for(inode_id),
+        )
+        .map_err(|e| {
+            DiskManagerError::Io(std::io::Error::other(format!("Inode decode failed: {e}")))
+        })?;
+
+        // Eviction is handled inside the cache: inserting past capacity drops the
+        // single oldest entry instead of wiping the whole cache.
+        guard.inode_cache.write().unwrap().insert(inode_id, inode);
         Ok(inode)
     }
 
@@ -2672,49 +2980,11 @@ impl DiskManager {
         inode_id: u64,
         inode: &Inode,
     ) -> Result<(), DiskManagerError> {
-        let inode_size = 256u64;
-        let base = guard
-            .superblock
-            .inode_table_block
-            .checked_mul(BLOCK_SIZE as u64)
-            .ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Offset overflow",
-                ))
-            })?;
-        let id_off = inode_id.checked_mul(inode_size).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Offset overflow",
-            ))
-        })?;
-        let offset = base.checked_add(id_off).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Offset overflow",
-            ))
-        })?;
-        let end = offset.checked_add(inode_size).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Offset overflow",
-            ))
-        })?;
-        if end > guard.mmap.len() as u64 {
-            return Err(DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Bounds",
-            )));
-        }
-        let slice = &mut guard.mmap[offset as usize..end as usize];
-        let bytes = bincode::serialize(inode)?;
-        if bytes.len() > inode_size as usize {
-            return Err(DiskManagerError::Serialization(Box::new(
-                bincode::ErrorKind::SizeLimit,
-            )));
-        }
-        slice[..bytes.len()].copy_from_slice(&bytes);
+        let (offset, end) = Self::inode_slot_range(guard, inode_id)?;
+        // Single source of truth for the on-disk bytes, shared with the journal's
+        // post-image path so recovery can never diverge from a clean mount.
+        let slot = Self::encode_inode_slot(guard, inode_id, inode)?;
+        guard.mmap[offset..end].copy_from_slice(&slot);
 
         // Update in-memory inode cache (P2.2)
         guard.inode_cache.write().unwrap().insert(inode_id, *inode);
@@ -3076,7 +3346,7 @@ impl DiskManager {
         }
         {
             let mut ic = guard.inode_cache.write().unwrap();
-            ic.remove(&target_inode_id);
+            ic.remove(target_inode_id);
             ic.insert(parent_inode_id, parent_inode);
         }
         {
@@ -3205,7 +3475,7 @@ impl DiskManager {
         if target_inode_id < guard.free_inode_hint {
             guard.free_inode_hint = target_inode_id;
         }
-        guard.inode_cache.write().unwrap().remove(&target_inode_id);
+        guard.inode_cache.write().unwrap().remove(target_inode_id);
 
         // Update Parent Mtime
         let now = std::time::SystemTime::now()

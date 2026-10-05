@@ -45,11 +45,83 @@ pub struct SuperBlock {
     pub encryption_salt: [u8; 16],
     /// Encryption version/algorithm identifier
     pub encryption_version: u8,
+
+    /// On-disk format version.
+    ///
+    /// **Must stay the last field.** Appending it leaves every existing field at
+    /// its historical offset, so a pre-versioning image decodes cleanly: its
+    /// `bincode` payload is 82 bytes and the remainder of block 0 is zero padding,
+    /// so this field reads back as `0`, which [`Self::is_legacy_inode_format`]
+    /// correctly classifies as v1.
+    ///
+    /// Adding the field in the middle instead would shift every subsequent field
+    /// and silently corrupt every existing image.
+    pub format_version: u32,
+
+    /// Migration progress cursor: inode ids strictly below this have already been
+    /// rewritten in the current format.
+    ///
+    /// An in-place format migration rewrites one inode at a time, so a crash can
+    /// leave an image holding *both* encodings. A single `format_version` cannot
+    /// describe that state, and reading a v1 record with the v2 decoder (or worse,
+    /// reading it "successfully" with garbage values) would corrupt the mount.
+    ///
+    /// Recording the cursor makes the mixed state explicit and safe: readers decode
+    /// each slot according to its position, so a migration is simply resumable and
+    /// idempotent. `0` means "no migration in progress".
+    pub migration_cursor: u64,
 }
 
 impl SuperBlock {
     /// Magic number identifying the OIFS file system ("OIFS" in ASCII)
     pub const MAGIC: u32 = 0x4F494653; // "OIFS" in hex (O=4F, I=49, F=46, S=53)
+
+    /// Original layout: inodes stored as packed `bincode` records.
+    ///
+    /// Read-only. A v1 image stays fully usable, but keeps writing v1 records until
+    /// it is upgraded, so an image never contains a mix of both encodings.
+    pub const FORMAT_VERSION_LEGACY: u32 = 1;
+
+    /// Fixed 256-byte inode records with explicit little-endian fields and zeroed
+    /// reserved space (see [`crate::inode_format`]).
+    pub const FORMAT_VERSION_FIXED_INODE: u32 = crate::inode_format::INODE_FORMAT_V2;
+
+    /// Returns `true` when inodes are still stored in the legacy `bincode` layout.
+    ///
+    /// Both `0` (read from zero padding in a pre-versioning image) and `1` mean v1.
+    pub fn is_legacy_inode_format(&self) -> bool {
+        self.format_version < Self::FORMAT_VERSION_FIXED_INODE
+    }
+
+    /// Format version to use for the whole image when encoding or decoding inodes.
+    ///
+    /// Prefer [`Self::inode_record_version_for`] on the write path: during a
+    /// migration the answer legitimately differs per inode.
+    pub fn inode_record_version(&self) -> u32 {
+        if self.is_legacy_inode_format() {
+            Self::FORMAT_VERSION_LEGACY
+        } else {
+            Self::FORMAT_VERSION_FIXED_INODE
+        }
+    }
+
+    /// Format version to use for one specific inode slot.
+    ///
+    /// During a migration the superblock still advertises the legacy version (so an
+    /// interrupted migration stays readable), while slots below
+    /// [`Self::migration_cursor`] already hold current-format records.
+    pub fn inode_record_version_for(&self, inode_id: u64) -> u32 {
+        if !self.is_legacy_inode_format() || inode_id < self.migration_cursor {
+            Self::FORMAT_VERSION_FIXED_INODE
+        } else {
+            Self::FORMAT_VERSION_LEGACY
+        }
+    }
+
+    /// `true` while a format migration is partially applied.
+    pub fn is_migration_in_progress(&self) -> bool {
+        self.is_legacy_inode_format() && self.migration_cursor > 0
+    }
 
     /// Creates a new SuperBlock for a file system with the given total number of blocks
     ///
@@ -125,6 +197,9 @@ impl SuperBlock {
             encrypted: false,
             encryption_salt: [0u8; 16],
             encryption_version: 0,
+            // New images are always written in the current inode format.
+            format_version: Self::FORMAT_VERSION_FIXED_INODE,
+            migration_cursor: 0,
         }
     }
 
@@ -298,5 +373,146 @@ mod tests {
 
         let deserialized: SuperBlock = bincode::deserialize(&serialized).expect("deserialize sb");
         assert_eq!(deserialized, sb);
+    }
+
+    // --- Format versioning -------------------------------------------------
+
+    /// Serialize a SuperBlock the way a pre-versioning build would have: the same
+    /// struct minus `format_version`, followed by zero padding out to a full block.
+    ///
+    /// Returns the full block and the exact v1 payload length. The payload length is
+    /// measured from the serializer rather than by scanning for trailing zeros, which
+    /// would undercount whenever the last field happens to be zero.
+    fn legacy_block0(sb: &SuperBlock) -> (Vec<u8>, usize) {
+        #[derive(serde::Serialize)]
+        struct SuperBlockV1 {
+            magic: u32,
+            block_size: u32,
+            block_count: u64,
+            inode_bitmap_block: u64,
+            data_bitmap_block: u64,
+            inode_table_block: u64,
+            inode_count: u64,
+            data_block_start: u64,
+            root_inode: u64,
+            encrypted: bool,
+            encryption_salt: [u8; 16],
+            encryption_version: u8,
+        }
+        let v1 = SuperBlockV1 {
+            magic: sb.magic,
+            block_size: sb.block_size,
+            block_count: sb.block_count,
+            inode_bitmap_block: sb.inode_bitmap_block,
+            data_bitmap_block: sb.data_bitmap_block,
+            inode_table_block: sb.inode_table_block,
+            inode_count: sb.inode_count,
+            data_block_start: sb.data_block_start,
+            root_inode: sb.root_inode,
+            encrypted: sb.encrypted,
+            encryption_salt: sb.encryption_salt,
+            encryption_version: sb.encryption_version,
+        };
+        let payload = bincode::serialize(&v1).expect("serialize v1");
+        let payload_len = payload.len();
+        let mut block = vec![0u8; crate::BLOCK_SIZE];
+        block[..payload_len].copy_from_slice(&payload);
+        (block, payload_len)
+    }
+
+    #[test]
+    fn test_new_images_declare_the_fixed_inode_format() {
+        let sb = SuperBlock::new(2560);
+        assert_eq!(sb.format_version, SuperBlock::FORMAT_VERSION_FIXED_INODE);
+        assert!(!sb.is_legacy_inode_format());
+        assert_eq!(
+            sb.inode_record_version(),
+            SuperBlock::FORMAT_VERSION_FIXED_INODE
+        );
+    }
+
+    #[test]
+    fn test_journaled_new_images_also_declare_v2() {
+        let sb = SuperBlock::new_journaled(2560);
+        assert!(!sb.is_legacy_inode_format());
+        assert_eq!(
+            sb.inode_record_version(),
+            SuperBlock::FORMAT_VERSION_FIXED_INODE
+        );
+    }
+
+    #[test]
+    fn test_legacy_image_reads_back_as_v1() {
+        // The compatibility guarantee: a block 0 written before format_version
+        // existed must still parse, and must be classified as legacy so its inodes
+        // are decoded with the bincode reader rather than the fixed one.
+        let created = SuperBlock::new(2560);
+        let (block, _) = legacy_block0(&created);
+        let parsed: SuperBlock = bincode::deserialize(&block).expect("legacy block 0 parses");
+
+        // Every pre-existing field must survive intact.
+        assert_eq!(parsed.magic, created.magic);
+        assert_eq!(parsed.block_size, created.block_size);
+        assert_eq!(parsed.block_count, created.block_count);
+        assert_eq!(parsed.inode_bitmap_block, created.inode_bitmap_block);
+        assert_eq!(parsed.data_bitmap_block, created.data_bitmap_block);
+        assert_eq!(parsed.inode_table_block, created.inode_table_block);
+        assert_eq!(parsed.inode_count, created.inode_count);
+        assert_eq!(parsed.data_block_start, created.data_block_start);
+        assert_eq!(parsed.root_inode, created.root_inode);
+        assert_eq!(parsed.has_journal_layout(), created.has_journal_layout());
+
+        // format_version reads as 0 from the zero padding, which means legacy.
+        assert_eq!(parsed.format_version, 0);
+        assert!(parsed.is_legacy_inode_format());
+        assert_eq!(
+            parsed.inode_record_version(),
+            SuperBlock::FORMAT_VERSION_LEGACY
+        );
+    }
+
+    #[test]
+    fn test_explicit_v1_version_is_also_legacy() {
+        let mut sb = SuperBlock::new(2560);
+        sb.format_version = SuperBlock::FORMAT_VERSION_LEGACY;
+        assert!(sb.is_legacy_inode_format());
+        assert_eq!(sb.inode_record_version(), SuperBlock::FORMAT_VERSION_LEGACY);
+    }
+
+    #[test]
+    fn test_unknown_future_version_is_read_as_current_family() {
+        // Forward compatibility: a newer binary must not silently downgrade the
+        // decode family of an image written by a newer format.
+        let mut sb = SuperBlock::new(2560);
+        sb.format_version = 99;
+        assert!(!sb.is_legacy_inode_format());
+        assert_eq!(
+            sb.inode_record_version(),
+            SuperBlock::FORMAT_VERSION_FIXED_INODE
+        );
+    }
+
+    #[test]
+    fn test_appending_format_version_did_not_move_existing_offsets() {
+        // The reason format_version must be the final field: the v1 payload must be
+        // a byte-exact prefix of the v2 payload.
+        let sb = SuperBlock::new(2560);
+        let v2 = bincode::serialize(&sb).expect("serialize v2");
+        let (_, v1_len) = legacy_block0(&sb);
+
+        assert_eq!(
+            &v2[..v1_len],
+            &bincode::serialize(&SuperBlock {
+                format_version: SuperBlock::FORMAT_VERSION_LEGACY,
+                ..sb
+            })
+            .expect("serialize v2 as legacy")[..v1_len],
+            "all pre-existing fields must keep their exact byte offsets"
+        );
+        assert_eq!(
+            v2.len(),
+            v1_len + 4 + 8,
+            "the only difference must be the appended format_version + migration_cursor"
+        );
     }
 }

@@ -123,6 +123,8 @@ enum Commands {
     },
     /// Check filesystem structural consistency (fsck)
     Fsck,
+    /// Upgrade a legacy image to the current inode format
+    Migrate,
 }
 
 /// Helper function to read password securely from stdin (with terminal echo masked).
@@ -171,8 +173,8 @@ fn open_session(
     mode: &oifs::ipc::SessionMode,
     json_mode: bool,
 ) -> Result<OifsSession, Box<dyn std::error::Error>> {
-    match OifsSession::open_with_mode(image_path, 0, mode.clone(), None, false) {
-        Ok(s) => Ok(s),
+    let session = match OifsSession::open_with_mode(image_path, 0, mode.clone(), None, false) {
+        Ok(s) => s,
         Err(oifs::session::SessionError::DiskManager(
             oifs::disk::DiskManagerError::PasswordRequired,
         )) => {
@@ -194,10 +196,23 @@ fn open_session(
             }
 
             OifsSession::open_with_mode(image_path, 0, mode.clone(), Some(&password), false)
-                .map_err(|e| e.into())
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
         }
-        Err(e) => Err(e.into()),
+        Err(e) => return Err(e.into()),
+    };
+
+    // A legacy image stays fully usable, but says so once rather than silently
+    // running the slower, older encoding forever.
+    if !json_mode && session.needs_migration()? {
+        eprintln!(
+            "⚠️  This image uses the legacy inode format (v1). It is fully supported, but \
+             run `oifs -i {} migrate` to upgrade to v{}.",
+            image_path.display(),
+            oifs::superblock::SuperBlock::FORMAT_VERSION_FIXED_INODE
+        );
     }
+
+    Ok(session)
 }
 
 fn main() {
@@ -876,6 +891,46 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => {
                     return Err(e.into());
                 }
+            }
+            Ok(())
+        }
+        Commands::Migrate => {
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
+            }
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+
+            if dm.migration_in_progress()? {
+                let msg = "A previous migration was interrupted; resuming it.";
+                if cli.json {
+                    println!("{}", json!({"ok": true, "resumed": true, "message": msg}));
+                } else {
+                    println!("↻ {}", msg);
+                }
+            }
+
+            let stats = dm.migrate()?;
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "from_version": stats.from_version,
+                        "to_version": stats.to_version,
+                        "inodes_rewritten": stats.inodes_rewritten,
+                        "already_current": stats.already_current,
+                    })
+                );
+            } else if stats.already_current {
+                println!(
+                    "✅ Already at inode format v{}; nothing to do.",
+                    stats.to_version
+                );
+            } else {
+                println!(
+                    "✅ Migrated inode format v{} → v{} ({} inode(s) rewritten).",
+                    stats.from_version, stats.to_version, stats.inodes_rewritten
+                );
             }
             Ok(())
         }

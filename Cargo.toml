@@ -18,6 +18,8 @@ chrono = "0.4.43"
 clap = { version = "4.5.54", features = ["derive"] }
 ctrlc = "3.5.1"
 libc = "0.2.180"
+# Fast integer-keyed hasher for the bounded inode cache (integer keys, no DoS surface)
+rustc-hash = "2.1"
 memmap2 = "0.9.9"
 nix = { version = "0.31.1", features = ["fs"] }
 serde = { version = "1.0.228", features = ["derive"] }

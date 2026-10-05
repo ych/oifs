@@ -196,12 +196,12 @@ pub struct ReadRequest<'a> {
 ///
 /// Contains the file handle, memory-mapped region, and superblock.
 /// Protected by a Mutex for thread-safe concurrent access.
-struct DiskManagerInner {
+pub(crate) struct DiskManagerInner {
     /// Image file handle; payload reads use it directly under the `Pread` / `IoUring`
     /// backends (P3.2).
     file: File,
     /// Memory-mapped view of the file system image
-    mmap: MmapMut,
+    pub(crate) mmap: MmapMut,
     /// Cached copy of the superblock
     pub superblock: SuperBlock,
     /// Encryption key (if filesystem is encrypted)
@@ -310,7 +310,7 @@ impl DiskManagerInner {
 /// (which already costs a full scan) or `DIR_INDEX_BUILD_AFTER_SCANS` cold scans, the whole
 /// directory is indexed and `complete` is set, after which hits *and misses* are O(1).
 #[derive(Default)]
-struct DirIndex {
+pub(crate) struct DirIndex {
     complete: bool,
     cold_scans: u32,
     /// On-disk stored name (ciphertext on encrypted filesystems) -> inode id.
@@ -353,180 +353,6 @@ pub struct DiskManager {
     sync_mutex: Arc<Mutex<()>>,
 }
 
-/// Local simulation of block/inode allocation against copied bitmaps.
-///
-/// The journaled create path must know every allocated id *before* it touches the
-/// image, so the whole operation can be expressed as post-images and committed to
-/// the WAL first. Allocation here mirrors `SimpleBlockAllocator` semantics exactly
-/// (same hint handling, same "first free bit at or after hint" rule), so the ids it
-/// predicts are the ids the real allocator would hand out.
-struct AllocSim {
-    inode_bitmap: Vec<u8>,
-    data_bitmap: Vec<u8>,
-    data_start: u64,
-    free_inode_hint: u64,
-    free_block_hint: u64,
-    /// Blocks allocated during this simulation, in order.
-    fresh_blocks: Vec<u64>,
-}
-
-impl AllocSim {
-    fn new(
-        guard: &DiskManagerInner,
-        free_inode_hint: u64,
-        free_block_hint: u64,
-    ) -> Result<Self, DiskManagerError> {
-        let sb = guard.superblock;
-        let ib = DiskManager::get_block_from_map(&guard.mmap, sb.inode_bitmap_block)
-            .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("inode bitmap not found")))?;
-        let db = DiskManager::get_block_from_map(&guard.mmap, sb.data_bitmap_block)
-            .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("data bitmap not found")))?;
-        Ok(Self {
-            inode_bitmap: ib.to_vec(),
-            data_bitmap: db.to_vec(),
-            data_start: sb.data_block_start,
-            free_inode_hint,
-            free_block_hint,
-            fresh_blocks: Vec::new(),
-        })
-    }
-
-    fn alloc_inode(&mut self) -> Result<u64, DiskManagerError> {
-        let mut a = SimpleBlockAllocator::new(&mut self.inode_bitmap, 0);
-        let id = a
-            .allocate_with_hint(Some(self.free_inode_hint))
-            .map_err(DiskManagerError::Allocator)?;
-        self.free_inode_hint = id + 1;
-        Ok(id)
-    }
-
-    fn alloc_block(&mut self) -> Result<u64, DiskManagerError> {
-        let mut a = SimpleBlockAllocator::new(&mut self.data_bitmap, self.data_start);
-        let blk = a
-            .allocate_with_hint(Some(self.free_block_hint))
-            .map_err(DiskManagerError::Allocator)?;
-        self.free_block_hint = blk + 1;
-        self.fresh_blocks.push(blk);
-        Ok(blk)
-    }
-
-    fn is_fresh(&self, block_id: u64) -> bool {
-        self.fresh_blocks.contains(&block_id)
-    }
-}
-
-/// Mirror of [`DiskManager::get_or_alloc_block`] that allocates against [`AllocSim`].
-///
-/// Instead of writing pointer blocks into the image it records the equivalent
-/// `MetadataOp`s, so the resulting indirect-block structure is captured in the WAL
-/// transaction exactly as the legacy path would have written it.
-fn sim_get_or_alloc_block(
-    mmap: &MmapMut,
-    inode: &mut Inode,
-    logical_idx: usize,
-    sim: &mut AllocSim,
-    ops: &mut Vec<crate::journal::MetadataOp>,
-) -> Result<u64, DiskManagerError> {
-    use crate::inode::BlockPath;
-
-    fn ensure_root(
-        slot: &mut u64,
-        sim: &mut AllocSim,
-        ops: &mut Vec<crate::journal::MetadataOp>,
-    ) -> Result<u64, DiskManagerError> {
-        if *slot == 0 {
-            let blk = sim.alloc_block()?;
-            ops.push(crate::journal::MetadataOp::SetDataBitmap {
-                block_id: blk,
-                allocated: true,
-            });
-            *slot = blk;
-        }
-        Ok(*slot)
-    }
-
-    fn child(
-        mmap: &MmapMut,
-        parent_blk: u64,
-        idx: usize,
-        sim: &mut AllocSim,
-        ops: &mut Vec<crate::journal::MetadataOp>,
-    ) -> Result<u64, DiskManagerError> {
-        // A freshly allocated pointer block reads as all-zero, so its entries are 0.
-        let existing = if sim.is_fresh(parent_blk) {
-            0
-        } else {
-            DiskManager::read_block_ptr(mmap, parent_blk, idx)
-        };
-        if existing != 0 {
-            return Ok(existing);
-        }
-        let blk = sim.alloc_block()?;
-        ops.push(crate::journal::MetadataOp::SetDataBitmap {
-            block_id: blk,
-            allocated: true,
-        });
-        // Record the pointer write into the parent pointer block.
-        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-            block_id: parent_blk,
-            offset: (idx * 8) as u32,
-            data: blk.to_le_bytes().to_vec(),
-        });
-        Ok(blk)
-    }
-
-    match BlockPath::from_logical(logical_idx) {
-        Some(BlockPath::Direct(i)) => {
-            if inode.blocks[i] == 0 {
-                let blk = sim.alloc_block()?;
-                ops.push(crate::journal::MetadataOp::SetDataBitmap {
-                    block_id: blk,
-                    allocated: true,
-                });
-                inode.blocks[i] = blk;
-            }
-            Ok(inode.blocks[i])
-        }
-        Some(BlockPath::Single(i)) => {
-            let sib = ensure_root(&mut inode.blocks[10], sim, ops)?;
-            if sib == 0 {
-                return Ok(0);
-            }
-            child(mmap, sib, i, sim, ops)
-        }
-        Some(BlockPath::Double(a, b)) => {
-            let dib = ensure_root(&mut inode.blocks[11], sim, ops)?;
-            if dib == 0 {
-                return Ok(0);
-            }
-            let sib = child(mmap, dib, a, sim, ops)?;
-            if sib == 0 {
-                return Ok(0);
-            }
-            child(mmap, sib, b, sim, ops)
-        }
-        Some(BlockPath::Triple(a, b, c)) => {
-            let tib = ensure_root(&mut inode.triple_indirect, sim, ops)?;
-            if tib == 0 {
-                return Ok(0);
-            }
-            let dib = child(mmap, tib, a, sim, ops)?;
-            if dib == 0 {
-                return Ok(0);
-            }
-            let sib = child(mmap, dib, b, sim, ops)?;
-            if sib == 0 {
-                return Ok(0);
-            }
-            child(mmap, sib, c, sim, ops)
-        }
-        None => Err(DiskManagerError::Io(std::io::Error::new(
-            std::io::ErrorKind::FileTooLarge,
-            "File too large (max 513GB)",
-        ))),
-    }
-}
-
 /// Maximum number of inodes kept in the in-memory inode cache.
 ///
 /// Reaching this limit evicts a single entry; it no longer wipes the whole cache.
@@ -542,7 +368,7 @@ pub const INODE_CACHE_CAPACITY: usize = 2048;
 /// Lookup uses a fast integer hasher (`FxHashMap`) because keys are dense `u64`
 /// inode ids; SipHash spends most of its time on entropy mixing that buys nothing
 /// for this access pattern.
-struct BoundedInodeCache {
+pub(crate) struct BoundedInodeCache {
     map: FxHashMap<u64, Inode>,
     /// Inode ids in insertion order; the front is the next eviction victim.
     order: VecDeque<u64>,
@@ -592,197 +418,6 @@ impl BoundedInodeCache {
     #[cfg(test)]
     fn len(&self) -> usize {
         self.map.len()
-    }
-}
-
-#[cfg(test)]
-mod prune_pointer_tests {
-    use super::*;
-
-    const DIRECT: usize = 10;
-    const P: usize = 512;
-    const SINGLE_SPAN: usize = DIRECT + P;
-    const DOUBLE_SPAN: usize = DIRECT + P * (1 + P);
-
-    /// A small real mmap so `read_block_ptr` can walk planted pointer blocks.
-    fn scratch() -> (std::fs::File, memmap2::MmapMut) {
-        let path = std::env::temp_dir().join(format!(
-            "oifs_prune_{}_{}.img",
-            std::process::id(),
-            // Distinguish the tests without needing a random source.
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-            .expect("scratch file");
-        file.set_len(64 * 4096).expect("size");
-        let mmap = unsafe { memmap2::MmapOptions::new().map_mut(&file).expect("map") };
-        (file, mmap)
-    }
-
-    fn plant(mmap: &mut MmapMut, block: u64, entry: usize, value: u64) {
-        let off = block as usize * BLOCK_SIZE + entry * 8;
-        mmap[off..off + 8].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn ops_targeting(
-        ops: &[crate::journal::MetadataOp],
-        block: u64,
-    ) -> Vec<&crate::journal::MetadataOp> {
-        ops.iter()
-            .filter(|op| matches!(op, crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } if *block_id == block))
-            .collect()
-    }
-
-    #[test]
-    fn test_prune_direct_only_clears_direct_pointers() {
-        let (_f, mmap) = scratch();
-        let mut inode = Inode::new(crate::inode::FileType::File);
-        for i in 0..DIRECT {
-            inode.blocks[i] = 100 + i as u64;
-        }
-        inode.blocks[10] = 500;
-        let mut ops = Vec::new();
-        DiskManager::prune_stale_pointers(&mmap, &mut inode, 3, &mut ops).expect("prune");
-
-        // Only the first three direct blocks survive.
-        assert_eq!(&inode.blocks[..3], &[100u64, 101, 102]);
-        assert!(
-            inode.blocks[3..DIRECT].iter().all(|b| *b == 0),
-            "direct cleared"
-        );
-        assert_eq!(inode.blocks[10], 0, "indirect root dropped");
-        assert!(ops.is_empty(), "no pointer-block writes needed");
-    }
-
-    #[test]
-    fn test_prune_into_single_indirect_zeroes_tail_entries() {
-        let (_f, mmap) = scratch();
-        const SIB: u64 = 20;
-        let mut inode = Inode::new(crate::inode::FileType::File);
-        inode.blocks[10] = SIB;
-        let mut ops = Vec::new();
-        DiskManager::prune_stale_pointers(&mmap, &mut inode, DIRECT + 100, &mut ops)
-            .expect("prune");
-
-        let sib_ops = ops_targeting(&ops, SIB);
-        assert_eq!(sib_ops.len(), P - 100, "entries 100..512 must be zeroed");
-        // The first zeroed entry is 100; the last is 511.
-        let offsets: Vec<u32> = sib_ops
-            .iter()
-            .map(|op| match op {
-                crate::journal::MetadataOp::WriteBlockSlice { offset, .. } => *offset,
-                _ => unreachable!(),
-            })
-            .collect();
-        assert_eq!(
-            offsets.first().copied(),
-            Some(800u32),
-            "first zeroed entry is 100"
-        );
-        assert_eq!(
-            offsets.last().copied(),
-            Some(4088u32),
-            "last zeroed entry is 511"
-        );
-    }
-
-    #[test]
-    fn test_prune_into_double_indirect_zeroes_whole_second_level_blocks() {
-        let (_f, mut mmap) = scratch();
-        const DIB: u64 = 21;
-        const SIB2: u64 = 22;
-        let mut inode = Inode::new(crate::inode::FileType::File);
-        inode.blocks[11] = DIB;
-        // Give the first stale second-level block a real target.
-        plant(&mut mmap, DIB, 3, SIB2);
-        let mut ops = Vec::new();
-        DiskManager::prune_stale_pointers(&mmap, &mut inode, SINGLE_SPAN + 3, &mut ops)
-            .expect("prune");
-
-        // The dib entry is zeroed and the whole sib2 block is wiped.
-        assert!(!ops_targeting(&ops, DIB).is_empty(), "dib entry zeroed");
-        let sib2_ops = ops_targeting(&ops, SIB2);
-        assert_eq!(sib2_ops.len(), 1, "whole second-level block wiped");
-        match sib2_ops[0] {
-            crate::journal::MetadataOp::WriteBlockSlice { offset, data, .. } => {
-                assert_eq!(*offset, 0);
-                assert_eq!(data.len(), BLOCK_SIZE);
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn test_prune_into_triple_indirect_is_reachable_and_zeroes_third_level() {
-        // The triple-indirect branch needs a file larger than ~1 GB, so it cannot be
-        // reached by an integration test. Drive it directly instead.
-        const TIB: u64 = 23;
-        const DIB2: u64 = 24;
-        const SIB3: u64 = 25;
-        let (_f, mut mmap) = scratch();
-        // Plant a third-level chain reachable from the first stale `b`.
-        plant(&mut mmap, TIB, 1, DIB2);
-        plant(&mut mmap, DIB2, 2, SIB3);
-
-        let mut inode = Inode::new(crate::inode::FileType::File);
-        inode.triple_indirect = TIB;
-
-        let mut ops = Vec::new();
-        DiskManager::prune_stale_pointers(&mmap, &mut inode, DOUBLE_SPAN + 1, &mut ops)
-            .expect("prune");
-
-        // TIB entries from the first stale b upward are zeroed.
-        let tib_ops = ops_targeting(&ops, TIB);
-        assert_eq!(tib_ops.len(), P - 1, "tib entries 1..512 zeroed");
-
-        // The planted DIB2 is reached: one zeroing op per entry.
-        let dib2_ops = ops_targeting(&ops, DIB2);
-        assert_eq!(dib2_ops.len(), P, "all 512 second-level entries zeroed");
-        assert!(
-            ops_targeting(&ops, SIB3).len() == 1,
-            "leaf block must be wiped"
-        );
-    }
-
-    #[test]
-    fn test_prune_does_not_underflow_without_indirect_roots() {
-        // A missing root must not let the tier arithmetic underflow. `first_stale`
-        // sits below the single-indirect span while no indirect block exists.
-        let (_f, mmap) = scratch();
-        let mut inode = Inode::new(crate::inode::FileType::File);
-        // blocks[10] and blocks[11] left at 0.
-        inode.blocks[0] = 42;
-        let mut ops = Vec::new();
-        DiskManager::prune_stale_pointers(&mmap, &mut inode, DIRECT + 1, &mut ops)
-            .expect("prune must not panic");
-        assert!(ops.is_empty(), "nothing addressable to zero");
-    }
-
-    #[test]
-    fn test_prune_is_idempotent() {
-        let (_f, mmap) = scratch();
-        const SIB: u64 = 20;
-        let mut inode = Inode::new(crate::inode::FileType::File);
-        inode.blocks[10] = SIB;
-        let mut first = Vec::new();
-        DiskManager::prune_stale_pointers(&mmap, &mut inode, DIRECT + 10, &mut first)
-            .expect("prune");
-        let mut second = Vec::new();
-        DiskManager::prune_stale_pointers(&mmap, &mut inode, DIRECT + 10, &mut second)
-            .expect("prune");
-        assert_eq!(
-            first.len(),
-            second.len(),
-            "replaying the same prune must produce the same ops"
-        );
     }
 }
 
@@ -1128,6 +763,11 @@ impl DiskManager {
         Self::init_or_open(path, total_size, Some(password), true, true)
     }
 
+    #[cfg(test)]
+    pub(crate) fn inner_for_test(&self) -> &Arc<RwLock<DiskManagerInner>> {
+        &self.inner
+    }
+
     fn init_or_open<P: AsRef<Path>>(
         path: P,
         total_size: u64,
@@ -1295,7 +935,7 @@ impl DiskManager {
     }
 
     // Private helper for Inner
-    fn get_block_mut_from_map(mmap: &mut MmapMut, block_id: u64) -> Option<&mut [u8]> {
+    pub(crate) fn get_block_mut_from_map(mmap: &mut MmapMut, block_id: u64) -> Option<&mut [u8]> {
         let start = usize::try_from(block_id).ok()?.checked_mul(BLOCK_SIZE)?;
         let end = start.checked_add(BLOCK_SIZE)?;
         if end > mmap.len() {
@@ -2208,7 +1848,8 @@ impl DiskManager {
             )));
         }
 
-        let mut sim = AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
+        let mut sim =
+            crate::journal::AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
         let mut ops = Vec::new();
 
         // ---- Phase 2: simulate allocation ----
@@ -2280,7 +1921,7 @@ impl DiskManager {
             // allocate indirect pointer blocks once the directory exceeds 10 blocks;
             // those allocations are recorded as ops too.
             let new_blk_idx = num_blocks;
-            let phys_blk = sim_get_or_alloc_block(
+            let phys_blk = crate::journal::sim_get_or_alloc_block(
                 &guard.mmap,
                 &mut parent_inode,
                 new_blk_idx,
@@ -2980,164 +2621,6 @@ impl DiskManager {
         Ok(current_offset)
     }
 
-    /// Stage a payload write into the file described by `inode`.
-    ///
-    /// Allocates through `sim` so every id is known before the bitmaps are touched,
-    /// and records each metadata change in `ops` (bitmap bits, indirect pointer writes).
-    /// `used` collects the physical blocks touched, so the caller can free orphans and
-    /// flush exactly the right ranges.
-    ///
-    /// Payload bytes are written straight into the mapping and are deliberately **not**
-    /// recorded as ops: journaling user data would multiply WAL traffic by the file size
-    /// and defeat the point of a metadata journal. Durability instead comes from
-    /// ordering — the caller flushes these blocks *before* committing the metadata
-    /// transaction, so recovery never exposes an allocated-but-empty block.
-    fn stage_payload_write(
-        guard: &mut DiskManagerInner,
-        inode: &mut Inode,
-        phys_off: u64,
-        buf: &[u8],
-        sim: &mut AllocSim,
-        ops: &mut Vec<crate::journal::MetadataOp>,
-        used: &mut Vec<u64>,
-    ) -> Result<(), DiskManagerError> {
-        let mut written = 0usize;
-        let mut cur = phys_off;
-        while written < buf.len() {
-            let blk_idx = (cur / BLOCK_SIZE as u64) as usize;
-            let in_blk_off = (cur % BLOCK_SIZE as u64) as usize;
-            let n = std::cmp::min(buf.len() - written, BLOCK_SIZE - in_blk_off);
-
-            let phys = sim_get_or_alloc_block(&guard.mmap, inode, blk_idx, sim, ops)?;
-            if phys != 0 && !used.contains(&phys) {
-                used.push(phys);
-            }
-            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, phys) {
-                slice[in_blk_off..in_blk_off + n].copy_from_slice(&buf[written..written + n]);
-            }
-            written += n;
-            cur += n as u64;
-        }
-        Ok(())
-    }
-
-    /// Clear block pointers at or beyond the file's new logical length.
-    ///
-    /// When a file shrinks, the indirect pointer blocks keep stale entries pointing at
-    /// blocks that are no longer used. Those blocks are freed by the caller, so leaving
-    /// the pointers behind would leave the inode referencing blocks the bitmap says are
-    /// free — an inconsistency `fsck` reports as `missing_blocks`.
-    ///
-    /// Direct pointers live in the inode and are captured by the `WriteInode` op;
-    /// indirect entries are recorded as zeroing `WriteBlockSlice` ops so the change is
-    /// part of the same transaction.
-    fn prune_stale_pointers(
-        mmap: &MmapMut,
-        inode: &mut Inode,
-        first_stale: usize,
-        ops: &mut Vec<crate::journal::MetadataOp>,
-    ) -> Result<(), DiskManagerError> {
-        const POINTERS_PER_BLOCK: usize = 512; // 4096 / 8
-        const DIRECT: usize = 10;
-        const SINGLE_SPAN: usize = DIRECT + POINTERS_PER_BLOCK;
-        const DOUBLE_SPAN: usize = DIRECT + POINTERS_PER_BLOCK * (1 + POINTERS_PER_BLOCK);
-
-        if first_stale == 0 {
-            return Ok(());
-        }
-
-        // Direct pointers live in the inode and are captured by the WriteInode op.
-        for i in first_stale.min(DIRECT)..DIRECT {
-            inode.blocks[i] = 0;
-        }
-        if first_stale <= DIRECT {
-            // Nothing beyond the direct blocks survives; drop the indirect roots so
-            // they are freed along with the rest of the orphans.
-            inode.blocks[10] = 0;
-            inode.blocks[11] = 0;
-            inode.triple_indirect = 0;
-            return Ok(());
-        }
-
-        // Early exits depend only on `first_stale`, never on whether the pointer
-        // block happens to be present: a missing root must not let the arithmetic
-        // below underflow. Emitting ops is still gated on the root existing —
-        // block id 0 is the SuperBlock and must never be a write target.
-        if first_stale <= SINGLE_SPAN {
-            let sib = inode.blocks[10];
-            if sib != 0 {
-                let start = first_stale - DIRECT;
-                for idx in start..POINTERS_PER_BLOCK {
-                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                        block_id: sib,
-                        offset: (idx * 8) as u32,
-                        data: vec![0u8; 8],
-                    });
-                }
-            }
-            return Ok(());
-        }
-
-        if first_stale <= DOUBLE_SPAN {
-            let dib = inode.blocks[11];
-            if dib != 0 {
-                let start = first_stale - SINGLE_SPAN;
-                for a in start..POINTERS_PER_BLOCK {
-                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                        block_id: dib,
-                        offset: (a * 8) as u32,
-                        data: vec![0u8; 8],
-                    });
-                    let sib2 = DiskManager::read_block_ptr(mmap, dib, a);
-                    if sib2 == 0 {
-                        continue;
-                    }
-                    // A whole second-level block goes away; zero it entirely.
-                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                        block_id: sib2,
-                        offset: 0,
-                        data: vec![0u8; BLOCK_SIZE],
-                    });
-                }
-            }
-            return Ok(());
-        }
-
-        // Triple indirect: whole third-level blocks beyond the new length.
-        let tib = inode.triple_indirect;
-        if tib != 0 {
-            let start = first_stale - DOUBLE_SPAN;
-            for b in start..POINTERS_PER_BLOCK {
-                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                    block_id: tib,
-                    offset: (b * 8) as u32,
-                    data: vec![0u8; 8],
-                });
-                let dib2 = DiskManager::read_block_ptr(mmap, tib, b);
-                if dib2 == 0 {
-                    continue;
-                }
-                for c in 0..POINTERS_PER_BLOCK {
-                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                        block_id: dib2,
-                        offset: (c * 8) as u32,
-                        data: vec![0u8; 8],
-                    });
-                    let sib3 = DiskManager::read_block_ptr(mmap, dib2, c);
-                    if sib3 == 0 {
-                        continue;
-                    }
-                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                        block_id: sib3,
-                        offset: 0,
-                        data: vec![0u8; BLOCK_SIZE],
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Journaled counterpart of [`Self::write_data_with_filters`].
     ///
     /// Same four cases as the in-place path, but staged through [`AllocSim`] and
@@ -3172,7 +2655,8 @@ impl DiskManager {
         };
         let old_blocks = Self::collect_inode_blocks(&guard.mmap, &inode);
 
-        let mut sim = AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
+        let mut sim =
+            crate::journal::AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
         let mut ops: Vec<crate::journal::MetadataOp> = Vec::new();
         let mut used: Vec<u64> = Vec::new();
 
@@ -3193,7 +2677,7 @@ impl DiskManager {
         )?;
 
         // 1. Stage payload (bitmap bits still clear).
-        Self::stage_payload_write(
+        crate::journal::stage_payload_write(
             guard, &mut inode, phys_off, &buffer, &mut sim, &mut ops, &mut used,
         )?;
 
@@ -3206,7 +2690,12 @@ impl DiskManager {
             let needed_logical = (new_physical / BLOCK_SIZE as u64) as usize
                 + usize::from(new_physical % BLOCK_SIZE as u64 != 0);
             if needed_logical < old_logical {
-                Self::prune_stale_pointers(&guard.mmap, &mut inode, needed_logical, &mut ops)?;
+                crate::journal::prune_stale_pointers(
+                    &guard.mmap,
+                    &mut inode,
+                    needed_logical,
+                    &mut ops,
+                )?;
             }
         }
 
@@ -3626,7 +3115,7 @@ impl DiskManager {
     }
 
     #[inline]
-    fn read_block_ptr(mmap: &MmapMut, block_id: u64, entry_idx: usize) -> u64 {
+    pub(crate) fn read_block_ptr(mmap: &MmapMut, block_id: u64, entry_idx: usize) -> u64 {
         if let Some(slice) = Self::get_block_from_map(mmap, block_id) {
             let start = entry_idx * 8;
             if start + 8 <= slice.len() {
@@ -3738,7 +3227,7 @@ impl DiskManager {
         }
     }
 
-    fn get_block_from_map(mmap: &MmapMut, block_id: u64) -> Option<&[u8]> {
+    pub(crate) fn get_block_from_map(mmap: &MmapMut, block_id: u64) -> Option<&[u8]> {
         let start = usize::try_from(block_id).ok()?.checked_mul(BLOCK_SIZE)?;
         let end = start.checked_add(BLOCK_SIZE)?;
         if end > mmap.len() {

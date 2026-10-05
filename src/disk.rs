@@ -587,6 +587,197 @@ impl BoundedInodeCache {
 }
 
 #[cfg(test)]
+mod prune_pointer_tests {
+    use super::*;
+
+    const DIRECT: usize = 10;
+    const P: usize = 512;
+    const SINGLE_SPAN: usize = DIRECT + P;
+    const DOUBLE_SPAN: usize = DIRECT + P * (1 + P);
+
+    /// A small real mmap so `read_block_ptr` can walk planted pointer blocks.
+    fn scratch() -> (std::fs::File, memmap2::MmapMut) {
+        let path = std::env::temp_dir().join(format!(
+            "oifs_prune_{}_{}.img",
+            std::process::id(),
+            // Distinguish the tests without needing a random source.
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .expect("scratch file");
+        file.set_len(64 * 4096).expect("size");
+        let mmap = unsafe { memmap2::MmapOptions::new().map_mut(&file).expect("map") };
+        (file, mmap)
+    }
+
+    fn plant(mmap: &mut MmapMut, block: u64, entry: usize, value: u64) {
+        let off = block as usize * BLOCK_SIZE + entry * 8;
+        mmap[off..off + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn ops_targeting<'a>(
+        ops: &'a [crate::journal::MetadataOp],
+        block: u64,
+    ) -> Vec<&'a crate::journal::MetadataOp> {
+        ops.iter()
+            .filter(|op| matches!(op, crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } if *block_id == block))
+            .collect()
+    }
+
+    #[test]
+    fn test_prune_direct_only_clears_direct_pointers() {
+        let (_f, mut mmap) = scratch();
+        let mut inode = Inode::new(crate::inode::FileType::File);
+        for i in 0..DIRECT {
+            inode.blocks[i] = 100 + i as u64;
+        }
+        inode.blocks[10] = 500;
+        let mut ops = Vec::new();
+        DiskManager::prune_stale_pointers(&mmap, &mut inode, 3, &mut ops).expect("prune");
+
+        // Only the first three direct blocks survive.
+        assert_eq!(&inode.blocks[..3], &[100u64, 101, 102]);
+        assert!(
+            inode.blocks[3..DIRECT].iter().all(|b| *b == 0),
+            "direct cleared"
+        );
+        assert_eq!(inode.blocks[10], 0, "indirect root dropped");
+        assert!(ops.is_empty(), "no pointer-block writes needed");
+    }
+
+    #[test]
+    fn test_prune_into_single_indirect_zeroes_tail_entries() {
+        let (_f, mut mmap) = scratch();
+        const SIB: u64 = 20;
+        let mut inode = Inode::new(crate::inode::FileType::File);
+        inode.blocks[10] = SIB;
+        let mut ops = Vec::new();
+        DiskManager::prune_stale_pointers(&mmap, &mut inode, DIRECT + 100, &mut ops)
+            .expect("prune");
+
+        let sib_ops = ops_targeting(&ops, SIB);
+        assert_eq!(sib_ops.len(), P - 100, "entries 100..512 must be zeroed");
+        // The first zeroed entry is 100; the last is 511.
+        let offsets: Vec<u32> = sib_ops
+            .iter()
+            .map(|op| match op {
+                crate::journal::MetadataOp::WriteBlockSlice { offset, .. } => *offset,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(
+            offsets.first().copied(),
+            Some(800u32),
+            "first zeroed entry is 100"
+        );
+        assert_eq!(
+            offsets.last().copied(),
+            Some(4088u32),
+            "last zeroed entry is 511"
+        );
+    }
+
+    #[test]
+    fn test_prune_into_double_indirect_zeroes_whole_second_level_blocks() {
+        let (_f, mut mmap) = scratch();
+        const DIB: u64 = 21;
+        const SIB2: u64 = 22;
+        let mut inode = Inode::new(crate::inode::FileType::File);
+        inode.blocks[11] = DIB;
+        // Give the first stale second-level block a real target.
+        plant(&mut mmap, DIB, 3, SIB2);
+        let mut ops = Vec::new();
+        DiskManager::prune_stale_pointers(&mmap, &mut inode, SINGLE_SPAN + 3, &mut ops)
+            .expect("prune");
+
+        // The dib entry is zeroed and the whole sib2 block is wiped.
+        assert!(ops_targeting(&ops, DIB).len() >= 1, "dib entry zeroed");
+        let sib2_ops = ops_targeting(&ops, SIB2);
+        assert_eq!(sib2_ops.len(), 1, "whole second-level block wiped");
+        match sib2_ops[0] {
+            crate::journal::MetadataOp::WriteBlockSlice { offset, data, .. } => {
+                assert_eq!(*offset, 0);
+                assert_eq!(data.len(), BLOCK_SIZE);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_prune_into_triple_indirect_is_reachable_and_zeroes_third_level() {
+        // The triple-indirect branch needs a file larger than ~1 GB, so it cannot be
+        // reached by an integration test. Drive it directly instead.
+        const TIB: u64 = 23;
+        const DIB2: u64 = 24;
+        const SIB3: u64 = 25;
+        let (_f, mut mmap) = scratch();
+        // Plant a third-level chain reachable from the first stale `b`.
+        plant(&mut mmap, TIB, 1, DIB2);
+        plant(&mut mmap, DIB2, 2, SIB3);
+
+        let mut inode = Inode::new(crate::inode::FileType::File);
+        inode.triple_indirect = TIB;
+
+        let mut ops = Vec::new();
+        DiskManager::prune_stale_pointers(&mmap, &mut inode, DOUBLE_SPAN + 1, &mut ops)
+            .expect("prune");
+
+        // TIB entries from the first stale b upward are zeroed.
+        let tib_ops = ops_targeting(&ops, TIB);
+        assert_eq!(tib_ops.len(), P - 1, "tib entries 1..512 zeroed");
+
+        // The planted DIB2 is reached: one zeroing op per entry.
+        let dib2_ops = ops_targeting(&ops, DIB2);
+        assert_eq!(dib2_ops.len(), P, "all 512 second-level entries zeroed");
+        assert!(
+            ops_targeting(&ops, SIB3).len() == 1,
+            "leaf block must be wiped"
+        );
+    }
+
+    #[test]
+    fn test_prune_does_not_underflow_without_indirect_roots() {
+        // A missing root must not let the tier arithmetic underflow. `first_stale`
+        // sits below the single-indirect span while no indirect block exists.
+        let (_f, mut mmap) = scratch();
+        let mut inode = Inode::new(crate::inode::FileType::File);
+        // blocks[10] and blocks[11] left at 0.
+        inode.blocks[0] = 42;
+        let mut ops = Vec::new();
+        DiskManager::prune_stale_pointers(&mmap, &mut inode, DIRECT + 1, &mut ops)
+            .expect("prune must not panic");
+        assert!(ops.is_empty(), "nothing addressable to zero");
+    }
+
+    #[test]
+    fn test_prune_is_idempotent() {
+        let (_f, mut mmap) = scratch();
+        const SIB: u64 = 20;
+        let mut inode = Inode::new(crate::inode::FileType::File);
+        inode.blocks[10] = SIB;
+        let mut first = Vec::new();
+        DiskManager::prune_stale_pointers(&mmap, &mut inode, DIRECT + 10, &mut first)
+            .expect("prune");
+        let mut second = Vec::new();
+        DiskManager::prune_stale_pointers(&mmap, &mut inode, DIRECT + 10, &mut second)
+            .expect("prune");
+        assert_eq!(
+            first.len(),
+            second.len(),
+            "replaying the same prune must produce the same ops"
+        );
+    }
+}
+
+#[cfg(test)]
 mod inode_cache_tests {
     use super::*;
 
@@ -2592,33 +2783,41 @@ impl DiskManager {
     /// indirect entries are recorded as zeroing `WriteBlockSlice` ops so the change is
     /// part of the same transaction.
     fn prune_stale_pointers(
-        guard: &mut DiskManagerInner,
+        mmap: &MmapMut,
         inode: &mut Inode,
         first_stale: usize,
         ops: &mut Vec<crate::journal::MetadataOp>,
     ) -> Result<(), DiskManagerError> {
         const POINTERS_PER_BLOCK: usize = 512; // 4096 / 8
+        const DIRECT: usize = 10;
+        const SINGLE_SPAN: usize = DIRECT + POINTERS_PER_BLOCK;
+        const DOUBLE_SPAN: usize = DIRECT + POINTERS_PER_BLOCK * (1 + POINTERS_PER_BLOCK);
 
         if first_stale == 0 {
             return Ok(());
         }
 
-        // Direct pointers.
-        for i in first_stale.min(10)..10 {
+        // Direct pointers live in the inode and are captured by the WriteInode op.
+        for i in first_stale.min(DIRECT)..DIRECT {
             inode.blocks[i] = 0;
         }
-        if first_stale <= 10 {
-            // The whole single-indirect block is unreachable; drop the pointer so it is
-            // freed with the rest of the orphans.
+        if first_stale <= DIRECT {
+            // Nothing beyond the direct blocks survives; drop the indirect roots so
+            // they are freed along with the rest of the orphans.
             inode.blocks[10] = 0;
+            inode.blocks[11] = 0;
+            inode.triple_indirect = 0;
             return Ok(());
         }
 
-        // Single indirect.
-        let sib = inode.blocks[10];
-        if sib != 0 {
-            let start = first_stale - 10;
-            if start < POINTERS_PER_BLOCK {
+        // Early exits depend only on `first_stale`, never on whether the pointer
+        // block happens to be present: a missing root must not let the arithmetic
+        // below underflow. Emitting ops is still gated on the root existing —
+        // block id 0 is the SuperBlock and must never be a write target.
+        if first_stale <= SINGLE_SPAN {
+            let sib = inode.blocks[10];
+            if sib != 0 {
+                let start = first_stale - DIRECT;
                 for idx in start..POINTERS_PER_BLOCK {
                     ops.push(crate::journal::MetadataOp::WriteBlockSlice {
                         block_id: sib,
@@ -2627,71 +2826,63 @@ impl DiskManager {
                     });
                 }
             }
-            if first_stale <= 10 + POINTERS_PER_BLOCK {
-                return Ok(());
-            }
+            return Ok(());
         }
 
-        // Double indirect: clear whole second-level blocks beyond the new length.
-        let dib = inode.blocks[11];
-        if dib != 0 {
-            let start = first_stale - 10 - POINTERS_PER_BLOCK;
-            for a in start.min(POINTERS_PER_BLOCK)..POINTERS_PER_BLOCK {
-                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                    block_id: dib,
-                    offset: (a * 8) as u32,
-                    data: vec![0u8; 8],
-                });
-            }
-            for a in start.min(POINTERS_PER_BLOCK)..POINTERS_PER_BLOCK {
-                let sib2 = DiskManager::read_block_ptr(&guard.mmap, dib, a);
-                if sib2 == 0 {
-                    continue;
-                }
-                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                    block_id: sib2,
-                    offset: 0,
-                    data: vec![0u8; BLOCK_SIZE],
-                });
-            }
-            if first_stale <= 10 + POINTERS_PER_BLOCK * (1 + POINTERS_PER_BLOCK) {
-                return Ok(());
-            }
-        }
-
-        // Triple indirect: clear whole third-level blocks beyond the new length.
-        let tib = inode.triple_indirect;
-        if tib != 0 {
-            let span = 10 + POINTERS_PER_BLOCK * (1 + POINTERS_PER_BLOCK);
-            if first_stale > span && tib != 0 {
-                let start = first_stale - span;
-                let max_b = POINTERS_PER_BLOCK;
-                for b in start.min(max_b)..max_b {
+        if first_stale <= DOUBLE_SPAN {
+            let dib = inode.blocks[11];
+            if dib != 0 {
+                let start = first_stale - SINGLE_SPAN;
+                for a in start..POINTERS_PER_BLOCK {
                     ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                        block_id: tib,
-                        offset: (b * 8) as u32,
+                        block_id: dib,
+                        offset: (a * 8) as u32,
                         data: vec![0u8; 8],
                     });
-                    let dib2 = DiskManager::read_block_ptr(&guard.mmap, tib, b);
-                    if dib2 == 0 {
+                    let sib2 = DiskManager::read_block_ptr(mmap, dib, a);
+                    if sib2 == 0 {
                         continue;
                     }
-                    for c in 0..POINTERS_PER_BLOCK {
-                        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                            block_id: dib2,
-                            offset: (c * 8) as u32,
-                            data: vec![0u8; 8],
-                        });
-                        let sib3 = DiskManager::read_block_ptr(&guard.mmap, dib2, c);
-                        if sib3 == 0 {
-                            continue;
-                        }
-                        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                            block_id: sib3,
-                            offset: 0,
-                            data: vec![0u8; BLOCK_SIZE],
-                        });
+                    // A whole second-level block goes away; zero it entirely.
+                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                        block_id: sib2,
+                        offset: 0,
+                        data: vec![0u8; BLOCK_SIZE],
+                    });
+                }
+            }
+            return Ok(());
+        }
+
+        // Triple indirect: whole third-level blocks beyond the new length.
+        let tib = inode.triple_indirect;
+        if tib != 0 {
+            let start = first_stale - DOUBLE_SPAN;
+            for b in start..POINTERS_PER_BLOCK {
+                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                    block_id: tib,
+                    offset: (b * 8) as u32,
+                    data: vec![0u8; 8],
+                });
+                let dib2 = DiskManager::read_block_ptr(mmap, tib, b);
+                if dib2 == 0 {
+                    continue;
+                }
+                for c in 0..POINTERS_PER_BLOCK {
+                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                        block_id: dib2,
+                        offset: (c * 8) as u32,
+                        data: vec![0u8; 8],
+                    });
+                    let sib3 = DiskManager::read_block_ptr(mmap, dib2, c);
+                    if sib3 == 0 {
+                        continue;
                     }
+                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                        block_id: sib3,
+                        offset: 0,
+                        data: vec![0u8; BLOCK_SIZE],
+                    });
                 }
             }
         }
@@ -2828,7 +3019,7 @@ impl DiskManager {
             let needed_logical = (new_physical / BLOCK_SIZE as u64) as usize
                 + usize::from(new_physical % BLOCK_SIZE as u64 != 0);
             if needed_logical < old_logical {
-                Self::prune_stale_pointers(guard, &mut inode, needed_logical, &mut ops)?;
+                Self::prune_stale_pointers(&guard.mmap, &mut inode, needed_logical, &mut ops)?;
             }
         }
 

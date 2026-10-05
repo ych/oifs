@@ -1085,3 +1085,234 @@ fn test_journaled_write_leaves_no_leaked_blocks() {
         assert!(report.leaked_blocks.is_empty());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Gap 1: encrypted journaled files
+// ---------------------------------------------------------------------------
+
+fn seeded(img: &Img, password: &str, files: &[(&str, &[u8])]) {
+    let dm = oifs::DiskManager::create_encrypted(&img.path, 20 * MB, password).expect("create enc");
+    let root = dm.superblock().root_inode;
+    for (name, body) in files {
+        let f = dm.create_file(root, name).expect("create");
+        dm.write_data(f, 0, body, CompressionMode::Never)
+            .expect("write");
+    }
+}
+
+#[test]
+fn test_journaled_encrypted_roundtrip() {
+    let img = Img::new("enc_round");
+    let secret = b"top secret payload".as_slice();
+    {
+        let dm =
+            oifs::DiskManager::create_encrypted_journaled(&img.path, 20 * MB, "hunter2hunter2")
+                .expect("create encrypted journaled");
+        assert!(dm.has_journal(), "journal layout must be detected");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "secret.txt").expect("create");
+        dm.write_data(f, 0, secret, CompressionMode::Never)
+            .expect("write");
+        assert_eq!(dm.read_data(f).expect("read"), secret);
+    }
+    {
+        // Reopening replays any pending transaction; decryption must still work.
+        let dm = oifs::DiskManager::open_with_password(&img.path, 0, Some("hunter2hunter2"))
+            .expect("reopen encrypted");
+        let root = dm.superblock().root_inode;
+        let f = dm.lookup(root, "secret.txt").expect("lookup");
+        assert_eq!(dm.read_data(f).expect("read after replay"), secret);
+        let report = dm.verify_integrity().expect("fsck");
+        assert!(report.is_clean, "encrypted journaled image: {report:?}");
+    }
+}
+
+#[test]
+fn test_journaled_encrypted_reopen_requires_password() {
+    let img = Img::new("enc_pw");
+    {
+        let dm = oifs::DiskManager::create_encrypted(&img.path, 20 * MB, "hunter2hunter2")
+            .expect("create encrypted");
+        let root = dm.superblock().root_inode;
+        dm.create_file(root, "x").expect("create");
+    }
+    // DiskManager has no Debug impl, so expect_err is unavailable.
+    let err = match oifs::DiskManager::open(&img.path, 0) {
+        Ok(_) => panic!("encrypted image must refuse to open without a password"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("Password required"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_journaled_encrypted_multi_write_and_delete() {
+    let img = Img::new("enc_multi");
+    let a = b"first secret".as_slice();
+    let b = b"second secret".as_slice();
+    {
+        let dm = oifs::DiskManager::create_encrypted(&img.path, 20 * MB, "hunter2hunter2")
+            .expect("create");
+        let root = dm.superblock().root_inode;
+        let fa = dm.create_file(root, "a").expect("create a");
+        dm.write_data(fa, 0, a, CompressionMode::Never)
+            .expect("write a");
+        let fb = dm.create_file(root, "b").expect("create b");
+        dm.write_data(fb, 0, b, CompressionMode::Never)
+            .expect("write b");
+        dm.delete_file(root, "a").expect("delete a");
+        assert_eq!(dm.read_data(fb).expect("read b"), b);
+    }
+    {
+        let dm = oifs::DiskManager::open_with_password(&img.path, 0, Some("hunter2hunter2"))
+            .expect("reopen");
+        let root = dm.superblock().root_inode;
+        assert!(dm.lookup(root, "a").is_err(), "delete persisted");
+        let fb = dm.lookup(root, "b").expect("b survives");
+        assert_eq!(dm.read_data(fb).expect("read b"), b);
+    }
+}
+
+#[test]
+fn test_journaled_encrypted_data_is_not_plaintext_on_disk() {
+    let img = Img::new("enc_cipher");
+    let secret = b"PLAINTEXT_MARKER_1234567890";
+    {
+        let dm = oifs::DiskManager::create_encrypted(&img.path, 20 * MB, "hunter2hunter2")
+            .expect("create");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "s.bin").expect("create");
+        dm.write_data(f, 0, secret, CompressionMode::Never)
+            .expect("write");
+    }
+    let bytes = std::fs::read(&img.path).expect("read image");
+    assert!(
+        !bytes.windows(secret.len()).any(|w| w == secret),
+        "payload must not appear verbatim in the image"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Gap 2: durability-mode matrix on journaled images
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_journaled_write_across_all_durability_modes() {
+    use oifs::DurabilityMode;
+    let payload: Vec<u8> = (0..12 * 1024).map(|i| (i % 199) as u8).collect();
+
+    for (label, mode) in [
+        ("lazy", DurabilityMode::Lazy),
+        ("range_async", DurabilityMode::RangeAsync),
+        ("strict", DurabilityMode::Strict),
+        ("legacy", DurabilityMode::LegacyWholeMmapAsync),
+    ] {
+        let img = Img::new(&format!("dur_{label}"));
+        {
+            let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB)
+                .expect("create")
+                .with_durability_mode(mode);
+            assert_eq!(dm.durability_mode(), mode, "{label}: mode must stick");
+            let root = dm.superblock().root_inode;
+            let f = dm.create_file(root, "d.bin").expect("create");
+            dm.write_data(f, 0, &payload, CompressionMode::Never)
+                .expect("write");
+            assert_eq!(
+                dm.read_data(f).expect("read"),
+                payload.as_slice(),
+                "{label}"
+            );
+        }
+        {
+            let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+            let root = dm.superblock().root_inode;
+            let f = dm.lookup(root, "d.bin").expect("lookup");
+            assert_eq!(
+                dm.read_data(f).expect("read after replay"),
+                payload.as_slice(),
+                "{label}: content must survive"
+            );
+            let report = dm.verify_integrity().expect("fsck");
+            assert!(report.is_clean, "{label}: {report:?}");
+        }
+    }
+}
+
+#[test]
+fn test_journaled_repeated_writes_under_each_durability_mode() {
+    use oifs::DurabilityMode;
+    for (label, mode) in [
+        ("lazy", DurabilityMode::Lazy),
+        ("range_async", DurabilityMode::RangeAsync),
+        ("strict", DurabilityMode::Strict),
+        ("legacy", DurabilityMode::LegacyWholeMmapAsync),
+    ] {
+        let img = Img::new(&format!("dur_rep_{label}"));
+        let mut expect = Vec::new();
+        {
+            let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB)
+                .expect("create")
+                .with_durability_mode(mode);
+            let root = dm.superblock().root_inode;
+            let f = dm.create_file(root, "r.bin").expect("create");
+            for i in 0..8u8 {
+                let chunk = vec![i; 1500];
+                let at = expect.len() as u64;
+                dm.write_data(f, at, &chunk, CompressionMode::Never)
+                    .unwrap_or_else(|e| panic!("{label}: write {i}: {e}"));
+                expect.extend_from_slice(&chunk);
+            }
+            assert_eq!(dm.read_data(f).expect("read"), expect.as_slice(), "{label}");
+        }
+        {
+            let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+            let root = dm.superblock().root_inode;
+            let f = dm.lookup(root, "r.bin").expect("lookup");
+            assert_eq!(dm.read_data(f).expect("read"), expect.as_slice(), "{label}");
+        }
+    }
+}
+
+#[test]
+fn test_journaled_random_writes_under_each_durability_mode() {
+    use oifs::DurabilityMode;
+    for (label, mode) in [
+        ("lazy", DurabilityMode::Lazy),
+        ("range_async", DurabilityMode::RangeAsync),
+        ("strict", DurabilityMode::Strict),
+        ("legacy", DurabilityMode::LegacyWholeMmapAsync),
+    ] {
+        let img = Img::new(&format!("dur_rand_{label}"));
+        let base = vec![b'.'; 9000];
+        {
+            let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB)
+                .expect("create")
+                .with_durability_mode(mode);
+            let root = dm.superblock().root_inode;
+            let f = dm.create_file(root, "x.bin").expect("create");
+            dm.write_data(f, 0, &base, CompressionMode::Never)
+                .expect("init");
+            let mut want = base.clone();
+            for (i, at) in [100usize, 4200, 8000].iter().enumerate() {
+                let marker = [b'A' + i as u8; 5];
+                dm.write_data(f, *at as u64, &marker, CompressionMode::Never)
+                    .unwrap_or_else(|e| panic!("{label}: patch: {e}"));
+                want[*at..*at + 5].copy_from_slice(&marker);
+            }
+            assert_eq!(dm.read_data(f).expect("read"), want.as_slice(), "{label}");
+        }
+        {
+            let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+            let root = dm.superblock().root_inode;
+            let f = dm.lookup(root, "x.bin").expect("lookup");
+            let mut want = base.clone();
+            for (i, at) in [100usize, 4200, 8000].iter().enumerate() {
+                let marker = [b'A' + i as u8; 5];
+                want[*at..*at + 5].copy_from_slice(&marker);
+            }
+            assert_eq!(dm.read_data(f).expect("read"), want.as_slice(), "{label}");
+        }
+    }
+}

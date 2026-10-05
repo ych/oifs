@@ -1653,3 +1653,126 @@ fn test_write_plan_parity_journaled_vs_legacy() {
         assert_eq!(jdata, ldata, "{}: content", case.name);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Write-plan behaviour fixes (block reclamation + empty-frame append)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_short_uncompressed_write_at_offset_zero_is_a_partial_update() {
+    // Guards the boundary of the block-reclamation change: a *short* write at offset
+    // zero is a partial update, not a full overwrite, so it must not truncate or
+    // release anything. This is the `Raw` case, not `FullOverwrite`.
+    let img = Img::new("partial_zero");
+    let dm = oifs::DiskManager::open(&img.path, 20 * MB).expect("create");
+    let root = dm.superblock().root_inode;
+    let f = dm.create_file(root, "p.bin").expect("create");
+
+    dm.write_data(f, 0, &vec![b'.'; 200 * 1024], CompressionMode::Never)
+        .expect("write big");
+    let before = dm.analyze_fragmentation().expect("stats").used_blocks;
+
+    dm.write_data(f, 0, b"tiny", CompressionMode::Never)
+        .expect("short write");
+    let after = dm.analyze_fragmentation().expect("stats").used_blocks;
+
+    assert_eq!(after, before, "a partial write must not release blocks");
+    let data = dm.read_data(f).expect("read");
+    assert_eq!(
+        data.len(),
+        200 * 1024,
+        "the file must not have been truncated"
+    );
+    assert_eq!(&data[..4], b"tiny", "the first bytes are replaced");
+    assert!(
+        data[4..].iter().all(|b| *b == b'.'),
+        "the tail is untouched"
+    );
+}
+
+#[test]
+fn test_full_overwrite_releases_blocks_on_both_paths_compressed() {
+    let incompressible = |seed: u64, len: usize| -> Vec<u8> {
+        let mut s = seed | 1;
+        (0..len)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                (s & 0xFF) as u8
+            })
+            .collect()
+    };
+
+    for (label, journal) in [("legacy", false), ("journaled", true)] {
+        let img = Img::new(&format!("shrink_c_{label}"));
+        let dm = if journal {
+            oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create")
+        } else {
+            oifs::DiskManager::open(&img.path, 20 * MB).expect("create")
+        };
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "s.bin").expect("create");
+        dm.write_data(
+            f,
+            0,
+            &incompressible(0xABCD, 300 * 1024),
+            CompressionMode::Always,
+        )
+        .expect("write big");
+        let before = dm.analyze_fragmentation().expect("stats").used_blocks;
+        dm.write_data(
+            f,
+            0,
+            &incompressible(0x1111, 4 * 1024),
+            CompressionMode::Always,
+        )
+        .expect("overwrite small");
+        let after = dm.analyze_fragmentation().expect("stats").used_blocks;
+        assert!(
+            after < before,
+            "{label}: compressed full overwrite must release blocks ({before} -> {after})"
+        );
+    }
+}
+
+#[test]
+fn test_empty_compressed_append_emits_a_frame_on_both_paths() {
+    // A zero-length append used to be skipped entirely on the in-place path. Now it
+    // goes through the normal fast-append route: the physical stream grows by an
+    // empty Zstd frame while the logical size stays put.
+    for (label, journal) in [("legacy", false), ("journaled", true)] {
+        let img = Img::new(&format!("empty_app_{label}"));
+        let dm = if journal {
+            oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create")
+        } else {
+            oifs::DiskManager::open(&img.path, 20 * MB).expect("create")
+        };
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "e.bin").expect("create");
+
+        dm.write_data(f, 0, b"payload", CompressionMode::Always)
+            .expect("seed");
+        let before = dm.read_inode(f).expect("inode");
+
+        dm.write_data(f, before.size, b"", CompressionMode::Always)
+            .expect("empty append");
+        let after = dm.read_inode(f).expect("inode");
+
+        assert_eq!(
+            after.size, before.size,
+            "{label}: logical size must not change"
+        );
+        assert!(
+            after.compressed_size > before.compressed_size,
+            "{label}: an empty Zstd frame must have been appended ({} -> {})",
+            before.compressed_size,
+            after.compressed_size
+        );
+        assert_eq!(
+            dm.read_data(f).expect("read"),
+            b"payload",
+            "{label}: content intact"
+        );
+    }
+}

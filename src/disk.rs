@@ -928,13 +928,15 @@ impl WriteCase {
         matches!(self, WriteCase::FullOverwrite | WriteCase::Recompress)
     }
 
-    /// Whether the in-place path must release every previously allocated block first.
+    /// Whether the write must release every previously allocated block first.
     ///
-    /// Only `Recompress` did so historically. `FullOverwrite` overwrites from block
-    /// 0 and leaves any surplus blocks allocated, so that behaviour is preserved
-    /// rather than quietly "improved" in a change meant to be a pure refactor.
+    /// Both rewriting cases rebuild the payload from block 0, so any block the new
+    /// payload does not need is dead weight. `FullOverwrite` used to leave it
+    /// allocated, which leaked space on every shrink; `Recompress` has always
+    /// reclaimed it. Freeing requires clearing the inode's pointers too, otherwise
+    /// `get_or_alloc_block` would hand back a block that is no longer ours.
     fn frees_previous_blocks(&self) -> bool {
-        matches!(self, WriteCase::Recompress)
+        matches!(self, WriteCase::FullOverwrite | WriteCase::Recompress)
     }
 }
 
@@ -1025,17 +1027,6 @@ fn plan_write(
             && !filter_config.is_active()
             && inode.filter_typesize == 0
             && guard.encryption_key.is_none();
-        if fast_append && data.is_empty() {
-            // The in-place path treated an empty append as a no-op; emitting an empty
-            // Zstd frame instead would grow the file's physical size for no reason.
-            return Ok(WritePlan {
-                case: WriteCase::CompressedAppend,
-                phys_off: old_compressed_size,
-                new_size: old_size,
-                new_compressed_size: old_compressed_size,
-                buffer: Vec::new(),
-            });
-        }
         if fast_append {
             let frame = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
                 .map_err(DiskManagerError::Io)?;

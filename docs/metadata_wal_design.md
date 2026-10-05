@@ -378,3 +378,76 @@ pub fn recover_from_journal(mmap: &mut MmapMut, sb: &mut SuperBlock) -> Result<u
 * **Kani 證明 59 項全數通過**，其中日誌相關 6 項：環狀游標永不越界、checkpoint 必使環狀緩衝歸零、**CRC32C 必能偵測任意單一位元翻轉**（GF(2) 線性）、CRC 輸入區域為純函式且編解碼器一致、框架長度溢位在讀取前被拒、區塊切片邊界在寫入前被檢查。
 * 實機驗證：journaled 映像檔寫入 300KB 隨機資料後讀回**位元組完全一致**（`cmp` 驗證）；`fsck` CLEAN；300KB 寫入後刪除回到 3 blocks，無洩漏。
 * 全數 **47 個測試套件**、clippy（`-D warnings`）、fmt、Shuttle 隨機化並發測試皆通過。
+
+---
+
+## 9. 已知效能問題：`RangeAsync` 每個 range 一次 syscall
+
+**狀態：已記錄，未修復。** 這是日誌化寫入路徑目前最大的剩餘開銷。
+
+### 9.1 症狀
+
+`tests/journal_bench.rs::bench_durability_mode_cost`（500 × 512B，journaled 映像檔）：
+
+| 模式 | 寫入吞吐 |
+|------|----------|
+| `Lazy` | 197,307/s |
+| `RangeAsync` | 13,567/s |
+| `Strict` | 4,547/s |
+
+`RangeAsync` 雖比 `Strict` 快約 3 倍，卻比 `Lazy` **慢 14 倍**。一個名為「async」的模式比什麼都不做還慢，這本身就不合理。
+
+### 9.2 根因
+
+`DurabilityMode::RangeAsync` 的語義是「只要求 dirty range 被排入 writeback，不等待完成」，實作上確實如此：
+
+```rust
+DurabilityMode::RangeAsync => {
+    for &(offset, len) in ranges {
+        let _ = self.mmap.flush_async_range(offset, len);  // 每個 range 一次 msync(MS_ASYNC)
+    }
+}
+```
+
+問題在於 **`msync(MS_ASYNC)` 仍然是真實 syscall**。它只是不阻塞，不代表免費。同一個問題有兩處：
+
+1. `DiskManagerInner::sync_mutation_ranges()` — 每個 range 一次 syscall，**不做合併或排序**。
+2. `write_data_journaled()` 的 payload flush — `payload_ranges` 是**每個資料區塊一項**。
+
+`bench_range_async_scales_with_block_count` 量到的結果（10 個檔案）：
+
+| payload | 區塊數 | Lazy/s | RangeAsync/s | async/lazy |
+|---------|--------|--------|--------------|------------|
+| 512 B | 1 | 247,164 | 13,965 | 5.7% |
+| 16 KB | 4 | 194,017 | 10,829 | 5.6% |
+| 128 KB | 32 | 47,393 | 3,568 | 7.5% |
+| 1 MB | 256 | 8,457 | 659 | 7.8% |
+
+**測量結果的兩點解讀**（與最初的推測略有不同，紀錄實測為準）：
+
+* async 的相對開銷在**所有尺寸上都穩定在 Lazy 的 6~8%**，並非「檔案越大比例越糟」。
+* 原因是兩項成本疊加：**每筆操作的固定 range 數**（bitmap + inode + payload，約 4~5 個）設定了一個下限，使單區塊檔案就已慢 17 倍；**每區塊一次 syscall** 的成本則只在大型 payload 才逐漸主導（256 區塊時約 258 次 syscall ≈ 1.4ms）。
+
+也就是說，合併 range 能改善**大型檔案**（逐區塊成本），但**無法消除小檔案的固定下限**——那需要減少每筆操作的 range 數，而非合併。
+
+### 9.3 為何不能直接修掉
+
+把 async flush 全部去掉會讓 `RangeAsync` 退化成 `Lazy`——它至少承諾了 dirty range 會被排入 writeback。所以只能**減少 syscall 次量**，不能取消。
+
+### 9.4 候選方案（依推薦順序）
+
+1. **減少每筆操作的 range 數**（對小檔案影響最大）：目前 metadata 與 payload 各自送出 range。可統一由 `sync_mutation_ranges` 一次處理，或合併 bitmap 與 inode range（兩者在磁碟上相鄰）。這是唯一能拉低小檔案固定下限的作法。
+2. **合併相鄰 range**：先 sort + coalesce，將連續或重疊的 range 併成一次 `flush_async_range`。對大型 payload 效果顯著（把 256 次 syscall 壓成少數幾次），對小檔案幫助有限。
+3. **延遲到 `flush()`**：與 `Lazy` 差別不大，除非在 `flush()` 補上實際的 writeback 等待。
+
+方案 1 與 2 都只是改變 syscall 的**數量與顆粒度**，不改變 `RangeAsync` 的保證層級（dirty range 仍會被排入 writeback），因此是安全的。
+
+### 9.5 復現方式
+
+```bash
+cargo test --release --test journal_bench -- --ignored --nocapture -- --test-threads=1
+```
+
+對應 benchmark：`bench_durability_mode_cost`（模式間差異）與 `bench_range_async_scales_with_block_count`（async 與 Lazy 的比例隨尺寸的變化）。
+
+> 註：上述數字量測於開發機（macOS / APFS / APFS），用於顯示**相對倍數**而非絕對值。不同平台與檔案系統的絕對數字會不同，但「async 比不做還慢」的倍數關係是實作層面的（syscall 數量），跨平台應當成立。

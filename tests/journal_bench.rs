@@ -233,6 +233,50 @@ fn bench_payload_size_scaling() {
     }
 }
 
+/// Isolates the known `RangeAsync` issue documented in
+/// `docs/metadata_wal_design.md` §9: it issues one `msync(MS_ASYNC)` syscall per
+/// mutated range, with no coalescing, so the syscall count grows linearly with the
+/// number of blocks a write touches.
+///
+/// If a future change coalesces those ranges, the `async` column should improve —
+/// most visibly as a rising `async/lazy` ratio for large payloads.
+#[test]
+#[ignore]
+fn bench_range_async_scales_with_block_count() {
+    use oifs::DurabilityMode;
+
+    println!("\n=== RangeAsync syscall scaling (10 files each) ===");
+    println!(
+        "  {:>12} | {:>9} | {:>11} | {:>11}",
+        "payload", "blocks", "lazy/s", "async/s"
+    );
+    for size in [512usize, 16 * 1024, 128 * 1024, 1024 * 1024] {
+        let blocks = size.div_ceil(4096);
+        let mut rates = Vec::new();
+        for mode in [DurabilityMode::Lazy, DurabilityMode::RangeAsync] {
+            let img = Img::new(&format!("rasync_{size}_{mode:?}"));
+            let dm = DiskManager::open_journaled(&img.0, 200 * MB)
+                .expect("create")
+                .with_durability_mode(mode);
+            let root = dm.superblock().root_inode;
+            let payload = vec![5u8; size];
+            let t = Instant::now();
+            for i in 0..10 {
+                let id = dm.create_file(root, &format!("f{i}")).expect("create");
+                dm.write_data(id, 0, &payload, CompressionMode::Never)
+                    .expect("write");
+            }
+            rates.push(Row::rate(10, t.elapsed()));
+        }
+        println!(
+            "  {:>9} B | {:>9} | {:>11.0} | {:>11.0}",
+            size, blocks, rates[0], rates[1]
+        );
+    }
+    println!("  (async stays ~6-8% of lazy across all sizes: a fixed per-range cost,");
+    println!("   plus a per-block cost that only becomes dominant for large payloads)");
+}
+
 /// Read-heavy workloads should be unaffected by the journal; this guards against a
 /// regression where the write path change leaked into the read path.
 #[test]

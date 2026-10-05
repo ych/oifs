@@ -1316,3 +1316,194 @@ fn test_journaled_random_writes_under_each_durability_mode() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Checkpoint on flush
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_flush_retires_pending_transactions() {
+    let img = Img::new("flush_ckpt");
+    let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+    let root = dm.superblock().root_inode;
+    for i in 0..5 {
+        let f = dm.create_file(root, &format!("f{i}")).expect("create");
+        dm.write_data(f, 0, &vec![i as u8; 2048], CompressionMode::Never)
+            .expect("write");
+    }
+    assert!(
+        ring_tx_count(&fs::read(&img.path).expect("read")) > 0,
+        "writes must leave transactions pending before the flush"
+    );
+
+    dm.flush().expect("flush");
+
+    assert_eq!(
+        ring_tx_count(&fs::read(&img.path).expect("read")),
+        0,
+        "flush makes the image durable, so pending transactions can be retired"
+    );
+    // Everything is still readable.
+    for i in 0..5 {
+        let f = dm.lookup(root, &format!("f{i}")).expect("lookup");
+        assert_eq!(dm.read_data(f).expect("read").len(), 2048);
+    }
+}
+
+#[test]
+fn test_flush_then_crash_replays_nothing() {
+    let img = Img::new("flush_noop");
+    {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let f = dm.create_file(root, "a.bin").expect("create");
+        dm.write_data(f, 0, &vec![7u8; 9000], CompressionMode::Never)
+            .expect("write");
+        dm.flush().expect("flush");
+    }
+    // Remount replays nothing, because the ring was already retired.
+    let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+    let root = dm.superblock().root_inode;
+    let f = dm.lookup(root, "a.bin").expect("lookup");
+    assert_eq!(dm.read_data(f).expect("read"), vec![7u8; 9000]);
+    assert_eq!(ring_tx_count(&fs::read(&img.path).expect("read")), 0);
+}
+
+#[test]
+fn test_writes_after_flush_are_pending_again() {
+    let img = Img::new("flush_then_write");
+    let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create");
+    let root = dm.superblock().root_inode;
+    let f = dm.create_file(root, "a").expect("create");
+    dm.flush().expect("flush");
+    assert_eq!(ring_tx_count(&fs::read(&img.path).expect("read")), 0);
+
+    dm.write_data(f, 0, b"after flush", CompressionMode::Never)
+        .expect("write after flush");
+    assert!(
+        ring_tx_count(&fs::read(&img.path).expect("read")) > 0,
+        "a write after the flush must be pending again"
+    );
+    assert_eq!(dm.read_data(f).expect("read"), b"after flush");
+
+    // And a second flush retires it.
+    dm.flush().expect("second flush");
+    assert_eq!(ring_tx_count(&fs::read(&img.path).expect("read")), 0);
+}
+
+#[test]
+fn test_flush_is_noop_on_non_journaled_image() {
+    let img = Img::new("flush_plain");
+    let dm = oifs::DiskManager::open(&img.path, 20 * MB).expect("create");
+    let root = dm.superblock().root_inode;
+    dm.create_file(root, "x").expect("create");
+    dm.flush()
+        .expect("flush on a legacy image must still succeed");
+    assert!(dm.lookup(root, "x").is_ok());
+}
+
+#[test]
+fn test_flush_preserves_data_on_strict_and_lazy() {
+    use oifs::DurabilityMode;
+    for (label, mode) in [
+        ("lazy", DurabilityMode::Lazy),
+        ("range_async", DurabilityMode::RangeAsync),
+        ("strict", DurabilityMode::Strict),
+    ] {
+        let img = Img::new(&format!("flush_mode_{label}"));
+        let payload: Vec<u8> = (0..5000).map(|i| (i % 251) as u8).collect();
+        {
+            let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB)
+                .expect("create")
+                .with_durability_mode(mode);
+            let root = dm.superblock().root_inode;
+            let f = dm.create_file(root, "m.bin").expect("create");
+            dm.write_data(f, 0, &payload, CompressionMode::Never)
+                .expect("write");
+            dm.flush().expect("flush");
+            assert_eq!(
+                dm.read_data(f).expect("read"),
+                payload.as_slice(),
+                "{label}"
+            );
+        }
+        {
+            let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+            let root = dm.superblock().root_inode;
+            let f = dm.lookup(root, "m.bin").expect("lookup");
+            assert_eq!(
+                dm.read_data(f).expect("read"),
+                payload.as_slice(),
+                "{label}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_concurrent_writes_and_flush_keep_ring_consistent() {
+    // The subtle case flush() is designed for: a transaction committed *during* the
+    // flush must not be retired, because that flush never made it durable.
+    let img = Img::new("flush_race");
+    let dm =
+        std::sync::Arc::new(oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create"));
+    let root = dm.superblock().root_inode;
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let flusher = {
+        let dm = dm.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = dm.flush();
+                std::thread::yield_now();
+            }
+        })
+    };
+
+    let mut expected = std::collections::BTreeMap::new();
+    for t in 0..4 {
+        let worker = dm.clone();
+        let handle = std::thread::spawn(move || {
+            for i in 0..25 {
+                let name = format!("w{t}_{i}");
+                if let Ok(id) = worker.create_file(root, &name) {
+                    let body = vec![(t as u8) << 4 | i as u8; 300];
+                    let _ = worker.write_data(id, 0, &body, CompressionMode::Never);
+                }
+            }
+        });
+        handle.join().expect("writer");
+        for i in 0..25 {
+            let name = format!("w{t}_{i}");
+            if dm.lookup(root, &name).is_ok() {
+                expected.insert(name, vec![(t as u8) << 4 | i as u8; 300]);
+            }
+        }
+    }
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    flusher.join().expect("flusher");
+
+    // Everything written must still read back correctly.
+    for (name, body) in &expected {
+        let f = dm
+            .lookup(root, name)
+            .unwrap_or_else(|_| panic!("{name} vanished"));
+        assert_eq!(dm.read_data(f).expect("read"), body.as_slice(), "{name}");
+    }
+    drop(dm);
+
+    let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+    for (name, body) in &expected {
+        let f = dm
+            .lookup(root, name)
+            .unwrap_or_else(|_| panic!("{name} lost on remount"));
+        assert_eq!(
+            dm.read_data(f).expect("read after remount"),
+            body.as_slice()
+        );
+    }
+    let report = dm.verify_integrity().expect("fsck");
+    assert!(report.is_clean, "concurrent flush + writes: {report:?}");
+}

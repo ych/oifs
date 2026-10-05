@@ -634,7 +634,7 @@ mod prune_pointer_tests {
 
     #[test]
     fn test_prune_direct_only_clears_direct_pointers() {
-        let (_f, mut mmap) = scratch();
+        let (_f, mmap) = scratch();
         let mut inode = Inode::new(crate::inode::FileType::File);
         for i in 0..DIRECT {
             inode.blocks[i] = 100 + i as u64;
@@ -655,7 +655,7 @@ mod prune_pointer_tests {
 
     #[test]
     fn test_prune_into_single_indirect_zeroes_tail_entries() {
-        let (_f, mut mmap) = scratch();
+        let (_f, mmap) = scratch();
         const SIB: u64 = 20;
         let mut inode = Inode::new(crate::inode::FileType::File);
         inode.blocks[10] = SIB;
@@ -747,7 +747,7 @@ mod prune_pointer_tests {
     fn test_prune_does_not_underflow_without_indirect_roots() {
         // A missing root must not let the tier arithmetic underflow. `first_stale`
         // sits below the single-indirect span while no indirect block exists.
-        let (_f, mut mmap) = scratch();
+        let (_f, mmap) = scratch();
         let mut inode = Inode::new(crate::inode::FileType::File);
         // blocks[10] and blocks[11] left at 0.
         inode.blocks[0] = 42;
@@ -759,7 +759,7 @@ mod prune_pointer_tests {
 
     #[test]
     fn test_prune_is_idempotent() {
-        let (_f, mut mmap) = scratch();
+        let (_f, mmap) = scratch();
         const SIB: u64 = 20;
         let mut inode = Inode::new(crate::inode::FileType::File);
         inode.blocks[10] = SIB;
@@ -1564,6 +1564,28 @@ impl DiskManager {
         // Shares the encoder with the in-place writer, so the bytes replayed by the
         // journal are exactly the bytes a clean mount would have written.
         Self::encode_inode_slot(guard, inode_id, inode)
+    }
+
+    /// Immutable view of the journal region, if the image is large enough.
+    fn journal_region_ref<'m>(
+        mmap: &'m MmapMut,
+        sb: &SuperBlock,
+    ) -> Result<&'m [u8], DiskManagerError> {
+        let bs = sb.block_size as u64;
+        let start = Self::journal_region_start(bs).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::other("Journal offset overflow"))
+        })?;
+        let end = start
+            .checked_add(Self::journal_region_len(bs))
+            .ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::other("Journal region overflow"))
+            })?;
+        if end > mmap.len() {
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Journal region does not fit in image",
+            )));
+        }
+        Ok(&mmap[start..end])
     }
 
     /// Write a metadata transaction to the WAL and flush it to stable storage.
@@ -3833,9 +3855,59 @@ impl DiskManager {
         // 1. Ensure only 1 flush operation performs msync at any given time (prevents redundant writeback storms)
         let _sync_guard = self.sync_mutex.lock().unwrap();
 
-        // 2. Acquire shared read lock: prevents concurrent writers, but allows all concurrent readers to proceed!
-        let guard = self.inner.read().unwrap();
-        guard.mmap.flush().map_err(DiskManagerError::Io)
+        // 2. Snapshot the ring head under the shared lock, *before* the flush.
+        //
+        // The flush itself must stay on a read lock so concurrent readers are not
+        // blocked (P4.5). But reclaiming the ring needs a write lock, and taking one
+        // only after the flush opens a window in which another thread can commit a
+        // new transaction — one the flush never made durable. Reclaiming up to this
+        // snapshot discards only what the flush actually covered.
+        let journal_head_before_flush = {
+            let guard = self.inner.read().unwrap();
+            let sb = guard.superblock;
+            if sb.has_journal_layout() {
+                let bs = sb.block_size as u64;
+                let region = Self::journal_region_ref(&guard.mmap, &sb)?;
+                let header_len = usize::try_from(bs)
+                    .unwrap_or(0)
+                    .min(crate::journal::JOURNAL_HEADER_LEN);
+                // Reading the header directly avoids opening a mutable ring just to
+                // look at one cursor.
+                crate::journal::JournalState::decode(&region[..header_len]).map(|s| s.head)
+            } else {
+                None
+            }
+        };
+
+        // 3. Acquire shared read lock: prevents concurrent writers, but allows all
+        // concurrent readers to proceed.
+        {
+            let guard = self.inner.read().unwrap();
+            guard.mmap.flush().map_err(DiskManagerError::Io)?;
+        }
+
+        // 4. Everything committed up to the snapshot is now on disk, so those
+        // transactions can be retired. Anything newer stays pending for recovery.
+        if let Some(head) = journal_head_before_flush {
+            let mut guard = self.inner.write().unwrap();
+            let sb = guard.superblock;
+            if sb.has_journal_layout() {
+                let bs = sb.block_size as u64;
+                let start = Self::journal_region_start(bs).unwrap_or(0);
+                let header_len = usize::try_from(bs)
+                    .unwrap_or(0)
+                    .min(crate::journal::JOURNAL_HEADER_LEN);
+                {
+                    let region = Self::journal_region(&mut guard.mmap, &sb)?;
+                    let mut ring = crate::journal::JournalRing::open(region, bs)?;
+                    ring.checkpoint_to(head);
+                }
+                if header_len > 0 {
+                    guard.mmap.flush_range(start, header_len)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Asynchronously flushes dirty pages in background without blocking concurrent readers.

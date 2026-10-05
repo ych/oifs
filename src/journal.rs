@@ -865,13 +865,43 @@ impl<'a> JournalRing<'a> {
 
     /// Discard transactions that have already been applied in place, freeing the ring.
     ///
-    /// Sets `tail = head`, so `used()` becomes 0 and a subsequent `recover()` replays
+    /// Sets `tail := head`, so `used()` becomes 0 and a subsequent `recover()` replays
     /// nothing. Only call this once the in-place bytes are durable: discarding a
     /// transaction that was committed but not yet applied would lose the only record
     /// of a half-finished mutation.
+    ///
+    /// Callers that cannot hold the write lock across their flush should use
+    /// [`Self::checkpoint_to`] with a snapshot of `head` taken beforehand.
     pub fn checkpoint(&mut self) {
-        self.state.tail = self.state.head;
-        self.persist();
+        let head = self.state.head;
+        self.checkpoint_to(head);
+    }
+
+    /// Advance `tail` to `cursor`, discarding every transaction before it.
+    ///
+    /// `cursor` must be a frame boundary recorded earlier — normally `head` as it read
+    /// *before* a flush began. Anything committed after that snapshot stays pending,
+    /// because the flush that made `cursor` durable did not cover it.
+    ///
+    /// The tail only moves forward, and never past `head`.
+    pub fn checkpoint_to(&mut self, cursor: u64) {
+        let ring = self.ring_bytes;
+        if ring == 0 {
+            return;
+        }
+        let head = self.state.head % ring;
+        let tail = self.state.tail % ring;
+        let target = cursor % ring;
+        if target == tail {
+            return;
+        }
+        // Distances are measured modulo the ring so a wrapped cursor compares
+        // correctly. Accept the target only when it lies between tail and head.
+        let dist_to_head = |a: u64| (head + ring - (a % ring)) % ring;
+        if dist_to_head(target) <= dist_to_head(tail) {
+            self.state.tail = target;
+            self.persist();
+        }
     }
 
     /// Mark the filesystem as cleanly unmounted (checkpoint complete).
@@ -1385,5 +1415,446 @@ mod tests {
         let legacy = SuperBlock::new(2560);
         assert!(!is_journaled_layout(&legacy));
         assert!(journaled_inode_table_block() > legacy.inode_table_block);
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    fn make() -> (Vec<u8>, u64) {
+        let bs = 4096u64;
+        let total = usize::try_from(bs * (1 + JOURNAL_RING_BLOCKS)).unwrap();
+        (vec![0u8; total], bs)
+    }
+
+    #[test]
+    fn test_checkpoint_to_advances_only_up_to_head() {
+        let (mut region, bs) = make();
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        ring.append(&[MetadataOp::SetInodeBitmap {
+            inode_id: 1,
+            allocated: true,
+        }])
+        .expect("t1");
+        let after_one = ring.state().head;
+        ring.append(&[MetadataOp::SetInodeBitmap {
+            inode_id: 2,
+            allocated: true,
+        }])
+        .expect("t2");
+
+        // Retiring only the first transaction must leave the second pending.
+        ring.checkpoint_to(after_one);
+        let st = ring.state();
+        assert_eq!(st.tail, after_one, "tail advances to the snapshot");
+        assert_eq!(ring.pending_transactions(), 1, "the later tx stays pending");
+        assert!(st.head != st.tail, "ring is not empty yet");
+    }
+
+    #[test]
+    fn test_checkpoint_to_never_moves_tail_backwards() {
+        let (mut region, bs) = make();
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        for i in 0..4u64 {
+            ring.append(&[MetadataOp::SetInodeBitmap {
+                inode_id: i,
+                allocated: true,
+            }])
+            .expect("append");
+        }
+        let mid = ring.state().head;
+        ring.checkpoint_to(mid);
+        assert_eq!(ring.state().tail, mid);
+
+        // An older snapshot must be ignored, not roll the tail back (which would
+        // resurrect already-applied transactions and could double-apply them).
+        let tail_before = ring.state().tail;
+        ring.checkpoint_to(0);
+        assert_eq!(
+            ring.state().tail,
+            tail_before,
+            "tail must never move backwards"
+        );
+    }
+
+    #[test]
+    fn test_checkpoint_to_refuses_cursor_past_head() {
+        let (mut region, bs) = make();
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        ring.append(&[MetadataOp::SetInodeBitmap {
+            inode_id: 1,
+            allocated: true,
+        }])
+        .expect("t1");
+        let head = ring.state().head;
+        ring.checkpoint_to(head + 1);
+        assert_eq!(
+            ring.state().tail,
+            0,
+            "a cursor past head must not be accepted"
+        );
+    }
+
+    #[test]
+    fn test_checkpoint_is_checkpoint_to_head() {
+        let (mut region, bs) = make();
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        for i in 0..6u64 {
+            ring.append(&[MetadataOp::SetInodeBitmap {
+                inode_id: i,
+                allocated: true,
+            }])
+            .expect("append");
+        }
+        ring.checkpoint();
+        let st = ring.state();
+        assert_eq!(st.tail, st.head, "checkpoint empties the ring");
+        assert_eq!(ring.pending_transactions(), 0);
+        assert_eq!(ring.used(), 0);
+    }
+
+    #[test]
+    fn test_checkpoint_to_is_a_noop_when_ring_already_empty() {
+        let (mut region, bs) = make();
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        ring.append(&[MetadataOp::SetInodeBitmap {
+            inode_id: 1,
+            allocated: true,
+        }])
+        .expect("append");
+        ring.checkpoint();
+        let st = ring.state();
+        ring.checkpoint_to(st.head);
+        assert_eq!(ring.state().tail, st.tail, "no change");
+        assert_eq!(ring.pending_transactions(), 0);
+    }
+
+    #[test]
+    fn test_checkpointed_transactions_are_not_replayed() {
+        let (mut region, bs) = make();
+        let ops = vec![MetadataOp::SetInodeBitmap {
+            inode_id: 9,
+            allocated: true,
+        }];
+        {
+            let mut ring = JournalRing::create(&mut region, bs).expect("create");
+            ring.append(&ops).expect("append");
+            ring.checkpoint();
+        }
+        let mut ring = JournalRing::open(&mut region, bs).expect("reopen");
+        let mut replayed = 0usize;
+        ring.recover(|_| {
+            replayed += 1;
+            Ok(())
+        })
+        .expect("recover");
+        assert_eq!(replayed, 0, "checkpointed transactions must not replay");
+    }
+}
+
+#[cfg(test)]
+mod log_conformance_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn scratch(_name: &str) -> (Vec<u8>, u64) {
+        let bs = 4096u64;
+        let total = usize::try_from(bs * (1 + JOURNAL_RING_BLOCKS)).unwrap();
+        (vec![0u8; total], bs)
+    }
+
+    fn ops(n: u64) -> Vec<MetadataOp> {
+        (0..n)
+            .map(|i| MetadataOp::SetInodeBitmap {
+                inode_id: i,
+                allocated: i % 2 == 0,
+            })
+            .collect()
+    }
+
+    /// Read every frame currently in the ring, in order.
+    fn frames(ring: &JournalRing) -> Vec<(u64, Vec<MetadataOp>)> {
+        let ring_bytes = ring.ring_bytes;
+        let mut cursor = ring.state().tail % ring_bytes;
+        let head = ring.state().head % ring_bytes;
+        let buf = ring.ring_ref();
+        let mut out = Vec::new();
+        while cursor != head {
+            match decode_frame(&buf[usize::try_from(cursor).unwrap()..]) {
+                Some((tx, total)) => {
+                    out.push((tx.tx_seq, tx.ops));
+                    cursor = (cursor + total as u64) % ring_bytes;
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_transaction_sequence_numbers_are_monotonic_and_dense() {
+        let (mut region, bs) = scratch("seq");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        for i in 0..10u64 {
+            ring.append(&ops(i % 4 + 1)).expect("append");
+            assert_eq!(ring.state().tx_seq, i + 1, "seq must increment by one");
+        }
+        let seen: Vec<u64> = frames(&ring).iter().map(|(s, _)| *s).collect();
+        assert_eq!(seen, (1..=10).collect::<Vec<u64>>(), "dense, no gaps");
+    }
+
+    #[test]
+    fn test_frames_decode_to_exactly_the_ops_appended() {
+        let (mut region, bs) = scratch("roundtrip");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        let expected: Vec<Vec<MetadataOp>> = (0..6u64).map(|i| ops(i % 5 + 1)).collect();
+        for e in &expected {
+            ring.append(e).expect("append");
+        }
+        let decoded = frames(&ring);
+        assert_eq!(decoded.len(), expected.len(), "frame count matches");
+        for (i, (_, got)) in decoded.iter().enumerate() {
+            assert_eq!(got, &expected[i], "frame {i} ops must round-trip exactly");
+        }
+    }
+
+    #[test]
+    fn test_replay_applies_ops_in_append_order() {
+        let (mut region, bs) = scratch("order");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        for i in 0..5u64 {
+            ring.append(&[MetadataOp::SetInodeBitmap {
+                inode_id: 100 + i,
+                allocated: true,
+            }])
+            .expect("append");
+        }
+        let mut applied = Vec::new();
+        ring.recover(|op| {
+            if let MetadataOp::SetInodeBitmap { inode_id, .. } = op {
+                applied.push(*inode_id);
+            }
+            Ok(())
+        })
+        .expect("recover");
+        assert_eq!(applied, vec![100, 101, 102, 103, 104]);
+    }
+
+    #[test]
+    fn test_ring_never_exceeds_capacity_and_drops_oldest() {
+        let (mut region, bs) = scratch("capacity");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        let big = vec![0u8; 900];
+        let total = 400usize;
+        for i in 0..total {
+            ring.append(&[MetadataOp::WriteBlockSlice {
+                block_id: 1000 + i as u64,
+                offset: 0,
+                data: big.clone(),
+            }])
+            .expect("append");
+            let capacity = journal_ring_bytes(bs);
+            assert!(
+                ring.used() <= capacity,
+                "ring usage must never exceed capacity (used={} cap={})",
+                ring.used(),
+                capacity
+            );
+        }
+        // The newest frames must still be intact and decodable.
+        let surviving = frames(&ring);
+        assert!(!surviving.is_empty(), "newest frame must survive");
+        let last = surviving.last().expect("last frame");
+        assert_eq!(
+            last.1[0],
+            MetadataOp::WriteBlockSlice {
+                block_id: 1000 + total as u64 - 1,
+                offset: 0,
+                data: big,
+            },
+            "the most recent transaction must be the last one"
+        );
+    }
+
+    #[test]
+    fn test_dropped_transactions_are_the_oldest_ones() {
+        let (mut region, bs) = scratch("dropoldest");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        let big = vec![1u8; 900];
+        for i in 0..400u64 {
+            ring.append(&[MetadataOp::WriteBlockSlice {
+                block_id: i,
+                offset: 0,
+                data: big.clone(),
+            }])
+            .expect("append");
+        }
+        let surviving: BTreeSet<u64> = frames(&ring)
+            .iter()
+            .filter_map(|(_, ops)| match &ops[0] {
+                MetadataOp::WriteBlockSlice { block_id, .. } => Some(*block_id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            surviving.iter().all(|b| *b > 0),
+            "only recent block ids should survive"
+        );
+        assert!(
+            surviving.iter().any(|b| *b == 399),
+            "the newest must survive"
+        );
+    }
+
+    #[test]
+    fn test_recover_after_wrap_replays_every_surviving_frame() {
+        let (mut region, bs) = scratch("wraprecover");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        let big = vec![7u8; 600];
+        for i in 0..500u64 {
+            ring.append(&[MetadataOp::WriteBlockSlice {
+                block_id: 5000 + i,
+                offset: 0,
+                data: big.clone(),
+            }])
+            .expect("append");
+        }
+        let before = frames(&ring).len();
+        assert!(before > 0);
+        let mut applied = 0usize;
+        ring.recover(|_| {
+            applied += 1;
+            Ok(())
+        })
+        .expect("recover after wrap");
+        assert_eq!(applied, before, "every surviving frame must replay");
+        assert_eq!(ring.pending_transactions(), 0, "ring empty after recover");
+    }
+
+    #[test]
+    fn test_pending_transactions_matches_frame_walk() {
+        let (mut region, bs) = scratch("pending");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        for i in 0..7u64 {
+            ring.append(&ops(i + 1)).expect("append");
+            assert_eq!(
+                ring.pending_transactions(),
+                frames(&ring).len(),
+                "pending count must match the actual frame walk"
+            );
+        }
+        ring.checkpoint();
+        assert_eq!(ring.pending_transactions(), 0);
+        assert!(frames(&ring).is_empty());
+    }
+
+    #[test]
+    fn test_crc_rejects_every_single_bit_flip_in_a_real_frame() {
+        let (mut region, bs) = scratch("crc");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        ring.append(&ops(3)).expect("append");
+        let st = ring.state();
+        let frame = {
+            let buf = ring.ring_ref();
+            let start = usize::try_from(st.tail).unwrap();
+            let end = usize::try_from(st.head).unwrap();
+            buf[start..end].to_vec()
+        };
+        assert!(decode_frame(&frame).is_some(), "clean frame decodes");
+        for byte in 0..frame.len() {
+            for bit in 0..8u8 {
+                let mut corrupt = frame.clone();
+                corrupt[byte] ^= 1 << bit;
+                assert!(
+                    decode_frame(&corrupt).is_none(),
+                    "flip at byte {byte} bit {bit} must be rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_truncated_frames_never_decode() {
+        let (mut region, bs) = scratch("trunc");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        ring.append(&ops(4)).expect("append");
+        let st = ring.state();
+        let frame = {
+            let buf = ring.ring_ref();
+            let start = usize::try_from(st.tail).unwrap();
+            let end = usize::try_from(st.head).unwrap();
+            buf[start..end].to_vec()
+        };
+        for cut in 1..frame.len() {
+            assert!(
+                decode_frame(&frame[..cut]).is_none(),
+                "truncation to {cut} bytes must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_surviving_frames_still_validate_after_heavy_wrap() {
+        // The guarantee that matters in production: whatever is still in the ring is
+        // always a set of intact, decodable frames — never a torn tail.
+        let (mut region, bs) = scratch("intact");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        let payload = vec![0xA5u8; 700];
+        for i in 0..600u64 {
+            ring.append(&[MetadataOp::WriteBlockSlice {
+                block_id: 7000 + i,
+                offset: 0,
+                data: payload.clone(),
+            }])
+            .expect("append");
+        }
+        for (_, ops) in frames(&ring) {
+            assert_eq!(ops.len(), 1, "each frame holds exactly one op");
+            assert!(
+                matches!(ops[0], MetadataOp::WriteBlockSlice { .. }),
+                "op survived intact"
+            );
+        }
+    }
+
+    #[test]
+    fn test_header_state_survives_reopen() {
+        let (mut region, bs) = scratch("persist");
+        let expected_head;
+        let expected_seq;
+        {
+            let mut ring = JournalRing::create(&mut region, bs).expect("create");
+            for i in 0..4u64 {
+                ring.append(&ops(i + 1)).expect("append");
+            }
+            expected_head = ring.state().head;
+            expected_seq = ring.state().tx_seq;
+        }
+        let ring = JournalRing::open(&mut region, bs).expect("reopen");
+        let st = ring.state();
+        assert_eq!(st.head, expected_head, "head persisted in the header");
+        assert_eq!(st.tx_seq, expected_seq, "sequence persisted");
+        assert_eq!(st.tail, 0, "fresh ring has an empty tail");
+    }
+
+    #[test]
+    fn test_used_matches_the_sum_of_frame_sizes() {
+        let (mut region, bs) = scratch("used");
+        let mut ring = JournalRing::create(&mut region, bs).expect("create");
+        for i in 0..5u64 {
+            ring.append(&ops(i + 1)).expect("append");
+            let walk: u64 = frames(&ring)
+                .iter()
+                .map(|(_, ops)| {
+                    let mut buf = Vec::new();
+                    for op in ops {
+                        op.encode(&mut buf);
+                    }
+                    (TX_HEADER_LEN + buf.len() + 4) as u64
+                })
+                .sum();
+            assert_eq!(ring.used(), walk, "used() must equal the framed byte count");
+        }
     }
 }

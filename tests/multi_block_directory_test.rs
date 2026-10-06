@@ -357,3 +357,124 @@ fn test_dir_index_consistency_across_mutations_and_reopen() {
     }
     assert!(dm.verify_integrity().expect("fsck").is_clean);
 }
+
+#[test]
+fn test_list_dir_cache_acceleration_p4_6() {
+    let ctx = TestContext::new("test_list_dir_cache_p4_6");
+    let dm = DiskManager::open(&ctx.image_path, 20 * 1024 * 1024).expect("open dm");
+    let root = dm.superblock().root_inode;
+    let d = dm.create_directory(root, "test_dir").expect("mkdir");
+
+    for i in 0..50 {
+        dm.create_file(d, &format!("item_{:02}.txt", i))
+            .expect("create file");
+    }
+
+    // First list_dir: cold pass, reads disk blocks and promotes to complete in dir_cache
+    let entries1 = dm.list_dir(d).expect("list_dir 1");
+    assert_eq!(entries1.len(), 50);
+
+    // Second list_dir: warm pass, hits complete dir_cache directly
+    let entries2 = dm.list_dir(d).expect("list_dir 2");
+    assert_eq!(entries2.len(), 50);
+
+    let mut names1: Vec<_> = entries1.iter().map(|e| &e.name).collect();
+    let mut names2: Vec<_> = entries2.iter().map(|e| &e.name).collect();
+    names1.sort();
+    names2.sort();
+    assert_eq!(names1, names2);
+
+    // Mutate: add an item, list_dir should reflect the update via cache
+    dm.create_file(d, "new_item.txt").expect("create new_item");
+    let entries3 = dm.list_dir(d).expect("list_dir 3");
+    assert_eq!(entries3.len(), 51);
+    assert!(entries3.iter().any(|e| e.name == "new_item.txt"));
+
+    // Mutate: delete an item, list_dir should reflect the removal
+    dm.delete_file(d, "item_00.txt").expect("delete item_00");
+    let entries4 = dm.list_dir(d).expect("list_dir 4");
+    assert_eq!(entries4.len(), 50);
+    assert!(!entries4.iter().any(|e| e.name == "item_00.txt"));
+
+    // Also test encrypted directory cache listing
+    let enc_path = format!("{}.enc.img", ctx.image_path);
+    let dm_enc = DiskManager::create_encrypted(&enc_path, 20 * 1024 * 1024, "P4_6_SecretPass!")
+        .expect("create enc dm");
+    let enc_root = dm_enc.superblock().root_inode;
+    let enc_dir = dm_enc.create_directory(enc_root, "enc_dir").expect("mkdir");
+    for i in 0..30 {
+        dm_enc
+            .create_file(enc_dir, &format!("secret_{:02}.dat", i))
+            .expect("create enc file");
+    }
+    // Cold list_dir decrypts names and populates plain cache
+    let enc_entries1 = dm_enc.list_dir(enc_dir).expect("list_dir enc 1");
+    assert_eq!(enc_entries1.len(), 30);
+    // Warm list_dir hits plain cache directly without repeating decryption
+    let enc_entries2 = dm_enc.list_dir(enc_dir).expect("list_dir enc 2");
+    assert_eq!(enc_entries2.len(), 30);
+    let mut enc_names1: Vec<_> = enc_entries1.iter().map(|e| &e.name).collect();
+    let mut enc_names2: Vec<_> = enc_entries2.iter().map(|e| &e.name).collect();
+    enc_names1.sort();
+    enc_names2.sort();
+    assert_eq!(enc_names1, enc_names2);
+    let _ = std::fs::remove_file(enc_path);
+}
+
+#[test]
+fn test_zero_allocation_path_resolution_p4_6() {
+    let ctx = TestContext::new("test_zero_alloc_paths_p4_6");
+    let dm = DiskManager::open(&ctx.image_path, 20 * 1024 * 1024).expect("open dm");
+    let root = dm.superblock().root_inode;
+
+    // Create nested hierarchy: a/b/c/file.txt
+    let a = dm.create_directory(root, "a").expect("mkdir a");
+    let b = dm.create_directory(a, "b").expect("mkdir b");
+    let c = dm.create_directory(b, "c").expect("mkdir c");
+    let f = dm.create_file(c, "file.txt").expect("create file");
+
+    // 1. Test resolve_path across various formats
+    assert_eq!(dm.resolve_path(".").unwrap(), root);
+    assert_eq!(dm.resolve_path("/.").unwrap(), root);
+    assert_eq!(dm.resolve_path("a").unwrap(), a);
+    assert_eq!(dm.resolve_path("/a").unwrap(), a);
+    assert_eq!(dm.resolve_path("a/b").unwrap(), b);
+    assert_eq!(dm.resolve_path("/a/b").unwrap(), b);
+    assert_eq!(dm.resolve_path("a/b/c/file.txt").unwrap(), f);
+    assert_eq!(dm.resolve_path("/a/b/c/file.txt").unwrap(), f);
+    assert_eq!(dm.resolve_path("///a///b///c///file.txt///").unwrap(), f);
+    assert_eq!(dm.resolve_path("a/./b/./c/file.txt").unwrap(), f);
+
+    // 2. Test resolve_parent across various formats
+    let (p1, name1) = dm.resolve_parent("simple.txt").unwrap();
+    assert_eq!(p1, root);
+    assert_eq!(name1, "simple.txt");
+
+    let (p2, name2) = dm.resolve_parent("/simple.txt").unwrap();
+    assert_eq!(p2, root);
+    assert_eq!(name2, "simple.txt");
+
+    let (p3, name3) = dm.resolve_parent("a/b/c/file.txt").unwrap();
+    assert_eq!(p3, c);
+    assert_eq!(name3, "file.txt");
+
+    let (p4, name4) = dm.resolve_parent("/a/b/c/file.txt").unwrap();
+    assert_eq!(p4, c);
+    assert_eq!(name4, "file.txt");
+
+    let (p5, name5) = dm.resolve_parent("a/b/c/file.txt///").unwrap();
+    assert_eq!(p5, c);
+    assert_eq!(name5, "file.txt");
+
+    // Trailing dot edge case
+    let (p6, name6) = dm.resolve_parent("a/b/c/file.txt/.").unwrap();
+    assert_eq!(p6, c);
+    assert_eq!(name6, "file.txt");
+
+    // Invalid / empty inputs
+    assert!(dm.resolve_parent("").is_err());
+    assert!(dm.resolve_parent("/").is_err());
+    assert!(dm.resolve_parent("///").is_err());
+    assert!(dm.resolve_parent(".").is_err());
+    assert!(dm.resolve_parent("./.").is_err());
+}

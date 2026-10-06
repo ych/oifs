@@ -253,3 +253,41 @@ fn test_ffi_read_at_and_read_file() {
 
     oifs_close(handle);
 }
+
+#[test]
+fn test_read_at_corrupted_size_larger_than_data_panic02() {
+    let img_path = "test_read_at_corrupted_size.img";
+    let _guard = CleanupGuard(img_path);
+    if Path::new(img_path).exists() {
+        let _ = fs::remove_file(img_path);
+    }
+
+    let dm = DiskManager::open(img_path, 10 * 1024 * 1024).expect("Failed to create disk");
+    let root_id = dm.superblock().root_inode;
+    let file_id = dm
+        .create_file(root_id, "corrupted_comp.bin")
+        .expect("create_file");
+
+    // Write compressed data of 100 bytes
+    let payload = vec![42u8; 100];
+    dm.write_data(file_id, 0, &payload, CompressionMode::Always)
+        .expect("write_data");
+
+    // Artificially corrupt inode.size to 1000 bytes (larger than decompressed length 100)
+    let mut inode = dm.read_inode(file_id).expect("read_inode");
+    inode.size = 1000;
+    dm.write_inode(file_id, &inode).expect("write_inode");
+
+    // Before fix: reading at offset 200 calculated end = min(200 + 50, 100) = 100 < 200,
+    // causing full_data[200..100] slice index panic (slice index starts after end).
+    // With fix: start >= full_data.len() safely returns Ok(0).
+    let mut buf = vec![0u8; 50];
+    let n = dm.read_at(file_id, 200, &mut buf).expect("must not panic");
+    assert_eq!(n, 0);
+
+    // Reading at offset 80 should safely read min(50, 100 - 80) = 20 bytes
+    let mut buf = vec![0u8; 50];
+    let n = dm.read_at(file_id, 80, &mut buf).expect("must not panic");
+    assert_eq!(n, 20);
+    assert_eq!(&buf[..20], &payload[80..100]);
+}

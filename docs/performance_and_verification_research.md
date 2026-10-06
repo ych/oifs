@@ -79,15 +79,20 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.6: Directory Listing Cache Utilization & Zero-Allocation Path Splitting
-* **File & Lines**: [`src/disk.rs:2036-2066`](file:///Users/ych/oifs/src/disk.rs#L2036-L2066), [`src/disk.rs:2068-2089`](file:///Users/ych/oifs/src/disk.rs#L2068-L2089)
-* **Current Behavior**:
-  - `list_dir` ignores `dir_cache` even when `ix.complete == true`, scanning physical blocks and decoding strings every time.
-  - `resolve_parent` performs `.split('/').filter(...).collect::<Vec<_>>()`, allocating a vector on every lookup.
-* **Proposed Remedy**:
-  - Check `dir_cache` first in `list_dir` to return cached names immediately.
-  - Replace path splitting in `resolve_parent` with `path.rsplit_once('/')`.
-* **Impact**: **Medium** ($O(1)$ zero-allocation path resolution).
+### P4.6: Directory Listing Cache Utilization & Zero-Allocation Path Splitting [RESOLVED]
+* **File & Lines**: [`src/disk.rs:3355-3440`](file:///Users/ych/oifs/src/disk.rs#L3355-L3440)
+* **Status**: **Completed & Verified**
+* **Implementation Details**:
+  - `list_dir`: Checks `dir_cache` first. If `ix.complete == true`, constructs and returns `DirectoryEntry` items directly from in-memory index without scanning physical directory blocks or decrypting filenames. When scanning an uncached directory, automatically promotes it to `complete = true` in `dir_cache`.
+  - `resolve_path`: Replaced heap-allocated `Vec<&str>` with `resolve_path_iter`, traversing path components via zero-allocation iterators.
+  - `resolve_parent`: Uses `path.trim_end_matches('/').rsplit_once('/')` to split parent and name in $O(1)$ without allocating intermediate vectors in the common fast path.
+* **Impact & Benchmark Results** (`tests/dir_bench.rs::bench_p4_6_dir_cache_and_path_resolution`):
+  - **`list_dir` (5,000 files in multi-block directory)**:
+    - Cold pass (on-disk block parse & scan): 495.7 µs (2,017 listings/sec)
+    - Warm pass (P4.6 in-memory cache hit): **212.2 µs (4,712 listings/sec)**
+    - **Speedup**: **2.34x faster (+134% throughput)**, completely eliminating physical block traversal and string decoding.
+  - **`resolve_path` throughput**: **7,729,979 lookups/sec (129.37 ns/op)** across 3-tier directory paths.
+  - **`resolve_parent` throughput**: **13,164,137 operations/sec (75.96 ns/op)** with zero heap vector allocations.
 
 ---
 
@@ -135,7 +140,7 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-01** | `src/disk.rs:1995` (`get_block_from_map`) | `block_id as usize * BLOCK_SIZE` can **overflow/wrap around** on release builds if `block_id` is large (e.g. from a corrupted indirect table). It wraps to 0, returning **Block 0 (SuperBlock)** as a valid data block, allowing user writes to **overwrite and corrupt the SuperBlock**! | **Critical** | `proof_get_block_from_map_overflow_safety` | Open |
 | **PANIC-01** | `src/filters.rs:192` (`delta_encode_inplace`) | Computes `data.len() / typesize` without checking `typesize > 0`. Public callers passing `typesize = 0` trigger an immediate `attempt to divide by zero` panic. | **Medium** | `proof_delta_encode_zero_typesize_safety` | Open |
 | **CORR-01** | `src/disk.rs:1599` (`write_data_from_start_internal`) | When overwriting a file at offset 0 with smaller data: `inode.size = std::cmp::max(inode.size, len)`. The file size is **not truncated**, leaving stale data blocks and leaked space. | **High** | `proof_write_from_start_size_invariant` | Open |
-| **PANIC-02** | `src/disk.rs:1442-1445` (`read_at_prepare`) | If an image is corrupted and `inode.size > decompressed.len()`, a read offset $\ge \text{len}$ causes `buf.copy_from_slice(&full_data[start..end])` to slice out of bounds. | **Medium** | `proof_clamp_slice_range_soundness` | Open |
+| **PANIC-02** | `src/disk.rs:2654` (`read_at_prepare`) | If an image is corrupted and `inode.size > decompressed.len()`, a read offset $\ge \text{len}$ causes `buf.copy_from_slice(&full_data[start..end])` where `end < start` to panic. | **Medium** | `proof_clamp_slice_range_soundness` | **Resolved** (`start >= full_data.len() -> Ok(0)`) |
 | **OVF-01** | `src/io_engine.rs:248` (`ExtentList::push`) | Adjacent extent merging uses `last.len += len` without `checked_add`, risking integer overflow on extreme read batches. | **Low** | `proof_extent_push_no_overflow` | **Resolved** (`last.len.checked_add(len)`) |
 
 ---

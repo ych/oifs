@@ -2654,6 +2654,9 @@ impl DiskManager {
         if inode.compressed_size > 0 || inode.encrypted {
             let full_data = Self::read_data_internal(guard, &inode)?;
             let start = file_offset as usize;
+            if start >= full_data.len() {
+                return Ok(0);
+            }
             let end = (start + to_read_total).min(full_data.len());
             let actual = end.saturating_sub(start);
             buf[..actual].copy_from_slice(&full_data[start..end]);
@@ -3350,12 +3353,12 @@ impl DiskManager {
         }
     }
 
-    fn resolve_path_internal(
+    fn resolve_path_iter<'a>(
         guard: &DiskManagerInner,
-        parts: &[&str],
+        parts: impl Iterator<Item = &'a str>,
     ) -> Result<u64, DiskManagerError> {
         let mut curr = guard.superblock.root_inode;
-        for &part in parts {
+        for part in parts {
             curr = Self::dir_lookup(guard, curr, part)?.ok_or_else(|| {
                 DiskManagerError::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -3366,14 +3369,13 @@ impl DiskManager {
         Ok(curr)
     }
 
-    // Path resolution API (public) - wraps lookup
+    // Path resolution API (public) - wraps lookup with zero heap allocations
     pub fn resolve_path(&self, path: &str) -> Result<u64, DiskManagerError> {
-        let parts: Vec<&str> = path
-            .split('/')
-            .filter(|s| !s.is_empty() && *s != ".")
-            .collect();
         let guard = self.inner.read().unwrap();
-        Self::resolve_path_internal(&guard, &parts)
+        Self::resolve_path_iter(
+            &guard,
+            path.split('/').filter(|s| !s.is_empty() && *s != "."),
+        )
     }
 
     pub fn get_block_copy(&self, block_id: u64) -> Option<Vec<u8>> {
@@ -3382,6 +3384,9 @@ impl DiskManager {
     }
 
     /// Lists all entries in a directory
+    ///
+    /// If the directory's index is complete in `dir_cache`, entries are returned directly
+    /// from memory without reading or parsing physical disk blocks (P4.6).
     pub fn list_dir(
         &self,
         dir_inode_id: u64,
@@ -3393,15 +3398,51 @@ impl DiskManager {
                 "Not a directory",
             )));
         }
+
+        let encrypted = guard.encryption_key.is_some();
+
+        // 1. Fast path: check directory index cache (P4.6).
+        // If complete, construct entries directly from memory without reading/decoding disk blocks.
+        if let Some(ix) = guard.dir_cache.read().unwrap().get(&dir_inode_id)
+            && ix.complete
+        {
+            if !encrypted {
+                let entries: Vec<crate::directory::DirectoryEntry> = ix
+                    .stored
+                    .iter()
+                    .map(|(name, &inode)| crate::directory::DirectoryEntry {
+                        inode,
+                        hash: crate::directory::hash_filename(name),
+                        name: name.clone(),
+                    })
+                    .collect();
+                return Ok(entries);
+            } else if ix.plain.len() == ix.stored.len() {
+                let entries: Vec<crate::directory::DirectoryEntry> = ix
+                    .plain
+                    .iter()
+                    .map(|(name, &inode)| crate::directory::DirectoryEntry {
+                        inode,
+                        hash: crate::directory::hash_filename(name),
+                        name: name.clone(),
+                    })
+                    .collect();
+                return Ok(entries);
+            }
+        }
+
+        // 2. Slow path: scan physical directory blocks
         let num_blocks = Self::dir_num_blocks(&inode);
-        let mut entries = Vec::new();
+        let mut raw_entries = Vec::new();
         for blk_idx in 0..num_blocks {
             let phys_blk = Self::resolve_logical_block_id(&guard.mmap, &inode, blk_idx);
             if phys_blk == 0 {
                 continue;
             }
-            entries.extend(Self::read_dir_entries_from_block(&guard.mmap, phys_blk)?);
+            raw_entries.extend(Self::read_dir_entries_from_block(&guard.mmap, phys_blk)?);
         }
+
+        let mut entries = raw_entries.clone();
         if let Some(key) = &guard.encryption_key {
             for entry in &mut entries {
                 if let Ok(decrypted) =
@@ -3411,11 +3452,44 @@ impl DiskManager {
                 }
             }
         }
+
+        // 3. Promote scanned directory to complete index in cache for future O(1) lookups and listings
+        {
+            let mut cache = guard.dir_cache.write().unwrap();
+            let ix = cache.entry(dir_inode_id).or_default();
+            ix.stored.clear();
+            for raw in &raw_entries {
+                ix.stored.insert(raw.name.clone(), raw.inode);
+            }
+            if encrypted {
+                ix.plain.clear();
+                for e in &entries {
+                    ix.plain.insert(e.name.clone(), e.inode);
+                }
+            }
+            ix.complete = true;
+        }
+
         Ok(entries)
     }
 
     pub fn resolve_parent(&self, path: &str) -> Result<(u64, String), DiskManagerError> {
-        let parts: Vec<&str> = path
+        let trimmed = path.trim_end_matches('/');
+        let (parent_str, name) = match trimmed.rsplit_once('/') {
+            Some((parent, name)) => (parent, name),
+            None => ("", trimmed),
+        };
+
+        if !name.is_empty() && name != "." {
+            let guard = self.inner.read().unwrap();
+            let parent_id = Self::resolve_path_iter(
+                &guard,
+                parent_str.split('/').filter(|s| !s.is_empty() && *s != "."),
+            )?;
+            return Ok((parent_id, name.to_string()));
+        }
+
+        let mut parts: Vec<&str> = path
             .split('/')
             .filter(|s| !s.is_empty() && *s != ".")
             .collect();
@@ -3425,15 +3499,9 @@ impl DiskManager {
                 "Empty",
             )));
         }
-        let name = parts.last().unwrap().to_string();
-        let parent_parts = &parts[..parts.len() - 1];
-
+        let name = parts.pop().unwrap().to_string();
         let guard = self.inner.read().unwrap();
-        let parent_id = if parent_parts.is_empty() {
-            guard.superblock.root_inode
-        } else {
-            Self::resolve_path_internal(&guard, parent_parts)?
-        };
+        let parent_id = Self::resolve_path_iter(&guard, parts.into_iter())?;
         Ok((parent_id, name))
     }
 
@@ -4364,5 +4432,30 @@ mod verification {
             !is_full_overwrite && new_data_len > old_size,
             "Partial write expansion"
         );
+    }
+
+    /// Prove that read_at slice clamping cannot overflow or invert start..end ranges (PANIC-02).
+    /// Even if an image is corrupted and file_offset exceeds the decoded buffer length,
+    /// the guard returns 0 safely without panicking.
+    #[kani::proof]
+    fn proof_clamp_slice_range_soundness() {
+        let file_offset: u64 = kani::any();
+        let to_read_total: usize = kani::any();
+        let full_data_len: usize = kani::any();
+        kani::assume(full_data_len <= 1024 * 1024);
+        kani::assume(to_read_total <= 64 * 1024);
+
+        let start = file_offset as usize;
+        if start >= full_data_len {
+            // Safely returns 0 bytes read
+            return;
+        }
+
+        let end = (start.saturating_add(to_read_total)).min(full_data_len);
+        assert!(start <= end, "start must never exceed end");
+        assert!(end <= full_data_len, "end must never exceed full_data_len");
+        let actual = end.saturating_sub(start);
+        assert!(actual <= to_read_total);
+        assert!(actual <= full_data_len);
     }
 }

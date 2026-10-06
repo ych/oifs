@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Quickstart](quickstart.md) - A step-by-step beginner's guide to building OIFS, creating your first container filesystem image, performing basic file and directory operations, using encryption, and exploring compression filters.
+- [Quick Start](quickstart.md) - Refresh task-routing map to reflect updated pages and provide guided navigation through the OIFS documentation hierarchy.
 
 # Directories
 

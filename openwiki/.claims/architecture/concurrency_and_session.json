@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2d31fd6d912160aa8ed4e3f7a6f426da3c056992a294ca2d123188cf1fcfe746",
+  "pageVersion": "sha256:bdf74b8c4e8faa4751377a9ce37f27f67338e6f8b6e5238472a712e5f2b9f2d3",
   "claims": [
     {
       "id": "claim_ccf982a2acb94220b5a4016b54d25dda",
       "statement": "OifsSession is a two-variant enum: Direct (Master) holds a DiskManager plus a background IpcServer with zero IPC overhead for its own calls, while Remote (Proxy) forwards every method through send_request.",
       "evidence": [
         {
-          "resource": "repo://src/ipc.rs#L330-L470",
+          "resource": "repo://src/ipc.rs#L334-L474",
           "version": "repo-lines-v1:sha256:d798d5dc2f37ab2143e4ab4b3e33d09ea10f1277a0bc72e83def361fc3e1c33a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNDU1MDliYjI4NDFiM2Y5NjRmYTlkYzc5NjVlNzljM2ViM2VlMjAxNmIwZmE5ZTBmY2M0OWVjNzJjYmYyNDFkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NzdlZjMxMDFmNDYxMzJmMmVmYzQxOWVkMzExZTU2MjhmMjJiNDExYjcxNGM5YzY5ODA3MWM4MjU4MzRjMDdmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MjcxZGFmZTI3YTA1OTMyYWExMjkzNjgyNTdlNDg2ZTg4YTEwNjAxYTc1ZmQ0YmNlZGQxOWY5NmRiOGZlZmIwIn0"
         },
         {
@@ -22,7 +22,7 @@
       "evidence": [
         {
           "resource": "repo://src/session.rs#L195-L215",
-          "version": "repo-lines-v1:sha256:f4f780dbff3ff09ffbd0a87e409b4c767d7cfa9a1ebdc4dab11a7af00fbb5ee8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyYTJlYzRhNDgwMDEwOTc1MmQ4YzY3MDQxYjFiMDlkMzk3YjE2NzMxOGJjZTBiMGNlMDY0ZWM0YjYwZmQxYTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdkNDNiMWM0YmNkMjMzMzRlOTQ3Mjc1NTRmYzBjZGE1YWEyZWMzMGJlODQyMDkzYWE4YWVmZDA4ZjdlMzlmZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxMzIzYzA0ODVkMGUyMjFmNmQ1MDI2NTk2ZTY3NjI1YTY0ZjFjYjMzODE4MjU3YWM1N2NmMzQ2ZDQxOTYzYzIifQ"
+          "version": "repo-lines-v1:sha256:2691ed95193cdc6c7ccb946e603fc97792b1e00a56b8721d40c9ffdf1cf79ea3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyYTJlYzRhNDgwMDEwOTc1MmQ4YzY3MDQxYjFiMDlkMzk3YjE2NzMxOGJjZTBiMGNlMDY0ZWM0YjYwZmQxYTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdkNDNiMWM0YmNkMjMzMzRlOTQ3Mjc1NTRmYzBjZGE1YWEyZWMzMGJlODQyMDkzYWE4YWVmZDA4ZjdlMzlmZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxMzIzYzA0ODVkMGUyMjFmNmQ1MDI2NTk2ZTY3NjI1YTY0ZjFjYjMzODE4MjU3YWM1N2NmMzQ2ZDQxOTYzYzIifQ"
         },
         {
           "resource": "repo://src/session.rs#L77-L131",
@@ -43,7 +43,7 @@
           "version": "repo-lines-v1:sha256:3b8aff922db3134a2ccb76ff0be087a23bc1bd85fd6794ae1ef26b60d09337fc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4NDVkNGZkMjZlYzlkMDhmZTJjMGZiNjQxMzQyMmE0MDdlMmUxYmQ3NTc1YjkxOWI4NGZiZWQ5ODA4MmRmZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhYTM3MjU2ODQ2NWQzMGQ1ZjllMTQ2OWY3ZmI2NDBkNTZhOWVkODgwYTk2NDRlMTk3MzM4YjcxNmI1MjEyYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmMTY2YjA2YTY5OWRmODgyMzgzOTNmZWViNDIzYmY1MzdkMjQxMTljOGM5MDBlOTlmNTE2M2VlNDY5NzMwODgifQ"
         },
         {
-          "resource": "repo://src/ipc.rs#L330-L470",
+          "resource": "repo://src/ipc.rs#L334-L474",
           "version": "repo-lines-v1:sha256:d798d5dc2f37ab2143e4ab4b3e33d09ea10f1277a0bc72e83def361fc3e1c33a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNDU1MDliYjI4NDFiM2Y5NjRmYTlkYzc5NjVlNzljM2ViM2VlMjAxNmIwZmE5ZTBmY2M0OWVjNzJjYmYyNDFkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NzdlZjMxMDFmNDYxMzJmMmVmYzQxOWVkMzExZTU2MjhmMjJiNDExYjcxNGM5YzY5ODA3MWM4MjU4MzRjMDdmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MjcxZGFmZTI3YTA1OTMyYWExMjkzNjgyNTdlNDg2ZTg4YTEwNjAxYTc1ZmQ0YmNlZGQxOWY5NmRiOGZlZmIwIn0"
         }
       ]
@@ -53,12 +53,12 @@
       "statement": "IPC messages are length-prefixed Bincode frames (128MB cap); IpcServer::handle_request is the single dispatcher mapping each IpcRequest to a DiskManager call, with one poll-based worker thread per peer.",
       "evidence": [
         {
-          "resource": "repo://src/ipc.rs#L278-L306",
+          "resource": "repo://src/ipc.rs#L282-L310",
           "version": "repo-lines-v1:sha256:d6ad765047b19c8d47a50d21729b0cb464217dd045fa4d9beaafb617d81ebcc7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyZjI4MGUxMjAwMWUwNGMxODg3YmVjNzc5NjI1MTJhNzdlZGJiN2MyNDAwZjVhNzU1YjJiZjhlNzcyNzc0YTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVmZjQ1MzBmMmE4MzcxN2ZhODE2N2I2ZjVhYTlmNGFlOTJjMTYyZjgwZTNmNjY1ZjExMzliZDVmZDlmMDljMDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1NmU2ZWZmZmZiNTg1MWNhZjNkZWQwYTRjOGYzMmIxZmMzMTRhY2EzMjMzYzc4NWI2ZjFlMzA0YTU4MDIyYWMifQ"
         },
         {
-          "resource": "repo://src/ipc.rs#L642-L741",
-          "version": "repo-lines-v1:sha256:66ac15a97ae0aaedb5b0fe7c24530831affe68157b744fca0d5d02477d9acbb5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3YzA3ODBmOWY4OTIxZGJhNmYwN2IzOThmYWMxZjU0ODZhMzk1YWU3MGQ0NDM1ODVmMDg1Nzc1MGU0MjZkZDg0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNTUwMGRhMWU2ZDUzZDQ2ZWQ3ZWFiNGRhOTU0YTRjNTBjZDAyZmZiNzFjMmQwNjMwZjNlMjEyZDE3YWZlOWNlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2MmI2N2I1NmJjNjdkNGMxZGRiOWU5OGFhYTM0YTBmNmEwZDFiZDEzOTEwYjY3ODUzOGIwZWVkMzY1MjNmYjA2In0"
+          "resource": "repo://src/ipc.rs#L646-L749",
+          "version": "repo-lines-v1:sha256:76d169a49cbe1e089c01441a513fed31f16cf60bb579b8ea8279966fb186678f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3YzA3ODBmOWY4OTIxZGJhNmYwN2IzOThmYWMxZjU0ODZhMzk1YWU3MGQ0NDM1ODVmMDg1Nzc1MGU0MjZkZDg0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNTUwMGRhMWU2ZDUzZDQ2ZWQ3ZWFiNGRhOTU0YTRjNTBjZDAyZmZiNzFjMmQwNjMwZjNlMjEyZDE3YWZlOWNlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2MmI2N2I1NmJjNjdkNGMxZGRiOWU5OGFhYTM0YTBmNmEwZDFiZDEzOTEwYjY3ODUzOGIwZWVkMzY1MjNmYjA2In0"
         }
       ]
     },
@@ -67,12 +67,12 @@
       "statement": "Remote sessions self-heal: on a connection error they re-run master election up to five times and, if they become the new Master, pin a local DiskManager as dm_fallback to keep serving locally.",
       "evidence": [
         {
-          "resource": "repo://src/session.rs#L449-L513",
-          "version": "repo-lines-v1:sha256:f505ec41e60eaadd0261220e420d50710062492a702b8017bd36584c051ce627:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxYzFkNzEyZWUwNGFjMTg4M2E4NTIzYjQxODBhOThjMjU3NTc0NWE1OTgxYzcyMDIxZWFiNTU4ZTgxMzY2ODciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjNDQ0ZDk5MDYxYzFkMzhiMTYwMWU1YzUwOTdmM2QyOGQ5NDVhYTI5OGI3MGY4OTJhNmM0ZTUzZTRjNDYyODAifQ"
+          "resource": "repo://src/session.rs#L483-L547",
+          "version": "repo-lines-v1:sha256:5866b69dd8cbf27b022275742fc4664c70c0e04c3f32aaa28cc03c0842e1863d:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxYzFkNzEyZWUwNGFjMTg4M2E4NTIzYjQxODBhOThjMjU3NTc0NWE1OTgxYzcyMDIxZWFiNTU4ZTgxMzY2ODciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjNDQ0ZDk5MDYxYzFkMzhiMTYwMWU1YzUwOTdmM2QyOGQ5NDVhYTI5OGI3MGY4OTJhNmM0ZTUzZTRjNDYyODAifQ"
         },
         {
-          "resource": "repo://src/session.rs#L515-L534",
-          "version": "repo-lines-v1:sha256:b875e289696d0cc59bac3a003d49410bbca54420154c7191c52e6948f5a8e7fb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0Nzc5ZmMzZDk2OTM1MzNlMGM4NWZkMjkyZmU3Yjg5YWI3MTI2ODRmZWE3OGIwZDc2YjEyYTRmZjEzOGFkMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0OGFkMWFhNmIxMmQxM2JlZjliMGY5YTM5MjMyZjA1YjZjYWIwN2ZkM2UyMzQ4NGYyYjc1ZjZlOGQzZDdiMzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBjZjE5ZDU4NDBjYzg2NjhhM2IwNjM3ZDUwZWM0NjMxMzNlYWNmZDI0NGY1YjNjYjNjN2M4YTlkMTNmZmY0YzcifQ"
+          "resource": "repo://src/session.rs#L518-L538",
+          "version": "repo-lines-v1:sha256:dc50b1e187ba3af346f404c4357ec7c141d1532c924d46dcd0e9a24ebb55ef1a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjMWIwMzIxOTVjY2Q5MGFkYTA0M2IwMDc5ZDljZjZiNTI1NWUxYjA1ODUxNmFjNTIyYmU2NmM3MWQ4MWJkODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3YjRlMWYxY2FjOWJmZDZmZDBiMzUwODY0ZjY1Yjc5ZTcxZmQ5M2YwZWEyMWUwOTFkNDdkNjNhMTg5MGU1NjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFlNzgzNjg5ZDg0YmM3YmQxNmM5OTQ5ZmJlMDdiY2JlMWI5NjgxNjBkYzczZDY5ZjJiYTE0YjM1NGQ3YWRkZDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVlNTdiNzQyOGIxM2JiZmM4ZGI0MjBmZjI5YWE0MDIzZWJmODZlMTcxNTY0ZWRjYzkxZGM1NWMzY2Y1Y2RjMjkifQ"
         }
       ]
     },
@@ -81,7 +81,7 @@
       "statement": "The block-level merge policy is enforced by the Master's single DiskManagerInner mutex rather than per-block locks: disjoint byte offsets merge in place, overlapping offsets are last-writer-wins, and compressed writes use multi-frame append or read-modify-recompress.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L332-L337",
+          "resource": "repo://src/disk.rs#L400-L405",
           "version": "repo-lines-v1:sha256:9cfd3ecc749162fd747dbf4a764555772994f3f8573f47c7a0d2257ef55b642e:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjkwNmNhZmJkMzc4MzU2ZDZlMjU1YmIwYTg1Y2NhYzIzMzMwNmYyNDA2ZWI3ZDAzMzUyNGE0Nzk4YzkwMzRjMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDE0MWUyZmE0M2RlODNjYjYyOWI3MzlhODY2MTc3NTI2YTRiYjM2YTEyYmMyNThkYmYzMWE3MmIzOTEzYWU4ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzQxNjVmYjI3ZTFlNGJiMDc1ZDRlNGYyMGJiMGY0MmEzNjE3OTJhZDliZjVkMWE0YzM5ZmE2Yzk2ZDllNDVlNiJ9"
         },
         {
@@ -105,14 +105,14 @@
       "statement": "open_with_mode_retry implements a 5-attempt progressive backoff loop for socket binding and flock acquisition, preventing startup race failures when multiple processes concurrently attempt master promotion.",
       "evidence": [
         {
-          "resource": "repo://src/session.rs#L319-L378",
-          "version": "repo-lines-v1:sha256:28353ca68c7bd61ca6d98909145ca33beb9df0a82410b98539780ac5a1bb0b5d:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4ODFhOTU0Y2NjNjE3OGFlZWZkNjYzNjY4ZjVmMGQ1ZmNiYmZkMDYxN2IxYTE3NTRlZjAzZDVlMzNlYTA2YzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkYjMzOWMxN2Q0Y2M1NGU3MGM0ZmNmZWNiNjExYmI5ZTdkMzYzZjI1YjE4ZTA5MjNhMWQzMDZjYzk1OTI0ZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZmMGQ3NTk1MGRmMGZmOWEzZWU5NjYzOWRjYzhmZjVlYWVkYjQwZDY4MmJlYTkyNjIyYjUyMGRkODg3ZDkzZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5OWNhNzUyZGYwODRjZGE2OWUxMGRiYzYzMTdjZDVkM2ZlNjgzMmRjNDRmMjExMDc2MTM5ODNmMGU5MGE4Y2IifQ"
+          "resource": "repo://src/session.rs#L347-L378",
+          "version": "repo-lines-v1:sha256:44a76da146928aab6bb7f84bf9d29e4c3fa009a9063b41da07886a95c7664beb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4ODFhOTU0Y2NjNjE3OGFlZWZkNjYzNjY4ZjVmMGQ1ZmNiYmZkMDYxN2IxYTE3NTRlZjAzZDVlMzNlYTA2YzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlOWJjOGMyYjBhMTkzNDFhMzUwNTViZTg4MDUzNTE0NDFjMzVhYjE1YjZiYWYxOTlkZmYyYmQ1Y2FiMTEyYjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZmMGQ3NTk1MGRmMGZmOWEzZWU5NjYzOWRjYzhmZjVlYWVkYjQwZDY4MmJlYTkyNjIyYjUyMGRkODg3ZDkzZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwZWFmMTc5YTAyNTRkMTVlMzlkMTJiZWU1ZDQ2MjA0ZDZkZWRiNjBjMjk2YjZiNjM5ZTFkMTFjZWZlOGRhZWYifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-04T06:56:29.774Z"
+    "at": "2026-10-06T14:52:27.072Z"
   }
 }

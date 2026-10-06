@@ -3,9 +3,6 @@ type: architecture
 title: Asynchronous I/O and Pluggable Engines
 description: Pluggable payload read engine supporting Mmap, Pread, and io_uring with ExtentList coalescing, ring pooling, and kernel gating.
 tags: [io_engine, async_io, io_uring, pread, extent_coalescing, kani, performance]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T06:56:29.774Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs

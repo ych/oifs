@@ -8,18 +8,17 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-9aac3242153060207ee25af4
     resource: repo://tests/crash_safety_test.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-05T16:55:45.523Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
+    at: 2026-10-06T14:52:27.072Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-06T14:52:27.072Z" }
 ---
 
 OIFS ensures crash safety through a combination of memory-mapped I/O, explicit flushing mechanisms, and automatic flushing on object drop. This page documents the test scenarios and mechanisms that verify data persistence across system crashes and power loss events.
 
 ## Durability Policies
 
-<!-- openwiki: broken internal link [#src/disk.rs#L111-L142] heading anchor "src/disk.rs#L111-L142" does not exist in /openwiki/testing/crash_safety_testing.md. Fix the href or restore the target, then delete this comment. -->
-OIFS provides configurable durability modes that control when and how modifications are synchronized to physical storage ([src/disk.rs#L111-L142](#src/disk.rs#L111-L142)):
+OIFS provides configurable durability modes that control when and how modifications are synchronized to physical storage ([src/disk.rs#L119-L150](../../src/disk.rs#L119-L150)):
 
 - **Lazy (Default)**: Updates reside in the OS page cache and survive process crashes but require explicit flush or drop for power-loss safety. Provides highest write throughput.
 - **RangeAsync**: Asynchronously flushes only modified byte ranges per mutation, balancing safety and performance.
@@ -36,12 +35,11 @@ The [`DiskManager::flush`] method forces synchronization of all pending changes 
 
 ### Implicit Flush on Drop
 
-<!-- openwiki: broken internal link [../src/disk.rs#L325-L338] file "../src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-The [`DiskManagerInner::Drop`] implementation calls [`MmapMut::flush`] when the DiskManager is dropped, ensuring data persistence even without an explicit flush ([src/disk.rs#L325-L338](../src/disk.rs#L325-L338)). This is validated by the drop_flush test which writes data and relies solely on the drop-triggered flush ([tests/crash_safety_test.rs#L53-L85](../../tests/crash_safety_test.rs#L53-L85)).
+The [`DiskManagerInner::Drop`] implementation calls [`MmapMut::flush`] when the DiskManager is dropped, ensuring data persistence even without an explicit flush ([src/disk.rs#L325-L338](../../src/disk.rs#L325-L338)). This is validated by the drop_flush test which writes data and relies solely on the drop-triggered flush ([tests/crash_safety_test.rs#L53-L85](../../tests/crash_safety_test.rs#L53-L85)).
 
 ### Range-Based Synchronization
-<!-- openwiki: broken internal link [../src/disk.rs#L265-L296] file "../src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-When using RangeAsync or Strict durability modes, mutations trigger synchronization of only the specific byte ranges that were modified ([src/disk.rs#L265-L296](../src/disk.rs#L265-L296)), including:
+
+When using RangeAsync or Strict durability modes, mutations trigger synchronization of only the specific byte ranges that were modified ([src/disk.rs#L265-L296](../../src/disk.rs#L265-L296)), including:
 - Inode bitmap updates
 - Data bitmap updates  
 - Modified inode ranges
@@ -101,8 +99,8 @@ These tests create temporary filesystem images in the current directory and clea
 ## Relation to Other Testing
 
 Crash safety testing complements:
-<!-- openwiki: broken internal link [../integration_testing.md] file "../integration_testing.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [Integration Testing](../integration_testing.md): Validates full filesystem operations under normal conditions
+
+- [Integration Testing](integration_testing.md): Validates full filesystem operations under normal conditions
 - [Testing and Verification](../operations/testing_and_verification.md): Broader verification strategies including performance and correctness
 
 Together, these test layers ensure OIFS maintains both functionality and reliability under various failure conditions.

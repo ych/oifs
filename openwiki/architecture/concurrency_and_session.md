@@ -10,7 +10,10 @@ sources:
     resource: repo://src/ipc.rs
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-06T14:52:27.072Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-06T14:52:27.072Z" }
 ---
 
 ## Responsibility and ownership
@@ -98,16 +101,3 @@ than by special code: all peers funnel into the one Master's
 - **Compressed files** use zstd multi-frame append at EOF, or transparent
   read-modify-recompress for random offsets, as documented in the compression
   page.
-
-There is no cross-process locking of individual blocks; mutual exclusion is the
-coarse-grained Master mutex, which is what the Shuttle concurrency proofs
-rely on.
-
-## Extension seams
-
-The `OifsSession` enum's two variants and its method-by-method dispatch are the
-seam for adding new operations: a new `IpcRequest` arm plus matching Direct and
-Remote branches, and a new `DiskManager` method. Transport is swappable through
-the `IpcStream`/`IpcListener` abstractions in `bind_or_connect`, and failover
-behavior lives entirely in `send_request`, so a new transport only needs to
-produce a connectable stream.

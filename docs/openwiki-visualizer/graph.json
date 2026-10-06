@@ -1,6 +1,6 @@
 {
   "root": "openwiki",
-  "generatedAt": "2026-10-05T18:36:53.915Z",
+  "generatedAt": "2026-10-06T15:34:12.885Z",
   "types": [
     "Section",
     "architecture",
@@ -8,6 +8,7 @@
     "guide",
     "integration guide",
     "operations",
+    "task_routing_map",
     "testing methodology",
     "workflow"
   ],
@@ -31,7 +32,8 @@
       "links": [],
       "backlinks": [
         "architecture/index",
-        "concepts/configuration"
+        "concepts/configuration",
+        "quickstart"
       ]
     },
     {
@@ -90,12 +92,13 @@
         "tcp",
         "failover"
       ],
-      "body": "\n## Responsibility and ownership\n\nThe session layer owns the process coordination contract while the IPC layer\n<!-- openwiki: broken internal link [`src/session.rs#L59-L78`] file \"`src/session.rs\" does not exist. Fix the href or restore the target, then delete this comment. -->\nowns the transport. [`OifsSession`](`src/session.rs#L59-L78`) decides whether a\ngiven process runs in **Direct (Master)** or **Remote (Proxy)** mode and forwards\n<!-- openwiki: broken internal link [`src/ipc.rs`] file \"`src/ipc.rs`\" does not exist. Fix the href or restore the target, then delete this comment. -->\nevery operation to the right place. [`ipc.rs`](`src/ipc.rs`) provides the\n`bind_or_connect` master election, the `IpcServer` request dispatcher, and the\nlength-prefixed framing used on every hop. The actual mutation of the image\nhappens only inside a single Master's [`DiskManager`] (`Arc<Mutex<DiskManagerInner>>`),\nwhich is the real serialization point.\n\n## Master-Proxy architecture\n\nOnly one process may hold the `mmap` and mutate the bitmap/inode tables. On open,\none process wins master status and runs in `Direct` mode: it opens the\n`DiskManager` directly (zero IPC overhead for its own calls) and starts a\nbackground `IpcServer`. Every other process wins nothing and runs in `Remote`\nmode: each public method forwards the request through `send_request` to the\nMaster.\n\nMaster election is transport-dependent and implemented in `bind_or_connect`\n(`src/ipc.rs#L332-L477`):\n\n- **Local (UDS)** — `get_socket_path` (`src/ipc.rs#L114`) derives a deterministic\n  `/tmp/oifs_<name>_<hash>.sock` from the canonical image path. A process first\n  tries to connect; if the socket is unreachable it atomically `bind`s as master,\n  retrying and cleaning up stale sockets.\n- **Network (TCP)** — a `<image>.master` rendezvous file in the image directory\n  holds a `MasterInfo { addr, pid }` (`src/ipc.rs#L45`). The probe\n  `is_tcp_master_alive` (`src/ipc.rs#L150`) runs a clock-free active Ping/Pong to\n  detect a dead master on NFS/Lustre. The winner atomically\n  `create_new`s the rendezvous file and binds TCP; losers connect.\n\n## Process-level session registry\n\n<!-- openwiki: broken internal link [`src/session.rs#L77`] file \"`src/session.rs\" does not exist. Fix the href or restore the target, then delete this comment. -->\n[`SESSION_REGISTRY`](`src/session.rs#L77`) is a process-wide\n`Mutex<HashMap<PathBuf, OifsSession>>` keyed by the canonicalized absolute path.\n`get_or_open_with_mode` (`src/session.rs#L195`) returns a `Clone` of the existing\nsession if one is cached, otherwise opens one and inserts it. Because\n`OifsSession` is `Clone` built on `Arc` fields, multiple threads share one Master\nwith no duplication and natural reference counting. `canonicalize_path`\n(`src/session.rs#L85`) resolves symlinks (up to 32 hops) so links pointing at the\nsame image deduplicate to the same registry key.\n\n## Transport: framed requests\n\nEvery RPC is a length-prefixed Bincode frame (`src/ipc.rs#L281`) with a 128 MB\nsafety cap. `IpcRequest` / `IpcResponseData` (`src/ipc.rs`) enumerate all\nsupported operations (create/read/write/delete/resolve/list/fsck/defrag/flush).\n`IpcServer::handle_request` (`src/ipc.rs#L648`) is the single dispatcher that\nmaps each request to a `DiskManager` call, so logic is never duplicated across\nthe Direct and Remote arms.\n\nThe server thread (`src/ipc.rs#L479`) keeps the listener non-blocking and uses\n`libc::poll` on the listener fd; each accepted peer gets its own worker thread\nthat loops reading requests and emitting `SessionEvent::PeerConnected`,\n`RequestHandled`, and `PeerDisconnected`. Drop performs a graceful shutdown and\nremoves the socket or rendezvous file.\n\n## Self-healing master failover\n\nA Remote session must survive the Master dying (crash, power loss). In\n`send_request` (`src/session.rs#L424-L490`) a Remote call first checks a cached\n`dm_fallback` local DiskManager, then retries up to five times. On a connection\nerror (broken pipe, reset, etc. per `is_connection_error`, `src/session.rs#L490`),\nit re-runs master election; if it turns out the retrying process is now the\nMaster, it pins the local `DiskManager` as `dm_fallback` and serves the request\nlocally. This makes a Proxy transparently promote itself after a master loss.\n\n## Block-level merge policy\n\nThe merge policy described in the project docs is enforced structurally rather\nthan by special code: all peers funnel into the one Master's\n`Mutex<DiskManagerInner>`. Under that mutex:\n\n- **Disjoint byte offsets in the same block** merge in place — each write\n  `copy_from_slice`s only its own byte range, leaving untouched bytes intact.\n- **Overlapping offsets** are Last-Writer-Wins because the mutex serializes\n  writes into POSIX `pwrite` semantics with no torn writes.\n- **Compressed files** use zstd multi-frame append at EOF, or transparent\n  read-modify-recompress for random offsets, as documented in the compression\n  page.\n\nThere is no cross-process locking of individual blocks; mutual exclusion is the\ncoarse-grained Master mutex, which is what the Shuttle concurrency proofs\nrely on.\n\n## Extension seams\n\nThe `OifsSession` enum's two variants and its method-by-method dispatch are the\nseam for adding new operations: a new `IpcRequest` arm plus matching Direct and\nRemote branches, and a new `DiskManager` method. Transport is swappable through\nthe `IpcStream`/`IpcListener` abstractions in `bind_or_connect`, and failover\nbehavior lives entirely in `send_request`, so a new transport only needs to\nproduce a connectable stream.\n",
-      "size": 5550,
+      "body": "\n## Responsibility and ownership\n\nThe session layer owns the process coordination contract while the IPC layer\n<!-- openwiki: broken internal link [`src/session.rs#L59-L78`] file \"`src/session.rs\" does not exist. Fix the href or restore the target, then delete this comment. -->\nowns the transport. [`OifsSession`](`src/session.rs#L59-L78`) decides whether a\ngiven process runs in **Direct (Master)** or **Remote (Proxy)** mode and forwards\n<!-- openwiki: broken internal link [`src/ipc.rs`] file \"`src/ipc.rs`\" does not exist. Fix the href or restore the target, then delete this comment. -->\nevery operation to the right place. [`ipc.rs`](`src/ipc.rs`) provides the\n`bind_or_connect` master election, the `IpcServer` request dispatcher, and the\nlength-prefixed framing used on every hop. The actual mutation of the image\nhappens only inside a single Master's [`DiskManager`] (`Arc<Mutex<DiskManagerInner>>`),\nwhich is the real serialization point.\n\n## Master-Proxy architecture\n\nOnly one process may hold the `mmap` and mutate the bitmap/inode tables. On open,\none process wins master status and runs in `Direct` mode: it opens the\n`DiskManager` directly (zero IPC overhead for its own calls) and starts a\nbackground `IpcServer`. Every other process wins nothing and runs in `Remote`\nmode: each public method forwards the request through `send_request` to the\nMaster.\n\nMaster election is transport-dependent and implemented in `bind_or_connect`\n(`src/ipc.rs#L332-L477`):\n\n- **Local (UDS)** — `get_socket_path` (`src/ipc.rs#L114`) derives a deterministic\n  `/tmp/oifs_<name>_<hash>.sock` from the canonical image path. A process first\n  tries to connect; if the socket is unreachable it atomically `bind`s as master,\n  retrying and cleaning up stale sockets.\n- **Network (TCP)** — a `<image>.master` rendezvous file in the image directory\n  holds a `MasterInfo { addr, pid }` (`src/ipc.rs#L45`). The probe\n  `is_tcp_master_alive` (`src/ipc.rs#L150`) runs a clock-free active Ping/Pong to\n  detect a dead master on NFS/Lustre. The winner atomically\n  `create_new`s the rendezvous file and binds TCP; losers connect.\n\n## Process-level session registry\n\n<!-- openwiki: broken internal link [`src/session.rs#L77`] file \"`src/session.rs\" does not exist. Fix the href or restore the target, then delete this comment. -->\n[`SESSION_REGISTRY`](`src/session.rs#L77`) is a process-wide\n`Mutex<HashMap<PathBuf, OifsSession>>` keyed by the canonicalized absolute path.\n`get_or_open_with_mode` (`src/session.rs#L195`) returns a `Clone` of the existing\nsession if one is cached, otherwise opens one and inserts it. Because\n`OifsSession` is `Clone` built on `Arc` fields, multiple threads share one Master\nwith no duplication and natural reference counting. `canonicalize_path`\n(`src/session.rs#L85`) resolves symlinks (up to 32 hops) so links pointing at the\nsame image deduplicate to the same registry key.\n\n## Transport: framed requests\n\nEvery RPC is a length-prefixed Bincode frame (`src/ipc.rs#L281`) with a 128 MB\nsafety cap. `IpcRequest` / `IpcResponseData` (`src/ipc.rs`) enumerate all\nsupported operations (create/read/write/delete/resolve/list/fsck/defrag/flush).\n`IpcServer::handle_request` (`src/ipc.rs#L648`) is the single dispatcher that\nmaps each request to a `DiskManager` call, so logic is never duplicated across\nthe Direct and Remote arms.\n\nThe server thread (`src/ipc.rs#L479`) keeps the listener non-blocking and uses\n`libc::poll` on the listener fd; each accepted peer gets its own worker thread\nthat loops reading requests and emitting `SessionEvent::PeerConnected`,\n`RequestHandled`, and `PeerDisconnected`. Drop performs a graceful shutdown and\nremoves the socket or rendezvous file.\n\n## Self-healing master failover\n\nA Remote session must survive the Master dying (crash, power loss). In\n`send_request` (`src/session.rs#L424-L490`) a Remote call first checks a cached\n`dm_fallback` local DiskManager, then retries up to five times. On a connection\nerror (broken pipe, reset, etc. per `is_connection_error`, `src/session.rs#L490`),\nit re-runs master election; if it turns out the retrying process is now the\nMaster, it pins the local `DiskManager` as `dm_fallback` and serves the request\nlocally. This makes a Proxy transparently promote itself after a master loss.\n\n## Block-level merge policy\n\nThe merge policy described in the project docs is enforced structurally rather\nthan by special code: all peers funnel into the one Master's\n`Mutex<DiskManagerInner>`. Under that mutex:\n\n- **Disjoint byte offsets in the same block** merge in place — each write\n  `copy_from_slice`s only its own byte range, leaving untouched bytes intact.\n- **Overlapping offsets** are Last-Writer-Wins because the mutex serializes\n  writes into POSIX `pwrite` semantics with no torn writes.\n- **Compressed files** use zstd multi-frame append at EOF, or transparent\n  read-modify-recompress for random offsets, as documented in the compression\n  page.\n",
+      "size": 4941,
       "links": [],
       "backlinks": [
         "architecture/index",
-        "architecture/overview"
+        "architecture/overview",
+        "quickstart"
       ]
     },
     {
@@ -140,7 +143,8 @@
       "links": [],
       "backlinks": [
         "architecture/index",
-        "architecture/overview"
+        "architecture/overview",
+        "quickstart"
       ]
     },
     {
@@ -214,7 +218,9 @@
         "architecture/overview",
         "architecture/superblock_and_layout"
       ],
-      "backlinks": []
+      "backlinks": [
+        "quickstart"
+      ]
     },
     {
       "id": "architecture/inode_and_directory",
@@ -377,7 +383,9 @@
       "links": [
         "concepts/configuration"
       ],
-      "backlinks": []
+      "backlinks": [
+        "quickstart"
+      ]
     },
     {
       "id": "index",
@@ -385,8 +393,8 @@
       "type": "Section",
       "description": "",
       "tags": [],
-      "body": "\n# Files\n\n- [Quickstart](quickstart.md) - A step-by-step beginner's guide to building OIFS, creating your first container filesystem image, performing basic file and directory operations, using encryption, and exploring compression filters.\n\n# Directories\n\n- [architecture](architecture/)\n- [concepts](concepts/)\n- [integrations](integrations/)\n- [operations](operations/)\n- [testing](testing/)\n- [workflows](workflows/)\n",
-      "size": 421,
+      "body": "\n# Files\n\n- [Quick Start](quickstart.md) - Refresh task-routing map to reflect updated pages and provide guided navigation through the OIFS documentation hierarchy.\n\n# Directories\n\n- [architecture](architecture/)\n- [concepts](concepts/)\n- [integrations](integrations/)\n- [operations](operations/)\n- [testing](testing/)\n- [workflows](workflows/)\n",
+      "size": 345,
       "links": [
         "quickstart"
       ],
@@ -428,7 +436,9 @@
         "integrations/ffi_integration",
         "integrations/mcp_integration"
       ],
-      "backlinks": []
+      "backlinks": [
+        "quickstart"
+      ]
     },
     {
       "id": "integrations/mcp_integration",
@@ -488,7 +498,9 @@
         "operations/cli_reference",
         "operations/testing_and_verification"
       ],
-      "backlinks": []
+      "backlinks": [
+        "quickstart"
+      ]
     },
     {
       "id": "operations/testing_and_verification",
@@ -517,22 +529,30 @@
     },
     {
       "id": "quickstart",
-      "title": "Quickstart",
-      "type": "guide",
-      "description": "A step-by-step beginner's guide to building OIFS, creating your first container filesystem image, performing basic file and directory operations, using encryption, and exploring compression filters.",
+      "title": "Quick Start",
+      "type": "task_routing_map",
+      "description": "Refresh task-routing map to reflect updated pages and provide guided navigation through the OIFS documentation hierarchy.",
       "tags": [
         "quickstart",
+        "navigation",
+        "documentation",
         "guide",
-        "tutorial",
-        "build",
-        "cli",
-        "encryption",
-        "compression",
-        "io_engine"
+        "tutorial"
       ],
-      "body": "\n# Quickstart\n\n**OIFS (O's Inode File System)** is a single-file containerized Unix-like inode filesystem implemented in Rust. It packages an entire filesystem—complete with permissions, directories, compression, and encryption—into a portable `.img` container file.\n\nThis quickstart guide walks you through:\n1. Building OIFS from source.\n2. Creating and inspecting your first filesystem image.\n3. Importing, exporting, and managing files and directories.\n4. Working with encrypted images.\n5. Next steps and documentation links.\n\n## 1. Prerequisites and Building\n\nOIFS requires the Rust toolchain (edition 2024 / Rust 1.85+).\n\n### Standard Build\n\nClone the repository and build the release binaries:\n\n```bash\ncargo build --release\n```\n\nThis compiles:\n- `target/release/oifs`: The primary command-line tool.\n- `target/release/liboifs.so` (or `liboifs.dylib` on macOS): The C-compatible FFI shared library.\n\n### Building with AI Agent MCP Support\n\nTo include the Model Context Protocol (MCP) server for integration with AI coding assistants (Claude Desktop, Cursor, Antigravity):\n\n```bash\ncargo build --release --features mcp\n```\n\nThis additionally produces `target/release/oifs_mcp`.\n\n## 2. Creating Your First Filesystem Image\n\nEvery OIFS filesystem lives inside a single `.img` file. Let's create a 10MB filesystem image named `my_disk.img`:\n\n```bash\n# Using cargo run\ncargo run --release --bin oifs -- -i my_disk.img create --size 10\n\n# Or using the compiled binary directly\n./target/release/oifs -i my_disk.img create --size 10\n```\n\nOutput:\n```text\nCreated image \"my_disk.img\" with size 10MB\n```\n\nThe tool allocates a 10MB container on your host machine, formats Block 0 as the SuperBlock, initializes the inode and data block bitmaps, and allocates the root directory (inode 0).\n\n## 3. Basic File and Directory Operations\n\nAll filesystem commands require `-i <image_path>`.\n\n### Creating Directories (`mkdir`)\n\nCreate a subdirectory named `documents` inside the image:\n\n```bash\n./target/release/oifs -i my_disk.img mkdir documents\n```\n\n### Importing Files (`put`)\n\nCreate a sample text file on your host machine:\n\n```bash\necho \"Hello from OIFS container!\" > sample.txt\n```\n\nImport `sample.txt` into the root of the image:\n\n```bash\n./target/release/oifs -i my_disk.img put sample.txt\n```\n\nYou can also import files directly into subdirectories or specify a new remote name:\n\n```bash\n./target/release/oifs -i my_disk.img put sample.txt documents/notes.txt\n```\n\n### Listing Directory Contents (`ls`)\n\nList files in the root directory:\n\n```bash\n./target/release/oifs -i my_disk.img ls\n```\n\nOutput displays permissions, size, modification timestamp, and filename.\n\n### Reading and Exporting Files\n\nTo view a file's contents, export it using the `get` command and then use your host's tools to view it:\n\n```bash\n# Export the file from the image\n./target/release/oifs -i my_disk.img get sample.txt\n\n# View the contents using your host's cat command\ncat sample.txt\n```\n\nExport a file from the image back to your host machine (optionally renaming it):\n\n```bash\n./target/release/oifs -i my_disk.img get sample.txt restored.txt\n```\n\n### Deleting Files (`rm`)\n\n```bash\n./target/release/oifs -i my_disk.img rm sample.txt\n```\n\n## 4. Working with Encrypted Images\n\nOIFS provides military-grade at-rest encryption powered by XChaCha20-Poly1305 AEAD, Argon2id key derivation, and deterministic SIV filename encryption.\n\n### Creating an Encrypted Image\n\n```bash\n./target/release/oifs -i secure.img create --size 20 --encrypt\n# 🔒 Enter password: [hidden]\n# 🔒 Confirm password: [hidden]\n```\n\n### Accessing Encrypted Images\n\nWhen running commands against an encrypted image, OIFS automatically detects encryption and securely prompts for your passphrase:\n\n```bash\n./target/release/oifs -i secure.img put sample.txt\n# 🔒 Encrypted filesystem detected. Enter password: [hidden]\n```\n\n### Non-Interactive / Scripted Password Handling\n\nFor scripts and CI/CD pipelines, provide the password using the environment variable or `--password` argument:\n\n```bash\n# Using environment variable (recommended)\nexport OIFS_PASSWORD=\"my-secret-passphrase\"\n./target/release/oifs -i secure.img ls\n\n# Using command-line argument\n./target/release/oifs -i secure.img --password \"my-secret-passphrase\" ls\n```\n\n## 5. Pre-Compression Filters and Analysis\n\nOIFS features Blosc2-style data filters (Delta, ByteShuffle, BitShuffle) that collapse Shannon entropy before Zstd compression:\n\n### Analyzing Host Data Before Import\n\nAnalyze numerical or tabular data to find the optimal filter configuration:\n\n```bash\n./target/release/oifs filter-analyze data.bin\n```\n\nOutput recommends the ideal pipeline (e.g. `--filter both --typesize 4` for 32-bit floats), boosting compression ratios up to 390x.\n\n### Importing with Filters\n\n```bash\n./target/release/oifs -i my_disk.img put data.bin --filter both --typesize 4 --compress\n```\n\n## 6. Structural Diagnostics (`fsck`)\n\nVerify that the image is structurally intact:\n\n```bash\n./target/release/oifs -i my_disk.img fsck\n```\n\nOutput:\n```text\n=== Filesystem Consistency Check (fsck) ===\nStatus:              ✅ CLEAN\nOrphan Inodes:       0\nLeaked Blocks:       0\nMissing Blocks:      0\nCross-linked Blocks: 0\n```\n\n## Next Steps & Documentation Links\n\n<!-- openwiki: broken internal link [../architecture/overview.md] file \"../architecture/overview.md\" does not exist. Fix the href or restore the target, then delete this comment. -->\n- [OIFS Architecture Overview](../architecture/overview.md) — Subsystem layout, memory-mapped storage engine, and block allocation.\n<!-- openwiki: broken internal link [../architecture/async_io_and_engines.md] file \"../architecture/async_io_and_engines.md\" does not exist. Fix the href or restore the target, then delete this comment. -->\n- [Asynchronous I/O and Pluggable Engines](../architecture/async_io_and_engines.md) — Deep dive into Mmap, Pread, Linux io_uring backends, ExtentList coalescing, and kernel gating.\n<!-- openwiki: broken internal link [../architecture/disk_manager_and_persistence.md] file \"../architecture/disk_manager_and_persistence.md\" does not exist. Fix the href or restore the target, then delete this comment. -->\n- [DiskManager and Persistence Model](../architecture/disk_manager_and_persistence.md) — Storage engine coordinator, durability policies, and read/write pipelines.\n<!-- openwiki: broken internal link [../architecture/compression_and_filters.md] file \"../architecture/compression_and_filters.md\" does not exist. Fix the href or restore the target, then delete this comment. -->\n- [Compression and Filters](../architecture/compression_and_filters.md) — Deep dive into Blosc2 filters, Delta encoding, and Zstd multi-frame streams.\n<!-- openwiki: broken internal link [../architecture/encryption.md] file \"../architecture/encryption.md\" does not exist. Fix the href or restore the target, then delete this comment. -->\n- [Encryption Subsystem](../architecture/encryption.md) — Cryptographic design, 192-bit nonces, and deterministic SIV filename privacy.\n<!-- openwiki: broken internal link [../architecture/ffi_interface.md] file \"../architecture/ffi_interface.md\" does not exist. Fix the href or restore the target, then delete this comment. -->\n- [C FFI Interface](../architecture/ffi_interface.md) — Shared library bindings, handle lifecycle, and I/O backend selection.\n<!-- openwiki: broken internal link [../operations/cli_reference.md] file \"../operations/cli_reference.md\" does not exist. Fix the href or restore the target, then delete this comment. -->\n- [CLI Reference](../operations/cli_reference.md) — Complete manual for all subcommands, options, and JSON pipelines.\n<!-- openwiki: broken internal link [../operations/testing_and_verification.md] file \"../operations/testing_and_verification.md\" does not exist. Fix the href or restore the target, then delete this comment. -->\n- [Testing and Formal Verification](../operations/testing_and_verification.md) — Guide to running integration tests, Shuttle concurrency permutations, and Kani proofs.\n",
-      "size": 8027,
-      "links": [],
+      "body": "\n# Task Routing Map\n\nThis page provides a routing map to recently updated documentation and the overall OIFS documentation hierarchy.\n\n## Recently Updated Pages\n\n- [Async I/O and Engines](architecture/async_io_and_engines.md) — Update to address stale claim and reflect current I/O engine implementation.\n- [Concurrency and Session Management](architecture/concurrency_and_session.md) — Update to address stale and unresolved claims regarding IPC, session registry, and block-level merge policy.\n- [Disk Manager and Persistence](architecture/disk_manager_and_persistence.md) — Update to address stale and unresolved claims regarding block allocation, persistence, and metadata updates.\n- [Crash Safety Testing](testing/crash_safety_testing.md) — Update to address unresolved claim regarding metadata mutation sync-on-write semantics.\n\n## Documentation Hierarchy\n\n- [Architecture](architecture/index.md) — Core subsystem designs and implementations.\n- [Concepts](concepts/index.md) — Fundamental ideas and configuration.\n- [Integrations](integrations/index.md) — External tool and service integrations.\n- [Operations](operations/index.md) — CLI usage, testing, and verification.\n- [Testing](testing/index.md) — Testing methodologies and verification.\n- [Workflows](workflows/index.md) — Step-by-step guides for common tasks.\n",
+      "size": 1324,
+      "links": [
+        "architecture/async_io_and_engines",
+        "architecture/concurrency_and_session",
+        "architecture/disk_manager_and_persistence",
+        "testing/crash_safety_testing",
+        "architecture/index",
+        "concepts/index",
+        "integrations/index",
+        "operations/index",
+        "testing/index",
+        "workflows/index"
+      ],
       "backlinks": [
         "index",
         "workflows/fsck_workflow"
@@ -549,12 +569,14 @@
         "durability",
         "flush"
       ],
-      "body": "\nOIFS ensures crash safety through a combination of memory-mapped I/O, explicit flushing mechanisms, and automatic flushing on object drop. This page documents the test scenarios and mechanisms that verify data persistence across system crashes and power loss events.\n\n## Durability Policies\n\n<!-- openwiki: broken internal link [#src/disk.rs#L111-L142] heading anchor \"src/disk.rs#L111-L142\" does not exist in /openwiki/testing/crash_safety_testing.md. Fix the href or restore the target, then delete this comment. -->\nOIFS provides configurable durability modes that control when and how modifications are synchronized to physical storage ([src/disk.rs#L111-L142](#src/disk.rs#L111-L142)):\n\n- **Lazy (Default)**: Updates reside in the OS page cache and survive process crashes but require explicit flush or drop for power-loss safety. Provides highest write throughput.\n- **RangeAsync**: Asynchronously flushes only modified byte ranges per mutation, balancing safety and performance.\n- **Strict**: Synchronously flushes modified byte ranges on every mutation, guaranteeing physical storage persistence before returning.\n- **LegacyWholeMmapAsync**: Asynchronously flushes the entire memory map after each mutation (pre-P3.3 behavior).\n\nThe current durability mode is accessible via [`DiskManager::durability_mode`] and can be modified at runtime.\n\n## Crash Safety Mechanisms\n\n### Explicit Flush\n\nThe [`DiskManager::flush`] method forces synchronization of all pending changes to disk. Tests verify that data written before an explicit flush persists after reopening the filesystem image ([tests/crash_safety_test.rs#L7-L50](../../tests/crash_safety_test.rs#L7-L50)).\n\n### Implicit Flush on Drop\n\n<!-- openwiki: broken internal link [../src/disk.rs#L325-L338] file \"../src/disk.rs\" does not exist. Fix the href or restore the target, then delete this comment. -->\nThe [`DiskManagerInner::Drop`] implementation calls [`MmapMut::flush`] when the DiskManager is dropped, ensuring data persistence even without an explicit flush ([src/disk.rs#L325-L338](../src/disk.rs#L325-L338)). This is validated by the drop_flush test which writes data and relies solely on the drop-triggered flush ([tests/crash_safety_test.rs#L53-L85](../../tests/crash_safety_test.rs#L53-L85)).\n\n### Range-Based Synchronization\n<!-- openwiki: broken internal link [../src/disk.rs#L265-L296] file \"../src/disk.rs\" does not exist. Fix the href or restore the target, then delete this comment. -->\nWhen using RangeAsync or Strict durability modes, mutations trigger synchronization of only the specific byte ranges that were modified ([src/disk.rs#L265-L296](../src/disk.rs#L265-L296)), including:\n- Inode bitmap updates\n- Data bitmap updates  \n- Modified inode ranges\n- Allocated data blocks\n- Directory data blocks (for new directories)\n\nThis minimizes unnecessary I/O while ensuring crash consistency.\n\n## Test Scenarios\n\n### Flush Persistence (`test_flush_persistence`)\n1. Creates a new filesystem image\n2. Opens the image and creates a file\n3. Writes test data (\"Critical Data\")\n4. Calls explicit [`flush`]\n5. Reopens the image and verifies data integrity\n\nValidates that explicit flush guarantees persistence across file closures and reopens.\n\n### Drop Flush (`test_drop_flush`)\n1. Creates a new filesystem image\n2. Opens the image and creates a file\n3. Writes test data (\"Drop Data\")\n4. Allows the DiskManager to drop (triggering implicit flush via Drop)\n5. Reopens the image and verifies data integrity\n\nConfirms that the Drop implementation provides sufficient crash safety without explicit flush calls.\n\n### Block Overflow Safety (`test_block_overflow_safety_does_not_return_superblock`)\n1. Creates a filesystem image\n2. Requests blocks far beyond the filesystem capacity\n3. Verifies that:\n   - Requests return `None` rather than valid block IDs\n   - Specifically do not return block 0 (superblock)\n   - Superblock magic number remains intact\n\nEnsures boundary checks prevent metadata corruption during error conditions.\n\n## Implementation Details\n\nCrash safety relies on several key implementation aspects:\n\n- **Memory-Mapped I/O**: All metadata and file data modifications occur through a shared memory map ([`MmapMut`]), which automatically updates the OS page cache.\n- **Controlled Synchronization**: The [`sync_mutation_ranges`] method applies the selected durability policy to specific byte ranges rather than the entire map when appropriate.\n- **Atomic Operations**: Critical metadata updates (inode allocations, bitmap modifications) are followed by appropriate synchronization calls.\n- **Error Handling**: Disk operations propagate errors upward, allowing tests to verify failure scenarios.\n\n## Running Crash Safety Tests\n\nExecute the crash safety test suite with:\n```bash\ncargo test --test crash_safety\n```\n\nThese tests create temporary filesystem images in the current directory and clean them up upon completion.\n\n## Relation to Other Testing\n\nCrash safety testing complements:\n<!-- openwiki: broken internal link [../integration_testing.md] file \"../integration_testing.md\" does not exist. Fix the href or restore the target, then delete this comment. -->\n- [Integration Testing](../integration_testing.md): Validates full filesystem operations under normal conditions\n- [Testing and Verification](../operations/testing_and_verification.md): Broader verification strategies including performance and correctness\n\nTogether, these test layers ensure OIFS maintains both functionality and reliability under various failure conditions.\n",
-      "size": 5523,
+      "body": "\nOIFS ensures crash safety through a combination of memory-mapped I/O, explicit flushing mechanisms, and automatic flushing on object drop. This page documents the test scenarios and mechanisms that verify data persistence across system crashes and power loss events.\n\n## Durability Policies\n\nOIFS provides configurable durability modes that control when and how modifications are synchronized to physical storage ([src/disk.rs#L119-L150](../../src/disk.rs#L119-L150)):\n\n- **Lazy (Default)**: Updates reside in the OS page cache and survive process crashes but require explicit flush or drop for power-loss safety. Provides highest write throughput.\n- **RangeAsync**: Asynchronously flushes only modified byte ranges per mutation, balancing safety and performance.\n- **Strict**: Synchronously flushes modified byte ranges on every mutation, guaranteeing physical storage persistence before returning.\n- **LegacyWholeMmapAsync**: Asynchronously flushes the entire memory map after each mutation (pre-P3.3 behavior).\n\nThe current durability mode is accessible via [`DiskManager::durability_mode`] and can be modified at runtime.\n\n## Crash Safety Mechanisms\n\n### Explicit Flush\n\nThe [`DiskManager::flush`] method forces synchronization of all pending changes to disk. Tests verify that data written before an explicit flush persists after reopening the filesystem image ([tests/crash_safety_test.rs#L7-L50](../../tests/crash_safety_test.rs#L7-L50)).\n\n### Implicit Flush on Drop\n\nThe [`DiskManagerInner::Drop`] implementation calls [`MmapMut::flush`] when the DiskManager is dropped, ensuring data persistence even without an explicit flush ([src/disk.rs#L325-L338](../../src/disk.rs#L325-L338)). This is validated by the drop_flush test which writes data and relies solely on the drop-triggered flush ([tests/crash_safety_test.rs#L53-L85](../../tests/crash_safety_test.rs#L53-L85)).\n\n### Range-Based Synchronization\n\nWhen using RangeAsync or Strict durability modes, mutations trigger synchronization of only the specific byte ranges that were modified ([src/disk.rs#L265-L296](../../src/disk.rs#L265-L296)), including:\n- Inode bitmap updates\n- Data bitmap updates  \n- Modified inode ranges\n- Allocated data blocks\n- Directory data blocks (for new directories)\n\nThis minimizes unnecessary I/O while ensuring crash consistency.\n\n## Test Scenarios\n\n### Flush Persistence (`test_flush_persistence`)\n1. Creates a new filesystem image\n2. Opens the image and creates a file\n3. Writes test data (\"Critical Data\")\n4. Calls explicit [`flush`]\n5. Reopens the image and verifies data integrity\n\nValidates that explicit flush guarantees persistence across file closures and reopens.\n\n### Drop Flush (`test_drop_flush`)\n1. Creates a new filesystem image\n2. Opens the image and creates a file\n3. Writes test data (\"Drop Data\")\n4. Allows the DiskManager to drop (triggering implicit flush via Drop)\n5. Reopens the image and verifies data integrity\n\nConfirms that the Drop implementation provides sufficient crash safety without explicit flush calls.\n\n### Block Overflow Safety (`test_block_overflow_safety_does_not_return_superblock`)\n1. Creates a filesystem image\n2. Requests blocks far beyond the filesystem capacity\n3. Verifies that:\n   - Requests return `None` rather than valid block IDs\n   - Specifically do not return block 0 (superblock)\n   - Superblock magic number remains intact\n\nEnsures boundary checks prevent metadata corruption during error conditions.\n\n## Implementation Details\n\nCrash safety relies on several key implementation aspects:\n\n- **Memory-Mapped I/O**: All metadata and file data modifications occur through a shared memory map ([`MmapMut`]), which automatically updates the OS page cache.\n- **Controlled Synchronization**: The [`sync_mutation_ranges`] method applies the selected durability policy to specific byte ranges rather than the entire map when appropriate.\n- **Atomic Operations**: Critical metadata updates (inode allocations, bitmap modifications) are followed by appropriate synchronization calls.\n- **Error Handling**: Disk operations propagate errors upward, allowing tests to verify failure scenarios.\n\n## Running Crash Safety Tests\n\nExecute the crash safety test suite with:\n```bash\ncargo test --test crash_safety\n```\n\nThese tests create temporary filesystem images in the current directory and clean them up upon completion.\n\n## Relation to Other Testing\n\nCrash safety testing complements:\n\n- [Integration Testing](integration_testing.md): Validates full filesystem operations under normal conditions\n- [Testing and Verification](../operations/testing_and_verification.md): Broader verification strategies including performance and correctness\n\nTogether, these test layers ensure OIFS maintains both functionality and reliability under various failure conditions.\n",
+      "size": 4793,
       "links": [
+        "testing/integration_testing",
         "operations/testing_and_verification"
       ],
       "backlinks": [
+        "quickstart",
         "testing/index"
       ]
     },
@@ -572,7 +594,9 @@
         "testing/kani_verification",
         "testing/tsan_testing"
       ],
-      "backlinks": []
+      "backlinks": [
+        "quickstart"
+      ]
     },
     {
       "id": "testing/integration_testing",
@@ -589,6 +613,7 @@
       "size": 6664,
       "links": [],
       "backlinks": [
+        "testing/crash_safety_testing",
         "testing/index"
       ]
     },
@@ -768,7 +793,9 @@
         "workflows/fsck_workflow",
         "workflows/mcp_workflow"
       ],
-      "backlinks": []
+      "backlinks": [
+        "quickstart"
+      ]
     },
     {
       "id": "workflows/mcp_workflow",
@@ -948,6 +975,50 @@
     {
       "source": "operations/index",
       "target": "operations/testing_and_verification"
+    },
+    {
+      "source": "quickstart",
+      "target": "architecture/async_io_and_engines"
+    },
+    {
+      "source": "quickstart",
+      "target": "architecture/concurrency_and_session"
+    },
+    {
+      "source": "quickstart",
+      "target": "architecture/disk_manager_and_persistence"
+    },
+    {
+      "source": "quickstart",
+      "target": "testing/crash_safety_testing"
+    },
+    {
+      "source": "quickstart",
+      "target": "architecture/index"
+    },
+    {
+      "source": "quickstart",
+      "target": "concepts/index"
+    },
+    {
+      "source": "quickstart",
+      "target": "integrations/index"
+    },
+    {
+      "source": "quickstart",
+      "target": "operations/index"
+    },
+    {
+      "source": "quickstart",
+      "target": "testing/index"
+    },
+    {
+      "source": "quickstart",
+      "target": "workflows/index"
+    },
+    {
+      "source": "testing/crash_safety_testing",
+      "target": "testing/integration_testing"
     },
     {
       "source": "testing/crash_safety_testing",

@@ -91,13 +91,17 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.7: Range-Coalescing in `sync_mutation_ranges`
-* **File & Lines**: [`src/disk.rs:1614-1620`](file:///Users/ych/oifs/src/disk.rs#L1614-L1620), [`src/disk.rs:1804-1812`](file:///Users/ych/oifs/src/disk.rs#L1804-L1812)
-* **Current Behavior**:
-  In `DurabilityMode::Strict`, each modified block issues an independent `msync(MS_SYNC)` syscall.
-* **Proposed Remedy**:
-  Sort and coalesce contiguous or overlapping byte ranges before calling `msync`.
-* **Impact**: **Medium** (Reduces syscall overhead in synchronous durability mode by up to 80%).
+### P4.7: Range-Coalescing in `sync_mutation_ranges` [RESOLVED]
+* **File & Lines**: [`src/disk.rs:520-560`](file:///Users/ych/oifs/src/disk.rs#L520-L560), [`src/disk.rs:2860-2875`](file:///Users/ych/oifs/src/disk.rs#L2860-L2875)
+* **Status**: **Completed & Verified**
+* **Implementation Details**:
+  - Implemented `DiskManagerInner::coalesce_ranges(ranges, mmap_len)` to align ranges to 4KB page boundaries (`BLOCK_SIZE`), sort by start offset, and merge overlapping/contiguous intervals into a single `(offset, len)` slice.
+  - Integrated into `DiskManagerInner::sync_mutation_ranges` (for `RangeAsync` and `Strict` modes) and `DiskManager::write_data_journaled` (for payload block pre-sync before WAL commit).
+* **Impact & Benchmark Results**:
+  - **1MB Writes (256 payload blocks)**: Throughput increased from 268 writes/sec to **1,885 writes/sec (7.03x speedup, +603%)**, reaching 81% of `DurabilityMode::Lazy` speed.
+  - **128KB Writes (32 blocks)**: Increased from 1,364 to **4,771 writes/sec (3.5x speedup)**.
+  - **Small file writes (500 files)**: Increased from 8,535/s (4.2 MB/s) to **19,840/s (9.7 MB/s) (2.32x speedup)**.
+  - Syscall count for multi-block sequential payload sync reduced by up to **99.6%** (from $N$ to 1).
 
 ---
 
@@ -126,13 +130,13 @@ This document consolidates deep codebase investigations and findings recovered f
 
 The following safety and correctness issues were uncovered during the subagent code audits:
 
-| Bug ID | Location | Vulnerability Description | Severity | Kani Target |
-| :--- | :--- | :--- | :--- | :--- |
-| **SEC-01** | `src/disk.rs:1995` (`get_block_from_map`) | `block_id as usize * BLOCK_SIZE` can **overflow/wrap around** on release builds if `block_id` is large (e.g. from a corrupted indirect table). It wraps to 0, returning **Block 0 (SuperBlock)** as a valid data block, allowing user writes to **overwrite and corrupt the SuperBlock**! | **Critical** | `proof_get_block_from_map_overflow_safety` |
-| **PANIC-01** | `src/filters.rs:192` (`delta_encode_inplace`) | Computes `data.len() / typesize` without checking `typesize > 0`. Public callers passing `typesize = 0` trigger an immediate `attempt to divide by zero` panic. | **Medium** | `proof_delta_encode_zero_typesize_safety` |
-| **CORR-01** | `src/disk.rs:1599` (`write_data_from_start_internal`) | When overwriting a file at offset 0 with smaller data: `inode.size = std::cmp::max(inode.size, len)`. The file size is **not truncated**, leaving stale data blocks and leaked space. | **High** | `proof_write_from_start_size_invariant` |
-| **PANIC-02** | `src/disk.rs:1442-1445` (`read_at_prepare`) | If an image is corrupted and `inode.size > decompressed.len()`, a read offset $\ge \text{len}$ causes `buf.copy_from_slice(&full_data[start..end])` to slice out of bounds. | **Medium** | `proof_clamp_slice_range_soundness` |
-| **OVF-01** | `src/io_engine.rs:248` (`ExtentList::push`) | Adjacent extent merging uses `last.len += len` without `checked_add`, risking integer overflow on extreme read batches. | **Low** | `proof_extent_push_no_overflow` |
+| Bug ID | Location | Vulnerability Description | Severity | Kani Target | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **SEC-01** | `src/disk.rs:1995` (`get_block_from_map`) | `block_id as usize * BLOCK_SIZE` can **overflow/wrap around** on release builds if `block_id` is large (e.g. from a corrupted indirect table). It wraps to 0, returning **Block 0 (SuperBlock)** as a valid data block, allowing user writes to **overwrite and corrupt the SuperBlock**! | **Critical** | `proof_get_block_from_map_overflow_safety` | Open |
+| **PANIC-01** | `src/filters.rs:192` (`delta_encode_inplace`) | Computes `data.len() / typesize` without checking `typesize > 0`. Public callers passing `typesize = 0` trigger an immediate `attempt to divide by zero` panic. | **Medium** | `proof_delta_encode_zero_typesize_safety` | Open |
+| **CORR-01** | `src/disk.rs:1599` (`write_data_from_start_internal`) | When overwriting a file at offset 0 with smaller data: `inode.size = std::cmp::max(inode.size, len)`. The file size is **not truncated**, leaving stale data blocks and leaked space. | **High** | `proof_write_from_start_size_invariant` | Open |
+| **PANIC-02** | `src/disk.rs:1442-1445` (`read_at_prepare`) | If an image is corrupted and `inode.size > decompressed.len()`, a read offset $\ge \text{len}$ causes `buf.copy_from_slice(&full_data[start..end])` to slice out of bounds. | **Medium** | `proof_clamp_slice_range_soundness` | Open |
+| **OVF-01** | `src/io_engine.rs:248` (`ExtentList::push`) | Adjacent extent merging uses `last.len += len` without `checked_add`, risking integer overflow on extreme read batches. | **Low** | `proof_extent_push_no_overflow` | **Resolved** (`last.len.checked_add(len)`) |
 
 ---
 

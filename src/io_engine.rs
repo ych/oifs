@@ -249,8 +249,9 @@ impl ExtentList {
         if let Some(last) = self.extents.last_mut()
             && last.disk_offset.checked_add(last.len as u64) == Some(disk_offset)
             && last.buf_offset.checked_add(last.len) == Some(buf_offset)
+            && let Some(new_len) = last.len.checked_add(len)
         {
-            last.len += len;
+            last.len = new_len;
             return;
         }
         self.extents.push(ReadExtent {
@@ -681,6 +682,21 @@ mod tests {
         l.push(0, 0, 0); // ignored
         assert_eq!(l.len(), 3);
         assert_eq!(l.total_bytes(), 3 * 4096);
+    }
+
+    #[test]
+    fn extent_list_push_overflow_safety() {
+        let mut l = ExtentList::new();
+        l.push(0, 0, usize::MAX - 10);
+        // Contiguous in disk and buffer, but length would overflow usize::MAX
+        l.push((usize::MAX - 10) as u64, usize::MAX - 10, 20);
+        assert_eq!(
+            l.len(),
+            2,
+            "overflowing run must split into a new extent rather than wrapping"
+        );
+        assert_eq!(l.as_slice()[0].len, usize::MAX - 10);
+        assert_eq!(l.as_slice()[1].len, 20);
     }
 
     #[test]

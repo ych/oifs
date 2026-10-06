@@ -270,29 +270,80 @@ impl DiskManagerInner {
         )
     }
 
+    /// Coalesces a slice of byte ranges by:
+    /// 1. Clamping to `mmap_len` and expanding to page/block boundaries (`BLOCK_SIZE = 4096`).
+    /// 2. Sorting by start offset.
+    /// 3. Merging overlapping and contiguous intervals.
+    ///
+    /// This eliminates duplicate syscalls when multiple mutations touch the same 4KB page
+    /// or contiguous blocks on disk.
+    pub fn coalesce_ranges(ranges: &[(usize, usize)], mmap_len: usize) -> Vec<(usize, usize)> {
+        if ranges.is_empty() || mmap_len == 0 {
+            return Vec::new();
+        }
+
+        let mut intervals: Vec<(usize, usize)> = ranges
+            .iter()
+            .filter_map(|&(off, len)| {
+                if len == 0 || off >= mmap_len {
+                    return None;
+                }
+                let page_start = (off / BLOCK_SIZE) * BLOCK_SIZE;
+                let raw_end = off.saturating_add(len);
+                let page_end = ((raw_end.saturating_add(BLOCK_SIZE - 1)) / BLOCK_SIZE)
+                    .saturating_mul(BLOCK_SIZE)
+                    .min(mmap_len);
+                if page_start < page_end {
+                    Some((page_start, page_end))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if intervals.is_empty() {
+            return Vec::new();
+        }
+
+        intervals.sort_unstable_by_key(|&(start, end)| (start, end));
+
+        let mut coalesced: Vec<(usize, usize)> = Vec::with_capacity(intervals.len());
+        let (mut cur_start, mut cur_end) = intervals[0];
+
+        for &(start, end) in &intervals[1..] {
+            if start <= cur_end {
+                cur_end = cur_end.max(end);
+            } else {
+                coalesced.push((cur_start, cur_end - cur_start));
+                cur_start = start;
+                cur_end = end;
+            }
+        }
+        coalesced.push((cur_start, cur_end - cur_start));
+
+        coalesced
+    }
+
     /// Syncs one or more modified byte ranges according to the current `DurabilityMode`.
+    ///
+    /// Ranges are automatically coalesced across page boundaries (`BLOCK_SIZE = 4096`)
+    /// to eliminate redundant system calls under `RangeAsync` and `Strict` modes.
     pub fn sync_mutation_ranges(&self, ranges: &[(usize, usize)]) -> Result<(), DiskManagerError> {
         match self.durability_mode() {
             DurabilityMode::Lazy => Ok(()),
             DurabilityMode::RangeAsync => {
-                let mmap_len = self.mmap.len();
-                for &(offset, len) in ranges {
-                    if len > 0 && offset < mmap_len {
-                        let actual_len = len.min(mmap_len - offset);
-                        let _ = self.mmap.flush_async_range(offset, actual_len);
-                    }
+                let coalesced = Self::coalesce_ranges(ranges, self.mmap.len());
+                for (offset, actual_len) in coalesced {
+                    let _ = self.mmap.flush_async_range(offset, actual_len);
                 }
                 Ok(())
             }
             DurabilityMode::Strict => {
-                let mmap_len = self.mmap.len();
-                for &(offset, len) in ranges {
-                    if len > 0 && offset < mmap_len {
-                        let actual_len = len.min(mmap_len - offset);
-                        self.mmap
-                            .flush_range(offset, actual_len)
-                            .map_err(DiskManagerError::Io)?;
-                    }
+                let coalesced = Self::coalesce_ranges(ranges, self.mmap.len());
+                for (offset, actual_len) in coalesced {
+                    self.mmap
+                        .flush_range(offset, actual_len)
+                        .map_err(DiskManagerError::Io)?;
                 }
                 Ok(())
             }
@@ -520,6 +571,74 @@ mod inode_cache_tests {
         c.insert(5, i);
         assert_eq!(c.get(5).expect("present").size, 4242);
         assert!(c.get(6).is_none());
+    }
+}
+
+#[cfg(test)]
+mod range_coalesce_tests {
+    use super::*;
+
+    const BS: usize = BLOCK_SIZE;
+
+    #[test]
+    fn test_coalesce_empty_and_zero_len() {
+        let mmap_len = 100 * BS;
+        assert!(DiskManagerInner::coalesce_ranges(&[], mmap_len).is_empty());
+        assert!(DiskManagerInner::coalesce_ranges(&[(0, 0), (100, 0)], mmap_len).is_empty());
+        assert!(DiskManagerInner::coalesce_ranges(&[(mmap_len, 100)], mmap_len).is_empty());
+        assert!(DiskManagerInner::coalesce_ranges(&[(mmap_len + 10, 100)], mmap_len).is_empty());
+        assert!(DiskManagerInner::coalesce_ranges(&[(100, 100)], 0).is_empty());
+    }
+
+    #[test]
+    fn test_coalesce_same_page_sub_ranges() {
+        let mmap_len = 100 * BS;
+        // Two disjoint 256-byte inode slices within the same block (block 3 = 12288..16384)
+        let r1 = (3 * BS, 256); // 12288..12544
+        let r2 = (3 * BS + 512, 256); // 12800..13056
+        let coalesced = DiskManagerInner::coalesce_ranges(&[r1, r2], mmap_len);
+        assert_eq!(coalesced, vec![(3 * BS, BS)]);
+    }
+
+    #[test]
+    fn test_coalesce_contiguous_blocks() {
+        let mmap_len = 100 * BS;
+        // Inode bitmap (block 1) + Data bitmap (block 2)
+        let r1 = (BS, BS);
+        let r2 = (2 * BS, BS);
+        let coalesced = DiskManagerInner::coalesce_ranges(&[r1, r2], mmap_len);
+        assert_eq!(coalesced, vec![(BS, 2 * BS)]);
+    }
+
+    #[test]
+    fn test_coalesce_multi_block_runs_and_disjoint() {
+        let mmap_len = 100 * BS;
+        // Contiguous run of 3 blocks + 1 disjoint block far away
+        let ranges = vec![(BS, BS), (2 * BS, BS), (3 * BS, BS), (10 * BS, BS)];
+        let coalesced = DiskManagerInner::coalesce_ranges(&ranges, mmap_len);
+        assert_eq!(coalesced, vec![(BS, 3 * BS), (10 * BS, BS)]);
+    }
+
+    #[test]
+    fn test_coalesce_unsorted_and_overlapping() {
+        let mmap_len = 100 * BS;
+        let ranges = vec![
+            (10 * BS, BS),
+            (BS, 2 * BS), // covers block 1 and 2
+            (2 * BS, BS), // duplicate overlap with block 2
+            (BS, BS),     // duplicate overlap with block 1
+        ];
+        let coalesced = DiskManagerInner::coalesce_ranges(&ranges, mmap_len);
+        assert_eq!(coalesced, vec![(BS, 2 * BS), (10 * BS, BS)]);
+    }
+
+    #[test]
+    fn test_coalesce_clamping_at_mmap_boundary() {
+        let mmap_len = 10 * BS;
+        // Range extending past end of mmap
+        let ranges = vec![(9 * BS + 100, 2 * BS)];
+        let coalesced = DiskManagerInner::coalesce_ranges(&ranges, mmap_len);
+        assert_eq!(coalesced, vec![(9 * BS, BS)]);
     }
 }
 
@@ -2740,23 +2859,17 @@ impl DiskManager {
         // per block, so issuing it there bought latency without adding a guarantee.
         let payload_ranges: Vec<(usize, usize)> =
             used.iter().map(|b| guard.block_byte_range(*b)).collect();
+        let coalesced_payload =
+            DiskManagerInner::coalesce_ranges(&payload_ranges, guard.mmap.len());
         match guard.durability_mode() {
             DurabilityMode::Strict => {
-                for &(off, len) in &payload_ranges {
-                    let mmap_len = guard.mmap.len();
-                    if len > 0 && off < mmap_len {
-                        let actual = len.min(mmap_len - off);
-                        guard.mmap.flush_range(off, actual)?;
-                    }
+                for (off, actual) in coalesced_payload {
+                    guard.mmap.flush_range(off, actual)?;
                 }
             }
             DurabilityMode::RangeAsync => {
-                for &(off, len) in &payload_ranges {
-                    let mmap_len = guard.mmap.len();
-                    if len > 0 && off < mmap_len {
-                        let actual = len.min(mmap_len - off);
-                        let _ = guard.mmap.flush_async_range(off, actual);
-                    }
+                for (off, actual) in coalesced_payload {
+                    let _ = guard.mmap.flush_async_range(off, actual);
                 }
             }
             // Lazy and LegacyWholeMmapAsync promise nothing about writeback timing.

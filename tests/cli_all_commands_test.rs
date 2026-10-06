@@ -147,11 +147,28 @@ fn test_cli_full_lifecycle_and_json_outputs() {
     assert!(analyze_json.contains("\"fragmentation_ratio\""));
 
     // 8. Defragment
+    // 8. Defragment (safe mode)
     let output = Command::new(bin_path)
         .args(["--image", &ctx.image_path, "defrag"])
         .output()
         .expect("defrag");
     assert!(output.status.success());
+
+    // 8b. Defragment (in-place mode via JSON)
+    let output = Command::new(bin_path)
+        .args([
+            "--image",
+            &ctx.image_path,
+            "--json",
+            "defrag",
+            "--mode",
+            "inplace",
+        ])
+        .output()
+        .expect("defrag inplace json");
+    assert!(output.status.success());
+    let defrag_json = String::from_utf8_lossy(&output.stdout);
+    assert!(defrag_json.contains("\"ok\": true") || defrag_json.contains("\"ok\":true"));
 
     // 9. Fsck with --json flag
     let output = Command::new(bin_path)

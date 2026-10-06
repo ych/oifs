@@ -32,7 +32,7 @@ fn test_ffi_create_and_list() {
 
     // List files
     let mut count = 0;
-    let res_ls = oifs_ls(handle, test_cb, &mut count as *mut _ as *mut c_void);
+    let res_ls = oifs_ls(handle, Some(test_cb), &mut count as *mut _ as *mut c_void);
     assert_eq!(res_ls, 0);
     assert_eq!(count, 1);
 
@@ -67,7 +67,7 @@ fn test_ffi_get_or_open() {
 
     // Verify handle 2 can see the created file
     let mut count = 0;
-    let res_ls = oifs_ls(handle2, test_cb, &mut count as *mut _ as *mut c_void);
+    let res_ls = oifs_ls(handle2, Some(test_cb), &mut count as *mut _ as *mut c_void);
     assert_eq!(res_ls, 0);
     assert_eq!(count, 1);
 

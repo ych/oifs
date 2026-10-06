@@ -11,30 +11,46 @@ use std::ptr;
 // Opaque handle for C
 pub struct OIFSHandle {
     pub dm: DiskManager,
-    pub last_error: Option<String>,
+    pub last_error: std::sync::Mutex<Option<String>>,
+}
+
+impl OIFSHandle {
+    pub fn new(dm: DiskManager) -> Self {
+        Self {
+            dm,
+            last_error: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub fn set_last_error(&self, err: Option<String>) {
+        if let Ok(mut lock) = self.last_error.lock() {
+            *lock = err;
+        }
+    }
+
+    pub fn get_last_error(&self) -> Option<String> {
+        self.last_error.lock().ok().and_then(|guard| guard.clone())
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn oifs_open(path: *const c_char, size: u64) -> *mut OIFSHandle {
-    if path.is_null() {
-        return ptr::null_mut();
-    }
-    let c_str = unsafe { CStr::from_ptr(path) };
-    let path_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return ptr::null_mut(),
-    };
-
-    match DiskManager::open(path_str, size) {
-        Ok(dm) => {
-            let handle = Box::new(OIFSHandle {
-                dm,
-                last_error: None,
-            });
-            Box::into_raw(handle)
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if path.is_null() {
+            return ptr::null_mut();
         }
-        Err(_) => ptr::null_mut(),
-    }
+        let c_str = unsafe { CStr::from_ptr(path) };
+        let path_str = match c_str.to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        match DiskManager::open(path_str, size) {
+            Ok(dm) => Box::into_raw(Box::new(OIFSHandle::new(dm))),
+            Err(_) => ptr::null_mut(),
+        }
+    }));
+    res.unwrap_or(ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
@@ -43,57 +59,62 @@ pub extern "C" fn oifs_open_with_password(
     size: u64,
     password: *const c_char,
 ) -> *mut OIFSHandle {
-    if path.is_null() {
-        return ptr::null_mut();
-    }
-    let c_str = unsafe { CStr::from_ptr(path) };
-    let path_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return ptr::null_mut(),
-    };
-
-    let pwd_str = if password.is_null() {
-        None
-    } else {
-        match unsafe { CStr::from_ptr(password) }.to_str() {
-            Ok(s) => Some(s),
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if path.is_null() {
+            return ptr::null_mut();
+        }
+        let c_str = unsafe { CStr::from_ptr(path) };
+        let path_str = match c_str.to_str() {
+            Ok(s) => s,
             Err(_) => return ptr::null_mut(),
-        }
-    };
+        };
 
-    match DiskManager::open_with_password(path_str, size, pwd_str) {
-        Ok(dm) => {
-            let handle = Box::new(OIFSHandle {
-                dm,
-                last_error: None,
-            });
-            Box::into_raw(handle)
+        let pwd_str = if password.is_null() {
+            None
+        } else {
+            match unsafe { CStr::from_ptr(password) }.to_str() {
+                Ok(s) => Some(s),
+                Err(_) => return ptr::null_mut(),
+            }
+        };
+
+        let dm_res = if !std::path::Path::new(path_str).exists()
+            && let Some(pwd) = pwd_str
+            && !pwd.is_empty()
+        {
+            DiskManager::create_encrypted(path_str, size, pwd)
+        } else {
+            DiskManager::open_with_password(path_str, size, pwd_str)
+        };
+
+        match dm_res {
+            Ok(dm) => Box::into_raw(Box::new(OIFSHandle::new(dm))),
+            Err(_) => ptr::null_mut(),
         }
-        Err(_) => ptr::null_mut(),
-    }
+    }));
+    res.unwrap_or(ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn oifs_get_or_open(path: *const c_char, size: u64) -> *mut OIFSHandle {
-    if path.is_null() {
-        return ptr::null_mut();
-    }
-    let c_str = unsafe { CStr::from_ptr(path) };
-    let path_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return ptr::null_mut(),
-    };
-
-    match crate::session::OifsSession::get_or_open(path_str, size) {
-        Ok(crate::session::OifsSession::Direct { dm, .. }) => {
-            let handle = Box::new(OIFSHandle {
-                dm: (*dm).clone(),
-                last_error: None,
-            });
-            Box::into_raw(handle)
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if path.is_null() {
+            return ptr::null_mut();
         }
-        _ => ptr::null_mut(),
-    }
+        let c_str = unsafe { CStr::from_ptr(path) };
+        let path_str = match c_str.to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        match crate::session::OifsSession::get_or_open(path_str, size) {
+            Ok(crate::session::OifsSession::Direct { dm, .. }) => {
+                Box::into_raw(Box::new(OIFSHandle::new((*dm).clone())))
+            }
+            _ => ptr::null_mut(),
+        }
+    }));
+    res.unwrap_or(ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
@@ -102,42 +123,50 @@ pub extern "C" fn oifs_get_or_open_with_password(
     size: u64,
     password: *const c_char,
 ) -> *mut OIFSHandle {
-    if path.is_null() {
-        return ptr::null_mut();
-    }
-    let c_str = unsafe { CStr::from_ptr(path) };
-    let path_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return ptr::null_mut(),
-    };
-
-    let pwd_str = if password.is_null() {
-        None
-    } else {
-        match unsafe { CStr::from_ptr(password) }.to_str() {
-            Ok(s) => Some(s),
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if path.is_null() {
+            return ptr::null_mut();
+        }
+        let c_str = unsafe { CStr::from_ptr(path) };
+        let path_str = match c_str.to_str() {
+            Ok(s) => s,
             Err(_) => return ptr::null_mut(),
-        }
-    };
+        };
 
-    match crate::session::OifsSession::get_or_open_with_password(path_str, size, pwd_str) {
-        Ok(crate::session::OifsSession::Direct { dm, .. }) => {
-            let handle = Box::new(OIFSHandle {
-                dm: (*dm).clone(),
-                last_error: None,
-            });
-            Box::into_raw(handle)
+        let pwd_str = if password.is_null() {
+            None
+        } else {
+            match unsafe { CStr::from_ptr(password) }.to_str() {
+                Ok(s) => Some(s),
+                Err(_) => return ptr::null_mut(),
+            }
+        };
+
+        let session_res = if !std::path::Path::new(path_str).exists()
+            && let Some(pwd) = pwd_str
+            && !pwd.is_empty()
+        {
+            crate::session::OifsSession::get_or_create_encrypted(path_str, size, pwd)
+        } else {
+            crate::session::OifsSession::get_or_open_with_password(path_str, size, pwd_str)
+        };
+
+        match session_res {
+            Ok(crate::session::OifsSession::Direct { dm, .. }) => {
+                Box::into_raw(Box::new(OIFSHandle::new((*dm).clone())))
+            }
+            _ => ptr::null_mut(),
         }
-        _ => ptr::null_mut(),
-    }
+    }));
+    res.unwrap_or(ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn oifs_close(handle: *mut OIFSHandle) {
     if !handle.is_null() {
-        unsafe {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             let _ = Box::from_raw(handle);
-        }
+        }));
     }
 }
 
@@ -147,51 +176,69 @@ pub type ListCallback = extern "C" fn(*const c_char, u64, u64, *mut c_void);
 #[unsafe(no_mangle)]
 pub extern "C" fn oifs_ls(
     handle: *mut OIFSHandle,
-    cb: ListCallback,
+    cb: Option<ListCallback>,
     user_data: *mut c_void,
 ) -> i32 {
     let handle_ref = unsafe {
         if handle.is_null() {
             return -1;
         }
-        &mut (*handle)
+        &(*handle)
     };
 
-    let dm = &mut handle_ref.dm;
-    let root_inode_id = dm.superblock().root_inode;
-
-    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let root_inode = dm.read_inode(root_inode_id)?;
-        if root_inode.mode != FileType::Directory {
-            return Ok(());
+    let cb_fn = match cb {
+        Some(f) => f,
+        None => {
+            handle_ref.set_last_error(Some("Null callback provided".to_string()));
+            return -1;
         }
+    };
 
-        let block_id = root_inode.blocks[0];
-        if block_id == 0 {
-            return Ok(());
-        }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dm = &handle_ref.dm;
+        let root_inode_id = dm.superblock().root_inode;
 
-        if let Some(block_data) = dm.get_block_copy(block_id) {
-            let iter = DirectoryIterator::new(&block_data);
-            for entry_res in iter {
-                if let Ok(entry) = entry_res
-                    && let Ok(inode) = dm.read_inode(entry.inode)
-                {
-                    let c_name = CString::new(entry.name).unwrap_or_default();
-                    cb(c_name.as_ptr(), inode.size, inode.modified_at, user_data);
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let root_inode = dm.read_inode(root_inode_id)?;
+            if root_inode.mode != FileType::Directory {
+                return Ok(());
+            }
+
+            let block_id = root_inode.blocks[0];
+            if block_id == 0 {
+                return Ok(());
+            }
+
+            if let Some(block_data) = dm.get_block_copy(block_id) {
+                let iter = DirectoryIterator::new(&block_data);
+                for entry_res in iter {
+                    if let Ok(entry) = entry_res
+                        && let Ok(inode) = dm.read_inode(entry.inode)
+                    {
+                        let c_name = CString::new(entry.name).unwrap_or_default();
+                        cb_fn(c_name.as_ptr(), inode.size, inode.modified_at, user_data);
+                    }
                 }
             }
-        }
-        Ok(())
-    })();
+            Ok(())
+        })();
 
-    match result {
-        Ok(_) => {
-            handle_ref.last_error = None;
-            0
+        match result {
+            Ok(_) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
         }
-        Err(e) => {
-            handle_ref.last_error = Some(e.to_string());
+    }));
+
+    match res {
+        Ok(code) => code,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during directory listing".to_string()));
             -1
         }
     }
@@ -203,28 +250,45 @@ pub extern "C" fn oifs_create_file(handle: *mut OIFSHandle, path: *const c_char)
         if handle.is_null() {
             return -1;
         }
-        &mut (*handle)
+        &(*handle)
     };
+
+    if path.is_null() {
+        handle_ref.set_last_error(Some("Null path provided".to_string()));
+        return -1;
+    }
 
     let c_str = unsafe { CStr::from_ptr(path) };
     let filename = match c_str.to_str() {
         Ok(s) => s,
         Err(_) => {
-            handle_ref.last_error = Some("Invalid UTF-8 filename".to_string());
+            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
             return -1;
         }
     };
 
-    let dm = &handle_ref.dm;
-    let root_inode_id = dm.superblock().root_inode;
-
-    match dm.create_file(root_inode_id, filename) {
-        Ok(_) => {
-            handle_ref.last_error = None;
-            0
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dm = &handle_ref.dm;
+        match (|| -> Result<(), Box<dyn std::error::Error>> {
+            let (parent_id, name) = dm.resolve_parent(filename)?;
+            dm.create_file(parent_id, &name)?;
+            Ok(())
+        })() {
+            Ok(_) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
         }
-        Err(e) => {
-            handle_ref.last_error = Some(e.to_string());
+    }));
+
+    match res {
+        Ok(code) => code,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during file creation".to_string()));
             -1
         }
     }
@@ -236,28 +300,45 @@ pub extern "C" fn oifs_delete_file(handle: *mut OIFSHandle, path: *const c_char)
         if handle.is_null() {
             return -1;
         }
-        &mut (*handle)
+        &(*handle)
     };
+
+    if path.is_null() {
+        handle_ref.set_last_error(Some("Null path provided".to_string()));
+        return -1;
+    }
 
     let c_str = unsafe { CStr::from_ptr(path) };
     let filename = match c_str.to_str() {
         Ok(s) => s,
         Err(_) => {
-            handle_ref.last_error = Some("Invalid UTF-8 filename".to_string());
+            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
             return -1;
         }
     };
 
-    let dm = &handle_ref.dm;
-    let root_inode_id = dm.superblock().root_inode;
-
-    match dm.delete_file(root_inode_id, filename) {
-        Ok(_) => {
-            handle_ref.last_error = None;
-            0
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dm = &handle_ref.dm;
+        match (|| -> Result<(), Box<dyn std::error::Error>> {
+            let (parent_id, name) = dm.resolve_parent(filename)?;
+            dm.delete_file(parent_id, &name)?;
+            Ok(())
+        })() {
+            Ok(_) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
         }
-        Err(e) => {
-            handle_ref.last_error = Some(e.to_string());
+    }));
+
+    match res {
+        Ok(code) => code,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during file deletion".to_string()));
             -1
         }
     }
@@ -275,11 +356,19 @@ pub extern "C" fn oifs_read_at(
         if handle.is_null() {
             return -1;
         }
-        &mut (*handle)
+        &(*handle)
     };
 
-    if filename.is_null() || buf.is_null() {
-        handle_ref.last_error = Some("Null argument provided".to_string());
+    if filename.is_null() {
+        handle_ref.set_last_error(Some("Null argument provided".to_string()));
+        return -1;
+    }
+
+    if buf.is_null() {
+        if buf_size == 0 {
+            return 0;
+        }
+        handle_ref.set_last_error(Some("Null argument provided".to_string()));
         return -1;
     }
 
@@ -287,24 +376,34 @@ pub extern "C" fn oifs_read_at(
     let filename_str = match c_str.to_str() {
         Ok(s) => s,
         Err(_) => {
-            handle_ref.last_error = Some("Invalid UTF-8 filename".to_string());
+            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
             return -1;
         }
     };
 
-    let dm = &handle_ref.dm;
-    match (|| -> Result<i64, Box<dyn std::error::Error>> {
-        let inode_id = dm.resolve_path(filename_str)?;
-        let out_slice = unsafe { std::slice::from_raw_parts_mut(buf, buf_size as usize) };
-        let bytes_read = dm.read_at(inode_id, offset, out_slice)?;
-        Ok(bytes_read as i64)
-    })() {
-        Ok(bytes) => {
-            handle_ref.last_error = None;
-            bytes
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dm = &handle_ref.dm;
+        match (|| -> Result<i64, Box<dyn std::error::Error>> {
+            let inode_id = dm.resolve_path(filename_str)?;
+            let out_slice = unsafe { std::slice::from_raw_parts_mut(buf, buf_size as usize) };
+            let bytes_read = dm.read_at(inode_id, offset, out_slice)?;
+            Ok(bytes_read as i64)
+        })() {
+            Ok(bytes) => {
+                handle_ref.set_last_error(None);
+                bytes
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
         }
-        Err(e) => {
-            handle_ref.last_error = Some(e.to_string());
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during read_at".to_string()));
             -1
         }
     }
@@ -331,11 +430,16 @@ pub extern "C" fn oifs_write_file(
         if handle.is_null() {
             return -1;
         }
-        &mut (*handle)
+        &(*handle)
     };
 
-    if filename.is_null() || buf.is_null() {
-        handle_ref.last_error = Some("Null argument provided".to_string());
+    if filename.is_null() {
+        handle_ref.set_last_error(Some("Null argument provided".to_string()));
+        return -1;
+    }
+
+    if buf.is_null() && buf_size > 0 {
+        handle_ref.set_last_error(Some("Null argument provided".to_string()));
         return -1;
     }
 
@@ -343,28 +447,42 @@ pub extern "C" fn oifs_write_file(
     let filename_str = match c_str.to_str() {
         Ok(s) => s,
         Err(_) => {
-            handle_ref.last_error = Some("Invalid UTF-8 filename".to_string());
+            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
             return -1;
         }
     };
 
-    let dm = &handle_ref.dm;
-    match (|| -> Result<(), Box<dyn std::error::Error>> {
-        let (parent_id, name) = dm.resolve_parent(filename_str)?;
-        let inode_id = match dm.lookup(parent_id, &name) {
-            Ok(existing_id) => existing_id,
-            Err(_) => dm.create_file(parent_id, &name)?,
-        };
-        let data = unsafe { std::slice::from_raw_parts(buf, buf_size as usize) };
-        dm.write_data(inode_id, 0, data, crate::disk::CompressionMode::Auto)?;
-        Ok(())
-    })() {
-        Ok(_) => {
-            handle_ref.last_error = None;
-            0
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dm = &handle_ref.dm;
+        match (|| -> Result<(), Box<dyn std::error::Error>> {
+            let (parent_id, name) = dm.resolve_parent(filename_str)?;
+            let inode_id = match dm.lookup(parent_id, &name) {
+                Ok(existing_id) => existing_id,
+                Err(_) => dm.create_file(parent_id, &name)?,
+            };
+            let data = if buf.is_null() {
+                &[][..]
+            } else {
+                unsafe { std::slice::from_raw_parts(buf, buf_size as usize) }
+            };
+            dm.write_data(inode_id, 0, data, crate::disk::CompressionMode::Auto)?;
+            Ok(())
+        })() {
+            Ok(_) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
         }
-        Err(e) => {
-            handle_ref.last_error = Some(e.to_string());
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during write_file".to_string()));
             -1
         }
     }
@@ -376,11 +494,11 @@ pub extern "C" fn oifs_mkdir(handle: *mut OIFSHandle, path: *const c_char) -> i3
         if handle.is_null() {
             return -1;
         }
-        &mut (*handle)
+        &(*handle)
     };
 
     if path.is_null() {
-        handle_ref.last_error = Some("Null path provided".to_string());
+        handle_ref.set_last_error(Some("Null path provided".to_string()));
         return -1;
     }
 
@@ -388,23 +506,33 @@ pub extern "C" fn oifs_mkdir(handle: *mut OIFSHandle, path: *const c_char) -> i3
     let path_str = match c_str.to_str() {
         Ok(s) => s,
         Err(_) => {
-            handle_ref.last_error = Some("Invalid UTF-8 path".to_string());
+            handle_ref.set_last_error(Some("Invalid UTF-8 path".to_string()));
             return -1;
         }
     };
 
-    let dm = &handle_ref.dm;
-    match (|| -> Result<(), Box<dyn std::error::Error>> {
-        let (parent_id, name) = dm.resolve_parent(path_str)?;
-        dm.create_directory(parent_id, &name)?;
-        Ok(())
-    })() {
-        Ok(_) => {
-            handle_ref.last_error = None;
-            0
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dm = &handle_ref.dm;
+        match (|| -> Result<(), Box<dyn std::error::Error>> {
+            let (parent_id, name) = dm.resolve_parent(path_str)?;
+            dm.create_directory(parent_id, &name)?;
+            Ok(())
+        })() {
+            Ok(_) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
         }
-        Err(e) => {
-            handle_ref.last_error = Some(e.to_string());
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during mkdir".to_string()));
             -1
         }
     }
@@ -416,32 +544,38 @@ pub extern "C" fn oifs_last_error(handle: *mut OIFSHandle, buf: *mut c_char, buf
         if handle.is_null() {
             return -1;
         }
-        &mut (*handle)
+        &(*handle)
     };
 
     if buf.is_null() || buf_size == 0 {
         return -1;
     }
 
-    let err_str = match &handle_ref.last_error {
-        Some(s) => s.as_str(),
-        None => "No error",
-    };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let err_opt = handle_ref.get_last_error();
+        let err_str = match &err_opt {
+            Some(s) => s.as_str(),
+            None => "No error",
+        };
 
-    let c_err = match CString::new(err_str) {
-        Ok(c) => c,
-        Err(_) => return -1,
-    };
+        let sanitized = err_str.replace('\0', " ");
+        let c_err = match CString::new(sanitized) {
+            Ok(c) => c,
+            Err(_) => return -1,
+        };
 
-    let bytes = c_err.as_bytes_with_nul();
-    let to_copy = std::cmp::min(bytes.len(), buf_size as usize);
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buf, to_copy);
-        if to_copy > 0 {
-            std::ptr::write(buf.add(to_copy - 1), 0);
+        let bytes = c_err.as_bytes_with_nul();
+        let to_copy = std::cmp::min(bytes.len(), buf_size as usize);
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buf, to_copy);
+            if to_copy > 0 {
+                std::ptr::write(buf.add(to_copy - 1), 0);
+            }
         }
-    }
-    0
+        0
+    }));
+
+    res.unwrap_or(-1)
 }
 
 #[unsafe(no_mangle)]
@@ -450,7 +584,7 @@ pub extern "C" fn oifs_set_io_backend(handle: *mut OIFSHandle, backend: u8) -> i
         if handle.is_null() {
             return -1;
         }
-        &mut (*handle)
+        &(*handle)
     };
     let b = IoBackend::from_u8(backend);
     let effective = handle_ref.dm.set_io_backend(b);
@@ -463,7 +597,7 @@ pub extern "C" fn oifs_get_io_backend(handle: *mut OIFSHandle) -> i32 {
         if handle.is_null() {
             return -1;
         }
-        &mut (*handle)
+        &(*handle)
     };
     handle_ref.dm.io_backend() as i32
 }

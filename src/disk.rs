@@ -1031,6 +1031,15 @@ impl DiskManager {
         Self::init_or_open(path, total_size, Some(password), true, true)
     }
 
+    /// Open an existing OIFS image with an existing derived encryption key (or unencrypted if None).
+    pub fn open_with_key<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        key: Option<crate::encryption::EncryptionKey>,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open_with_key(path, total_size, None, key, false, false)
+    }
+
     #[cfg(test)]
     pub(crate) fn inner_for_test(&self) -> &Arc<RwLock<DiskManagerInner>> {
         &self.inner
@@ -1040,6 +1049,17 @@ impl DiskManager {
         path: P,
         total_size: u64,
         password: Option<&str>,
+        create_encrypted: bool,
+        journal: bool,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open_with_key(path, total_size, password, None, create_encrypted, journal)
+    }
+
+    fn init_or_open_with_key<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>,
+        existing_key: Option<crate::encryption::EncryptionKey>,
         create_encrypted: bool,
         journal: bool,
     ) -> Result<Self, DiskManagerError> {
@@ -1080,12 +1100,19 @@ impl DiskManager {
                 SuperBlock::new(block_count)
             };
             if create_encrypted {
-                let pwd = password.unwrap_or_default();
-                sb.encrypted = true;
-                sb.encryption_salt = crate::encryption::generate_salt();
-                sb.encryption_version = 1; // XChaCha20-Poly1305
-                let key = crate::encryption::derive_key(pwd, &sb.encryption_salt)?;
-                encryption_key = Some(key);
+                if let Some(key) = existing_key {
+                    sb.encrypted = true;
+                    sb.encryption_salt = crate::encryption::generate_salt();
+                    sb.encryption_version = 1;
+                    encryption_key = Some(key);
+                } else {
+                    let pwd = password.unwrap_or_default();
+                    sb.encrypted = true;
+                    sb.encryption_salt = crate::encryption::generate_salt();
+                    sb.encryption_version = 1; // XChaCha20-Poly1305
+                    let key = crate::encryption::derive_key(pwd, &sb.encryption_salt)?;
+                    encryption_key = Some(key);
+                }
             } else {
                 encryption_key = None;
             }
@@ -1102,9 +1129,13 @@ impl DiskManager {
             }
 
             if superblock.encrypted {
-                let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
-                let key = crate::encryption::derive_key(pwd, &superblock.encryption_salt)?;
-                encryption_key = Some(key);
+                if let Some(key) = existing_key {
+                    encryption_key = Some(key);
+                } else {
+                    let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
+                    let key = crate::encryption::derive_key(pwd, &superblock.encryption_salt)?;
+                    encryption_key = Some(key);
+                }
             } else {
                 encryption_key = None;
             }
@@ -4167,8 +4198,20 @@ impl DiskManager {
     ///
     /// # Returns
     /// `FragmentationStats` containing detailed fragmentation information
+    /// Analyzes disk fragmentation and returns statistics
+    ///
+    /// Scans the data block bitmap to calculate fragmentation metrics.
+    ///
+    /// # Returns
+    /// `FragmentationStats` containing detailed fragmentation information
     pub fn analyze_fragmentation(&self) -> Result<FragmentationStats, DiskManagerError> {
         let guard = self.inner.read().unwrap();
+        Self::analyze_fragmentation_internal(&guard)
+    }
+
+    pub(crate) fn analyze_fragmentation_internal(
+        guard: &DiskManagerInner,
+    ) -> Result<FragmentationStats, DiskManagerError> {
         let sb = &guard.superblock;
 
         // Get data bitmap block
@@ -4287,6 +4330,117 @@ impl DiskManager {
         })
     }
 
+    /// Reloads the underlying mapped image and locks after an external or safe-mode file replacement.
+    pub(crate) fn reload_from_disk(&self, source_path: &str) -> Result<(), DiskManagerError> {
+        let mut guard = self.inner.write().unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(source_path)?;
+
+        let mut lock = unsafe { std::mem::zeroed::<libc::flock>() };
+        lock.l_type = libc::F_WRLCK as _;
+        lock.l_whence = libc::SEEK_SET as _;
+        use nix::fcntl::{FcntlArg, fcntl};
+        fcntl(&file, FcntlArg::F_SETLK(&lock)).map_err(DiskManagerError::Locking)?;
+
+        let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+        let superblock: SuperBlock = bincode::deserialize(&mmap[0..BLOCK_SIZE])?;
+
+        guard.file = file;
+        guard.mmap = mmap;
+        guard.superblock = superblock;
+        guard.free_block_hint = superblock.data_block_start;
+        guard.free_inode_hint = 0;
+        guard.inode_cache = BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY);
+        guard.dir_cache.write().unwrap().clear();
+        Ok(())
+    }
+
+    /// Collects all physical block IDs for an inode split into:
+    /// 1. `payload_blocks`: data/directory blocks in logical order
+    /// 2. `indirect_blocks`: pointer table blocks (SIB, DIB, TIB)
+    fn collect_inode_block_layout(mmap: &MmapMut, inode: &Inode) -> (Vec<u64>, Vec<u64>) {
+        let mut payload_blocks = Vec::new();
+        let mut indirect_blocks = Vec::new();
+
+        // 1. Direct blocks (0..10)
+        for i in 0..10 {
+            let blk = inode.blocks[i];
+            if blk != 0 {
+                payload_blocks.push(blk);
+            }
+        }
+
+        // 2. Single Indirect block (10)
+        let sib_id = inode.blocks[10];
+        if sib_id != 0 {
+            indirect_blocks.push(sib_id);
+            if let Some(slice) = Self::get_block_from_map(mmap, sib_id) {
+                for chunk in slice.as_chunks::<8>().0 {
+                    let blk = u64::from_le_bytes(*chunk);
+                    if blk != 0 {
+                        payload_blocks.push(blk);
+                    }
+                }
+            }
+        }
+
+        // 3. Double Indirect block (11)
+        let dib_id = inode.blocks[11];
+        if dib_id != 0 {
+            indirect_blocks.push(dib_id);
+            if let Some(slice) = Self::get_block_from_map(mmap, dib_id) {
+                for chunk in slice.as_chunks::<8>().0 {
+                    let sib = u64::from_le_bytes(*chunk);
+                    if sib != 0 {
+                        indirect_blocks.push(sib);
+                        if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
+                            for d_chunk in s_slice.as_chunks::<8>().0 {
+                                let blk = u64::from_le_bytes(*d_chunk);
+                                if blk != 0 {
+                                    payload_blocks.push(blk);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Triple Indirect block
+        let tib_id = inode.triple_indirect;
+        if tib_id != 0 {
+            indirect_blocks.push(tib_id);
+            if let Some(slice) = Self::get_block_from_map(mmap, tib_id) {
+                for chunk in slice.as_chunks::<8>().0 {
+                    let dib = u64::from_le_bytes(*chunk);
+                    if dib != 0 {
+                        indirect_blocks.push(dib);
+                        if let Some(d_slice) = Self::get_block_from_map(mmap, dib) {
+                            for s_chunk in d_slice.as_chunks::<8>().0 {
+                                let sib = u64::from_le_bytes(*s_chunk);
+                                if sib != 0 {
+                                    indirect_blocks.push(sib);
+                                    if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
+                                        for p_chunk in s_slice.as_chunks::<8>().0 {
+                                            let blk = u64::from_le_bytes(*p_chunk);
+                                            if blk != 0 {
+                                                payload_blocks.push(blk);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (payload_blocks, indirect_blocks)
+    }
+
     /// Defragments the filesystem by reorganizing files contiguously
     ///
     /// # Arguments
@@ -4308,7 +4462,9 @@ impl DiskManager {
         }
     }
 
-    /// Safe defragmentation: creates new image with defragmented layout
+    /// Safe defragmentation: creates new image with defragmented layout,
+    /// stream-rewrites files to prevent memory exhaustion (OOM), supports encrypted
+    /// images, and live-reloads the active handle after atomic swap.
     fn defragment_safe(
         &self,
         source_path: &str,
@@ -4327,12 +4483,13 @@ impl DiskManager {
         // Step 1: Copy the entire image file first (safer than creating new)
         std::fs::copy(source_path, &temp_path)?;
 
-        // Step 2: Open the copy and perform actual defragmentation
-        let temp_dm = DiskManager::open(&temp_path, 0)?;
+        // Step 2: Open the copy with preserved encryption key
+        let enc_key = self.inner.read().unwrap().encryption_key.clone();
+        let temp_dm = DiskManager::open_with_key(&temp_path, 0, enc_key.clone())?;
 
-        // Collect all active, allocated inodes and their data
+        // Collect all active, allocated inodes and lightweight metadata (no file data in memory!)
         let sb = temp_dm.superblock();
-        let mut file_data_list = Vec::new();
+        let mut file_meta_list = Vec::new();
         let mut directory_blocks = Vec::new();
 
         let mut allocated_inodes = Vec::new();
@@ -4354,16 +4511,14 @@ impl DiskManager {
                     let dir_blks = Self::collect_inode_blocks(&guard.mmap, &inode);
                     directory_blocks.extend(dir_blks);
                 } else if inode.mode == crate::inode::FileType::File && inode.size > 0 {
-                    // Read and store data
                     let is_compressed = inode.compressed_size > 0;
-                    let data = temp_dm.read_data(inode_id)?;
                     let filter_cfg = crate::filters::FilterConfig {
                         typesize: inode.filter_typesize,
                         delta: inode.filter_delta,
                         shuffle: inode.filter_shuffle,
                         bitshuffle: inode.filter_bitshuffle,
                     };
-                    file_data_list.push((inode_id, is_compressed, data, filter_cfg));
+                    file_meta_list.push((inode_id, is_compressed, filter_cfg));
 
                     // Reset inode on disk so write_data allocates contiguous blocks
                     let mut cleared_inode = inode;
@@ -4395,20 +4550,21 @@ impl DiskManager {
             }
         }
 
-        // Step 4: Reallocate blocks contiguously and write data
+        // Step 4: Stream files one-by-one from self into temp_dm (bounded memory, no OOM)
         let mut files_processed = 0;
         let mut bytes_moved = 0u64;
 
-        for (inode_id, is_compressed, data, filter_cfg) in file_data_list {
+        for (inode_id, is_compressed, filter_cfg) in file_meta_list {
             let comp_mode = if is_compressed {
                 CompressionMode::Always
             } else {
                 CompressionMode::Never
             };
 
+            let data = self.read_data(inode_id)?;
+            bytes_moved += data.len() as u64;
             temp_dm.write_data_with_filters(inode_id, 0, &data, comp_mode, filter_cfg)?;
             files_processed += 1;
-            bytes_moved += data.len() as u64;
         }
 
         // Step 5: Flush all changes
@@ -4424,14 +4580,25 @@ impl DiskManager {
         // 6b: Rename new defragged to original
         match std::fs::rename(&temp_path, source_path) {
             Ok(_) => {
-                // Success! Now we can delete the backup
-                // But let's verify first
-                match DiskManager::open(source_path, 0) {
+                // Verify with open_with_key
+                match DiskManager::open_with_key(source_path, 0, enc_key) {
                     Ok(final_dm) => {
                         let stats_after = final_dm.analyze_fragmentation()?;
+                        let fsck = final_dm.verify_integrity()?;
+                        if !fsck.is_clean {
+                            let _ = std::fs::rename(&backup_path, source_path);
+                            return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                                "Safe defragmentation integrity check failed: {:?}",
+                                fsck
+                            ))));
+                        }
 
-                        // Everything OK, delete backup
+                        // Everything OK, drop final verification handle and delete backup
+                        drop(final_dm);
                         let _ = std::fs::remove_file(&backup_path);
+
+                        // Live reload the active manager handle to synchronize with the new file
+                        self.reload_from_disk(source_path)?;
 
                         Ok(DefragStats {
                             files_processed,
@@ -4458,12 +4625,252 @@ impl DiskManager {
         }
     }
 
-    /// In-place defragmentation: directly modifies original image
+    /// In-place defragmentation: directly compacts and reorganizes physical data blocks
+    /// within the existing image without allocating duplicate temporary files.
     fn defragment_inplace(&self) -> Result<DefragStats, DiskManagerError> {
-        // TODO: Implement in-place defrag
-        Err(DiskManagerError::Io(std::io::Error::other(
-            "In-place defragmentation not yet implemented",
-        )))
+        let stats_before = self.analyze_fragmentation()?;
+
+        let mut guard = self.inner.write().unwrap();
+        let sb = guard.superblock;
+
+        // 1. Collect all active allocated inodes
+        let mut allocated_inodes = Vec::new();
+        let ib_blk = sb.inode_bitmap_block;
+        if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, ib_blk) {
+            let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
+            bitmap.for_each_set_bit(sb.inode_count as usize, |idx| {
+                allocated_inodes.push(idx as u64);
+            });
+        }
+
+        let mut dir_inodes = Vec::new();
+        let mut file_inodes = Vec::new();
+        for &inode_id in &allocated_inodes {
+            if let Ok(inode) = Self::read_inode_internal(&guard, inode_id) {
+                if inode.mode == crate::inode::FileType::Directory {
+                    dir_inodes.push(inode_id);
+                } else if inode.mode == crate::inode::FileType::File && inode.size > 0 {
+                    file_inodes.push(inode_id);
+                }
+            }
+        }
+
+        // 2. Compute contiguous target locations for all blocks
+        let mut next_target = guard.superblock.data_block_start;
+        let mut old_to_new = std::collections::HashMap::new();
+        let mut all_indirect_blocks = std::collections::HashSet::new();
+
+        // Place directory blocks first
+        for &dir_inode_id in &dir_inodes {
+            if let Ok(inode) = Self::read_inode_internal(&guard, dir_inode_id) {
+                let (payloads, indirects) = Self::collect_inode_block_layout(&guard.mmap, &inode);
+                for blk in payloads {
+                    old_to_new.insert(blk, next_target);
+                    next_target += 1;
+                }
+                for ind in indirects {
+                    all_indirect_blocks.insert(ind);
+                    old_to_new.insert(ind, next_target);
+                    next_target += 1;
+                }
+            }
+        }
+
+        // Place regular file blocks next
+        for &file_inode_id in &file_inodes {
+            if let Ok(inode) = Self::read_inode_internal(&guard, file_inode_id) {
+                let (payloads, indirects) = Self::collect_inode_block_layout(&guard.mmap, &inode);
+                for blk in payloads {
+                    old_to_new.insert(blk, next_target);
+                    next_target += 1;
+                }
+                for ind in indirects {
+                    all_indirect_blocks.insert(ind);
+                    old_to_new.insert(ind, next_target);
+                    next_target += 1;
+                }
+            }
+        }
+
+        // 3. Filter blocks that need to move
+        let moves: std::collections::HashMap<u64, u64> = old_to_new
+            .iter()
+            .filter_map(|(&s, &d)| if s != d { Some((s, d)) } else { None })
+            .collect();
+
+        let num_moves = moves.len();
+        let bytes_moved = num_moves as u64 * BLOCK_SIZE as u64;
+
+        if !moves.is_empty() {
+            // 4. Cycle-aware block permutation
+            let mut pending = moves.clone();
+            let mut occupied: std::collections::HashSet<u64> = pending.keys().copied().collect();
+            let mut incoming: std::collections::HashMap<u64, u64> =
+                pending.iter().map(|(&s, &d)| (d, s)).collect();
+            let mut free_targets: Vec<u64> = pending
+                .iter()
+                .filter_map(|(&s, &d)| {
+                    if !occupied.contains(&d) {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            while !pending.is_empty() {
+                if let Some(src) = free_targets.pop() {
+                    if let Some(dst) = pending.remove(&src) {
+                        let src_off = src as usize * BLOCK_SIZE;
+                        let dst_off = dst as usize * BLOCK_SIZE;
+                        guard
+                            .mmap
+                            .copy_within(src_off..src_off + BLOCK_SIZE, dst_off);
+                        occupied.remove(&src);
+                        incoming.remove(&dst);
+
+                        if let Some(&prev_src) = incoming.get(&src) {
+                            free_targets.push(prev_src);
+                        }
+                    }
+                } else {
+                    // Cycle detected: break by saving leader into temporary 4KB buffer
+                    let (&leader_src, _) = pending.iter().next().unwrap();
+                    let mut scratch = [0u8; BLOCK_SIZE];
+                    let leader_off = leader_src as usize * BLOCK_SIZE;
+                    scratch.copy_from_slice(&guard.mmap[leader_off..leader_off + BLOCK_SIZE]);
+                    occupied.remove(&leader_src);
+
+                    let mut curr_dest = leader_src;
+                    while let Some(&curr_src) = incoming.get(&curr_dest) {
+                        if curr_src == leader_src {
+                            break;
+                        }
+                        let src_off = curr_src as usize * BLOCK_SIZE;
+                        let dst_off = curr_dest as usize * BLOCK_SIZE;
+                        guard
+                            .mmap
+                            .copy_within(src_off..src_off + BLOCK_SIZE, dst_off);
+
+                        pending.remove(&curr_src);
+                        occupied.remove(&curr_src);
+                        incoming.remove(&curr_dest);
+
+                        curr_dest = curr_src;
+                    }
+
+                    let final_off = curr_dest as usize * BLOCK_SIZE;
+                    guard.mmap[final_off..final_off + BLOCK_SIZE].copy_from_slice(&scratch);
+                    pending.remove(&leader_src);
+                    incoming.remove(&curr_dest);
+                }
+            }
+
+            // 5. Update inode block pointers
+            for &inode_id in &allocated_inodes {
+                if let Ok(mut inode) = Self::read_inode_internal(&guard, inode_id) {
+                    let mut modified = false;
+                    for i in 0..10 {
+                        if inode.blocks[i] != 0
+                            && let Some(&new_blk) = old_to_new.get(&inode.blocks[i])
+                        {
+                            inode.blocks[i] = new_blk;
+                            modified = true;
+                        }
+                    }
+                    if inode.blocks[10] != 0
+                        && let Some(&new_sib) = old_to_new.get(&inode.blocks[10])
+                    {
+                        inode.blocks[10] = new_sib;
+                        modified = true;
+                    }
+                    if inode.blocks[11] != 0
+                        && let Some(&new_dib) = old_to_new.get(&inode.blocks[11])
+                    {
+                        inode.blocks[11] = new_dib;
+                        modified = true;
+                    }
+                    if inode.triple_indirect != 0
+                        && let Some(&new_tib) = old_to_new.get(&inode.triple_indirect)
+                    {
+                        inode.triple_indirect = new_tib;
+                        modified = true;
+                    }
+                    if modified {
+                        Self::write_inode_internal(&mut guard, inode_id, &inode)?;
+                    }
+                }
+            }
+
+            // 6. Update indirect block pointers
+            for &old_ind_blk in &all_indirect_blocks {
+                let new_ind_blk = *old_to_new.get(&old_ind_blk).unwrap_or(&old_ind_blk);
+                if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, new_ind_blk) {
+                    for chunk in slice.as_chunks_mut::<8>().0 {
+                        let ptr = u64::from_le_bytes(*chunk);
+                        if ptr != 0
+                            && let Some(&new_ptr) = old_to_new.get(&ptr)
+                        {
+                            *chunk = new_ptr.to_le_bytes();
+                        }
+                    }
+                }
+            }
+
+            // 7. Update data bitmap
+            let total_used = (next_target - guard.superblock.data_block_start) as usize;
+            let data_bitmap_block = guard.superblock.data_bitmap_block;
+            if let Some(bitmap_slice) =
+                Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap_block)
+            {
+                bitmap_slice.fill(0);
+                let mut bitmap = crate::bitmap::Bitmap::new(bitmap_slice);
+                for bit in 0..total_used {
+                    bitmap.set(bit);
+                }
+            }
+
+            // 8. Reset hints and caches
+            guard.free_block_hint = next_target;
+            guard.inode_cache = BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY);
+            guard.dir_cache.write().unwrap().clear();
+
+            // 9. Reset / checkpoint WAL if journaled
+            if guard.superblock.has_journal_layout() {
+                let sb = guard.superblock;
+                let bs = sb.block_size as u64;
+                if let Ok(region) = Self::journal_region(&mut guard.mmap, &sb)
+                    && let Ok(mut ring) = crate::journal::JournalRing::open(region, bs)
+                {
+                    ring.checkpoint();
+                    ring.mark_clean_shutdown();
+                }
+            }
+
+            // 10. Flush mmap
+            guard.mmap.flush()?;
+        }
+
+        // 11. Fragmentation after
+        let stats_after = Self::analyze_fragmentation_internal(&guard)?;
+        drop(guard);
+
+        // 12. Verify filesystem consistency
+        let fsck = self.verify_integrity()?;
+        if !fsck.is_clean {
+            return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                "In-place defragmentation integrity check failed: {:?}",
+                fsck
+            ))));
+        }
+
+        Ok(DefragStats {
+            files_processed: file_inodes.len(),
+            bytes_moved,
+            blocks_freed: stats_before.free_runs.saturating_sub(stats_after.free_runs),
+            frag_before: stats_before.fragmentation_ratio,
+            frag_after: stats_after.fragmentation_ratio,
+        })
     }
 
     /// Structural consistency check (fsck) for OIFS filesystem

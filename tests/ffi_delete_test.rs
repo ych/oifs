@@ -21,7 +21,7 @@ fn test_ffi_create_delete_list() {
     assert_eq!(oifs_create_file(handle, filename.as_ptr()), 0);
 
     let mut count = 0;
-    oifs_ls(handle, test_cb, &mut count as *mut _ as *mut c_void);
+    oifs_ls(handle, Some(test_cb), &mut count as *mut _ as *mut c_void);
     assert_eq!(count, 1);
 
     // Delete
@@ -29,7 +29,11 @@ fn test_ffi_create_delete_list() {
 
     // Check list empty
     let mut count_after = 0;
-    oifs_ls(handle, test_cb, &mut count_after as *mut _ as *mut c_void);
+    oifs_ls(
+        handle,
+        Some(test_cb),
+        &mut count_after as *mut _ as *mut c_void,
+    );
     assert_eq!(count_after, 0);
 
     // Check double delete fails

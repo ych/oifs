@@ -701,6 +701,13 @@ impl WriteCase {
 /// parallel implementations that had already drifted: the in-place path added
 /// `data.len()` (logical) for a compressed append while the journaled path added
 /// `frame.len()` (physical), so the same append produced two different file sizes.
+/// Result of preparing a full-overwrite payload buffer out-of-lock.
+pub(crate) struct FullOverwritePayload {
+    pub buffer: Vec<u8>,
+    pub is_compressed: bool,
+    pub encryption_nonce: Option<[u8; 24]>,
+}
+
 struct WritePlan {
     case: WriteCase,
     /// Byte offset in the file's payload where `buffer` begins.
@@ -711,28 +718,23 @@ struct WritePlan {
     new_size: u64,
     /// New physical size; `0` when the payload is stored raw.
     new_compressed_size: u64,
+    /// Updated encryption nonce if newly encrypted.
+    encryption_nonce: Option<[u8; 24]>,
 }
 
 impl WritePlan {}
 
 /// Decide which of the four write cases applies and compute the exact bytes and
-/// sizes that result.
-///
-/// `inode` is read for its current state and **mutated only for the encryption
-/// fields** (`encrypted`, `encryption_nonce`), which a caller must persist
-/// regardless of which apply path it takes.
-///
-/// This is the single source of truth for write semantics. The in-place and
-/// journaled paths differ only in *how* the returned plan is applied, which is what
-/// keeps them from drifting: they previously carried two parallel copies of this
-/// decision and had already disagreed about a compressed append's logical size.
-fn plan_write(
-    guard: &mut DiskManagerInner,
-    inode: &mut Inode,
+/// sizes that result, performing CPU-intensive filtering, compression, and encryption
+/// without holding any filesystem lock (P4.1).
+fn plan_write_prepared(
+    inode: &Inode,
     file_offset: u64,
     data: &[u8],
     compression_mode: CompressionMode,
     filter_config: &crate::filters::FilterConfig,
+    existing_decompressed: Option<&[u8]>,
+    encryption_key: Option<&crate::encryption::EncryptionKey>,
 ) -> Result<WritePlan, DiskManagerError> {
     let old_size = inode.size;
     let old_compressed_size = inode.compressed_size;
@@ -747,27 +749,31 @@ fn plan_write(
             || filter_config.is_active());
 
     if is_full_overwrite {
-        let (buffer, compressed) = DiskManager::build_full_overwrite_buffer(
-            guard,
-            inode,
+        let payload = DiskManager::build_full_overwrite_buffer_pure(
             data,
             compression_mode,
             filter_config,
+            encryption_key,
         )?;
         // A compressed payload keeps its logical length in `size`; an uncompressed
         // one never shrinks, matching the in-place path's `max` behaviour.
-        let new_size = if compressed {
+        let new_size = if payload.is_compressed {
             data.len() as u64
         } else {
-            std::cmp::max(old_size, buffer.len() as u64)
+            std::cmp::max(old_size, payload.buffer.len() as u64)
         };
-        let new_compressed_size = if compressed { buffer.len() as u64 } else { 0 };
+        let new_compressed_size = if payload.is_compressed {
+            payload.buffer.len() as u64
+        } else {
+            0
+        };
         return Ok(WritePlan {
             case: WriteCase::FullOverwrite,
             phys_off: 0,
-            buffer,
+            buffer: payload.buffer,
             new_size,
             new_compressed_size,
+            encryption_nonce: payload.encryption_nonce,
         });
     }
 
@@ -780,7 +786,7 @@ fn plan_write(
             && !inode.encrypted
             && !filter_config.is_active()
             && inode.filter_typesize == 0
-            && guard.encryption_key.is_none();
+            && encryption_key.is_none();
         if fast_append {
             let frame = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
                 .map_err(DiskManagerError::Io)?;
@@ -792,11 +798,19 @@ fn plan_write(
                 new_size: old_size.saturating_add(data.len() as u64),
                 new_compressed_size: old_compressed_size + frame.len() as u64,
                 buffer: frame,
+                encryption_nonce: None,
             });
         }
 
         // Read-modify-recompress: splice into the decoded image and rewrite from 0.
-        let mut full = DiskManager::read_data_internal(guard, inode)?;
+        let mut full = match existing_decompressed {
+            Some(existing) => existing.to_vec(),
+            None => {
+                return Err(DiskManagerError::Io(std::io::Error::other(
+                    "Missing existing decompressed payload for recompression plan",
+                )));
+            }
+        };
         let end = (file_offset as usize).saturating_add(data.len());
         if full.len() < end {
             full.resize(end, 0);
@@ -804,25 +818,29 @@ fn plan_write(
         full[file_offset as usize..end].copy_from_slice(data);
 
         let effective = DiskManager::effective_filter(inode, filter_config);
-        let (buffer, compressed) = DiskManager::build_full_overwrite_buffer(
-            guard,
-            inode,
+        let payload = DiskManager::build_full_overwrite_buffer_pure(
             &full,
             compression_mode,
             &effective,
+            encryption_key,
         )?;
-        let new_size = if compressed {
+        let new_size = if payload.is_compressed {
             full.len() as u64
         } else {
-            buffer.len() as u64
+            payload.buffer.len() as u64
         };
-        let new_compressed_size = if compressed { buffer.len() as u64 } else { 0 };
+        let new_compressed_size = if payload.is_compressed {
+            payload.buffer.len() as u64
+        } else {
+            0
+        };
         return Ok(WritePlan {
             case: WriteCase::Recompress,
             phys_off: 0,
-            buffer,
+            buffer: payload.buffer,
             new_size,
             new_compressed_size,
+            encryption_nonce: payload.encryption_nonce,
         });
     }
 
@@ -833,7 +851,48 @@ fn plan_write(
         new_size: std::cmp::max(old_size, file_offset + data.len() as u64),
         new_compressed_size: 0,
         buffer: data.to_vec(),
+        encryption_nonce: None,
     })
+}
+
+/// Helper to plan a write when already holding a disk lock (e.g. for re-planning after a race).
+fn plan_write(
+    guard: &DiskManagerInner,
+    inode: &Inode,
+    file_offset: u64,
+    data: &[u8],
+    compression_mode: CompressionMode,
+    filter_config: &crate::filters::FilterConfig,
+) -> Result<WritePlan, DiskManagerError> {
+    let old_compressed_size = inode.compressed_size;
+    let is_full_overwrite = file_offset == 0
+        && (inode.size == 0
+            || data.len() as u64 >= inode.size
+            || old_compressed_size > 0
+            || inode.encrypted
+            || filter_config.is_active());
+    let fast_append = old_compressed_size > 0
+        && file_offset == inode.size
+        && !inode.encrypted
+        && !filter_config.is_active()
+        && inode.filter_typesize == 0
+        && guard.encryption_key.is_none();
+
+    let existing_decompressed = if !is_full_overwrite && old_compressed_size > 0 && !fast_append {
+        Some(DiskManager::read_data_internal(guard, inode)?)
+    } else {
+        None
+    };
+
+    plan_write_prepared(
+        inode,
+        file_offset,
+        data,
+        compression_mode,
+        filter_config,
+        existing_decompressed.as_deref(),
+        guard.encryption_key.as_ref(),
+    )
 }
 
 impl DiskManager {
@@ -1939,21 +1998,15 @@ impl DiskManager {
         guard: &mut DiskManagerInner,
         parent_inode_id: u64,
         name: &str,
+        stored_name: String,
+        stored_hash: u64,
         file_type: crate::inode::FileType,
     ) -> Result<u64, DiskManagerError> {
-        // ---- Phase 1: read-only validation ----
+        // ---- Phase 1: in-lock validation (re-verify parent & collision in case of race) ----
         let mut parent_inode = Self::read_inode_internal(guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
             return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
         }
-
-        let stored_name = if let Some(key) = &guard.encryption_key {
-            crate::encryption::encrypt_filename(key, parent_inode_id, name)
-                .unwrap_or_else(|_| name.to_string())
-        } else {
-            name.to_string()
-        };
-        let stored_hash = crate::directory::hash_filename(&stored_name);
 
         if Self::dir_lookup(guard, parent_inode_id, name)?.is_some() {
             let type_str = if file_type == crate::inode::FileType::Directory {
@@ -2124,29 +2177,60 @@ impl DiskManager {
         name: &str,
         file_type: crate::inode::FileType,
     ) -> Result<u64, DiskManagerError> {
+        // --- STAGE 1: Out-of-Lock Fast Validation & Filename Encryption ---
+        let (stored_name, stored_hash) = {
+            let guard = self.inner.read().unwrap();
+            let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
+            if parent_inode.mode != crate::inode::FileType::Directory {
+                return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
+            }
+
+            // Fast presence check under shared read lock without blocking readers
+            if Self::dir_lookup(&guard, parent_inode_id, name)?.is_some() {
+                let type_str = if file_type == crate::inode::FileType::Directory {
+                    "Directory"
+                } else {
+                    "File"
+                };
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("{} '{}' already exists", type_str, name),
+                )));
+            }
+
+            let stored_name = if let Some(key) = &guard.encryption_key {
+                crate::encryption::encrypt_filename(key, parent_inode_id, name)
+                    .unwrap_or_else(|_| name.to_string())
+            } else {
+                name.to_string()
+            };
+            let stored_hash = crate::directory::hash_filename(&stored_name);
+            (stored_name, stored_hash)
+        }; // Shared read-guard is dropped immediately here!
+
+        // --- STAGE 2: In-Lock Allocation & Commitment ---
         let mut guard = self.inner.write().unwrap();
 
         // M3: journaled images take the WAL-first path; legacy images keep the
         // original in-place implementation untouched (zero-overhead guarantee).
         if guard.superblock.has_journal_layout() {
-            return Self::create_entry_journaled(&mut guard, parent_inode_id, name, file_type);
+            return Self::create_entry_journaled(
+                &mut guard,
+                parent_inode_id,
+                name,
+                stored_name,
+                stored_hash,
+                file_type,
+            );
         }
 
-        // 1. Read Parent
+        // 1. Read Parent (re-verify under write lock in case of concurrent changes)
         let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
             return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
         }
 
-        let stored_name = if let Some(key) = &guard.encryption_key {
-            crate::encryption::encrypt_filename(key, parent_inode_id, name)
-                .unwrap_or_else(|_| name.to_string())
-        } else {
-            name.to_string()
-        };
-        let stored_hash = crate::directory::hash_filename(&stored_name);
-
-        // Check if file or directory already exists (checks ciphertext and legacy plaintext names).
+        // Check if file or directory was created in a race
         if Self::dir_lookup(&guard, parent_inode_id, name)?.is_some() {
             let type_str = if file_type == crate::inode::FileType::Directory {
                 "Directory"
@@ -2764,8 +2848,7 @@ impl DiskManager {
         guard: &mut DiskManagerInner,
         inode_id: u64,
         file_offset: u64,
-        data: &[u8],
-        compression_mode: CompressionMode,
+        plan: WritePlan,
         filter_config: crate::filters::FilterConfig,
     ) -> Result<(), DiskManagerError> {
         let mut inode = Self::read_inode_internal(guard, inode_id)?;
@@ -2782,21 +2865,14 @@ impl DiskManager {
         let mut ops: Vec<crate::journal::MetadataOp> = Vec::new();
         let mut used: Vec<u64> = Vec::new();
 
-        // Single source of truth for the write semantics; see `plan_write`.
         let WritePlan {
             case,
             phys_off,
             buffer,
             new_size,
             new_compressed_size,
-        } = plan_write(
-            guard,
-            &mut inode,
-            file_offset,
-            data,
-            compression_mode,
-            &filter_config,
-        )?;
+            encryption_nonce,
+        } = plan;
 
         // 1. Stage payload (bitmap bits still clear).
         crate::journal::stage_payload_write(
@@ -2823,6 +2899,10 @@ impl DiskManager {
 
         inode.size = new_size;
         inode.compressed_size = new_compressed_size;
+        if let Some(nonce) = encryption_nonce {
+            inode.encrypted = true;
+            inode.encryption_nonce = nonce;
+        }
         // Persist filter metadata whenever the pipeline re-ran over the whole file,
         // compressed or not. Gating this on `compressed_size > 0` silently corrupted
         // uncompressed filtered writes: the payload stayed filtered on disk while the
@@ -2911,16 +2991,13 @@ impl DiskManager {
     /// Build the final on-disk buffer for a full (offset 0) overwrite: filter, then
     /// compress, then encrypt, for a write that replaces the whole file.
     ///
-    /// Returns `(buffer, is_compressed)`. The flag matters: the caller must record it
-    /// in the inode, otherwise a compressed payload would be tagged as uncompressed and
-    /// read back as garbage.
-    fn build_full_overwrite_buffer(
-        guard: &mut DiskManagerInner,
-        inode: &mut Inode,
+    /// This function performs pure CPU-bound processing without holding any disk locks (P4.1).
+    pub(crate) fn build_full_overwrite_buffer_pure(
         data: &[u8],
         compression_mode: CompressionMode,
         filter_config: &crate::filters::FilterConfig,
-    ) -> Result<(Vec<u8>, bool), DiskManagerError> {
+        encryption_key: Option<&crate::encryption::EncryptionKey>,
+    ) -> Result<FullOverwritePayload, DiskManagerError> {
         let filtered = crate::filters::apply_filters_cow(data, filter_config);
         let working: &[u8] = &filtered;
 
@@ -2948,14 +3025,42 @@ impl DiskManager {
             (filtered, false)
         };
 
-        if let Some(key) = &guard.encryption_key {
+        if let Some(key) = encryption_key {
             let nonce = crate::encryption::generate_nonce();
             let enc = crate::encryption::encrypt_data(final_data.as_ref(), key, &nonce)?;
-            inode.encrypted = true;
-            inode.encryption_nonce = nonce;
-            return Ok((enc, is_compressed));
+            return Ok(FullOverwritePayload {
+                buffer: enc,
+                is_compressed,
+                encryption_nonce: Some(nonce),
+            });
         }
-        Ok((final_data.into_owned(), is_compressed))
+        Ok(FullOverwritePayload {
+            buffer: final_data.into_owned(),
+            is_compressed,
+            encryption_nonce: None,
+        })
+    }
+
+    /// Backwards-compatible wrapper around `build_full_overwrite_buffer_pure`.
+    #[allow(dead_code)]
+    fn build_full_overwrite_buffer(
+        guard: &DiskManagerInner,
+        inode: &mut Inode,
+        data: &[u8],
+        compression_mode: CompressionMode,
+        filter_config: &crate::filters::FilterConfig,
+    ) -> Result<(Vec<u8>, bool), DiskManagerError> {
+        let payload = Self::build_full_overwrite_buffer_pure(
+            data,
+            compression_mode,
+            filter_config,
+            guard.encryption_key.as_ref(),
+        )?;
+        if let Some(n) = payload.encryption_nonce {
+            inode.encrypted = true;
+            inode.encryption_nonce = n;
+        }
+        Ok((payload.buffer, payload.is_compressed))
     }
 
     /// Filters to apply on a recompression path: the caller's when active, otherwise
@@ -3002,6 +3107,57 @@ impl DiskManager {
         compression_mode: CompressionMode,
         filter_config: crate::filters::FilterConfig,
     ) -> Result<(), DiskManagerError> {
+        // --- STAGE 1: Out-of-Lock Preparation (P4.1) ---
+        // Fast shared read-lock inspection to determine plan parameters and extract encryption key.
+        let (initial_inode, existing_decompressed, encryption_key) = {
+            let guard = self.inner.read().unwrap();
+            let inode = Self::read_inode_internal(&guard, inode_id)?;
+
+            if inode.mode != crate::inode::FileType::File {
+                return Err(DiskManagerError::Io(std::io::Error::other(
+                    "Cannot write data to non-file inode",
+                )));
+            }
+
+            let is_full_overwrite = file_offset == 0
+                && (inode.size == 0
+                    || data.len() as u64 >= inode.size
+                    || inode.compressed_size > 0
+                    || inode.encrypted
+                    || filter_config.is_active());
+
+            let fast_append = inode.compressed_size > 0
+                && file_offset == inode.size
+                && !inode.encrypted
+                && !filter_config.is_active()
+                && inode.filter_typesize == 0
+                && guard.encryption_key.is_none();
+
+            let existing = if !is_full_overwrite && inode.compressed_size > 0 && !fast_append {
+                Some(Self::read_data_internal(&guard, &inode)?)
+            } else {
+                None
+            };
+
+            let key = guard.encryption_key.clone();
+            (inode, existing, key)
+        }; // Shared read-guard is dropped immediately here!
+
+        // --- STAGE 2: CPU-Bound Processing (ZERO filesystem locks held) ---
+        // Perform CPU-heavy filtering, Zstd compression, and XChaCha20 encryption
+        // entirely outside the exclusive lock so concurrent readers are not blocked.
+        let prepared_plan = plan_write_prepared(
+            &initial_inode,
+            file_offset,
+            data,
+            compression_mode,
+            &filter_config,
+            existing_decompressed.as_deref(),
+            encryption_key.as_ref(),
+        )?;
+
+        // --- STAGE 3: Exclusive Lock Acquisition & Commit ---
+        // Acquire exclusive write lock ONLY for block allocation and metadata commit.
         let mut guard = self.inner.write().unwrap();
         let mut inode = Self::read_inode_internal(&guard, inode_id)?;
 
@@ -3011,6 +3167,27 @@ impl DiskManager {
             )));
         }
 
+        // Verify if the inode state remains consistent with Stage 1.
+        let can_use_prepared = inode.size == initial_inode.size
+            && inode.compressed_size == initial_inode.compressed_size
+            && inode.modified_at == initial_inode.modified_at
+            && inode.encrypted == initial_inode.encrypted
+            && inode.blocks == initial_inode.blocks;
+
+        let plan = if can_use_prepared {
+            prepared_plan
+        } else {
+            // Raced with another writer on this specific inode: re-compute plan under write lock.
+            plan_write(
+                &guard,
+                &inode,
+                file_offset,
+                data,
+                compression_mode,
+                &filter_config,
+            )?
+        };
+
         // M3: journaled images stage the write through AllocSim and commit one
         // metadata transaction; legacy images keep the in-place implementation.
         if guard.superblock.has_journal_layout() {
@@ -3018,28 +3195,12 @@ impl DiskManager {
                 &mut guard,
                 inode_id,
                 file_offset,
-                data,
-                compression_mode,
+                plan,
                 filter_config,
             );
         }
 
-        // Decide once, apply in place. `plan_write` holds the four-case logic and the
-        // size arithmetic that used to be duplicated between this path and the
-        // journaled one.
-        let plan = plan_write(
-            &mut guard,
-            &mut inode,
-            file_offset,
-            data,
-            compression_mode,
-            &filter_config,
-        )?;
-
-        // A recompression rebuilds the whole stream, so the previous blocks are dead
-        // weight. `FullOverwrite` historically left surplus blocks allocated and
-        // still does; changing that here would be a behaviour change disguised as a
-        // refactor.
+        // Decide once, apply in place.
         if plan.case.frees_previous_blocks() {
             let old_blocks = Self::collect_inode_blocks(&guard.mmap, &inode);
             let mut min_freed_blk = u64::MAX;
@@ -3078,6 +3239,10 @@ impl DiskManager {
 
         inode.size = plan.new_size;
         inode.compressed_size = plan.new_compressed_size;
+        if let Some(nonce) = plan.encryption_nonce {
+            inode.encrypted = true;
+            inode.encryption_nonce = nonce;
+        }
         if plan.case.rewrites_filter_metadata() {
             inode.filter_typesize = filter_config.typesize;
             inode.filter_delta = filter_config.delta;
@@ -3609,6 +3774,9 @@ impl DiskManager {
         guard: &mut DiskManagerInner,
         parent_inode_id: u64,
         name: &str,
+        matched_name: &str,
+        target_inode_id: u64,
+        phys_blk: u64,
     ) -> Result<(), DiskManagerError> {
         let mut parent_inode = Self::read_inode_internal(guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
@@ -3617,39 +3785,50 @@ impl DiskManager {
             )));
         }
 
-        let enc_name = if let Some(key) = &guard.encryption_key {
-            crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
-        } else {
-            None
-        };
-        let candidates = [enc_name.as_deref(), Some(name)];
-
-        // Locate the entry (ciphertext name first, then legacy plaintext) without
-        // deserializing. Read-only, so this belongs to the compute phase.
-        let (matched_name, target_inode_id, phys_blk) = candidates
-            .iter()
-            .flatten()
-            .find_map(|c| {
-                Self::locate_entry_in_dir(
-                    &guard.mmap,
-                    &parent_inode,
-                    c,
-                    crate::directory::hash_filename(c),
+        let raw_entries = Self::read_dir_entries_from_block(&guard.mmap, phys_blk)?;
+        let (matched_name, target_inode_id, phys_blk, remaining_entries) =
+            if raw_entries.iter().any(|e| e.name == matched_name) {
+                let remaining: Vec<_> = raw_entries
+                    .into_iter()
+                    .filter(|e| e.name != matched_name)
+                    .collect();
+                (
+                    matched_name.to_string(),
+                    target_inode_id,
+                    phys_blk,
+                    remaining,
                 )
-                .map(|(id, blk)| (*c, id, blk))
-            })
-            .ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "File not found",
-                ))
-            })?;
+            } else {
+                let enc_name = guard.encryption_key.as_ref().and_then(|key| {
+                    crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
+                });
+                let candidates = [enc_name.as_deref(), Some(name)];
+                let (c, id, blk) = candidates
+                    .iter()
+                    .flatten()
+                    .find_map(|c| {
+                        Self::locate_entry_in_dir(
+                            &guard.mmap,
+                            &parent_inode,
+                            c,
+                            crate::directory::hash_filename(c),
+                        )
+                        .map(|(id, blk)| (*c, id, blk))
+                    })
+                    .ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "File not found",
+                        ))
+                    })?;
+                let remaining: Vec<_> = Self::read_dir_entries_from_block(&guard.mmap, blk)?
+                    .into_iter()
+                    .filter(|e| e.name != c)
+                    .collect();
+                (c.to_string(), id, blk, remaining)
+            };
 
         // ---- Phase 1: compute post-images (no mutation) ----
-        let remaining_entries: Vec<_> = Self::read_dir_entries_from_block(&guard.mmap, phys_blk)?
-            .into_iter()
-            .filter(|e| e.name != matched_name)
-            .collect();
         let dir_image = Self::build_dir_block_image(&remaining_entries)?;
 
         let file_inode = Self::read_inode_internal(guard, target_inode_id)?;
@@ -3706,7 +3885,7 @@ impl DiskManager {
             let mut cache = guard.dir_cache.write().unwrap();
             if let Some(ix) = cache.get_mut(&parent_inode_id) {
                 ix.plain.remove(name);
-                ix.stored.remove(matched_name);
+                ix.stored.remove(&matched_name);
             }
             cache.remove(&target_inode_id);
         }
@@ -3731,18 +3910,59 @@ impl DiskManager {
     }
 
     pub fn delete_file(&self, parent_inode_id: u64, name: &str) -> Result<(), DiskManagerError> {
+        // --- STAGE 1: Out-of-Lock Validation & Target Resolution ---
+        let (matched_name, target_inode_id, phys_blk) = {
+            let guard = self.inner.read().unwrap();
+            let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
+            if parent_inode.mode != crate::inode::FileType::Directory {
+                return Err(DiskManagerError::Io(std::io::Error::other(
+                    "Not a directory",
+                )));
+            }
+
+            let enc_name = if let Some(key) = &guard.encryption_key {
+                crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
+            } else {
+                None
+            };
+            let candidates = [enc_name.as_deref(), Some(name)];
+
+            // Locate entry under shared read lock without blocking readers
+            let (matched_name, id, blk) = candidates
+                .iter()
+                .flatten()
+                .find_map(|c| {
+                    Self::locate_entry_in_dir(
+                        &guard.mmap,
+                        &parent_inode,
+                        c,
+                        crate::directory::hash_filename(c),
+                    )
+                    .map(|(id, blk)| ((*c).to_string(), id, blk))
+                })
+                .ok_or_else(|| {
+                    DiskManagerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "File not found",
+                    ))
+                })?;
+            (matched_name, id, blk)
+        }; // Read guard is dropped!
+
+        // --- STAGE 2: In-Lock Modification & Commit ---
         let mut guard = self.inner.write().unwrap();
 
         // M3: journaled images take the WAL-first path; legacy images keep the
         // original in-place implementation untouched (zero-overhead guarantee).
         if guard.superblock.has_journal_layout() {
-            return Self::delete_file_journaled(&mut guard, parent_inode_id, name);
-        }
-
-        // M3: journaled images take the WAL-first path; legacy images keep the
-        // original in-place implementation untouched (zero-overhead guarantee).
-        if guard.superblock.has_journal_layout() {
-            return Self::delete_file_journaled(&mut guard, parent_inode_id, name);
+            return Self::delete_file_journaled(
+                &mut guard,
+                parent_inode_id,
+                name,
+                &matched_name,
+                target_inode_id,
+                phys_blk,
+            );
         }
 
         let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
@@ -3752,38 +3972,45 @@ impl DiskManager {
             )));
         }
 
-        let enc_name = if let Some(key) = &guard.encryption_key {
-            crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
-        } else {
-            None
-        };
-        let candidates = [enc_name.as_deref(), Some(name)];
-
-        // Locate the entry (ciphertext name first, then legacy plaintext) without deserializing.
-        let (matched_name, target_inode_id, phys_blk) = candidates
-            .iter()
-            .flatten()
-            .find_map(|c| {
-                Self::locate_entry_in_dir(
-                    &guard.mmap,
-                    &parent_inode,
-                    c,
-                    crate::directory::hash_filename(c),
-                )
-                .map(|(id, blk)| (*c, id, blk))
-            })
-            .ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "File not found",
-                ))
-            })?;
+        let raw_entries = Self::read_dir_entries_from_block(&guard.mmap, phys_blk)?;
+        let (matched_name, target_inode_id, phys_blk, remaining_entries) =
+            if raw_entries.iter().any(|e| e.name == matched_name) {
+                let remaining: Vec<_> = raw_entries
+                    .into_iter()
+                    .filter(|e| e.name != matched_name)
+                    .collect();
+                (matched_name, target_inode_id, phys_blk, remaining)
+            } else {
+                let enc_name = guard.encryption_key.as_ref().and_then(|key| {
+                    crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
+                });
+                let candidates = [enc_name.as_deref(), Some(name)];
+                let (c, id, blk) = candidates
+                    .iter()
+                    .flatten()
+                    .find_map(|c| {
+                        Self::locate_entry_in_dir(
+                            &guard.mmap,
+                            &parent_inode,
+                            c,
+                            crate::directory::hash_filename(c),
+                        )
+                        .map(|(id, blk)| ((*c).to_string(), id, blk))
+                    })
+                    .ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "File not found",
+                        ))
+                    })?;
+                let remaining: Vec<_> = Self::read_dir_entries_from_block(&guard.mmap, blk)?
+                    .into_iter()
+                    .filter(|e| e.name != c)
+                    .collect();
+                (c, id, blk, remaining)
+            };
 
         // Rewrite only the block that holds the entry.
-        let remaining_entries: Vec<_> = Self::read_dir_entries_from_block(&guard.mmap, phys_blk)?
-            .into_iter()
-            .filter(|e| e.name != matched_name)
-            .collect();
         Self::rewrite_dir_entries_in_block(&mut guard.mmap, phys_blk, &remaining_entries)?;
 
         // Invalidate cached names in the parent, and drop the target's own index in case it was
@@ -3792,7 +4019,7 @@ impl DiskManager {
             let mut cache = guard.dir_cache.write().unwrap();
             if let Some(ix) = cache.get_mut(&parent_inode_id) {
                 ix.plain.remove(name);
-                ix.stored.remove(matched_name);
+                ix.stored.remove(&matched_name);
             }
             cache.remove(&target_inode_id);
         }

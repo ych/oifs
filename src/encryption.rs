@@ -10,7 +10,7 @@ use std::fmt;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Encryption key with automatic zeroization on drop
-#[derive(Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct EncryptionKey {
     key: [u8; 32], // 256-bit key for XChaCha20-Poly1305
 }

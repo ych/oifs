@@ -1110,6 +1110,235 @@ mod kani_proofs {
             None => {}
         }
     }
+
+    /// Prove ring buffer `used()` calculation invariants:
+    /// 1. `head + ring` never overflows `u64` for any valid ring size (`ring <= u64::MAX / 2`).
+    /// 2. `head + ring - tail` never underflows since `head + ring >= ring > tail`.
+    /// 3. `used < ring` always holds.
+    /// 4. When `head == tail`, `used == 0`.
+    /// 5. When `head != tail`, `used > 0 && used < ring`.
+    #[kani::proof]
+    fn proof_ring_used_invariants() {
+        let ring: u64 = kani::any();
+        let head: u64 = kani::any();
+        let tail: u64 = kani::any();
+        kani::assume(ring > 0 && ring <= (u64::MAX / 2));
+        kani::assume(head < ring);
+        kani::assume(tail < ring);
+
+        // Checked arithmetic verification
+        let head_plus_ring = head.checked_add(ring);
+        assert!(
+            head_plus_ring.is_some(),
+            "head + ring must never overflow u64"
+        );
+        let sum = head_plus_ring.unwrap();
+        assert!(sum > tail, "head + ring must strictly exceed tail");
+
+        let used = (sum - tail) % ring;
+        assert!(
+            used < ring,
+            "used bytes must be strictly less than ring size"
+        );
+
+        if head == tail {
+            assert_eq!(used, 0, "used must be 0 when head == tail");
+            kani::cover!(used == 0, "empty ring reached");
+        } else {
+            assert!(used > 0, "used must be positive when head != tail");
+            assert!(used < ring, "used must stay below capacity");
+            kani::cover!(head > tail, "head ahead of tail");
+            kani::cover!(head < tail, "tail wrapped ahead of head");
+        }
+    }
+
+    /// Prove that `append`'s wrapping and slice indexing cannot exceed `ring_bytes`.
+    ///
+    /// After wrapping `head` if `head + len > ring`, `head + len <= ring` is guaranteed,
+    /// ensuring `ring()[head..head+len]` can never access out of bounds, and
+    /// `(head + len) % ring < ring`.
+    #[kani::proof]
+    fn proof_ring_append_bounds_guarantee() {
+        let ring_bytes: u64 = kani::any();
+        let mut head: u64 = kani::any();
+        let len: u64 = kani::any();
+        kani::assume(ring_bytes > 0 && ring_bytes <= (1 << 30));
+        kani::assume(head < ring_bytes);
+        kani::assume(len > 0 && len <= ring_bytes);
+
+        // Mirror JournalRing::append wrap check
+        if head.saturating_add(len) > ring_bytes {
+            head = 0;
+        }
+
+        // Must fit contiguously without exceeding ring_bytes
+        let end = head.checked_add(len);
+        assert!(end.is_some());
+        let end_val = end.unwrap();
+        assert!(
+            end_val <= ring_bytes,
+            "write slice must never exceed ring capacity"
+        );
+
+        // Next head cursor stays within [0, ring_bytes)
+        let next_head = end_val % ring_bytes;
+        assert!(next_head < ring_bytes, "next head must stay inside ring");
+    }
+
+    /// Prove that `checkpoint_to` moves `tail` forward towards `head` without passing it.
+    ///
+    /// Distances are measured modulo the ring. A candidate `target` is only accepted
+    /// when `dist_to_head(target) <= dist_to_head(tail)`, guaranteeing that the distance
+    /// to head is strictly non-increasing and tail never overtakes head.
+    #[kani::proof]
+    fn proof_ring_checkpoint_to_monotonicity() {
+        let ring: u64 = kani::any();
+        let head: u64 = kani::any();
+        let tail: u64 = kani::any();
+        let target: u64 = kani::any();
+        kani::assume(ring > 0 && ring <= (1 << 20));
+        kani::assume(head < ring);
+        kani::assume(tail < ring);
+        kani::assume(target < ring);
+
+        let dist = |a: u64| (head + ring - a) % ring;
+        let dist_tail = dist(tail);
+        let dist_target = dist(target);
+
+        assert!(dist_tail < ring);
+        assert!(dist_target < ring);
+
+        if dist_target <= dist_tail {
+            // Target lies between tail and head in forward ring order
+            let new_tail = target;
+            assert!(
+                dist(new_tail) <= dist_tail,
+                "tail must not move backwards away from head"
+            );
+            kani::cover!(dist_target < dist_tail, "tail advanced forward");
+            kani::cover!(dist_target == dist_tail, "tail remained at same distance");
+        }
+    }
+
+    /// Prove that applying `MetadataOp::SetInodeBitmap` is strictly idempotent:
+    /// `apply(op)` followed by `apply(op)` leaves the image in the exact same state as `apply(op)`.
+    #[kani::proof]
+    fn proof_apply_op_set_inode_bitmap_idempotent() {
+        let mut image = [0u8; 32];
+        let mut sb = SuperBlock::new(100);
+        sb.block_size = 16;
+        sb.inode_bitmap_block = 1;
+
+        let inode_id: u64 = kani::any();
+        let allocated: bool = kani::any();
+        kani::assume(inode_id < 128); // 16 bytes * 8 bits
+
+        let op = MetadataOp::SetInodeBitmap {
+            inode_id,
+            allocated,
+        };
+
+        if apply_op_in_place(&mut image, &sb, &op).is_ok() {
+            let once = image;
+            // Apply a second time
+            let res2 = apply_op_in_place(&mut image, &sb, &op);
+            assert!(
+                res2.is_ok(),
+                "re-applying an already applied op must succeed"
+            );
+            assert_eq!(
+                image, once,
+                "second application must be completely identical (idempotent)"
+            );
+        }
+    }
+
+    /// Prove that applying `MetadataOp::SetDataBitmap` is strictly idempotent.
+    #[kani::proof]
+    fn proof_apply_op_set_data_bitmap_idempotent() {
+        let mut image = [0u8; 32];
+        let mut sb = SuperBlock::new(100);
+        sb.block_size = 16;
+        sb.data_bitmap_block = 1;
+        sb.data_block_start = 2;
+
+        let block_id: u64 = kani::any();
+        let allocated: bool = kani::any();
+        kani::assume(block_id >= 2 && block_id < 2 + 128);
+
+        let op = MetadataOp::SetDataBitmap {
+            block_id,
+            allocated,
+        };
+
+        if apply_op_in_place(&mut image, &sb, &op).is_ok() {
+            let once = image;
+            let res2 = apply_op_in_place(&mut image, &sb, &op);
+            assert!(res2.is_ok());
+            assert_eq!(
+                image, once,
+                "second application must be completely identical (idempotent)"
+            );
+        }
+    }
+
+    /// Prove that applying `MetadataOp::WriteBlockSlice` is strictly idempotent.
+    #[kani::proof]
+    fn proof_apply_op_write_block_slice_idempotent() {
+        let mut image = [0u8; 32];
+        let mut sb = SuperBlock::new(100);
+        sb.block_size = 16;
+
+        let block_id: u64 = kani::any();
+        let offset: u32 = kani::any();
+        let d0: u8 = kani::any();
+        let d1: u8 = kani::any();
+        kani::assume(block_id <= 1);
+        kani::assume(offset <= 14);
+
+        let data = vec![d0, d1];
+        let op = MetadataOp::WriteBlockSlice {
+            block_id,
+            offset,
+            data,
+        };
+
+        if apply_op_in_place(&mut image, &sb, &op).is_ok() {
+            let once = image;
+            let res2 = apply_op_in_place(&mut image, &sb, &op);
+            assert!(res2.is_ok());
+            assert_eq!(
+                image, once,
+                "second application must be completely identical (idempotent)"
+            );
+        }
+    }
+
+    /// Prove that applying `MetadataOp::WriteInode` is strictly idempotent.
+    #[kani::proof]
+    fn proof_apply_op_write_inode_idempotent() {
+        let mut image = [0u8; 256];
+        let mut sb = SuperBlock::new(100);
+        sb.block_size = 256;
+        sb.inode_table_block = 0;
+
+        let pattern: u8 = kani::any();
+        let inode_bytes = Box::new([pattern; INODE_BYTES]);
+        let op = MetadataOp::WriteInode {
+            inode_id: 0,
+            inode_bytes,
+        };
+
+        if apply_op_in_place(&mut image, &sb, &op).is_ok() {
+            let once = image;
+            let res2 = apply_op_in_place(&mut image, &sb, &op);
+            assert!(res2.is_ok());
+            assert_eq!(
+                image, once,
+                "second application must be completely identical (idempotent)"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

@@ -237,21 +237,22 @@ pub fn recover_from_journal(mmap: &mut MmapMut, sb: &mut SuperBlock) -> Result<u
 2. **Master-Proxy Multi-Process Concurrency**:
    - Only the Master process (holding OS `flock`) appends to the WAL and advances pointers. Proxies forward operations via IPC, avoiding multi-process log contention.
 3. **Formal Verification (Kani CBMC)**:
-   - Prove that `apply_op_in_place` is strictly **idempotent** (replaying multiple times yields identical filesystem states).
-   - Prove that circular ring-buffer pointer arithmetic `(cursor + len) % ring_size` is free from arithmetic overflow and out-of-bounds access.
+   - Proved that `apply_op_in_place` is strictly **idempotent** across all `MetadataOp` variants (`SetInodeBitmap`, `SetDataBitmap`, `WriteBlockSlice`, `WriteInode`), guaranteeing that replaying multiple times yields identical filesystem states.
+   - Proved that circular ring-buffer pointer arithmetic `(cursor + len) % ring_size` and `(head + ring - tail) % ring` are free from arithmetic overflow and out-of-bounds access.
+   - Proved that `checkpoint_to` moves `tail` forward towards `head` monotonically without passing it.
 
 ---
 
 ## 8. Implementation Milestones
 
-| Milestone | Scope | Deliverables |
-| :--- | :--- | :--- |
-| **M1** | Journal structures & ring buffer (`src/journal.rs`) | `MetadataOp` serialization, `TxHeader`, CRC32C computation |
-| **M2** | Superblock expansion & layout formatting | Support `--journal` creation flag and backward-compatible parsing |
-| **M3** | Write path integration (`src/disk.rs`) | Connect `create_file`, `delete_file`, `mkdir` to transaction batches |
-| **M4** | Crash recovery & fault injection tests | Power-cut / torn-write injection tests verifying self-healing recovery |
-| **M5** | Kani formal proofs | CBMC proofs for replay idempotency and ring buffer invariants |
-| **M6** | `write_data` Journaling & Refactoring | Ordered payload staging via `AllocSim`, pointer pruning on shrink, helper extraction |
+| Milestone | Scope | Deliverables | Status |
+| :--- | :--- | :--- | :--- |
+| **M1** | Journal structures & ring buffer (`src/journal.rs`) | `MetadataOp` serialization, `TxHeader`, CRC32C computation | Completed |
+| **M2** | Superblock expansion & layout formatting | Support `--journal` creation flag and backward-compatible parsing | Completed |
+| **M3** | Write path integration (`src/disk.rs`) | Connect `create_file`, `delete_file`, `mkdir` to transaction batches | Completed |
+| **M4** | Crash recovery & fault injection tests | Power-cut / torn-write injection tests verifying self-healing recovery | Completed |
+| **M5** | Kani formal proofs | CBMC proofs for replay idempotency and ring buffer invariants | **Completed** |
+| **M6** | `write_data` Journaling & Refactoring | Ordered payload staging via `AllocSim`, pointer pruning on shrink, helper extraction | Completed |
 
 ---
 

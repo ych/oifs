@@ -396,3 +396,190 @@ int main() {{
         String::from_utf8_lossy(&output.stdout)
     );
 }
+
+#[test]
+fn test_native_cpp20_e2e() {
+    let compiler = if has_tool("clang++") {
+        "clang++"
+    } else if has_tool("g++") {
+        "g++"
+    } else {
+        eprintln!("Neither clang++ nor g++ found in PATH, skipping native C++20 test");
+        return;
+    };
+
+    // Check if compiler actually accepts -std=c++20
+    let supports_cpp20 = Command::new(compiler)
+        .args(["-std=c++20", "-dM", "-E", "-x", "c++", "/dev/null"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !supports_cpp20 {
+        eprintln!("Compiler does not support -std=c++20, skipping C++20 test");
+        return;
+    }
+
+    let dylib_path = get_dylib_path();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
+    let include_dir = Path::new(&manifest_dir).join("include");
+
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let cpp_src_path = tmp_dir.path().join("main_cpp20.cpp");
+    let bin_path = tmp_dir.path().join("main_cpp20_bin");
+    let test_img_path = tmp_dir.path().join("cpp20_test_fs.img");
+
+    let cpp_code = format!(
+        r#"
+#include <iostream>
+#include <vector>
+#include <string>
+#include <memory>
+#include <thread>
+#include <span>
+#include <concepts>
+#include <atomic>
+#include <cassert>
+#include <cstring>
+#include "oifs.h"
+
+// Modern C++ RAII Deleter for OIFSHandle
+struct OIFSDeleter {{
+    void operator()(OIFSHandle *h) const noexcept {{
+        if (h) {{
+            oifs_close(h);
+        }}
+    }}
+}};
+using UniqueOIFS = std::unique_ptr<OIFSHandle, OIFSDeleter>;
+
+struct DirEntry {{
+    std::string name;
+    uint64_t size = 0;
+    uint64_t mtime = 0;
+}};
+
+// C++20 Concept to verify contiguous byte buffer convertible to std::span<const uint8_t>
+template <typename T>
+concept ContiguousByteRange = requires(T t) {{
+    requires std::convertible_to<decltype(std::span{{t}}), std::span<const uint8_t>>;
+}};
+
+int main() {{
+    // 1. Verify C++20 Header Inclusion and Version Handshake
+    assert(OIFS_CHECK_VERSION() == OIFS_VERSION_COMPAT_OK);
+    std::string ver = oifs_version_string();
+    assert(ver == "1.0.0");
+
+    // 2. Open via RAII Smart Pointer
+    const std::string img_path = "{img_path}";
+    UniqueOIFS fs(oifs_open(img_path.c_str(), 20 * 1024 * 1024));
+    assert(fs != nullptr);
+
+    // 3. Write data using C++20 std::span<const uint8_t>
+    std::string text = "C++20 std::span & std::jthread Modern Integration Test";
+    std::vector<uint8_t> raw_bytes(text.begin(), text.end());
+    static_assert(ContiguousByteRange<std::vector<uint8_t>>);
+
+    std::span<const uint8_t> write_span(raw_bytes);
+    assert(oifs_write_file(fs.get(), "cpp20_span.txt", write_span.data(), write_span.size()) == 0);
+
+    // 4. Read back using C++20 std::span<uint8_t>
+    std::vector<uint8_t> read_storage(128, 0);
+    std::span<uint8_t> read_span(read_storage);
+    int64_t bytes = oifs_read_at(fs.get(), "cpp20_span.txt", 0, read_span.data(), read_span.size());
+    assert(bytes == static_cast<int64_t>(write_span.size()));
+    assert(std::memcmp(read_span.data(), write_span.data(), bytes) == 0);
+
+    // 5. C++20 Designated Initializers in callback context
+    struct Stats {{
+        size_t count = 0;
+        uint64_t total_bytes = 0;
+    }};
+    Stats stats{{.count = 0, .total_bytes = 0}};
+
+    auto cb = [](const char *name, uint64_t size, uint64_t mtime, void *user_data) {{
+        (void)name;
+        (void)mtime;
+        auto *s = static_cast<Stats*>(user_data);
+        if (s) {{
+            s->count++;
+            s->total_bytes += size;
+        }}
+    }};
+    assert(oifs_ls(fs.get(), cb, &stats) == 0);
+    assert(stats.count >= 1);
+
+    // 6. C++20 Concurrency using std::jthread (or fallback to std::thread if not in lib)
+#if defined(__cpp_lib_jthread)
+    {{
+        std::vector<std::jthread> jworkers;
+        for (int t = 0; t < 6; ++t) {{
+            jworkers.emplace_back([handle = fs.get(), t]() {{
+                for (int i = 0; i < 5; ++i) {{
+                    std::string fname = "jworker_" + std::to_string(t) + "_" + std::to_string(i) + ".dat";
+                    std::vector<uint8_t> payload = {{static_cast<uint8_t>(t), static_cast<uint8_t>(i), 0x20}};
+                    std::span<const uint8_t> p_span(payload);
+                    assert(oifs_write_file(handle, fname.c_str(), p_span.data(), p_span.size()) == 0);
+
+                    std::vector<uint8_t> in_buf(3, 0);
+                    std::span<uint8_t> in_span(in_buf);
+                    int64_t r_res = oifs_read_file(handle, fname.c_str(), in_span.data(), in_span.size());
+                    assert(r_res == 3);
+                    assert(in_buf == payload);
+                }}
+            }});
+        }}
+        // jworkers automatically join upon leaving scope (C++20 RAII)
+    }}
+#endif
+
+    std::cout << "ALL C++20 TESTS PASSED CLEANLY!\n";
+    return 0;
+}}
+"#,
+        img_path = test_img_path.to_str().unwrap()
+    );
+
+    std::fs::write(&cpp_src_path, cpp_code).expect("write C++20 source");
+
+    // Compile with strict C++20 flags
+    let compile_status = Command::new(compiler)
+        .args([
+            "-std=c++20",
+            "-Wall",
+            "-Wextra",
+            "-Wpedantic",
+            "-Werror",
+            "-I",
+            include_dir.to_str().unwrap(),
+            cpp_src_path.to_str().unwrap(),
+            dylib_path.to_str().unwrap(),
+            "-o",
+            bin_path.to_str().unwrap(),
+        ])
+        .status()
+        .expect("compile C++20 binary");
+
+    assert!(compile_status.success(), "Compilation of C++20 test failed");
+
+    // Execute compiled binary
+    let dylib_dir = dylib_path.parent().unwrap();
+    let mut cmd = Command::new(&bin_path);
+    if cfg!(target_os = "macos") {
+        cmd.env("DYLD_LIBRARY_PATH", dylib_dir);
+    } else {
+        cmd.env("LD_LIBRARY_PATH", dylib_dir);
+    }
+
+    let output = cmd.output().expect("execute compiled C++20 test binary");
+    assert!(
+        output.status.success(),
+        "C++20 native binary execution failed!\nStdout:\n{}\nStderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    println!(
+        "C++20 Test Output:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}

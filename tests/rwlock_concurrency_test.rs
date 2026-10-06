@@ -107,7 +107,7 @@ fn test_mixed_readers_and_writers_safety() {
         reader_handles.push(thread::spawn(move || {
             let mut buf = vec![0u8; 512];
             let mut read_count = 0;
-            while !stop.load(Ordering::Relaxed) {
+            loop {
                 let offset = ((t * 100 + read_count * 50) % (payload_ref.len() - 512)) as u64;
                 let n = dm_clone
                     .read_at(main_file_id, offset, &mut buf)
@@ -118,6 +118,9 @@ fn test_mixed_readers_and_writers_safety() {
                     &payload_ref[offset as usize..offset as usize + 512]
                 );
                 read_count += 1;
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
             }
             read_count
         }));
@@ -183,7 +186,7 @@ fn test_concurrent_flush_and_readers() {
         reader_handles.push(thread::spawn(move || {
             let mut buf = vec![0u8; 1024];
             let mut read_count = 0;
-            while !stop.load(Ordering::Relaxed) {
+            loop {
                 let offset = ((t * 200 + read_count * 128) % (payload_ref.len() - 1024)) as u64;
                 let n = dm_clone
                     .read_at(file_id, offset, &mut buf)
@@ -194,6 +197,9 @@ fn test_concurrent_flush_and_readers() {
                     &payload_ref[offset as usize..offset as usize + 1024]
                 );
                 read_count += 1;
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
             }
             read_count
         }));

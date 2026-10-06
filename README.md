@@ -2,156 +2,141 @@
 
 [English](README.md) | [繁體中文](README_zh.md) | [📖 Online Documentation](https://ych.github.io/oifs/)
 
-> 🌐 **Documentation & Architecture Website**: [https://ych.github.io/oifs/](https://ych.github.io/oifs/)
+> 🌐 **Documentation & Architecture Website**: [https://ych.github.io/oifs/](https://ych.github.io/oifs/)  
 > Browse interactive architecture diagrams, module call trees, verified design claims, and comprehensive technical specifications.
 
-OIFS is an inode-based file system implemented in Rust. It provides robust file operations, directory management, multi-process thread-safe concurrency, online safe defragmentation, pre-compression data filters, AEAD encryption, Model Context Protocol (MCP) server integration, and a C FFI interface for C/C++ integration.
+OIFS is a high-performance, embedded, multi-process inode filesystem engine implemented in Rust. It delivers crash-resilient storage, fine-grained concurrency, military-grade AEAD encryption, scientific data pre-compression filters, pluggable asynchronous I/O engines, a native Model Context Protocol (MCP) server for AI agents, and a stable C/C++ FFI interface.
 
 ---
 
-## Features
+## Capabilities & Architecture
 
-*   **Inode-based Architecture**: Standard Unix-like inode design managing files, directories, permissions, and timestamps.
-*   **Large File Support**: Single indirect, double indirect, and triple indirect block indexing, expanding maximum file size up to **513GB** (134,480,394 blocks of 4KB), while maintaining 100% backward compatibility with legacy images.
-*   **Encryption Support 🔒**:
-    *   **XChaCha20-Poly1305 AEAD**: Authenticated Encryption with Associated Data providing confidentiality and cryptographic tamper-proofing.
-    *   **Argon2id Key Derivation**: Memory-hard password hashing resistant to GPU/ASIC brute-force attacks.
-    *   **Per-File Unique Nonces**: Cryptographically secure 192-bit CSPRNG nonces per file.
-    *   **Integrated Compression & Encryption**: Compresses before encrypting to maximize compression ratio while preserving ciphertext entropy.
-    *   **CLI Password Masking**: Automatically suppresses echo in terminal prompts to prevent shoulder-surfing.
-*   **Integrity & Diagnostics (fsck) 🛠️**:
-    *   Full structural integrity scanner detecting Orphan Inodes, Leaked Blocks, Missing Blocks, and Cross-Linked Blocks.
-    *   Supports human-readable and structured JSON output formats.
-*   **Crash Safety**:
-    *   Metadata mutations (`create`, `mkdir`, `delete`) enforce sync-on-write semantics.
-    *   Leverages `mmap` kernel flush mechanisms to guarantee durability against sudden application or system crashes.
-*   **Concurrency & Multi-Process Session (Master-Proxy IPC) 🔄**:
-    *   **Dynamic Master-Proxy Architecture**: The first process opening an image acquires an OS-level exclusive file lock (`flock`) and becomes the **Master**. Subsequent processes automatically run in **Proxy** mode, transparently forwarding all file system requests over IPC.
-    *   **Dual-Mode IPC Coordination**: Seamlessly supports ultra-low-latency local Unix Domain Sockets (UDS) and cross-host Network TCP (`--network`).
-    *   **Process-Level Session Registry**: Provides `OifsSession::get_or_open` for thread-safe session caching and reference counting, with multi-hop symbolic link (symlink) recursive canonicalization.
-    *   **Block-Level Merge Policy**: Disjoint byte ranges in the same 4KB block automatically merge in-place; overlapping ranges adhere to atomic Last-Writer-Wins (POSIX `pwrite` semantics).
-*   **Online Safe Defragmentation 🧹**:
-    *   **Fragmentation Analysis**: `analyze_fragmentation` computes fragmentation percentage and unallocated gap distributions.
-    *   **3-Step Atomic Replacement**: Employs a fail-safe rename sequence with an automated `.old` backup to protect against power outages or crashes during defragmentation.
-    *   **100% Metadata Preservation**: Contiguously reallocates blocks while strictly preserving directory structures, Blosc2 filter parameters, compression, and encryption.
-*   **Model Context Protocol (MCP) Server 🤖**:
-    *   Dedicated `oifs_mcp` server binary allowing AI agents and IDEs (Claude Desktop, Cursor, Antigravity) to manage and inspect OIFS images via standard JSON-RPC tools.
-*   **Extreme Zero-Allocation Optimization 🚀**:
-    *   **Bitmap Allocation Scanner**: 64-bit word chunking with hardware `tzcnt` instruction, speeding up free-block scans by **11x ~ 13.4x**.
-    *   **Zero-Allocation Directory Lookup**: In-place byte-slice parsing of entry headers and names, accelerating lookups by **12x ~ 26.8x** with **0 heap allocations**.
-    *   **Step-Skipping Insertion Point Scan**: Fast-forwards directory insertion offsets via `18 + len` byte offsets, speeding up appends by **32.5x**.
-    *   **Zero-Copy Read/Write Filter Pipeline**: Utilizes `Cow<'a, [u8]>` to eliminate memory clones on uncompressed/unfiltered paths, speeding up reads/writes by **10x ~ 3,162x**.
-*   **Rigorous Concurrency Verification 🧪**:
-    *   Integrated **Shuttle** randomized thread-schedule permutation tests to exhaustively explore race conditions and deadlocks.
-    *   Integrated **ThreadSanitizer (TSan)** multi-threaded stress tests verifying data integrity under extreme concurrency.
-*   **Blosc2 Pre-compression Data Filters & Extreme Compression ⚡**:
-    *   **Why Blosc2**: General-purpose compressors (Zstandard, LZ4) rely on sliding-window byte matching (LZ77), which underperforms on numerical streams (Float32/64, Int32/64), time series, and Array of Structures (AoS). Pre-compression filters reorganize bytes and compute differences to collapse Shannon Entropy, boosting compression ratios from 1.95x to **390x** (**99.7% space savings**).
-    *   **Supported Filters**: First-order Delta, Byte Shuffle, BitShuffle, TruncPrecision.
-    *   **Composite Filter Pipeline**: Arbitrary stacking and chaining of multiple filters.
-    *   **Filter Recommendation Tool**: Automatically measures Shannon entropy and evaluates 14 candidate pipelines in parallel to suggest optimal parameters.
-    *   **Native C-Blosc2 Integration**: Direct bindings to the compiled C-Blosc2 chunk codec.
-*   **Formal Verification Guarantee 🛡️**:
-    *   **50 mathematical proofs** verified with AWS **Kani Rust Verifier (CBMC/CaDiCaL)** across 9 modules, proving filter bijectivity, two's-complement overflow safety, superblock bounds, directory serialization safety, block pointer path traversal, and file size invariants on full/partial overwrites (`proof_write_from_start_size_invariant`).
-*   **Pluggable Asynchronous I/O Engine (P3.2) ⚡**:
-    *   Abstracted `IoEngine` decoupling block payload reads into pluggable backends: `IoBackend::Mmap` (zero-copy memory map), `IoBackend::Pread` (positional syscalls per coalesced extent), and `IoBackend::IoUring` (Linux concurrent submission queue).
-    *   Selectable at runtime via the `OIFS_IO_BACKEND` environment variable (`mmap`, `pread`, `io_uring`) or via Rust API.
-*   **Configurable Durability Policies (P3.3) 💾**:
-    *   Granular `DurabilityMode` (`Lazy`, `RangeAsync`, `Strict`, `LegacyWholeMmapAsync`) allowing developers to precisely balance immediate power-loss crash resilience (`msync(MS_SYNC)`) against microsecond-level write throughput.
-*   **Dynamic Multi-Block Directories (P3.1) 📁**:
-    *   Directories seamlessly expand across multiple dynamically allocated 4KB extent blocks, scaling to tens of thousands of entries per directory while retaining zero-allocation step-skipping search.
-*   **Non-Blocking Flush Concurrency 🔄**:
-    *   Background `flush()` operations employ a shared read-lock separated by a dedicated synchronization mutex, guaranteeing that long disk flushes never block concurrent reader threads.
-*   **3-State FFI Version Handshake 🔌**:
-    *   `oifs_init_version_check` provides a 3-state compatibility handshake for C/C++ FFI dynamic linking, guaranteeing ABI stability across library upgrades.
-*   **Interactive Architecture & OpenWiki Visualizer 🌐**:
-    *   Explore interactive architecture diagrams, module call trees, and verified design claims on the [OpenWiki Interactive Visualizer](https://ych.github.io/oifs/).
-*   **C API (FFI) 🔌**: Comprehensive C shared library (`liboifs.so`) supporting encrypted access, I/O, directory management, `oifs_get_or_open` session reuse, and rich diagnostics.
+### 1. Storage & Scaling
+*   **Unix-like Inode Architecture**: Standard inode hierarchy managing regular files, directories, permissions, and nanosecond timestamps.
+*   **Large File Support (up to 513 GB)**: Single, double, and triple indirect block indexing (134,480,394 blocks of 4KB), maintaining 100% backward compatibility with legacy disk formats.
+*   **Dynamic Multi-Block Directories**: Seamlessly expands directories across dynamically allocated 4KB extent blocks, scaling to tens of thousands of entries per directory with in-memory accelerated caching.
+*   **Online Zero-Downtime Defragmentation 🧹**: `analyze_fragmentation` computes fragmentation ratios; online defragmentation uses a safe 3-step atomic rename sequence with `.old` backup protection, relocating files contiguously while 100% preserving metadata, filter parameters, and encryption.
+*   **FSCK Integrity Diagnostics 🛠️**: Full structural consistency scanner detecting orphan inodes, leaked blocks, missing blocks, and cross-linked references with human-readable and structured JSON outputs.
+
+### 2. Transactional Crash Resilience & Durability
+*   **Transactional Metadata WAL (Write-Ahead Log)**: Circular ring buffer write-ahead logging for directory mutations and file allocations. Every structural mutation is logged before physical blocks are modified.
+*   **Instant Crash Recovery**: Automatic replay upon mount restores uncheckpointed transactions and discards torn transactions without leaking blocks or leaving orphaned inodes.
+*   **Configurable Durability Policies**:
+    *   `Strict`: Synchronous `msync(MS_SYNC)` per transaction commit for maximum power-loss resilience.
+    *   `RangeAsync`: Asynchronous page writeback with automatic 4KB page range-coalescing, reducing system call overhead by up to 99.6%.
+    *   `Lazy`: Memory-buffered writeback for maximum in-memory throughput.
+*   **Non-Blocking Flush Concurrency**: `flush()` and `flush_async()` serialize physical `msync` calls through a dedicated synchronization mutex while holding a shared read-lock, guaranteeing that background flushes never stall concurrent reader threads.
+
+### 3. High-Concurrency Multi-Threaded Engine
+*   **32-Shard Lock-Striped Inode Cache**: Decouples the in-memory bounded inode cache into 32 independent shards, each guarded by its own `RwLock`. Inode IDs are uniformly distributed using 64-bit Fibonacci hashing bijections, eliminating lock contention on cache misses and evictions (**4,000,000+ ops/sec**).
+*   **Out-of-Lock Processing Pipeline**: CPU-intensive Delta/Shuffle filtering, Zstandard compression, and XChaCha20 encryption execute completely outside filesystem locks. Reader threads experience **zero starvation** during heavy multi-megabyte writes, maintaining 0 µs p50/p99 read latencies.
+*   **Decoupled Directory Mutations**: File and directory creation (`create_file`) and deletion (`delete_file`) perform path resolution, collision checks, and cryptographic filename encryption under shared read-locks or out-of-lock, acquiring exclusive write-locks only for the brief final block commit.
+*   **Zero-Allocation Path Splitting**: Zero-heap-allocation path component iteration (`resolve_path_iter`) and $O(1)$ parent splitting (`resolve_parent`), delivering **7.7M+ path lookups/sec**.
+
+### 4. End-to-End Cryptographic Security 🔒
+*   **XChaCha20-Poly1305 AEAD**: Authenticated Encryption with Associated Data providing confidentiality and cryptographic tamper-proofing.
+*   **Argon2id Key Derivation**: Memory-hard password hashing with random salt stored in the SuperBlock, resistant to GPU/ASIC brute-force attacks.
+*   **Synthetic IV (SIV) Filename Encryption**: Deterministic authenticated filename encryption using ChaCha20-Poly1305 + Blake2b-512 PRF with parent inode tweak and Base64URL encoding. Raw disk inspections (`strings`, `hexdump`) reveal zero filenames or directory structures.
+*   **Zeroization**: Sensitive cryptographic key material is automatically zeroed on drop using the `zeroize` crate.
+*   **CLI Password Masking**: Automatically suppresses echo in terminal prompts to prevent shoulder-surfing.
+
+### 5. Numerical Data Filters & Blosc2 Compression ⚡
+*   **Why Pre-compression Filters**: General-purpose compressors (Zstandard, LZ4) rely on sliding-window byte matching (LZ77), which struggles on binary numerical arrays (IEEE 754 floats, timeseries integers, coordinate vectors). Pre-compression filters reorganize bytes to collapse Shannon Entropy, boosting compression ratios from 1.95x up to **390x (99.7% space savings)**.
+*   **Supported Filters**: First-order Delta (`wrapping_sub`), Byte Shuffle (AoS to SoA transposition), BitShuffle ($8 \times 8$ bit matrix transposition), and TruncPrecision (mantissa bit truncation).
+*   **Composite Filter Pipelines**: Arbitrary stacking and chaining of multiple filters.
+*   **Intelligent Filter Recommender**: Automatically computes Shannon entropy across candidate pipelines in parallel to suggest optimal parameters.
+
+### 6. Transparent Multi-Process & Network IPC 🔄
+*   **Dynamic Master-Proxy Coordination**: The first process opening an image acquires an OS-level exclusive file lock (`flock`) and becomes the **Master**. Subsequent processes automatically run as **Proxies**, transparently dispatching operations over IPC.
+*   **Dual Transport Backends**: Ultra-low-latency local Unix Domain Sockets (UDS) and cross-host Network TCP (`--network`).
+*   **Atomic Block-Level Merge Policy**: Disjoint byte ranges in the same 4KB block merge in-place; overlapping ranges adhere to atomic Last-Writer-Wins (POSIX `pwrite` semantics).
+
+### 7. Pluggable Async I/O Engine ⚡
+*   Decouples payload block reads into pluggable engines selectable at runtime via API or `OIFS_IO_BACKEND`:
+    *   `IoBackend::Mmap`: Direct zero-copy memory mapping.
+    *   `IoBackend::Pread`: Positional system calls per coalesced extent run.
+    *   `IoBackend::IoUring`: Linux asynchronous submission queue with kernel polling.
+
+### 8. Mathematical Verification & Tooling 🛡️
+*   **50+ Kani Formal Proofs**: Mathematically proven with AWS **Kani Rust Verifier (CBMC/CaDiCaL)** across 9 modules, proving integer overflow safety, filter bijectivity, ring buffer wrap invariants, and file overwrite bounds.
+*   **Shuttle & TSan Concurrency Verification**: Exhaustive randomized thread-schedule permutation testing via Shuttle and ThreadSanitizer multi-threaded stress tests.
+*   **Model Context Protocol (MCP) Server 🤖**: Dedicated `oifs_mcp` binary allowing AI coding agents (Claude Desktop, Cursor, Antigravity) to inspect and manage OIFS filesystems via standard JSON-RPC tools.
+*   **Stable C/C++ ABI (FFI) 🔌**: Shared library (`liboifs.so`) with a 3-state version handshake verifying runtime compatibility.
 
 ---
 
-## Build
+## Performance & Concurrency Benchmarks
+
+The following benchmarks were measured on release builds under multi-threaded stress workloads:
+
+| Benchmark Scenario | Workload / Configuration | Result / Throughput | Baseline Comparison |
+| :--- | :--- | :--- | :--- |
+| **Inode Cache Throughput** | 16 reader threads, 32,000 operations across 3,000 files (continuous misses & evictions) | **3,996,081 ops/sec** (8.05 ms total) | **2.70x faster** (+170% throughput vs. global lock 1.48M ops/sec) |
+| **Concurrent Reader Latency Under Heavy Writes** | 8 readers reading 64KB file while 2 writers continuously compress/encrypt multi-MB files | **p50 = 0 µs, p99 = 0 µs** (341,902 reads completed) | **Zero reader starvation** (down from 30~50 ms stalls per write) |
+| **Path Resolution** | 10,000 lookups traversing multi-tier directory paths | **7,729,979 lookups/sec** (129.37 ns/op) | **Zero heap allocations** |
+| **Large Directory Listing** | Listing directory with 5,000 files | **4,712 listings/sec** (212.2 µs per listing) | **2.34x faster** (+134% throughput via in-memory index) |
+| **Multi-Block Durability Sync** | 1 MB sequential write (256 payload blocks) under `RangeAsync` mode | **1,885 writes/sec** (81% of Lazy speed) | **7.03x faster** (+603% throughput, 99.6% syscall reduction) |
+| **Numerical Data Compression** | 4-byte structured integer / telemetry dataset | **390.1x compression ratio** (99.7% space savings) | **200x better** than raw Zstd (1.95x) |
+
+---
+
+## Build & Test
 
 ```bash
 # Build the project (release mode)
 cargo build --release
 
-# Run the test suite
-cargo test
+# Run all test suites
+cargo test --all-targets
+
+# Run the comprehensive concurrency benchmarks
+cargo test --test rwlock_concurrency_test -- --nocapture
 ```
 
 ---
 
 ## CLI Usage
 
-The compiled `oifs` binary provides a comprehensive command-line interface for disk image management.
+The compiled `oifs` binary provides a comprehensive CLI for managing disk images.
 
 ### 1. Create Image
-Create a 10MB file system image:
+Create a standard 10MB image:
 ```bash
 cargo run --bin oifs -- -i disk.img create --size 10
 ```
 
-#### Create Encrypted Image 🔒
-Create an encrypted file system (prompts for password securely with masked input):
+Create an encrypted image (prompts for password securely with masked input):
 ```bash
 cargo run --bin oifs -- -i encrypted.img create --size 10 --encrypt
 ```
 
-Specify password via command-line argument (not recommended for production):
+### 2. File Import & Export
+Import a host file:
 ```bash
-cargo run --bin oifs -- -i encrypted.img --password mypassword create --size 10 --encrypt
+cargo run --bin oifs -- -i disk.img put dataset.bin
 ```
 
-### 2. Import File
-Import a local file into the file system image:
+Extract a file back to the host:
 ```bash
-touch hello.txt && echo "Hello World" > hello.txt
-cargo run --bin oifs -- -i disk.img put hello.txt
+cargo run --bin oifs -- -i disk.img get dataset.bin extracted.bin
 ```
 
-Encrypted images will automatically prompt for password when accessed:
+### 3. Directories & Listings
 ```bash
-cargo run --bin oifs -- -i encrypted.img put hello.txt
-# 🔒 Encrypted filesystem detected. Enter password: 
-```
+# Create directory
+cargo run --bin oifs -- -i disk.img mkdir logs
 
-### 3. Make Directory
-Create a new directory inside the image:
-```bash
-cargo run --bin oifs -- -i disk.img mkdir documents
-```
-
-### 4. List Files
-List files and directories (supports recursive listing `-r`):
-```bash
+# Recursive listing
 cargo run --bin oifs -- -i disk.img ls -r
 ```
 
-### 5. Export File
-Extract a file from the image back to the host system:
-```bash
-cargo run --bin oifs -- -i disk.img get hello.txt downloaded.txt
-```
-
-### 6. Filesystem Consistency Check (FSCK) 🛠️
-Scan and verify file system structural integrity:
-```bash
-cargo run --bin oifs -- -i disk.img fsck
-```
-
-Output in JSON format for automated tooling:
-```bash
-cargo run --bin oifs -- -i disk.img fsck --json
-```
-
-### 7. Blosc2 Filter Recommendation & Numerical Compression ⚡
-
-#### Analyze file and obtain filter recommendations:
+### 4. Blosc2 Numerical Compression & Recommendation ⚡
+Analyze data and obtain automated filter recommendations:
 ```bash
 cargo run --bin oifs -- filter-analyze dataset.bin
 ```
 
-Example Output:
+Example output:
 ```text
 === OIFS Filter Recommendation Report for "dataset.bin" ===
 Original Size:        8192 bytes
@@ -164,91 +149,43 @@ Delta (typesize=4, u32/f32)           0.811         21    390.10x      99.7% [*R
 BitShuffle (typesize=4, u32/f32)      1.122        147     55.73x      98.2%
 Shuffle (typesize=4, u32/f32)         4.024        309     26.51x      96.2%
 --------------------------------------------------------------------------------
-Recommendation Rationale: Data displays strong linear/temporal correlation; first-order delta collapses dynamic range, shrinking entropy.
 Recommended Blosc2 Filter(s): ["blosc2::Filter::Delta"]
-Command to import with recommended filter:
-  oifs -i disk.img put "dataset.bin" --filter delta --typesize 4
 ```
 
-#### Automatically apply the recommended filter on import:
+Import with automatic filter selection:
 ```bash
 cargo run --bin oifs -- -i disk.img put dataset.bin --filter auto
 ```
 
-#### Manually specify filter and element typesize (1, 2, 4, 8 bytes):
+Or manually specify filters (`delta`, `shuffle`, `bitshuffle`, `both`):
 ```bash
-# First-order Delta
 cargo run --bin oifs -- -i disk.img put dataset.bin --filter delta --typesize 4
-
-# Byte Shuffle
-cargo run --bin oifs -- -i disk.img put dataset.bin --filter shuffle --typesize 4
-
-# BitShuffle
-cargo run --bin oifs -- -i disk.img put dataset.bin --filter bitshuffle --typesize 4
-
-# Composite Filter (Delta + ByteShuffle)
-cargo run --bin oifs -- -i disk.img put dataset.bin --filter both --typesize 4
 ```
 
-### 8. Online Defragmentation 🧹
-Analyze and eliminate disk fragmentation by relocating blocks contiguously:
+### 5. Integrity Check (FSCK) 🛠️
+```bash
+cargo run --bin oifs -- -i disk.img fsck
+cargo run --bin oifs -- -i disk.img fsck --json
+```
+
+### 6. Online Defragmentation 🧹
 ```bash
 cargo run --bin oifs -- -i disk.img defrag
 ```
-The command outputs before-and-after fragmentation ratios (e.g. `Fragmentation: 45.2% -> 0.0%`) and guarantees atomic cutover with backup protection.
 
-### 9. Multi-Process & Network IPC Mode 🌐
-OIFS supports concurrent multi-process access and cross-host networking:
+### 7. Multi-Process & Network Cluster Access 🌐
 ```bash
-# First process launches as Master listening on TCP port 8989
+# Node 1 starts as Master listening on TCP port 8989
 cargo run --bin oifs -- -i disk.img --network 127.0.0.1:8989 ls
 
-# Secondary processes connect as Proxies, transparently dispatching operations
+# Node 2 connects as Proxy, transparently dispatching writes
 cargo run --bin oifs -- -i disk.img --network 127.0.0.1:8989 put data.bin
 ```
 
-### 10. Model Context Protocol (MCP) Server 🤖
-Launch the native MCP server to interface with AI coding agents and IDEs:
+### 8. Model Context Protocol (MCP) Server 🤖
+Run the native MCP server for AI coding agents (Claude, Cursor, Antigravity):
 ```bash
 cargo run --bin oifs_mcp --features mcp
-```
-Provides standard MCP tools: `create_image`, `list_files`, `read_file`, `write_file`, `delete_file`, `fsck`, `defrag`.
-
-### 11. Performance Microbenchmark 📊
-Run the dedicated release-mode benchmark to measure speedups across key hot paths:
-```bash
-cargo test --test perf_comparison --release -- --nocapture
-```
-
----
-
-## Why Blosc2 & Pre-compression Filters?
-
-### 1. The Core Problem
-In HPC, machine learning, and scientific computing, datasets predominantly consist of binary numerical arrays (e.g., IEEE 754 floats, time-series integers, spatial coordinates).
-
-Standard dictionary compressors (Zstandard, LZ4) match repeating byte sequences. In numerical data, exponent and mantissa bits interleave, meaning even smooth gradients or close values rarely produce repeating substrings. Raw Zstd typically achieves only a 1.2x ~ 2.0x ratio.
-
-**The Role of Pre-compression Filters**:
-> Transform binary layouts losslessly before compression to collapse Shannon Entropy and group repeating bytes, unlocking 10x ~ 300x higher compression ratios.
-
-### 2. Filter Principles
-*   **Delta**: Computes difference between adjacent elements: $\Delta[i] = x[i] \mathbin{-} x[i-1]$ (`wrapping_sub`). Continuous sequences collapse to constant streams of `1`s or small integers.
-*   **Byte Shuffle**: Transposes Array of Structures (AoS) into Structure of Arrays (SoA), clustering identical high-order bytes together into long zero-byte runs.
-*   **BitShuffle**: Performs an $8 \times 8$ bit matrix transposition, highly effective for sparse matrices and boolean masks.
-*   **TruncPrecision**: Zeros out lower mantissa noise bits in Float32/Float64 to boost compressibility while maintaining specified precision.
-
-### 3. Composite Filter Pipeline
-```rust
-use oifs::filters::{FilterPipeline, FilterType};
-
-let pipeline = FilterPipeline::new(4)
-    .then(FilterType::TruncPrecision { prec_bits: 14 })
-    .then(FilterType::Delta)
-    .then(FilterType::ByteShuffle);
-
-let filtered = pipeline.apply(&data);
-let restored = pipeline.unapply(&filtered);
 ```
 
 ---
@@ -256,20 +193,20 @@ let restored = pipeline.unapply(&filtered);
 ## Rust API Example
 
 ```rust
-use oifs::disk::DiskManager;
+use oifs::disk::{CompressionMode, DiskManager};
 
-// Open image (size 0 opens existing file)
+// Open existing image (size 0 opens without truncation)
 let dm = DiskManager::open("disk.img", 0).unwrap();
 
 // Resolve root directory
 let root_id = dm.resolve_path(".").unwrap();
 
 // Create a file (returns Inode ID)
-let file_id = dm.create_file(root_id, "test.txt").unwrap();
+let file_id = dm.create_file(root_id, "telemetry.bin").unwrap();
 
-// Write data (supports offset)
-let data = b"Hello OIFS";
-dm.write_data(file_id, 0, data).unwrap();
+// Write data with offset
+let data = b"High-throughput concurrent payload";
+dm.write_data(file_id, 0, data, CompressionMode::Auto).unwrap();
 
 // Read data back
 let content = dm.read_data(file_id).unwrap();
@@ -278,90 +215,10 @@ assert_eq!(content, data);
 
 ---
 
-## Architecture & Layout
+## Documentation Website & Interactive Visualizer 🌐
 
-*   **SuperBlock**: Stores file system metadata (magic number, total blocks, block size, bitmap locations).
-*   **Inode Bitmap & Data Bitmap**: Bitmaps tracking allocation status of inodes and data blocks.
-*   **Inode Table**: Array of 256-byte Inode structures (mode, size, timestamps, block pointers).
-*   **Data Blocks**: 4KB blocks storing file payloads, directory entries, or indirect pointer tables.
-*   **Directory Entry**: 18-byte header (`inode`, `hash`, `name_len`) followed by variable-length name bytes.
-*   **Dynamic Master-Proxy IPC**: Coordinates multi-process and multi-node concurrent access.
-
----
-
-## Concurrency Model & Block Merge Policy ⚖️
-
-When multiple processes or threads concurrently access the same file system image, OIFS guarantees data integrity and POSIX compliance through a two-tiered model:
-
-### 1. Master-Proxy Architecture
-* **Exclusive Coordination**: The first process opening the image becomes the **Master**, acquiring the OS-level exclusive file lock (`flock`) and exclusive `mmap` write control.
-* **Transparent Proxy**: Subsequent processes operate as **Proxies**, forwarding file system operations over IPC to the Master.
-* **Serialization via Mutex**: Inside the Master process, incoming requests acquire an internal `Mutex<DiskManagerInner>`, serializing operations and preventing low-level data races.
-
-### 2. Block-Level Merge Policy
-When multiple processes write to the **same file and the same 4KB block**, OIFS applies the following merge policy:
-
-| Conflict Scenario | Merge Policy | Behavior & Resulting State |
-| :--- | :--- | :--- |
-| **Same Block, Disjoint Offsets** | **In-place Byte Merging** | For example, Process A writes `0..100` and Process B writes `200..300`. Each writes only to its designated offset range in the 4KB block slice. Untouched bytes remain intact, and **both writes coexist and merge seamlessly**. |
-| **Same Block, Overlapping Offsets** | **Last-Writer-Wins (Atomic)** | Overlapping byte ranges are overwritten by whichever write acquires the Master Mutex later. The mutex ensures atomicity, **guaranteeing no torn writes**. Conforms to standard POSIX `pwrite()` semantics. |
-| **Same Block, Compressed File** | **Zstd Multi-Frame Append / Read-Modify-Recompress Fallback** | For sequential EOF appends (`file_offset == size`), OIFS natively writes independent Zstd frames via Multi-Frame concatenation without decompressing previous blocks. For middle-offset random writes or encrypted files, OIFS transparently performs Read-Modify-Recompress to ensure stream consistency. |
-
----
-
-## Documentation Website & Architecture Visualizer 🌐
-
-The complete system documentation, architecture specifications, and interactive knowledge graph are published at:
+Explore the complete system specifications, module dependencies, and verified design claims:  
 👉 **[https://ych.github.io/oifs/](https://ych.github.io/oifs/)**
-
-Highlights of the documentation portal:
-* **Interactive Architecture Graph**: Visualize the relationships between subsystems, modules, struct definitions, and formal proof harnesses.
-* **Verified Claim Inspector**: Real-time line-by-line verification tracking design assertions directly against source code.
-* **Deep-Dive Subsystem Specs**: Comprehensive references covering memory-mapped I/O, pluggable engines, durability modes, and cryptographic guarantees.
-
----
-
-## Testing Suite
-
-OIFS is validated by over 100 automated unit/integration tests and 50 formal verification proofs:
-
-*   **Unit Tests**: Core module functionality (Superblock, Inode, Directory, Allocator, Bitmaps, IoEngine).
-*   **Integration Tests**: End-to-end file system operations, durability modes, and persistence across re-openings.
-*   **Large File Tests**: Validates boundary limits across single, double, and triple indirect blocks (up to 513GB).
-*   **FSCK Extended Tests**: Verifies detection of orphan inodes, leaked blocks, missing blocks, and cross-linked references.
-*   **Online Defrag Tests**: Verifies fragmentation analysis, 3-step atomic rename, and metadata preservation.
-*   **Shuttle Concurrency Tests**: Uses **Shuttle** randomized schedule permutation testing to exhaustively explore race conditions and deadlock freedom.
-*   **ThreadSanitizer (TSan) Stress Tests**: Validates high-concurrency multi-threaded read/write integrity.
-*   **Session IPC & Edge Cases**: Tests dynamic master-proxy promotion, stale socket recovery, zero-byte files, and high-concurrency bursts.
-*   **Network Multi-Node Sync Tests**: Verifies multi-node TCP concurrent slice writes and synchronization on a single shared file.
-*   **MCP Server Tests**: Validates JSON-RPC tool invocations adhering to the Model Context Protocol.
-*   **Performance Microbenchmark**: Empirically proves zero-allocation and algorithmic speedup ratios.
-*   **Kani Formal Proofs**: **50 mathematical proofs** verifying arithmetic overflow safety, filter bijectivity, directory serialization correctness, block pointer path resolution, and file size invariants on write/overwrite.
-
-Run all standard tests:
-```bash
-cargo test
-```
-
-Run performance comparison benchmark:
-```bash
-cargo test --test perf_comparison --release -- --nocapture
-```
-
----
-
-## Encryption Security
-
-### Cryptographic Primitives
-*   **File Payload AEAD Cipher**: XChaCha20-Poly1305 (256-bit key, 192-bit CSPRNG nonce per file).
-*   **Filename Encryption (SIV)**: Synthetic IV deterministic authenticated encryption via ChaCha20-Poly1305 + Blake2b-512 PRF with parent inode tweak and Base64URL encoding.
-*   **Key Derivation**: Argon2id with 128-bit random salt stored in the SuperBlock.
-
-### Security Notes
-1. **Password Recovery**: Passwords are never stored on disk. **Lost passwords result in permanent data loss**.
-2. **Filename Confidentiality**: Both file contents and file/directory names are cryptographically encrypted. Inspecting raw disk images with tools like `strings` or `hexdump` will not reveal filenames or contents.
-3. **Memory Zeroing**: Key material is cleared on drop using the `zeroize` crate.
-4. **Ordering**: Data is compressed before encryption, maintaining high compression efficiency without degrading ciphertext entropy.
 
 ---
 
@@ -369,14 +226,4 @@ cargo test --test perf_comparison --release -- --nocapture
 
 Copyright (c) 2026 Yu-Chun Huang <ych@ychuang.org>
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0).

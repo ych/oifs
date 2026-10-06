@@ -2,144 +2,136 @@
 
 [English](README.md) | [繁體中文](README_zh.md) | [📖 線上官方文件](https://ych.github.io/oifs/)
 
-> 🌐 **線上官方文件與架構視覺化網站 (Docs Website)**: [https://ych.github.io/oifs/](https://ych.github.io/oifs/)
+> 🌐 **線上官方文件與架構視覺化網站**: [https://ych.github.io/oifs/](https://ych.github.io/oifs/)  
 > 探索完整的互動式系統架構圖形導覽、模組呼叫關係、形式化數學證明與技術規格文件。
 
-OIFS 是一個使用 Rust 編寫的簡單 Inode 檔案系統實作。它支援基本的檔案操作、目錄管理、並發訪問保護 (Thread-safe)，以及透過 FFI 供 C/C++ 呼叫。
+OIFS 是一個以 Rust 打造的高效能、嵌入式、多行程 Inode 檔案系統引擎。具備斷電崩潰自癒（Crash Resilience）、細粒度並行存取保護（Fine-Grained Concurrency）、軍規級 AEAD 加密、科學數值前處理壓縮濾鏡（Blosc2）、可插拔異步 I/O 引擎、專為 AI 智慧代理人設計的原生 Model Context Protocol (MCP) 伺服器，以及穩定的 C/C++ FFI 介面。
 
-## 功能特色 (Features)
+---
 
-*   **Inode-based Architecture**: 採用標準的 Inode 設計管理檔案與目錄。
-*   **Large File Support**: 支援單級 (Single)、雙級 (Double) 與三級間接 (Triple Indirect) 區塊，單一檔案大小上限提升至 **513GB** (134,480,394 個 4KB 區塊)，且 100% 向後相容舊版映像檔。
-*   **Encryption Support** 🔒:
-    *   XChaCha20-Poly1305 AEAD 加密演算法
-    *   Argon2id 密碼金鑰衍生
-    *   支援加密與壓縮同時使用
-    *   每個檔案使用唯一的 Nonce
-    *   **CLI 密碼輸入遮罩**：在終端機輸入密碼時自動隱藏 (Suppress Echo)，防範旁窺安全。
-*   **Integrity & Diagnostics (fsck)** 🛠️:
-    *   支援完整性掃描，檢查 Orphan Inodes, Leaked Blocks, Missing Blocks 以及 Cross-Linked Blocks，並支援 JSON 與文字格式輸出。
-*   **Crash Safety**:
-    *   Metadata 操作 (如 `create`, `mkdir`, `delete`) 支援同步寫回 (Sync-on-write)。
-    *   使用 `mmap` 的 flush 機制確保資料在崩潰時不遺失。
-*   **Concurrency & Multi-Process Session (Master-Proxy IPC)** 🔄:
-    *   **動態主從架構 (Dynamic Master-Proxy)**：第一個開啟映像檔的行程成為 Master，持有 OS 層級獨占排他鎖 (`flock`)；後續行程自動轉為 Proxy，所有操作透過 IPC 請求透明轉發至 Master 執行，保證多行程並行安全。
-    *   **雙模 IPC 協同**：支援本地高效 Unix Domain Socket (UDS) 與跨主機 Network TCP 模式 (`--network`)。
-    *   **行程級 Session 註冊快取**：提供 `OifsSession::get_or_open` 進行安全工作階段重複利用，支援遞迴多跳符號連結（Symlink）路徑正規化。
-    *   **區塊級並行合併 (Merge Policy)**：同區塊非重疊區間自動原地合併 (In-place Merge)，重疊區間依序遵循原子性 Last-Writer-Wins (POSIX pwrite 語意)。
-*   **Online Safe Defragmentation (磁碟線上重組)** 🧹:
-    *   **碎片化程度分析**：提供 `analyze_fragmentation` 精準量測不連續區塊與零散空洞。
-    *   **安全 3 步驟原子置換**：採三段式置換並建立 `.old` 備份檔，確保重組過程遭遇斷電或崩潰能安全恢復。
-    *   **完整保留 Metadata**：重新分配連續區塊的同時，100% 保留目錄結構、Blosc2 濾鏡參數、Zstd 壓縮與加密資訊。
-*   **Model Context Protocol (MCP) Server 支援** 🤖:
-    *   內建 `oifs_mcp` 二進制檔，無縫對接 Claude Desktop, Cursor, Antigravity 等 AI 工具，支援透過標準 MCP JSON-RPC 協議操作 OIFS 映像檔。
-*   **Extreme Zero-Allocation Optimization (極致效能重構)** 🚀:
-    *   **Bitmap 區塊分配掃描**：改採 64-bit 字組搭配硬體指令 (`tzcnt`)，區塊搜尋提速 **11x ~ 13.4x**。
-    *   **零記憶體配置目錄查找**：以切片直接原地比對標頭與檔名，目錄搜尋提速 **12x ~ 26.8x**，Heap 分配次數降為 0。
-    *   **步進跳躍插入點掃描**：新增檔案與目錄時以 `18 + len` 步進切片跳躍，提速 **32.5x**。
-    *   **讀寫路徑零拷貝**：引入 `Cow<'a, [u8]>`，常規讀寫完全免除記憶體複製與分配，提速 **10x ~ 3,162x**。
-*   **嚴格的並行驗證與壓力測試 (Concurrency Verification)** 🧪:
-    *   整合 **Shuttle** 隨機執行緒排程探索測試，窮舉並發 race condition 與死鎖。
-    *   整合 **ThreadSanitizer (TSan)** 進行極限多行程高頻壓力測試。
-*   **CLI Tool**: 提供完整的命令列工具進行映像檔操作。
-*   **Blosc2 Pre-compression Data Filters & Extreme Compression** ⚡:
-    *   **為何引入 Blosc2**：傳統通用壓縮算法 (如 Zstandard, LZ4) 基於字節滑動窗口 (LZ77)，對文字重複串效果佳，但對連續數值流 (Float32/64, Int32/64)、時間序列、結構體陣列 (AoS) 壓縮比極低。引入 Blosc2 前處理濾鏡能在壓縮前重組位元組或計算相鄰增量，大幅削減資訊熵 (Shannon Entropy)，使連續整數數列壓縮比從 1.95x 飆升至 **390x** (空間節省率達 **99.7%**)。
-    *   **支援濾鏡**：First-order Delta (一階差分)、Byte Shuffle (位元組轉置)、BitShuffle (位元級轉置)、TruncPrecision (浮點數精度截斷)。
-    *   **複合濾鏡管線 (Composite Pipeline)**：支援任意順序的多重濾鏡堆疊串聯。
-    *   **智慧推薦工具 (Filter Recommendation Tool)**：自動量測資料資訊熵並平行模擬評估 14 種濾鏡組合，輸出壓縮效益排行榜與建議參數。
-    *   **原生 C-Blosc2 整合**：支援直接呼叫原生 `blosc2` C 函式庫 Chunk 編碼解碼器。
-*   **Formal Verification Guarantee (形式化數學驗證)** 🛡️:
-    *   使用 AWS **Kani Rust Verifier (CBMC/CaDiCaL)** 建立 **50 項數學證明**，覆蓋濾鏡雙射可逆性、二補數環繞溢位安全、Superblock 邊界、區塊配置無碰撞、目錄跨區塊序列化無 OOB，以及覆寫檔案大小不變量保證 (`proof_write_from_start_size_invariant`)。
-*   **可插拔異步 I/O 引擎 (Pluggable Async I/O Engine - P3.2)** ⚡:
-    *   抽象化 `IoEngine` 讀取引擎架構：提供 `IoBackend::Mmap`（共享記憶體零拷貝）、`IoBackend::Pread`（連續 Extent 位置系統呼叫），以及 Linux 上的 `IoBackend::IoUring`（核心並行佇列），支援透過環境變數 `OIFS_IO_BACKEND` 或 Rust API 於執行階段自由切換。
-*   **可設定持久化策略 (Configurable Durability Policies - P3.3)** 💾:
-    *   提供細粒度 `DurabilityMode`（`Lazy`、`RangeAsync`、`Strict`、`LegacyWholeMmapAsync`），讓使用者能自由取捨即時斷電崩潰復原保證（`msync(MS_SYNC)`）與微秒級寫入輸送量。
-*   **動態多區塊目錄支援 (Multi-Block Directory - P3.1)** 📁:
-    *   突破舊版 4KB 單區塊目錄限制，目錄隨項目增長動態鏈結額外區塊，支援單一目錄容納數千至數萬個檔案，並維持原地切片與步進跳躍零 Heap 配置極速搜尋。
-*   **並行非阻塞 Flush (Non-Blocking Flush Concurrency)** 🔄:
-    *   背景 `flush()` 採用共享讀鎖（Shared Read Lock）搭配專屬同步 Mutex，確保長時間的磁碟同步操作絕不阻礙並行的讀取執行緒。
-*   **3-State FFI 版本協商機制** 🔌:
-    *   提供 `oifs_init_version_check` 進行 C/C++ ABI 相容性三態握手驗證，保證動態函式庫升級的二進制相容性。
-*   **互動式架構與 OpenWiki 視覺化導覽 (Interactive Visualizer)** 🌐:
-    *   可直接於線上透過 [OpenWiki Interactive Visualizer](https://ych.github.io/oifs/) 瀏覽完整的系統架構圖、模組呼叫關係與驗證聲明。
-*   **C API (FFI)** 🔌: 提供極為完整的 C 語言介面庫 (`liboifs.so`)，支援加密開啟、檔案讀寫、目錄建立、`oifs_get_or_open` 工作階段快取以及詳細錯誤診斷輸出。
+## 核心功能與系統架構 (Capabilities & Architecture)
 
-## 建置 (Build)
+### 1. 儲存與大容量擴展 (Storage & Scaling)
+*   **類 Unix Inode 架構**：標準 Inode 階層架構，管理常規檔案、目錄樹、存取權限與奈秒級時間戳記。
+*   **超大檔案支援（高達 513 GB）**：具備單級、雙級與三級間接區塊索引（134,480,394 個 4KB 區塊），且 100% 向後相容舊版磁碟格式。
+*   **動態多區塊目錄 (Multi-Block Directory)**：目錄容量隨項目自動跨動態分配的 4KB Extent 區塊擴展，支援單一目錄容納數萬筆項目，並搭配記憶體加速快取索引。
+*   **線上零停機磁碟重組 (Online Defragmentation) 🧹**：`analyze_fragmentation` 精準計算碎片率；線上重組採用安全的三步驟原子置換機制與 `.old` 備份防護，在連續區塊重配的過程中 100% 完整保留 Metadata、濾鏡參數與加密資訊。
+*   **FSCK 結構完整性診斷 🛠️**：全域結構一致性掃描器，能精準偵測孤立 Inode、洩漏區塊、遺失區塊與交叉參照，並支援人類可讀文字與結構化 JSON 輸出。
+
+### 2. 事務性斷電崩潰自癒與持久化 (Transactional Crash Resilience & Durability)
+*   **事務性 Metadata WAL (預寫日誌)**：針對目錄變更與檔案區塊配置採用環狀緩衝區（Circular Ring Buffer）預寫日誌。所有結構性變更在實體區塊寫入前皆先完成事務日誌持久化。
+*   **即時崩潰復原 (Instant Crash Recovery)**：掛載時自動重放（Replay）未檢查點的事務，並安全捨棄撕裂或不完整的事務，絕不洩漏區塊或殘留孤立 Inode。
+*   **可設定持久化策略 (Configurable Durability Policies)**：
+    *   `Strict`：每筆事務提交時同步執行 `msync(MS_SYNC)`，提供最高的抗斷電安全保障。
+    *   `RangeAsync`：異步分頁寫回並自動進行 4KB 分頁區間合併（Range-Coalescing），減少高達 99.6% 的系統呼叫開銷。
+    *   `Lazy`：記憶體緩衝寫回，提供極限記憶體級輸送量。
+*   **非阻塞 Flush 並行保護 (Non-Blocking Flush Concurrency)**：`flush()` 與 `flush_async()` 在持有共享讀鎖（Shared Read-Lock）下，透過專屬同步互斥鎖序列化實體 `msync` 呼叫，保證背景寫回磁碟絕不阻礙並行的讀取執行緒。
+
+### 3. 高並行多執行緒引擎 (High-Concurrency Multi-Threaded Engine)
+*   **32 分片條帶化讀寫鎖 Inode 快取 (32-Shard Lock-Striped Inode Cache)**：將記憶體中的有限 Inode 快取解耦為 32 個獨立分片，每個分片由各自的 `RwLock` 保護。Inode ID 透過 64 位元費氏雜湊雙射（Fibonacci Hashing Bijection）均勻分佈，徹底消除快取未命中與淘汰時的鎖競爭（**4,000,000+ ops/sec**）。
+*   **無鎖處理管線 (Out-of-Lock Processing Pipeline)**：高 CPU 開銷的 Delta/Shuffle 濾鏡運算、Zstandard 壓縮與 XChaCha20 加密全程在檔案系統鎖之外執行。在多 MB 的繁重寫入過程中，讀取執行緒**零飢餓（Zero Starvation）**，讀取延遲維持在 0 µs p50/p99。
+*   **解耦目錄變更 (Decoupled Directory Mutations)**：建立檔案與目錄（`create_file`）及刪除（`delete_file`）時，路徑解析、碰撞檢查與檔名加密均在共享讀鎖或無鎖環境下進行，僅在最後的極短區塊提交階段獲取排他寫鎖。
+*   **零配置路徑解析 (Zero-Allocation Path Splitting)**：零 Heap 配置的路徑分量迭代器（`resolve_path_iter`）與 $O(1)$ 父目錄切分（`resolve_parent`），提供 **7.7M+ 次路徑解析/秒** 的超高效能。
+
+### 4. 端對端密碼學安全 (End-to-End Cryptographic Security) 🔒
+*   **XChaCha20-Poly1305 AEAD**：認證加密與關聯資料保護，提供頂級機密性與防竄改完整性保證。
+*   **Argon2id 金鑰衍生**：記憶體困難（Memory-hard）密碼雜湊，搭配儲存於 SuperBlock 的隨機 Salt，能有效抵禦 GPU/ASIC 暴力破解。
+*   **合成 IV (SIV) 檔名級別加密**：採用類 fscrypt 的 Synthetic IV 確定性認證加密（ChaCha20-Poly1305 + Blake2b-512 PRF），結合父目錄 Inode 作為 Tweak 與 Base64URL 編碼。原始磁碟掃描（`strings`、`hexdump`）完全無法得知任何真實檔名或目錄結構。
+*   **記憶體自動清零 (Zeroization)**：敏感密碼學金鑰在生命週期結束（Drop）時，自動透過 `zeroize` 安全清除記憶體。
+*   **CLI 密碼輸入遮罩**：終端機提示輸入密碼時自動隱藏回顯（Suppress Echo），防範旁窺外洩。
+
+### 5. 科學數值前處理濾鏡與 Blosc2 極限壓縮 (Numerical Data Filters & Blosc2 Compression) ⚡
+*   **為何需要前處理濾鏡**：傳統通用壓縮算法（Zstandard、LZ4）基於滑動視窗字節匹配（LZ77），對二進位數值陣列（IEEE 754 浮點數、時間序列整數、向量座標）壓縮效果有限。前處理濾鏡在壓縮前重組位元組排布以大幅瓦解夏農資訊熵（Shannon Entropy），使壓縮比從原本的 1.95x 飆升至 **390x（空間節省率達 99.7%）**。
+*   **支援濾鏡**：一階差分 Delta（`wrapping_sub`）、位元組轉置 Byte Shuffle（AoS 轉 SoA）、位元級轉置 BitShuffle（$8 \times 8$ 位元矩陣轉置）與浮點精度截斷 TruncPrecision。
+*   **複合濾鏡管線 (Composite Pipelines)**：支援任意濾鏡的串聯堆疊。
+*   **智慧推薦分析器**：平行計算候選管線的資訊熵與壓縮比，自動推薦最佳濾鏡參數。
+
+### 6. 透明多行程與網路協同 IPC (Transparent Multi-Process & Network IPC) 🔄
+*   **動態主從架構 (Dynamic Master-Proxy Coordination)**：首個開啟映像檔的行程獲得 OS 級排他檔案鎖（`flock`）並成為 **Master**；後續行程自動切換為 **Proxy**，透過 IPC 透明轉發所有操作。
+*   **雙傳輸後端**：支援極低延遲的本地 Unix Domain Socket (UDS) 與跨主機 Network TCP 模式（`--network`）。
+*   **原子性區塊合併策略 (Block-Level Merge Policy)**：同一 4KB 區塊中不重疊的位移區間直接原地合併；重疊區間嚴格遵循原子性後寫者勝（Last-Writer-Wins，相容 POSIX `pwrite` 語意）。
+
+### 7. 可插拔異步 I/O 引擎 (Pluggable Async I/O Engine) ⚡
+*   支援透過 API 或環境變數 `OIFS_IO_BACKEND` 於執行階段動態切換底層讀取引擎：
+    *   `IoBackend::Mmap`：直接共享記憶體映射零拷貝。
+    *   `IoBackend::Pread`：連續 Extent 位置系統呼叫。
+    *   `IoBackend::IoUring`：Linux 核心異步提交佇列與核心輪詢。
+
+### 8. 數學形式化驗證與工具鏈 (Mathematical Verification & Tooling) 🛡️
+*   **50+ 項 Kani 數學形式化證明**：使用 AWS **Kani Rust Verifier (CBMC/CaDiCaL)** 橫跨 9 大模組完成數學證明，涵蓋整數溢位安全、濾鏡雙射可逆性、環狀緩衝區環繞不變量與檔案覆寫邊界。
+*   **Shuttle & TSan 並行驗證**：透過 Shuttle 隨機窮舉執行緒排程交錯測試與 ThreadSanitizer 高頻壓力測試，杜絕資料競爭與死鎖。
+*   **Model Context Protocol (MCP) 伺服器 🤖**：內建 `oifs_mcp` 二進位檔，讓 AI 代理人（Claude Desktop、Cursor、Antigravity）透過標準 JSON-RPC 工具呼叫直接檢視與管理 OIFS。
+*   **穩定 C/C++ ABI (FFI) 🔌**：提供動態函式庫（`liboifs.so`）與三態版本握手機制，嚴格驗證執行階段相容性。
+
+---
+
+## 效能與並行實測基準 (Performance & Concurrency Benchmarks)
+
+以下效能數據皆於 Release 建置下進行多執行緒極限壓力測試實測取得：
+
+| 評測場景 (Benchmark Scenario) | 負載與測試條件 (Workload / Configuration) | 實測結果 / 輸送量 (Result / Throughput) | 基準對比 (Baseline Comparison) |
+| :--- | :--- | :--- | :--- |
+| **Inode Cache 輸送量** | 16 個讀取執行緒，跨 3,000 個檔案執行 32,000 次操作（高頻快取未命中與淘汰） | **3,996,081 ops/sec** (總耗時 8.05 ms) | **提升 2.70 倍** (輸送量較全域鎖 1.48M ops/sec 增加 +170%) |
+| **繁重寫入下的讀取延遲** | 8 個執行緒讀取 64KB 檔案，同時 2 個寫入執行緒持續壓縮/加密數 MB 檔案 | **p50 = 0 µs, p99 = 0 µs** (累計完成 341,902 次讀取) | **讀取零飢餓 (Zero Starvation)** (原本每次寫入需停頓 30~50 ms) |
+| **路徑解析效能** | 10,000 次查詢遍歷多層目錄結構路徑 | **7,729,979 lookups/sec** (單次 129.37 ns) | **完全零 Heap 記憶體配置** |
+| **大目錄檢視清單** | 遍歷包含 5,000 個檔案之單一目錄 | **4,712 listings/sec** (單次 212.2 µs) | **提速 2.34 倍** (藉由記憶體索引提升 +134% 輸送量) |
+| **多區塊持久化同步** | 1 MB 連續寫入（256 個酬載區塊），啟用 `RangeAsync` 模式 | **1,885 writes/sec** (達 Lazy 極限模式 81% 速度) | **提速 7.03 倍** (輸送量提升 +603%，系統呼叫減少 99.6%) |
+| **數值資料壓縮效益** | 4-byte 結構化數值 / 遙測時間序列資料集 | **390.1 倍壓縮比** (空間節省率 99.7%) | 較未濾鏡之原生 Zstd (1.95x) **優化 200 倍** |
+
+---
+
+## 建置與測試 (Build & Test)
 
 ```bash
-# 建置 Rust 專案
+# 建置專案 (Release 模式)
 cargo build --release
 
-# 執行測試
-cargo test
+# 執行所有測試套件
+cargo test --all-targets
+
+# 執行高並行實測基準測試
+cargo test --test rwlock_concurrency_test -- --nocapture
 ```
 
-## 使用說明 (CLI Usage)
+---
 
-您可以使用編譯出的 `oifs` 執行檔來管理檔案系統映像檔 (Image)。
+## 命令列工具使用說明 (CLI Usage)
+
+編譯出的 `oifs` 執行檔提供完整的 CLI 工具管理檔案系統映像檔。
 
 ### 1. 建立映像檔 (Create Image)
-建立一個 10MB 的檔案系統映像檔：
+建立標準 10MB 映像檔：
 ```bash
 cargo run --bin oifs -- -i disk.img create --size 10
 ```
 
-#### 建立加密映像檔 (Create Encrypted Image) 🔒
-建立一個加密的檔案系統（會提示輸入密碼）：
+建立加密映像檔（終端機會自動安全遮罩密碼輸入）：
 ```bash
 cargo run --bin oifs -- -i encrypted.img create --size 10 --encrypt
 ```
 
-使用 `--password` 參數直接指定密碼（不建議用於生產環境）：
+### 2. 檔案匯入與匯出 (Import & Export)
+將本機檔案匯入至映像檔：
 ```bash
-cargo run --bin oifs -- -i encrypted.img --password mypassword create --size 10 --encrypt
+cargo run --bin oifs -- -i disk.img put dataset.bin
 ```
 
-### 2. 匯入檔案 (Import File)
-將本機檔案 `hello.txt` 匯入到映像檔中：
+從映像檔擷取並匯出檔案至本機：
 ```bash
-touch hello.txt && echo "Hello World" > hello.txt
-cargo run --bin oifs -- -i disk.img put hello.txt
+cargo run --bin oifs -- -i disk.img get dataset.bin extracted.bin
 ```
 
-**加密檔案系統會自動偵測並提示輸入密碼**：
+### 3. 目錄建立與列表 (Directories & Listings)
 ```bash
-cargo run --bin oifs -- -i encrypted.img put hello.txt
-# 🔒 Encrypted filesystem detected. Enter password: 
-```
+# 建立目錄
+cargo run --bin oifs -- -i disk.img mkdir logs
 
-### 3. 建立目錄 (Make Directory)
-在映像檔中建立一個新目錄：
-```bash
-cargo run --bin oifs -- -i disk.img mkdir documents
-```
-
-### 4. 列出檔案 (List Files)
-列出根目錄下的檔案與資料夾 (支援遞迴 `-r`)：
-```bash
+# 遞迴列出所有目錄與檔案
 cargo run --bin oifs -- -i disk.img ls -r
 ```
 
-### 5. 匯出檔案 (Export File)
-從映像檔中讀取檔案並存回本機：
-```bash
-cargo run --bin oifs -- -i disk.img get hello.txt downloaded.txt
-```
-
-### 6. 一致性檢查 (Filesystem Consistency Check - FSCK) 🛠️
-掃描並確認映像檔結構完整性，偵測是否有孤立 Inode、洩漏區塊或多重引用：
-```bash
-cargo run --bin oifs -- -i disk.img fsck
-```
-
-支援以 JSON 格式輸出：
-```bash
-cargo run --bin oifs -- -i disk.img fsck --json
-```
-
-### 7. Blosc2 濾鏡智慧推薦與數值壓縮 (Filter Recommendation & Put) ⚡
-
-#### 📊 獨立分析檔案並取得最佳濾鏡推薦：
+### 4. Blosc2 數值壓縮與智慧推薦 (Blosc2 Numerical Compression & Recommendation) ⚡
+分析資料特徵並取得最佳濾鏡管線推薦報告：
 ```bash
 cargo run --bin oifs -- filter-analyze dataset.bin
 ```
@@ -157,256 +149,76 @@ Delta (typesize=4, u32/f32)           0.811         21    390.10x      99.7% [*R
 BitShuffle (typesize=4, u32/f32)      1.122        147     55.73x      98.2%
 Shuffle (typesize=4, u32/f32)         4.024        309     26.51x      96.2%
 --------------------------------------------------------------------------------
-Recommendation Rationale: Data displays strong linear/temporal correlation; first-order delta collapses dynamic range, shrinking entropy.
 Recommended Blosc2 Filter(s): ["blosc2::Filter::Delta"]
-Command to import with recommended filter:
-  oifs -i disk.img put "dataset.bin" --filter delta --typesize 4
 ```
 
-#### 🚀 自動依據分析結果套用最佳濾鏡匯入：
+使用自動推薦濾鏡匯入檔案：
 ```bash
 cargo run --bin oifs -- -i disk.img put dataset.bin --filter auto
 ```
 
-#### 🛠️ 手動指定特定濾鏡與 Element Typesize (1, 2, 4, 8 bytes)：
+或手動指定特定濾鏡（`delta`、`shuffle`、`bitshuffle`、`both`）：
 ```bash
-# 一階差分 (Delta)
 cargo run --bin oifs -- -i disk.img put dataset.bin --filter delta --typesize 4
-
-# 位元組轉置 (Byte Shuffle)
-cargo run --bin oifs -- -i disk.img put dataset.bin --filter shuffle --typesize 4
-
-# 位元級轉置 (BitShuffle)
-cargo run --bin oifs -- -i disk.img put dataset.bin --filter bitshuffle --typesize 4
-
-# 複合濾鏡 (Delta + ByteShuffle)
-cargo run --bin oifs -- -i disk.img put dataset.bin --filter both --typesize 4
 ```
 
-### 8. 磁碟線上重組 (Online Defragmentation) 🧹
-當檔案系統頻繁建立與刪除檔案後，可執行線上重組以消除碎片並將零散區塊整理為連續區塊：
+### 5. 結構完整性檢查 (FSCK) 🛠️
+```bash
+cargo run --bin oifs -- -i disk.img fsck
+cargo run --bin oifs -- -i disk.img fsck --json
+```
+
+### 6. 線上零停機磁碟重組 (Online Defrag) 🧹
 ```bash
 cargo run --bin oifs -- -i disk.img defrag
 ```
-系統會自動輸出重組前後的碎片率對比（例如 `Fragmentation: 45.2% -> 0.0%`），並在安全 3 步驟機制下完成原子切換。
 
-### 9. 跨行程與網路協同模式 (Network Mode IPC) 🌐
-OIFS 支援多行程與跨主機協同。可透過 `--network` 參數指定監聽/連線的 TCP 位址：
+### 7. 多行程與網路叢集協同 (Multi-Process & Network Cluster Access) 🌐
 ```bash
-# 第一個行程作為 Master 啟動並監聽 TCP 8989 埠
+# 節點 1 作為 Master 啟動並監聽 TCP 8989 埠
 cargo run --bin oifs -- -i disk.img --network 127.0.0.1:8989 ls
 
-# 其他行程或節點自動作為 Proxy 透明轉發請求
+# 節點 2 作為 Proxy 連線並透明轉發寫入操作
 cargo run --bin oifs -- -i disk.img --network 127.0.0.1:8989 put data.bin
 ```
 
-### 10. Model Context Protocol (MCP) 伺服器 🤖
-OIFS 提供專用的 MCP 伺服器二進位檔 `oifs_mcp`，讓 AI Agent 與 IDE 能直接以標準協議操作 OIFS：
+### 8. Model Context Protocol (MCP) 伺服器 🤖
+啟動專為 AI 代理人（Claude Desktop、Cursor、Antigravity）設計的原生 MCP 伺服器：
 ```bash
 cargo run --bin oifs_mcp --features mcp
 ```
-支援的 Tool 呼叫包含 `create_image`, `list_files`, `read_file`, `write_file`, `delete_file`, `fsck`, `defrag`。
-
-### 11. 效能對比基準測試 (Performance Proof Benchmark) 📊
-您可以隨時執行專案內建的 Release 模式效能對比測試，親自檢驗各項熱點路徑在重構後的實測提速倍率：
-```bash
-cargo test --test perf_comparison --release -- --nocapture
-```
-
-
-## Blosc2 與前處理濾鏡技術說明 (Why Blosc2?)
-
-### 1. 為何要引入 Blosc2？
-在科學計算、HPC 與機器學習環境中，我們處理的資料大多不是 ASCII 文字，而是二進位數值（如 32-bit/64-bit 浮點數、時間序列整數、感測器讀數、地理座標等）。
-
-傳統壓縮演算法（如 Zstandard、LZ4）主要基於字典匹配（LZ77）與熵編碼（Huffman/FSE）：
-* 當處理純文字時，重複出現的單字或標籤能輕易被壓縮。
-* 但數值資料在記憶體中是以連續二進位表示（如 IEEE 754 浮點數），其指數位元與小數位元交錯，即使數值非常接近，位元組層級也難以找到重複的子字串。這導致未經處理的數值資料送入 Zstd 時，壓縮比往往只有 1.2x ~ 2.0x。
-
-**Blosc2（以及其前處理濾鏡架構）的核心使命**：
-> 在壓縮前先透過「可逆轉換」重整資料排布，將高資訊熵的二進位資料轉化為大量重複連續零或低動態範圍差分，從根本上**瓦解資訊熵**，讓後續的壓縮演算法發揮數十倍甚至數百倍的壓縮效益。
-
-### 2. 核心濾鏡原理
-* **Delta (一階差分)**：
-  計算相鄰元素間的差值：$\Delta[0] = x[0], \Delta[i] = x[i] \mathbin{\text{wrapping\_sub}} x[i-1]$。
-  在連續變化或趨勢數列中，原本跨越很大動態範圍的數值（如 1000000, 1000001, 1000002）會被全部轉換為 `1`，釋放極高壓縮比。
-* **Byte Shuffle (位元組轉置)**：
-  將結構體陣列（Array of Structures, AoS）重排為結構陣列（Structure of Arrays, SoA）。
-  將所有元素的第 0 個 Byte 集中、第 1 個 Byte 集中...使高有效位的連續零群聚成超長連續字節串。
-* **BitShuffle (位元級轉置)**：
-  進行 $8 \times 8$ bit 矩陣轉置。對稀疏矩陣（Sparse Matrix）與二元布林遮罩（Boolean Array）具備比 Byte Shuffle 更強大的點陣聚集能力。
-* **TruncPrecision (浮點數精度截斷)**：
-  將 Float32/Float64 尾數（Mantissa）低有效位清零，抹除不具物理意義的噪聲位元，大幅提升浮點數壓縮比。
-
-### 3. 複合濾鏡管線 (Composite Filter Pipeline)
-支援使用者自選並自由堆疊任意順序的濾鏡：
-```rust
-use oifs::filters::{FilterPipeline, FilterType};
-
-let pipeline = FilterPipeline::new(4)
-    .then(FilterType::TruncPrecision { prec_bits: 14 })
-    .then(FilterType::Delta)
-    .then(FilterType::ByteShuffle)
-    .then(FilterType::BitShuffle);
-
-let filtered = pipeline.apply(&data);
-let restored = pipeline.unapply(&filtered);
-```
-
-### 4. 原生 C-Blosc2 整合呼叫
-若欲直接調用底層已編譯的 C-Blosc2 原生庫：
-```rust
-use oifs::filters::{blosc2_compress, blosc2_decompress};
-use blosc2::{Filter, CompressAlgo};
-
-let compressed = blosc2_compress(&data, 4, &[Filter::BitShuffle], CompressAlgo::Lz4, 5)?;
-let decompressed = blosc2_decompress(&compressed)?;
-```
-
-### 5. 形式化驗證保證 (Formal Verification with Kani)
-所有純 Rust 濾鏡實作皆透過 AWS **Kani Rust Verifier (CBMC/CaDiCaL)** 完成形式化數學證明（專案全模組共 50 個 Proof Harness 全部通過）：
-* 證明二補數溢位環繞下 Delta 嚴格可逆且不 panic。
-* 證明任意符號化位元組序列經 Shuffle / BitShuffle 運算皆完全雙射還原。
-* 證明任意非對齊尾部位元組（Tail Bytes）不被吞噬或錯位。
 
 ---
 
-## Rust API 範例
-
-若要在其他 Rust 專案中使用 OIFS：
+## Rust API 程式碼範例
 
 ```rust
-use oifs::disk::DiskManager;
-use std::path::Path;
+use oifs::disk::{CompressionMode, DiskManager};
 
-// 開啟映像檔 (size 設為 0 表示開啟現有檔案)
+// 開啟現有映像檔 (size 傳入 0 表示開啟現有檔案而不截斷)
 let dm = DiskManager::open("disk.img", 0).unwrap();
 
 // 解析根目錄
 let root_id = dm.resolve_path(".").unwrap();
 
 // 建立檔案 (返回 Inode ID)
-let file_id = dm.create_file(root_id, "test.txt").unwrap();
+let file_id = dm.create_file(root_id, "telemetry.bin").unwrap();
 
-// 寫入資料 (支援 Offset)
-let data = b"Hello OIFS";
-dm.write_data(file_id, 0, data).unwrap();
+// 寫入資料 (支援 Offset 與壓縮模式)
+let data = b"High-throughput concurrent payload";
+dm.write_data(file_id, 0, data, CompressionMode::Auto).unwrap();
 
-// 讀取資料
+// 讀取檔案資料
 let content = dm.read_data(file_id).unwrap();
 assert_eq!(content, data);
 ```
 
-## 系統架構
-
-*   **SuperBlock**: 儲存檔案系統 Metadata (Magic Code, Size, Bitmaps locations)。
-*   **Inode Bitmap & Data Bitmap**: 管理 Inode 與 Data Block 的分配狀態。
-*   **Inode Table**: 儲存所有 Inode 結構 (Mode, Size, Block pointers)。
-*   **Data Blocks**: 實際儲存檔案內容或目錄項目 (Directory Entries)。
-*   **Directory Entry**: 包含 `inode_id`, `name`, `hash`。
-*   **Dynamic Master-Proxy IPC**: 協調跨行程、跨節點對單一映像檔的並發訪問。
-
-## 並行模型與區塊合併策略 (Concurrency Model & Merge Policy) ⚖️
-
-當多個行程（Processes）或多執行緒同時存取同一個檔案系統映像檔時，OIFS 透過兩層架構保證資料一致性與 POSIX 語意相容：
-
-### 1. Master-Proxy 協同架構
-* **獨占協調**：首個開啟映像檔的行程成為 Master，持有 OS 層級排他鎖（`flock`）與 `mmap` 的唯一修改權。
-* **透明代理**：後續行程自動成為 Proxy，透過 IPC Socket（Unix Domain Socket 或 TCP）將操作發送至 Master。
-* **嚴格循序化**：Master 內部透過 `Mutex<DiskManagerInner>` 將並行寫入操作循序化處理，徹底杜絕底層磁碟區塊的記憶體競爭與損壞。
-
-### 2. 同檔案同區塊的合併策略 (Block Merge Policy)
-當多個行程寫入**同一檔案的同一個 4KB 區塊**時，OIFS 的合併原則如下：
-
-| 衝突場景 | 合併策略 (Merge Policy) | 行為說明與最終狀態 |
-| :--- | :--- | :--- |
-| **同 Block、不重疊位移 (Disjoint Slices)** | **In-place Byte Merging (原地合併)** | 例如 Process A 寫 `0..100`，Process B 寫 `200..300`。兩者在 4KB 切片中各自寫入自己的 offset，未觸及的 byte 原樣保留，**雙方資料完美合併共存**。 |
-| **同 Block、重疊位移 (Overlapping Slices)** | **Last-Writer-Wins (原子性後寫者勝)** | 重疊部分依 Master Mutex 獲取順序，由後寫入者原子性覆蓋；單次寫入受 Mutex 保護，**絕不產生位元撕裂 (No Torn Writes)**。符合標準 POSIX `pwrite()` 語意。 |
-| **同 Block、已壓縮檔案 (Compressed File)** | **Zstd 多幀追加 (Multi-Frame Append) / 讀取-修改-重壓回退** | 當從檔案末端追加（`file_offset == size`）時，OIFS 透過 Zstandard 多幀串聯 (Multi-Frame Concatenation) 直接寫入獨立壓縮幀，無需解壓縮歷史區塊；若為中間位移隨機寫入或加密檔案，則透明透過 Read-Modify-Recompress 回退機制確保流一致性與正確性。 |
 ---
 
-## 線上文件與架構視覺化導覽 (Documentation Website) 🌐
+## 官方文件與互動式視覺化導覽 🌐
 
-完整的系統設計文件、架構技術規範與互動式知識圖譜皆已公開部署：
+探索完整的系統架構規範、模組依賴關係圖與經過形式化驗證的設計宣告：  
 👉 **[https://ych.github.io/oifs/](https://ych.github.io/oifs/)**
-
-網站亮點包含：
-* **互動式架構圖 (Interactive Force-Directed Graph)**：視覺化探索子系統、模組、資料結構與形式化數學證明（Kani Proofs）之依賴關係。
-* **程式碼聲明即時驗證 (Verified Claim Inspector)**：逐行比對設計聲明與原始碼實作，確保規格與最新程式碼 100% 同步。
-* **深度子系統專題**：詳盡介紹共享記憶體映射、可插拔 I/O 引擎、持久化策略與密碼學保證。
-
----
-
-## 測試 (Testing)
-
-專案包含超過 100 項自動化單元與整合測試，以及 50 項形式化數學證明：
-*   **Unit Tests**: 基本模組功能測試（Superblock、Inode、Directory、Allocator、Bitmaps、IoEngine 等）。
-*   **Integration Tests**: 基礎與擴充整合測試、持久化模式（Durability Modes）與重啟一致性驗證。
-*   **Large File Test**: 驗證大檔案極限（支援高達 513GB）的單/雙/三級間接區塊讀寫。
-*   **FSCK Extended Test**: 驗證孤立 Inode、洩漏區塊、遺失區塊與交叉引用之診斷偵測。
-*   **Online Defrag Test**: 驗證碎片分析、3 步驟安全原子重組與 Metadata 完整保留。
-*   **Shuttle Concurrency Tests**: 使用 **Shuttle** 隨機交錯排程探索，驗證多執行緒競態與死鎖安全。
-*   **ThreadSanitizer (TSan) Stress Tests**: 在高頻高壓下驗證跨執行緒讀寫與區塊合併完整性。
-*   **Session IPC & Edge Cases Tests**: 驗證 Master-Proxy 行程切換、Socket 自癒、跨行程檔案生命週期與突發並發。
-*   **Network Multi-Node Sync Tests**: 驗證多節點跨 TCP 連線在單一檔案上的並發切片寫入與資料同步。
-*   **MCP Server Tests**: 驗證符合 Model Context Protocol 規範之 JSON-RPC 工具呼叫。
-*   **Performance Comparison Microbenchmark**: 實測驗證重構後之 Zero-Allocation 與演算法加速倍率。
-*   **Kani Formal Proofs**: **50 項數學證明**，嚴格驗證整數溢位安全、雙射可逆性、目錄序列化安全性與覆寫大小不變量。
-
-執行所有標準測試：
-```bash
-cargo test
-```
-
-執行 Release 模式效能對比驗證：
-```bash
-cargo test --test perf_comparison --release -- --nocapture
-```
-
-
-## 加密安全性說明 (Encryption Security)
-
-### 加密演算法
-*   **檔案內容加密 (Payload AEAD Cipher)**: XChaCha20-Poly1305
-    *   提供機密性（Confidentiality）和完整性（Integrity）保護
-    *   192-bit Nonce，每個檔案使用唯一的隨機 Nonce
-    *   256-bit 金鑰
-*   **檔名級別加密 (Filename SIV Encryption)**:
-    *   採用類 fscrypt 的 Synthetic IV 確定性認證加密
-    *   透過 Blake2b-512 PRF 結合父目錄 Inode 作為 Tweak，搭配 ChaCha20-Poly1305 與 Base64URL 編碼
-    *   raw image 中無法透過 `strings` 或 `hexdump` 查獲任何檔案或目錄名稱
-*   **金鑰衍生**: Argon2id
-    *   記憶體困難（Memory-hard）演算法，抵抗暴力破解
-    *   每個檔案系統使用唯一的 128-bit 隨機 Salt
-    *   Salt 儲存在 SuperBlock 中
-
-### 安全性考量
-1. **密碼強度**: 建議使用至少 12 個字元的強密碼，包含大小寫字母、數字和符號
-2. **密碼遺失**: 密碼不會儲存在磁碟上，**遺失密碼將無法恢復資料**
-3. **檔名與內容機密性**: 檔案內容與目錄檔名均已獲得密碼學加密保護。外部無法透過 `strings` 或十六進位檢視器直接辨識檔案或目錄名稱。
-4. **記憶體安全**:
-   *   加密金鑰使用 `zeroize` crate 在釋放時自動清零
-   *   但 Rust 無法保證記憶體不會被交換到磁碟（swap）
-   *   建議使用加密的 swap 或停用 swap 以獲得最大安全性
-5. **Nonce 唯一性**: 每個檔案使用密碼學安全隨機數產生器（CSPRNG）產生唯一 Nonce
-6. **加密與壓縮**: 資料先壓縮後加密，確保壓縮效率不受影響
-
-### 效能影響
-*   加密/解密操作會增加約 5-15% 的讀寫延遲（取決於檔案大小）
-*   Argon2 金鑰衍生在開啟檔案系統時執行一次（約 100-500ms）
-*   加密不會影響壓縮率
-
-### 驗證加密
-您可以使用 `hexdump` 驗證資料確實被加密：
-```bash
-# 建立加密檔案系統並寫入資料
-cargo run --bin oifs -- -i encrypted.img create --size 10 --encrypt
-echo "SECRET_DATA" > test.txt
-cargo run --bin oifs -- -i encrypted.img put test.txt
-
-# 檢查原始磁碟映像（應該找不到明文）
-hexdump -C encrypted.img | grep "SECRET_DATA"  # 應該沒有結果
-```
 
 ---
 
@@ -414,4 +226,4 @@ hexdump -C encrypted.img | grep "SECRET_DATA"  # 應該沒有結果
 
 Copyright (c) 2026 Yu-Chun Huang <ych@ychuang.org>
 
-本專案採用 Apache License 2.0 條款授權開源。詳細內容請參閱 [LICENSE](LICENSE) 檔案。
+本專案採用 Apache License 2.0 條款授權。詳細內容請參閱 [LICENSE](http://www.apache.org/licenses/LICENSE-2.0)。

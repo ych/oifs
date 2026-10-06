@@ -6,16 +6,15 @@ tags: [disk-manager, mmap, persistence, durability, io_engine, io_uring, rwlock,
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-05T16:55:45.523Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-04T13:48:44.224Z
+    at: 2026-10-05T16:55:45.523Z
 ---
 
 # DiskManager and Persistence Model
 
-<!-- openwiki: broken internal link [src/disk.rs#L324-L327] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-[`DiskManager`](src/disk.rs#L324-L327) is the central coordinator of the OIFS storage engine. It provides the single authoritative interface between raw on-disk bytes and high-level filesystem operations (file and directory creation, reads, writes, deletion, path resolution, defragmentation, and integrity checks).
+[`DiskManager`](../../src/disk.rs#L324-L327) is the central coordinator of the OIFS storage engine. It provides the single authoritative interface between raw on-disk bytes and high-level filesystem operations (file and directory creation, reads, writes, deletion, path resolution, defragmentation, and integrity checks).
 
 Internally, state is maintained by `DiskManagerInner` (`src/disk.rs#L191-L213`), wrapped in an `Arc<RwLock<DiskManagerInner>>` (`src/disk.rs#L324-L327`):
 - `file`: The underlying host image file handle with an exclusive POSIX advisory lock (`F_SETLK`).
@@ -23,21 +22,21 @@ Internally, state is maintained by `DiskManagerInner` (`src/disk.rs#L191-L213`),
 - `superblock`: In-memory cached copy of the deserialized `SuperBlock` (`src/superblock.rs`).
 - `encryption_key`: Derived cryptographic key (`Option<EncryptionKey>`) used for authenticated AEAD encryption.
 - `free_block_hint` and `free_inode_hint`: Allocation watermarks that convert sequential bitmap scans into amortized $O(1)$ operations.
-- `inode_cache`: In-memory zero-copy cache (`RwLock<HashMap<u64, Inode>>`) avoiding redundant bincode deserialization (P2.2).
+- `inode_cache`: In-memory zero-copy cache (`RwLock<BoundedInodeCache>`) avoiding redundant bincode deserialization (P2.2).
 - `dir_cache`: In-memory directory lookup indices (`RwLock<HashMap<u64, DirIndex>>`) providing $O(1)$ path queries (P3.1).
 - `durability_mode`: Atomic durability policy governing `msync` flush behavior on writes (P3.3).
 - `io_engine`: Pluggable data-block read engine supporting Mmap, Pread, and Linux `io_uring` backends (P3.2).
 
 ## Lifecycle, Image Locking, and Initialization
 
-`DiskManager` instances are constructed via `DiskManager::open` (`src/disk.rs#L331-L333`), `open_with_password` (`src/disk.rs#L336-L342`), or `create_encrypted` (`src/disk.rs#L345-L351`), all delegating to the unified `init_or_open` routine (`src/disk.rs#L353-L471`):
+`DiskManager` instances are constructed via `DiskManager::open` (`src/disk.rs#L331-L333`), `open_with_password` (`src/disk.rs#L336-L342`), or `create_encrypted` (`src/disk.rs#L345-L351`), all delegating to the unified `init_or_open` routine (`src/disk.rs#L1131-L1273`):
 
-1. **File Opening and Locking**: Opens the image with read/write permissions. Immediately attempts an exclusive whole-file advisory lock using `libc::F_SETLK` (`src/disk.rs#L369-L378`). This prevents independent host processes from concurrently accessing the same raw image without going through the Master-Proxy IPC protocol.
-2. **Sizing and Memory Mapping**: New images are sized to `total_size` via `file.set_len(total_size)`. The full image is mapped into process address space using `MmapOptions::new().map_mut(&file)` (`src/disk.rs#L384`).
+1. **File Opening and Locking**: Opens the image with read/write permissions. Immediately attempts an exclusive whole-file advisory lock using `libc::F_SETLK` (`src/disk.rs#L1148-L1156`). This prevents independent host processes from concurrently accessing the same raw image without going through the Master-Proxy IPC protocol.
+2. **Sizing and Memory Mapping**: New images are sized to `total_size` via `file.set_len(total_size)`. The full image is mapped into process address space using `MmapOptions::new().map_mut(&file)` (`src/disk.rs#L1163`).
 3. **Superblock Verification**:
-   - For new files: Constructs a fresh `SuperBlock`, configures encryption salt/flags if requested, writes the serialized block to offset 0, and initializes root directory inode 0 (`src/disk.rs#L388-L403`, `L439-L468`).
-   - For existing files: Reads and deserializes `SuperBlock` from block 0. Verifies magic bytes (`OIFS`) against `SuperBlock::MAGIC` (`src/disk.rs#L404-L411`).
-4. **Key Derivation**: If `superblock.encrypted` is true, derives the 256-bit AEAD key using Argon2id with `superblock.encryption_salt` (`src/disk.rs#L413-L417`).
+   - For new files: Constructs a fresh `SuperBlock`, configures encryption salt/flags if requested, writes the serialized block to offset 0, and initializes root directory inode 0 (`src/disk.rs#L1167-L1186`, `L1208-L1213`).
+   - For existing files: Reads and deserializes `SuperBlock` from block 0. Verifies magic bytes (`OIFS`) against `SuperBlock::MAGIC` (`src/disk.rs#L1187-L1194`).
+4. **Key Derivation**: If `superblock.encrypted` is true, derives the 256-bit AEAD key using Argon2id with `superblock.encryption_salt` (`src/disk.rs#L1196-L1202`).
 
 ## Durability Policies and Flush Behavior (P3.3)
 
@@ -78,9 +77,8 @@ Complete file reads via `read_data_internal` (`src/disk.rs#L1229-L1303`) execute
 
 ## The Write Pipeline (`write_data_with_filters`)
 
-File mutation via `write_data_with_filters` (`src/disk.rs#L1645-L1814`) branches across three paths:
-1. **Offset 0 Write**: Calls `write_data_from_start_internal` (`src/disk.rs#L1529-L1625`), applying pre-compression filters, optional Zstd compression, and AEAD encryption before block allocation.
-2. **Compressed Stream Appends & Edits**:
-   - **Fast Path (Zstd Multi-Frame Append)**: When appending strictly at EOF to an unencrypted file with no active filters, compresses the new chunk as an independent Zstd frame and writes it directly at `inode.compressed_size`.
-   - **Fallback (Read-Modify-Recompress)**: When performing random writes, modifying encrypted files, or altering filtered files, decompresses existing content, splices changes, frees previous blocks, and re-compresses from offset 0.
-3. **Raw Uncompressed Writes**: Calls `write_buffer_at_offset` (`src/disk.rs#L1479-L1527`) to directly write or allocate sequential blocks.
+File mutation via `write_data_with_filters` (`src/disk.rs#L3392-L3486`) delegates to `plan_write` (`src/disk.rs#L975-L1083`) which selects among four cases:
+1. **FullOverwrite**: offset-0 rewrite that runs the full filter-compression-encryption staging when rewriting the entire file.
+2. **CompressedAppend**: fast Zstd multi-frame append at EOF for eligible compressed, unencrypted, unfiltered files.
+3. **Recompress**: read-modify-recompress fallback for compressed files when the fast path is unavailable (random writes, encrypted files, or active filters).
+4. **Raw**: direct block writes for uncompressed files, either extending or overwriting in place.

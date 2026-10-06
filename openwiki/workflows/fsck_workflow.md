@@ -3,9 +3,6 @@ type: workflow
 title: Filesystem Check Workflow
 description: Step-by-step guide to running fsck, interpreting the consistency report, and understanding next steps when inconsistencies are detected.
 tags: [fsck, integrity, verification, diagnostics]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
@@ -16,6 +13,9 @@ sources:
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
 generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-05T16:55:45.523Z
 ---
 
 ## Purpose

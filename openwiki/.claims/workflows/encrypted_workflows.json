@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b1673b5a90a75f7bad888848b7ab4c97b352e7bef7d0b79c16963d6c4d84780e",
+  "pageVersion": "sha256:17e9e9b54ecebdc61d7cf73f4e8dc87666f36a64befecbac57f3e5dfc27bf09b",
   "claims": [
     {
       "id": "claim_14fd3e9407164f668f9461dd49a671a3",
       "statement": "The `oifs create` command with `--encrypt` flag creates an encrypted OIFS image by generating a random salt, deriving a key from the password via Argon2id, and initializing the filesystem for encryption.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L318-L364",
-          "version": "repo-lines-v1:sha256:23254a2d6227f2f91f24a353175b7d7d4dcb0b621839132888baaa7c7b15bfa8:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyOTI2MThjOTk1YTEzMTEwYzkzOTZjYzdlYTY1NDNmZGY3YTZmNzU1YTdiYTExOTBlNjJhMzg3NmFmZDEzNjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNjQ3OWNjMjMwNDQwZmQ0MWU4MjI0MjE4Njc5Njk4NTU5ZDI4OTNiZDY3YjQzODBhZmFiODExYjM4YTU1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkZWZkMjJmYjE0ODVkMDAxOTdmZmFlNGUwMzdmYzM0MDI3MDI0MzlhOTJjZjczMTZmMDgxZGJjZmI0OTFlNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2Yzk0NmM1ZWI2YWE4ZTBkYTE2OTA3N2M0YzMxMzEzMDEwOGI5ZThmNzlhNzA2NWVkZjk1ZjlmOGU5NWJlMDIifQ"
+          "resource": "repo://src/bin/oifs.rs#L342-L408",
+          "version": "repo-lines-v1:sha256:7e2a83a0c0453930ebfb05bff0673b6797744d5d784bb61ce84e6e9fb5c027ed:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjMzMzYjhhYjNlOTE0YzgyZWYwYTAxNTU5OGU0N2RiYWNjNDhkMDhkZTM1NTZiMWNhZmU4OTZiN2IwNDUxY2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNjQ3OWNjMjMwNDQwZmQ0MWU4MjI0MjE4Njc5Njk4NTU5ZDI4OTNiZDY3YjQzODBhZmFiODExYjM4YTU1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxOTdkOWYyOWM1OWE0ODNiYTc5YmY1M2I5Zjc0NjJjYzQzYjc1OTQ0MDdmZmJjYzVlNGZlNTRhM2I3NjFmYmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhYjhlYjUyM2FmOTllNTA1YzcxMTUyODI3MmVhY2MzZjE3YjA1ZDRkNTZiYzUyNzg0YTZkZDdjMzhmZTU5ZGIifQ"
         },
         {
           "resource": "repo://src/encryption.rs#L128-L134",
@@ -25,8 +25,8 @@
       "statement": "When opening an encrypted image, the system requires a password and obtains it in this order: `--password` flag, `OIFS_PASSWORD` environment variable, interactive prompt (except in `--json` mode where interactive is disabled).",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L149-L186",
-          "version": "repo-lines-v1:sha256:c7801d44f1a9af03ab5e1dc5a9a8ce809cff3606a0cae5d689ac77d1c8ebb9eb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYTNiYzMzNmM3NmUxZmJhZjFjZGMwNTdlZmZjN2YxOGNkYzA0YmIyNzVmMTI0ZTc1YzVhMTEwN2IwZjAwYWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyZTdmZDk0ODEyMDJjOTE2MjQxYjUzMjk3NDU3ZTJjMDU5YTk5YzY5YWU5M2FjN2JiY2YzYjRlMzNhMTQwNDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMjI2MWQ1Mzg4MjliZTAxYmI2ZGRhNGFlMmZlNzRhMWU2N2Q5MTdiNWMxNDVjYzM5NDZiZjFiNmQ2ZGU1OTEifQ"
+          "resource": "repo://src/bin/oifs.rs#L166-L216",
+          "version": "repo-lines-v1:sha256:c6b25b2f07d8bf287d6fa6b7fea9070e302701a1444576bb894e56addd2939db:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYTNiYzMzNmM3NmUxZmJhZjFjZGMwNTdlZmZjN2YxOGNkYzA0YmIyNzVmMTI0ZTc1YzVhMTEwN2IwZjAwYWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyZTdmZDk0ODEyMDJjOTE2MjQxYjUzMjk3NDU3ZTJjMDU5YTk5YzY5YWU5M2FjN2JiY2YzYjRlMzNhMTQwNDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMjI2MWQ1Mzg4MjliZTAxYmI2ZGRhNGFlMmZlNzRhMWU2N2Q5MTdiNWMxNDVjYzM5NDZiZjFiNmQ2ZGU1OTEifQ"
         }
       ]
     },
@@ -63,14 +63,14 @@
       "statement": "The `open_session` function in src/bin/oifs.rs correctly handles the password precedence and interactive prompt suppression in JSON mode.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L149-L186",
-          "version": "repo-lines-v1:sha256:c7801d44f1a9af03ab5e1dc5a9a8ce809cff3606a0cae5d689ac77d1c8ebb9eb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYTNiYzMzNmM3NmUxZmJhZjFjZGMwNTdlZmZjN2YxOGNkYzA0YmIyNzVmMTI0ZTc1YzVhMTEwN2IwZjAwYWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyZTdmZDk0ODEyMDJjOTE2MjQxYjUzMjk3NDU3ZTJjMDU5YTk5YzY5YWU5M2FjN2JiY2YzYjRlMzNhMTQwNDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMjI2MWQ1Mzg4MjliZTAxYmI2ZGRhNGFlMmZlNzRhMWU2N2Q5MTdiNWMxNDVjYzM5NDZiZjFiNmQ2ZGU1OTEifQ"
+          "resource": "repo://src/bin/oifs.rs#L166-L216",
+          "version": "repo-lines-v1:sha256:c6b25b2f07d8bf287d6fa6b7fea9070e302701a1444576bb894e56addd2939db:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYTNiYzMzNmM3NmUxZmJhZjFjZGMwNTdlZmZjN2YxOGNkYzA0YmIyNzVmMTI0ZTc1YzVhMTEwN2IwZjAwYWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyZTdmZDk0ODEyMDJjOTE2MjQxYjUzMjk3NDU3ZTJjMDU5YTk5YzY5YWU5M2FjN2JiY2YzYjRlMzNhMTQwNDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMjI2MWQ1Mzg4MjliZTAxYmI2ZGRhNGFlMmZlNzRhMWU2N2Q5MTdiNWMxNDVjYzM5NDZiZjFiNmQ2ZGU1OTEifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-04T10:12:53.730Z"
+    "at": "2026-10-05T16:55:45.523Z"
   }
 }

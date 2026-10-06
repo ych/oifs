@@ -3,9 +3,6 @@ type: concept
 title: ThreadSanitizer Testing
 description: Details on ThreadSanitizer integration for detecting data races and ensuring memory safety under concurrency.
 tags: [testing, concurrency, ThreadSanitizer, memory safety]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-120f0cc600d844dc98f88d46
     resource: repo://tests/concurrency_stress_test.rs
@@ -16,6 +13,9 @@ sources:
   - id: openwiki-source-4dd96a71b25353481dd09366
     resource: repo://tests/session_ipc_test.rs
 generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-05T16:55:45.523Z
 ---
 
 ThreadSanitizer (TSan) is a dynamic data race detector integrated into the OIFS testing suite to identify memory safety issues arising from concurrent access. The project includes specialized stress tests designed to expose data races, atomicity violations, and other concurrency-related bugs when executed under TSan's instrumentation.

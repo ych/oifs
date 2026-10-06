@@ -10,10 +10,10 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
+generated: { by: "openwiki/0.6.1", at: "2026-10-05T16:55:45.523Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+    at: 2026-10-05T16:55:45.523Z
 ---
 
 # Quickstart
@@ -114,15 +114,19 @@ List files in the root directory:
 
 Output displays permissions, size, modification timestamp, and filename.
 
-### Reading and Exporting Files (`cat` and `get`)
+### Reading and Exporting Files
 
-View file contents directly to standard output:
+To view a file's contents, export it using the `get` command and then use your host's tools to view it:
 
 ```bash
-./target/release/oifs -i my_disk.img cat sample.txt
+# Export the file from the image
+./target/release/oifs -i my_disk.img get sample.txt
+
+# View the contents using your host's cat command
+cat sample.txt
 ```
 
-Export a file from the image back to your host machine:
+Export a file from the image back to your host machine (optionally renaming it):
 
 ```bash
 ./target/release/oifs -i my_disk.img get sample.txt restored.txt

@@ -3,15 +3,15 @@ type: testing methodology
 title: Crash Safety Testing
 description: Guide to crash safety test scenarios that verify durability against power loss and system crashes in the OIFS file system.
 tags: [testing, crash safety, durability, flush]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
   - id: openwiki-source-9aac3242153060207ee25af4
     resource: repo://tests/crash_safety_test.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-05T16:55:45.523Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-05T16:55:45.523Z
 ---
 
 OIFS ensures crash safety through a combination of memory-mapped I/O, explicit flushing mechanisms, and automatic flushing on object drop. This page documents the test scenarios and mechanisms that verify data persistence across system crashes and power loss events.
@@ -31,17 +31,17 @@ The current durability mode is accessible via [`DiskManager::durability_mode`] a
 ## Crash Safety Mechanisms
 
 ### Explicit Flush
-<!-- openwiki: broken internal link [#tests/crash_safety_test.rs#L7-L50] heading anchor "tests/crash_safety_test.rs#L7-L50" does not exist in /openwiki/testing/crash_safety_testing.md. Fix the href or restore the target, then delete this comment. -->
-The [`DiskManager::flush`] method forces synchronization of all pending changes to disk. Tests verify that data written before an explicit flush persists after reopening the filesystem image ([tests/crash_safety_test.rs#L7-L50](#tests/crash_safety_test.rs#L7-L50)).
+
+The [`DiskManager::flush`] method forces synchronization of all pending changes to disk. Tests verify that data written before an explicit flush persists after reopening the filesystem image ([tests/crash_safety_test.rs#L7-L50](../../tests/crash_safety_test.rs#L7-L50)).
 
 ### Implicit Flush on Drop
-<!-- openwiki: broken internal link [#src/disk.rs#L317-L322] heading anchor "src/disk.rs#L317-L322" does not exist in /openwiki/testing/crash_safety_testing.md. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [#tests/crash_safety_test.rs#L53-L85] heading anchor "tests/crash_safety_test.rs#L53-L85" does not exist in /openwiki/testing/crash_safety_testing.md. Fix the href or restore the target, then delete this comment. -->
-The [`DiskManagerInner::Drop`] implementation calls [`MmapMut::flush`] when the DiskManager is dropped, ensuring data persistence even without an explicit flush ([src/disk.rs#L317-L322](#src/disk.rs#L317-L322)). This is validated by the drop_flush test which writes data and relies solely on the drop-triggered flush ([tests/crash_safety_test.rs#L53-L85](#tests/crash_safety_test.rs#L53-L85)).
+
+<!-- openwiki: broken internal link [../src/disk.rs#L325-L338] file "../src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+The [`DiskManagerInner::Drop`] implementation calls [`MmapMut::flush`] when the DiskManager is dropped, ensuring data persistence even without an explicit flush ([src/disk.rs#L325-L338](../src/disk.rs#L325-L338)). This is validated by the drop_flush test which writes data and relies solely on the drop-triggered flush ([tests/crash_safety_test.rs#L53-L85](../../tests/crash_safety_test.rs#L53-L85)).
 
 ### Range-Based Synchronization
-<!-- openwiki: broken internal link [#src/disk.rs#L265-L296] heading anchor "src/disk.rs#L265-L296" does not exist in /openwiki/testing/crash_safety_testing.md. Fix the href or restore the target, then delete this comment. -->
-When using RangeAsync or Strict durability modes, mutations trigger synchronization of only the specific byte ranges that were modified ([src/disk.rs#L265-L296](#src/disk.rs#L265-L296)), including:
+<!-- openwiki: broken internal link [../src/disk.rs#L265-L296] file "../src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+When using RangeAsync or Strict durability modes, mutations trigger synchronization of only the specific byte ranges that were modified ([src/disk.rs#L265-L296](../src/disk.rs#L265-L296)), including:
 - Inode bitmap updates
 - Data bitmap updates  
 - Modified inode ranges

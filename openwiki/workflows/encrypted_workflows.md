@@ -3,15 +3,15 @@ type: workflow
 title: Encrypted Filesystem Workflows
 description: Step-by-step guide for creating, opening, and using encrypted OIFS images including password management, key derivation, and transparent encryption/decryption.
 tags: [encryption, workflow, cli, security]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
   - id: openwiki-source-88657ea41344918d5e874716
     resource: repo://src/encryption.rs
 generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-05T16:55:45.523Z
 ---
 # Encrypted Filesystem Workflows
 

@@ -442,3 +442,66 @@ fn test_p4_1_reader_latency_under_heavy_writes() {
         p99
     );
 }
+
+#[test]
+fn test_sharded_inode_cache_sparse_readers_concurrency() {
+    let img_path = "test_sharded_cache_sparse.img";
+    let _guard = CleanupGuard(img_path);
+    if Path::new(img_path).exists() {
+        let _ = fs::remove_file(img_path);
+    }
+
+    let dm = DiskManager::open(img_path, 30 * 1024 * 1024).expect("Failed to open disk");
+    let root_id = dm.superblock().root_inode;
+
+    // Create 128 different files to distribute across all 32 cache shards
+    let file_count = 128;
+    let mut files = Vec::with_capacity(file_count);
+    for i in 0..file_count {
+        let fname = format!("sparse_file_{:03}.dat", i);
+        let fid = dm.create_file(root_id, &fname).expect("create_file");
+        let payload = format!("Content for file {:03} with padding bytes...", i).into_bytes();
+        dm.write_data(fid, 0, &payload, CompressionMode::Never)
+            .expect("write_data");
+        files.push((fid, payload));
+    }
+
+    let files_arc = Arc::new(files);
+    let mut handles = Vec::new();
+    let num_threads = 16;
+    let ops_per_thread = 1_000;
+
+    let start = Instant::now();
+    for t in 0..num_threads {
+        let dm_clone = dm.clone();
+        let files_ref = files_arc.clone();
+        handles.push(thread::spawn(move || {
+            let mut buf = vec![0u8; 128];
+            for i in 0..ops_per_thread {
+                // Read pseudo-random files to test sharded cache access
+                let target_idx = (t * 7919 + i * 1013) % files_ref.len();
+                let (fid, ref expected) = files_ref[target_idx];
+                let n = dm_clone.read_at(fid, 0, &mut buf).expect("read_at");
+                assert_eq!(n, expected.len());
+                assert_eq!(&buf[..n], &expected[..]);
+            }
+        }));
+    }
+
+    for h in handles {
+        h.join().expect("reader thread panicked");
+    }
+
+    let elapsed = start.elapsed();
+    let total_ops = num_threads * ops_per_thread;
+    let ops_per_sec = total_ops as f64 / elapsed.as_secs_f64();
+    println!(
+        "Sharded Inode Cache: {} sparse read_at operations completed in {:?} ({:.0} ops/sec)",
+        total_ops, elapsed, ops_per_sec
+    );
+    assert!(
+        ops_per_sec > 10_000.0,
+        "Sharded cache must achieve high throughput across threads, got {:.0} ops/sec",
+        ops_per_sec
+    );
+}

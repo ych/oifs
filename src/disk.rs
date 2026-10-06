@@ -211,7 +211,7 @@ pub(crate) struct DiskManagerInner {
     /// Search hint for sequential O(1) inode allocation
     pub free_inode_hint: u64,
     /// Inode cache for zero-copy metadata access (P2.2)
-    pub inode_cache: RwLock<BoundedInodeCache>,
+    pub inode_cache: BoundedInodeCache,
     /// Per-directory name index: dir_inode_id -> DirIndex (P3.1)
     pub dir_cache: RwLock<HashMap<u64, DirIndex>>,
     /// Durability policy governing mmap msync behavior on mutations (P3.3)
@@ -419,15 +419,18 @@ pub const INODE_CACHE_CAPACITY: usize = 2048;
 /// Lookup uses a fast integer hasher (`FxHashMap`) because keys are dense `u64`
 /// inode ids; SipHash spends most of its time on entropy mixing that buys nothing
 /// for this access pattern.
-pub(crate) struct BoundedInodeCache {
+/// Number of concurrent shards in the bounded inode cache to eliminate lock contention.
+const NUM_INODE_CACHE_SHARDS: usize = 32;
+
+/// A single shard of the bounded inode cache, protected by its own RwLock.
+struct InodeCacheShard {
     map: FxHashMap<u64, Inode>,
-    /// Inode ids in insertion order; the front is the next eviction victim.
     order: VecDeque<u64>,
     capacity: usize,
 }
 
-impl BoundedInodeCache {
-    fn with_capacity(capacity: usize) -> Self {
+impl InodeCacheShard {
+    fn new(capacity: usize) -> Self {
         Self {
             map: FxHashMap::default(),
             order: VecDeque::with_capacity(capacity),
@@ -453,14 +456,9 @@ impl BoundedInodeCache {
 
     fn remove(&mut self, inode_id: u64) {
         self.map.remove(&inode_id);
-        // Drop the queue slot too, otherwise a later re-insert of the same id would
-        // evict the *new* entry prematurely via a stale queue entry.
         self.order.retain(|id| *id != inode_id);
     }
 
-    /// Drop every cached inode.
-    ///
-    /// Used by a format migration, which rewrites every slot underneath the cache.
     fn clear(&mut self) {
         self.map.clear();
         self.order.clear();
@@ -469,6 +467,76 @@ impl BoundedInodeCache {
     #[cfg(test)]
     fn len(&self) -> usize {
         self.map.len()
+    }
+}
+
+/// Sharded, thread-safe bounded inode cache (P4.3 / lock contention reduction).
+///
+/// Divides the inode cache into 32 independent shards, each with its own `RwLock`.
+/// Concurrent readers and writers on different inodes access completely separate shards
+/// with zero lock contention.
+///
+/// Inode IDs are uniformly distributed across shards using a 64-bit Fibonacci hashing
+/// bijection, ensuring consecutive sequential inode IDs never map to the same shard.
+pub(crate) struct BoundedInodeCache {
+    shards: Box<[RwLock<InodeCacheShard>]>,
+    num_shards: usize,
+}
+
+impl BoundedInodeCache {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        if capacity <= 16 {
+            Self {
+                shards: vec![RwLock::new(InodeCacheShard::new(capacity))].into_boxed_slice(),
+                num_shards: 1,
+            }
+        } else {
+            let num_shards = NUM_INODE_CACHE_SHARDS;
+            let shard_cap = std::cmp::max(1, capacity / num_shards);
+            let shards = (0..num_shards)
+                .map(|_| RwLock::new(InodeCacheShard::new(shard_cap)))
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            Self { shards, num_shards }
+        }
+    }
+
+    #[inline]
+    fn shard_index(&self, inode_id: u64) -> usize {
+        if self.num_shards == 1 {
+            0
+        } else {
+            (inode_id.wrapping_mul(0x517cc1b727220a95) as usize) & (self.num_shards - 1)
+        }
+    }
+
+    pub(crate) fn get(&self, inode_id: u64) -> Option<Inode> {
+        let idx = self.shard_index(inode_id);
+        self.shards[idx].read().unwrap().get(inode_id)
+    }
+
+    pub(crate) fn insert(&self, inode_id: u64, inode: Inode) {
+        let idx = self.shard_index(inode_id);
+        self.shards[idx].write().unwrap().insert(inode_id, inode);
+    }
+
+    pub(crate) fn remove(&self, inode_id: u64) {
+        let idx = self.shard_index(inode_id);
+        self.shards[idx].write().unwrap().remove(inode_id);
+    }
+
+    /// Drop every cached inode.
+    ///
+    /// Used by a format migration, which rewrites every slot underneath the cache.
+    pub(crate) fn clear(&self) {
+        for shard in self.shards.iter() {
+            shard.write().unwrap().clear();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.shards.iter().map(|s| s.read().unwrap().len()).sum()
     }
 }
 
@@ -484,7 +552,7 @@ mod inode_cache_tests {
     fn test_cache_evicts_single_oldest_entry_not_all() {
         // This is the regression the bounded cache exists for: the old policy wiped
         // every entry, turning one overflow into a full cache stampede.
-        let mut c = BoundedInodeCache::with_capacity(4);
+        let c = BoundedInodeCache::with_capacity(4);
         for i in 0..4u64 {
             c.insert(i, ino(crate::inode::FileType::File));
         }
@@ -500,7 +568,7 @@ mod inode_cache_tests {
 
     #[test]
     fn test_cache_reinsert_does_not_queue_duplicate_eviction() {
-        let mut c = BoundedInodeCache::with_capacity(3);
+        let c = BoundedInodeCache::with_capacity(3);
         for i in 0..3u64 {
             c.insert(i, ino(crate::inode::FileType::File));
         }
@@ -519,7 +587,7 @@ mod inode_cache_tests {
     #[test]
     fn test_cache_remove_then_reinsert_evicts_correct_entry() {
         // A stale queue slot left by remove() would evict the *new* entry.
-        let mut c = BoundedInodeCache::with_capacity(3);
+        let c = BoundedInodeCache::with_capacity(3);
         c.insert(10, ino(crate::inode::FileType::File));
         c.insert(11, ino(crate::inode::FileType::File));
         c.insert(12, ino(crate::inode::FileType::File));
@@ -537,7 +605,7 @@ mod inode_cache_tests {
 
     #[test]
     fn test_cache_remove_drops_queue_slot() {
-        let mut c = BoundedInodeCache::with_capacity(2);
+        let c = BoundedInodeCache::with_capacity(2);
         c.insert(1, ino(crate::inode::FileType::File));
         c.insert(2, ino(crate::inode::FileType::File));
         c.remove(1);
@@ -551,7 +619,7 @@ mod inode_cache_tests {
 
     #[test]
     fn test_cache_clear_resets_both_structures() {
-        let mut c = BoundedInodeCache::with_capacity(4);
+        let c = BoundedInodeCache::with_capacity(4);
         for i in 0..4u64 {
             c.insert(i, ino(crate::inode::FileType::File));
         }
@@ -565,12 +633,34 @@ mod inode_cache_tests {
 
     #[test]
     fn test_cache_insert_returns_stored_inode() {
-        let mut c = BoundedInodeCache::with_capacity(2);
+        let c = BoundedInodeCache::with_capacity(2);
         let mut i = ino(crate::inode::FileType::File);
         i.size = 4242;
         c.insert(5, i);
         assert_eq!(c.get(5).expect("present").size, 4242);
         assert!(c.get(6).is_none());
+    }
+
+    #[test]
+    fn test_sharded_cache_concurrent_access() {
+        let c = Arc::new(BoundedInodeCache::with_capacity(2048));
+        let mut handles = Vec::new();
+        for t in 0..8 {
+            let cache = c.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..20 {
+                    let inode_id = t * 1000 + i;
+                    let mut inode = ino(crate::inode::FileType::File);
+                    inode.size = inode_id;
+                    cache.insert(inode_id, inode);
+                    let fetched = cache.get(inode_id).expect("must be cached");
+                    assert_eq!(fetched.size, inode_id);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }
 
@@ -1038,7 +1128,7 @@ impl DiskManager {
             encryption_key,
             free_block_hint,
             free_inode_hint: 0,
-            inode_cache: RwLock::new(BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY)),
+            inode_cache: BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY),
             dir_cache: RwLock::new(HashMap::new()),
             durability_mode: std::sync::atomic::AtomicU8::new(DurabilityMode::Lazy as u8),
             io_engine: IoEngine::new(IoBackend::from_env().unwrap_or_default()),
@@ -1972,7 +2062,7 @@ impl DiskManager {
         guard.superblock.format_version = SuperBlock::FORMAT_VERSION_FIXED_INODE;
         Self::persist_superblock(&mut guard)?;
         guard.mmap.flush()?;
-        guard.inode_cache.write().unwrap().clear();
+        guard.inode_cache.clear();
 
         Ok(MigrationStats {
             from_version,
@@ -2136,11 +2226,8 @@ impl DiskManager {
         guard.free_inode_hint = sim.free_inode_hint;
         guard.free_block_hint = sim.free_block_hint;
 
-        {
-            let mut ic = guard.inode_cache.write().unwrap();
-            ic.insert(new_inode_id, new_inode);
-            ic.insert(parent_inode_id, parent_inode);
-        }
+        guard.inode_cache.insert(new_inode_id, new_inode);
+        guard.inode_cache.insert(parent_inode_id, parent_inode);
         let encrypted = guard.encryption_key.is_some();
         if let Some(ix) = guard.dir_cache.write().unwrap().get_mut(&parent_inode_id) {
             if encrypted {
@@ -2967,10 +3054,7 @@ impl DiskManager {
 
         guard.free_inode_hint = sim.free_inode_hint;
         guard.free_block_hint = sim.free_block_hint;
-        {
-            let mut ic = guard.inode_cache.write().unwrap();
-            ic.insert(inode_id, inode);
-        }
+        guard.inode_cache.insert(inode_id, inode);
 
         let mut ranges = vec![
             guard.data_bitmap_byte_range(),
@@ -3345,7 +3429,7 @@ impl DiskManager {
         inode_id: u64,
     ) -> Result<Inode, DiskManagerError> {
         // Fast path: check in-memory inode cache (P2.2)
-        if let Some(cached) = guard.inode_cache.read().unwrap().get(inode_id) {
+        if let Some(cached) = guard.inode_cache.get(inode_id) {
             return Ok(cached);
         }
 
@@ -3361,7 +3445,7 @@ impl DiskManager {
 
         // Eviction is handled inside the cache: inserting past capacity drops the
         // single oldest entry instead of wiping the whole cache.
-        guard.inode_cache.write().unwrap().insert(inode_id, inode);
+        guard.inode_cache.insert(inode_id, inode);
         Ok(inode)
     }
 
@@ -3377,7 +3461,7 @@ impl DiskManager {
         guard.mmap[offset..end].copy_from_slice(&slot);
 
         // Update in-memory inode cache (P2.2)
-        guard.inode_cache.write().unwrap().insert(inode_id, *inode);
+        guard.inode_cache.insert(inode_id, *inode);
         Ok(())
     }
 
@@ -3876,11 +3960,8 @@ impl DiskManager {
         if target_inode_id < guard.free_inode_hint {
             guard.free_inode_hint = target_inode_id;
         }
-        {
-            let mut ic = guard.inode_cache.write().unwrap();
-            ic.remove(target_inode_id);
-            ic.insert(parent_inode_id, parent_inode);
-        }
+        guard.inode_cache.remove(target_inode_id);
+        guard.inode_cache.insert(parent_inode_id, parent_inode);
         {
             let mut cache = guard.dir_cache.write().unwrap();
             if let Some(ix) = cache.get_mut(&parent_inode_id) {
@@ -4055,7 +4136,7 @@ impl DiskManager {
         if target_inode_id < guard.free_inode_hint {
             guard.free_inode_hint = target_inode_id;
         }
-        guard.inode_cache.write().unwrap().remove(target_inode_id);
+        guard.inode_cache.remove(target_inode_id);
 
         // Update Parent Mtime
         let now = std::time::SystemTime::now()

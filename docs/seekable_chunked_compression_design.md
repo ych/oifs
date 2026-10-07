@@ -96,6 +96,49 @@ Inode 指標原子替換指向 [ Blk 201 ~ 212 ]
 * **極端膨脹防禦 (Anti-Inflation Fallback)**：
   若該 Chunk 修改後寫入高熵資料（如隨機數或加密流），導致壓縮後 $N_{new} \ge N_{raw}$（例如 64KB 壓縮後 $> 64\text{KB}$），系統自動放棄壓縮，改為分配 16 個 Raw blocks 以未壓縮形式寫入，並標記該 Chunk 為 Raw，防止負壓縮效益。
 
+### 3.3 連續區塊 Metadata 注記：方案二 (ChunkExtent) 規格與潛在挑戰分析
+
+#### 1. ChunkExtent 結構體定義 (8 Bytes 緊湊佈局)
+```rust
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkExtent {
+    /// 實體連續起始區塊 ID (4KB 區塊，支援高達 16 TB 單一映像檔)
+    pub start_block: u32,
+    /// 佔用的連續實體區塊個數 (例如 11 個 4KB 區塊)
+    pub block_count: u16,
+    /// 實際壓縮後的精確位元組長度 (例如 45,056 bytes，供 Zstd 及 AEAD 解密安全校驗)
+    pub compressed_len: u16,
+}
+```
+
+#### 2. 方案二的潛在問題與對應防禦手段 (Critical Challenges & Mitigations)
+
+##### 問題一：磁碟高度碎片化時，無法分配到「連續區塊」 (Contiguous Allocation Failure)
+* **現象**：當硬碟剩餘空間低且極度零碎時，寫入一個 48KB Chunk（需要 12 個區塊），磁碟可能無法提供連續的 12 個 blocks，僅有零散的區塊可用。
+* **因應手段 (三層防護)**：
+  1. **首選配置**：分配器優先嘗試在同一 Extent 連續區間內申請空間。
+  2. **自動連鎖 Defrag**：若連續空間不足但總空閒空間充足，觸發內部輕量 In-Place Defrag Compaction，立即騰出連續空間。
+  3. **Fallback 降級機制**：若仍無法連續，允許將該 Chunk 退化為未壓縮 Raw 區塊（直接沿用既有 Direct/Indirect 個別指標鏈），確保寫入永遠 100% 成功不報錯。
+
+##### 問題二：64KB 上限與 16-bit 邊界問題 (64KB Boundary Overflow)
+* **現象**：`u16` 的最大值為 65,535。如果 Chunk 大小剛好是 64KB (65,536 bytes)，未壓縮或壓縮不良時長度剛好超出 `u16` 範圍 1 byte。
+* **因應手段**：
+  * 定義 `compressed_len = 0` 特別代表「剛好 65,536 bytes（64KB）」；或者：
+  * 當壓縮長度 $\ge 65,536$ 時，已失去壓縮效益，觸發 Anti-Inflation 直接改以 Raw 模式儲存。
+
+##### 問題三：跨 Chunk 邊界寫入的交易原子性 (Cross-Chunk Write Atomicity)
+* **現象**：若寫入請求跨越了 64KB 邊界（例如 offset = 60KB, len = 8KB，橫跨 Chunk 0 與 Chunk 1）。
+* **因應手段**：
+  * 系統需拆解為針對 Chunk 0 與 Chunk 1 的兩筆獨立 COW 操作。
+  * 必須透過現有的 **Metadata WAL Journal** 將這兩個 ChunkExtent 的指針交換包裝在同一筆原子交易中，確保「要麼兩個 Chunk 同時更新成功，要麼同時回滾」，杜絕只更新一半的中間損毀狀態。
+
+##### 問題四：非整除尾端 Chunk (Tail Chunk Truncation)
+* **現象**：檔案大小非 64KB 整數倍（如 70KB，Chunk 0 為 64KB，Chunk 1 僅 6KB）。
+* **因應手段**：
+  * Inode 原生記錄了 `inode.size`（整體精確邏輯大小）。
+  * 尾端 Chunk 解壓後，系統直接依據 `inode.size % chunk_size` 自動裁切有效資料，乾淨透明。
+
 ---
 
 ## 4. API 規格設計

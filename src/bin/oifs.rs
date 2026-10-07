@@ -125,6 +125,14 @@ enum Commands {
     Fsck,
     /// Upgrade a legacy image to the current inode format
     Migrate,
+    /// Truncate or extend a file to the specified size
+    Truncate {
+        /// Remote path in OIFS
+        path: String,
+        /// New size in bytes
+        #[arg(short, long)]
+        size: u64,
+    },
 }
 
 /// Helper function to read password securely from stdin (with terminal echo masked).
@@ -978,6 +986,19 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => {
                     return Err(e.into());
                 }
+            }
+            Ok(())
+        }
+        Commands::Truncate { path, size } => {
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
+            }
+            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            dm.truncate_path(path, *size)?;
+            if cli.json {
+                println!("{}", json!({"ok": true, "path": path, "size": size}));
+            } else {
+                println!("Truncated '{}' to {} bytes", path, size);
             }
             Ok(())
         }

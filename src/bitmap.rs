@@ -98,6 +98,88 @@ impl<'a> BitmapRef<'a> {
         }
     }
 
+    /// Find first range of `count` contiguous free bits (0s) starting from `start_bit`.
+    pub fn find_contiguous_free_from(&self, mut start_bit: usize, count: usize) -> Option<usize> {
+        let total_bits = self.data.len() * 8;
+        if count == 0 {
+            return if start_bit <= total_bits {
+                Some(start_bit)
+            } else {
+                None
+            };
+        }
+        if count > total_bits || start_bit >= total_bits {
+            return None;
+        }
+        if count == 1 {
+            return self.find_first_free_from(start_bit);
+        }
+
+        let (chunks, remainder) = self.data.as_chunks::<8>();
+        let chunk_count = chunks.len();
+
+        let is_bit_free = |idx: usize| -> bool {
+            let chunk_idx = idx / 64;
+            let bit_idx = idx % 64;
+            if chunk_idx < chunk_count {
+                let word = u64::from_le_bytes(chunks[chunk_idx]);
+                (word & (1u64 << bit_idx)) == 0
+            } else {
+                let rem_idx = (idx - chunk_count * 64) / 8;
+                let rem_bit = idx % 8;
+                if rem_idx < remainder.len() {
+                    (remainder[rem_idx] & (1u8 << rem_bit)) == 0
+                } else {
+                    false
+                }
+            }
+        };
+
+        while start_bit.saturating_add(count) <= total_bits {
+            let candidate = self.find_first_free_from(start_bit)?;
+            if candidate.saturating_add(count) > total_bits {
+                return None;
+            }
+
+            let mut all_free = true;
+            let mut i = 1;
+            while i < count {
+                let check_bit = candidate + i;
+                if !is_bit_free(check_bit) {
+                    start_bit = check_bit + 1;
+                    all_free = false;
+                    break;
+                }
+                i += 1;
+            }
+
+            if all_free {
+                return Some(candidate);
+            }
+        }
+
+        None
+    }
+
+    /// Find first range of `count` contiguous free bits starting from 0.
+    #[inline]
+    pub fn find_contiguous_free(&self, count: usize) -> Option<usize> {
+        self.find_contiguous_free_from(0, count)
+    }
+
+    /// Find `count` contiguous free bits starting from `hint`.
+    /// If not found after `hint`, wraps around to 0.
+    pub fn find_contiguous_free_wrapped(&self, hint: usize, count: usize) -> Option<usize> {
+        if let Some(idx) = self.find_contiguous_free_from(hint, count) {
+            Some(idx)
+        } else if hint > 0 {
+            self.find_contiguous_free_from(0, count)
+                .filter(|&idx| idx < hint)
+        } else {
+            None
+        }
+    }
+
     /// Fast 64-bit word iterator over all set bits up to `max_bits`.
     /// Skips 64 zero bits in a single CPU operation.
     pub fn for_each_set_bit<F: FnMut(usize)>(&self, max_bits: usize, mut f: F) {
@@ -170,6 +252,98 @@ impl<'a> Bitmap<'a> {
         BitmapRef::new(self.data).get(index)
     }
 
+    /// Set a contiguous range of `count` bits starting at `start_bit` to 1 (used).
+    pub fn set_range(&mut self, start_bit: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let total_bits = self.data.len() * 8;
+        let end_bit = match start_bit.checked_add(count) {
+            Some(e) => e.min(total_bits),
+            None => total_bits,
+        };
+        if start_bit >= end_bit {
+            return;
+        }
+
+        let start_byte = start_bit / 8;
+        let end_byte = end_bit / 8;
+
+        if start_byte == end_byte {
+            let num_bits = end_bit - start_bit;
+            let mask = (((1u16 << num_bits) - 1) as u8) << (start_bit % 8);
+            self.data[start_byte] |= mask;
+            return;
+        }
+
+        let head_rem = start_bit % 8;
+        if head_rem != 0 {
+            let mask = 0xFFu8 << head_rem;
+            self.data[start_byte] |= mask;
+        }
+
+        let mid_start = if head_rem != 0 {
+            start_byte + 1
+        } else {
+            start_byte
+        };
+        if mid_start < end_byte {
+            self.data[mid_start..end_byte].fill(0xFF);
+        }
+
+        let tail_rem = end_bit % 8;
+        if tail_rem != 0 && end_byte < self.data.len() {
+            let mask = (1u8 << tail_rem) - 1;
+            self.data[end_byte] |= mask;
+        }
+    }
+
+    /// Clear a contiguous range of `count` bits starting at `start_bit` to 0 (free).
+    pub fn clear_range(&mut self, start_bit: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let total_bits = self.data.len() * 8;
+        let end_bit = match start_bit.checked_add(count) {
+            Some(e) => e.min(total_bits),
+            None => total_bits,
+        };
+        if start_bit >= end_bit {
+            return;
+        }
+
+        let start_byte = start_bit / 8;
+        let end_byte = end_bit / 8;
+
+        if start_byte == end_byte {
+            let num_bits = end_bit - start_bit;
+            let mask = (((1u16 << num_bits) - 1) as u8) << (start_bit % 8);
+            self.data[start_byte] &= !mask;
+            return;
+        }
+
+        let head_rem = start_bit % 8;
+        if head_rem != 0 {
+            let mask = 0xFFu8 << head_rem;
+            self.data[start_byte] &= !mask;
+        }
+
+        let mid_start = if head_rem != 0 {
+            start_byte + 1
+        } else {
+            start_byte
+        };
+        if mid_start < end_byte {
+            self.data[mid_start..end_byte].fill(0x00);
+        }
+
+        let tail_rem = end_bit % 8;
+        if tail_rem != 0 && end_byte < self.data.len() {
+            let mask = (1u8 << tail_rem) - 1;
+            self.data[end_byte] &= !mask;
+        }
+    }
+
     /// Find first bit that is 0 (free)
     #[inline]
     pub fn find_first_free(&self) -> Option<usize> {
@@ -186,6 +360,24 @@ impl<'a> Bitmap<'a> {
     #[inline]
     pub fn find_next_free_wrapped(&self, hint: usize) -> Option<usize> {
         BitmapRef::new(self.data).find_next_free_wrapped(hint)
+    }
+
+    /// Find first range of `count` contiguous free bits starting from 0.
+    #[inline]
+    pub fn find_contiguous_free(&self, count: usize) -> Option<usize> {
+        BitmapRef::new(self.data).find_contiguous_free(count)
+    }
+
+    /// Find first range of `count` contiguous free bits starting from `start_bit`.
+    #[inline]
+    pub fn find_contiguous_free_from(&self, start_bit: usize, count: usize) -> Option<usize> {
+        BitmapRef::new(self.data).find_contiguous_free_from(start_bit, count)
+    }
+
+    /// Find `count` contiguous free bits starting from `hint`. If not found after `hint`, wraps around to 0.
+    #[inline]
+    pub fn find_contiguous_free_wrapped(&self, hint: usize, count: usize) -> Option<usize> {
+        BitmapRef::new(self.data).find_contiguous_free_wrapped(hint, count)
     }
 
     /// Fast 64-bit word iterator over all set bits
@@ -250,6 +442,60 @@ mod tests {
         assert_eq!(bm.find_first_free_from(10), None);
         assert_eq!(bm.find_next_free_wrapped(10), Some(0));
         assert_eq!(bm.find_next_free_wrapped(50), Some(0));
+    }
+
+    #[test]
+    fn test_bitmap_contiguous_operations() {
+        let mut data = [0u8; 32]; // 256 bits
+        let mut bm = Bitmap::new(&mut data);
+
+        // Initially all 256 bits are free
+        assert_eq!(bm.find_contiguous_free(10), Some(0));
+        assert_eq!(bm.find_contiguous_free(256), Some(0));
+        assert_eq!(bm.find_contiguous_free(257), None);
+
+        // Set bits 0..5 (bits 0,1,2,3,4)
+        bm.set_range(0, 5);
+        for i in 0..5 {
+            assert!(bm.get(i));
+        }
+        assert!(!bm.get(5));
+        assert_eq!(bm.find_contiguous_free(5), Some(5));
+
+        // Set bit 10
+        bm.set(10);
+        // Free intervals: [5..10) has 5 bits, [11..256) has 245 bits
+        assert_eq!(bm.find_contiguous_free(5), Some(5));
+        assert_eq!(bm.find_contiguous_free(6), Some(11));
+
+        // Test multi-byte set_range spanning word boundaries
+        // Set range 60..130 (70 bits)
+        bm.set_range(60, 70);
+        for i in 60..130 {
+            assert!(bm.get(i), "Bit {} should be set", i);
+        }
+        assert!(!bm.get(59));
+        assert!(!bm.get(130));
+
+        // Clear range 70..80 (10 bits)
+        bm.clear_range(70, 10);
+        for i in 70..80 {
+            assert!(!bm.get(i), "Bit {} should be cleared", i);
+        }
+        assert!(bm.get(69));
+        assert!(bm.get(80));
+
+        // Contiguous search should find the hole [70..80) for count <= 10
+        assert_eq!(bm.find_contiguous_free_from(60, 10), Some(70));
+        assert_eq!(bm.find_contiguous_free_from(60, 11), Some(130));
+
+        // Wrapped search
+        // Fill all bits 0..70 except 70..80, and fill 130..256
+        bm.set_range(0, 70);
+        bm.set_range(130, 126);
+        // Now free intervals: [70..80) (10 bits), and nothing after 80
+        assert_eq!(bm.find_contiguous_free_from(100, 10), None);
+        assert_eq!(bm.find_contiguous_free_wrapped(100, 10), Some(70));
     }
 }
 
@@ -335,5 +581,23 @@ mod kani_proofs {
             !bitmap.get(index),
             "Out-of-bounds get() should return false"
         );
+    }
+
+    /// Prove that find_contiguous_free returns a range where all bits are genuinely free.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn proof_find_contiguous_free_correctness() {
+        let b0: u8 = kani::any();
+        let mut data = [b0]; // 8 bits
+        let count: usize = kani::any();
+        kani::assume(count > 0 && count <= 8);
+
+        let bitmap = Bitmap::new(&mut data);
+        if let Some(start) = bitmap.find_contiguous_free(count) {
+            assert!(start + count <= 8);
+            for i in start..start + count {
+                assert!(!bitmap.get(i), "All bits in returned range must be free");
+            }
+        }
     }
 }

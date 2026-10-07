@@ -82,6 +82,45 @@ impl<'a> SimpleBlockAllocator<'a> {
             Err(AllocatorError::NoSpace)
         }
     }
+
+    /// Allocates a contiguous run of `count` free blocks starting from an optional hint block ID.
+    pub fn allocate_contiguous(
+        &mut self,
+        count: usize,
+        hint_block_id: Option<u64>,
+    ) -> Result<u64, AllocatorError> {
+        if count == 0 {
+            return Ok(hint_block_id.unwrap_or(self.start_block_offset));
+        }
+        let hint_bit = hint_block_id
+            .and_then(|id| id.checked_sub(self.start_block_offset))
+            .map(|bit| bit as usize)
+            .unwrap_or(0);
+
+        let mut bitmap = Bitmap::new(self.bitmap_data);
+        if let Some(bit_index) = bitmap.find_contiguous_free_wrapped(hint_bit, count) {
+            bitmap.set_range(bit_index, count);
+            let block_id = self.start_block_offset + bit_index as u64;
+            Ok(block_id)
+        } else {
+            Err(AllocatorError::NoSpace)
+        }
+    }
+
+    /// Frees a contiguous run of `count` blocks starting from `start_block_id`.
+    pub fn free_contiguous(
+        &mut self,
+        start_block_id: u64,
+        count: usize,
+    ) -> Result<(), AllocatorError> {
+        if count == 0 || start_block_id < self.start_block_offset {
+            return Ok(());
+        }
+        let bit_index = (start_block_id - self.start_block_offset) as usize;
+        let mut bitmap = Bitmap::new(self.bitmap_data);
+        bitmap.clear_range(bit_index, count);
+        Ok(())
+    }
 }
 
 impl<'a> BlockAllocator for SimpleBlockAllocator<'a> {
@@ -240,5 +279,34 @@ mod tests {
 
         // Freeing a block ID smaller than start_block_offset should be ignored safely
         assert!(allocator.free(10).is_ok());
+    }
+
+    #[test]
+    fn test_simple_block_allocator_contiguous() {
+        let mut bitmap_buf = vec![0u8; 16]; // 128 blocks
+        let start_offset = 2000u64;
+        let mut allocator = SimpleBlockAllocator::new(&mut bitmap_buf, start_offset);
+
+        // Allocate 10 contiguous blocks
+        let blk1 = allocator.allocate_contiguous(10, None).expect("alloc 10");
+        assert_eq!(blk1, 2000);
+
+        // Allocate 5 contiguous blocks with hint
+        let blk2 = allocator
+            .allocate_contiguous(5, Some(blk1 + 10))
+            .expect("alloc 5");
+        assert_eq!(blk2, 2010);
+
+        // Free the first 10 blocks
+        allocator.free_contiguous(blk1, 10).expect("free 10");
+
+        // Allocating 8 contiguous blocks should reuse the freed space at 2000
+        let blk3 = allocator.allocate_contiguous(8, None).expect("alloc 8");
+        assert_eq!(blk3, 2000);
+
+        // Allocating 5 contiguous blocks cannot fit in the remaining 2 blocks at 2008..2010,
+        // so it should allocate at 2015..2020!
+        let blk4 = allocator.allocate_contiguous(5, None).expect("alloc 5");
+        assert_eq!(blk4, 2015);
     }
 }

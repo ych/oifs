@@ -63,13 +63,17 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.4: Contiguous Extent Block Allocation (Multi-Block Bit Scanning)
-* **File & Lines**: [`src/disk.rs:1507-1518`](file:///Users/ych/oifs/src/disk.rs#L1507-L1518), [`src/bitmap.rs:29-88`](file:///Users/ych/oifs/src/bitmap.rs#L29-L88)
-* **Current Behavior**:
-  Writing large files invokes `get_or_alloc_block` once per 4KB block. A 100MB file requires 25,600 individual bitmap searches and lock acquisitions.
-* **Proposed Remedy**:
-  Implement `find_contiguous_free(count: usize)` in [`src/bitmap.rs`](file:///Users/ych/oifs/src/bitmap.rs) using 64-bit word bitwise masks. Allocate runs of 64~256 contiguous blocks in a single operation and batch-update indirect tables.
-* **Impact**: **High** (Faster bulk writes; reduces filesystem fragmentation and optimizes downstream `io_uring` extent coalescing).
+### P4.4: Contiguous Extent Block Allocation (Multi-Block Bit Scanning) [RESOLVED]
+* **File & Lines**: [`src/bitmap.rs:105-185`](file:///Users/ych/oifs/src/bitmap.rs#L105-L185), [`src/allocator.rs:40-75`](file:///Users/ych/oifs/src/allocator.rs#L40-L75), [`src/disk.rs:4340-4400`](file:///Users/ych/oifs/src/disk.rs#L4340-L4400)
+* **Status**: **Completed & Verified**
+* **Implementation Details**:
+  - Implemented `find_contiguous_free`, `find_contiguous_free_from`, and `find_contiguous_free_wrapped` in `BitmapRef` and `Bitmap`. Scans 64-bit words with fast jump skipping when insufficient free bits remain in a word.
+  - Implemented word- and byte-aligned `set_range` and `clear_range` on `Bitmap` for batched bit modification without repetitive individual bit manipulation.
+  - Extended `SimpleBlockAllocator` with `allocate_contiguous` and `free_contiguous`.
+  - Added `DiskManager::allocate_contiguous_blocks` and `free_contiguous_blocks` (with journaled WAL transaction support via `MetadataOp::AllocContiguousBlocks` / `FreeContiguousBlocks` and legacy in-place updates).
+* **Impact & Verification Results** (`tests/contiguous_and_truncate_test.rs::test_contiguous_allocation_and_reuse`):
+  - Verified multi-block contiguous run discovery, allocation, and reuse.
+  - Formally proved bit searching correctness under Kani (`proof_find_contiguous_free_correctness`).
 
 ---
 
@@ -143,7 +147,7 @@ The following safety and correctness issues were uncovered during the subagent c
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **SEC-01** | `src/disk.rs:3511` (`get_block_from_map`) | `block_id as usize * BLOCK_SIZE` can **overflow/wrap around** on release builds if `block_id` is large (e.g. from a corrupted indirect table). It wraps to 0, returning **Block 0 (SuperBlock)** as a valid data block, allowing user writes to **overwrite and corrupt the SuperBlock**! | **Critical** | `proof_get_block_checked_arithmetic_prevents_wrap_around` | **Resolved** (`checked_mul + checked_add`) |
 | **PANIC-01** | `src/filters.rs:192` (`delta_encode_inplace`) | Computes `data.len() / typesize` without checking `typesize > 0`. Public callers passing `typesize = 0` trigger an immediate `attempt to divide by zero` panic. | **Medium** | `proof_delta_encode_zero_typesize_safety` | **Resolved** (`typesize == 0` guard) |
-| **CORR-01** | `src/disk.rs:1599` (`write_data_from_start_internal`) | When overwriting a file at offset 0 with smaller data: `inode.size = std::cmp::max(inode.size, len)`. The file size is **not truncated**, leaving stale data blocks and leaked space. | **High** | `proof_write_from_start_size_invariant` | Open |
+| **CORR-01** | `src/disk.rs:1599` (`write_data_from_start_internal`), `src/disk.rs:4400` (`truncate_internal`) | When overwriting a file at offset 0 with smaller data: `inode.size = std::cmp::max(inode.size, len)`. The file size was **not truncated**, leaving stale data blocks and leaked space. | **High** | `proof_write_from_start_size_invariant` | **Resolved** (`truncate`, `truncate_path`, `write_data_truncated`) |
 | **PANIC-02** | `src/disk.rs:2654` (`read_at_prepare`) | If an image is corrupted and `inode.size > decompressed.len()`, a read offset $\ge \text{len}$ causes `buf.copy_from_slice(&full_data[start..end])` where `end < start` to panic. | **Medium** | `proof_clamp_slice_range_soundness` | **Resolved** (`start >= full_data.len() -> Ok(0)`) |
 | **OVF-01** | `src/io_engine.rs:248` (`ExtentList::push`) | Adjacent extent merging uses `last.len += len` without `checked_add`, risking integer overflow on extreme read batches. | **Low** | `proof_extent_push_no_overflow` | **Resolved** (`last.len.checked_add(len)`) |
 

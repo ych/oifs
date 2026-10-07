@@ -702,6 +702,61 @@ pub extern "C" fn oifs_loaded_path(buf: *mut c_char, buf_size: usize) -> i32 {
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_truncate_file(
+    handle: *mut OIFSHandle,
+    filename: *const c_char,
+    new_size: u64,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    if filename.is_null() {
+        handle_ref.set_last_error(Some("Null filename provided".to_string()));
+        return -1;
+    }
+
+    let c_str = unsafe { CStr::from_ptr(filename) };
+    let filename_str = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
+            return -1;
+        }
+    };
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dm = &handle_ref.dm;
+        match (|| -> Result<(), Box<dyn std::error::Error>> {
+            let (parent_id, name) = dm.resolve_parent(filename_str)?;
+            let inode_id = dm.lookup(parent_id, &name)?;
+            dm.truncate(inode_id, new_size)?;
+            Ok(())
+        })() {
+            Ok(_) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during truncate_file".to_string()));
+            -1
+        }
+    }
+}
+
 #[cfg(kani)]
 mod verification {
     use super::*;

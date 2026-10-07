@@ -115,6 +115,14 @@ struct DeleteFileParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct TruncateFileParams {
+    /// Path inside the OIFS image (e.g. "notes/todo.txt")
+    path: String,
+    /// Target file size in bytes
+    size: u64,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct AppendFileParams {
     /// Path inside the OIFS image (e.g. "logs/memory.jsonl")
     path: String,
@@ -144,12 +152,7 @@ impl OifsMcpServer {
                 Ok(existing_id) => existing_id,
                 Err(_) => dm.create_file(parent_id, &name)?,
             };
-            dm.write_data(
-                inode_id,
-                0,
-                params.content.as_bytes(),
-                CompressionMode::Auto,
-            )?;
+            dm.write_data_truncated(inode_id, params.content.as_bytes(), CompressionMode::Auto)?;
             Ok(format!(
                 "{{\"ok\":true,\"inode\":{},\"bytes\":{}}}",
                 inode_id,
@@ -229,6 +232,21 @@ impl OifsMcpServer {
             let (parent_id, name) = dm.resolve_parent(&params.path)?;
             dm.delete_file(parent_id, &name)?;
             Ok("{\"ok\":true}".to_string())
+        })();
+        match result {
+            Ok(msg) => msg,
+            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", e),
+        }
+    }
+
+    #[tool(
+        description = "Truncate or extend a file in the OIFS sandbox image to the specified size in bytes."
+    )]
+    async fn truncate_file(&self, Parameters(params): Parameters<TruncateFileParams>) -> String {
+        let dm = self.dm.lock().await;
+        let result = (|| -> Result<String> {
+            dm.truncate_path(&params.path, params.size)?;
+            Ok(format!("{{\"ok\":true,\"size\":{}}}", params.size))
         })();
         match result {
             Ok(msg) => msg,

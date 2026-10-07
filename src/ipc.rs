@@ -225,6 +225,10 @@ pub enum IpcRequest {
     GetBlockCopy {
         block_id: u64,
     },
+    Truncate {
+        inode_id: u64,
+        new_size: u64,
+    },
 }
 
 impl IpcRequest {
@@ -238,6 +242,7 @@ impl IpcRequest {
             IpcRequest::ReadData { .. } => "ReadData",
             IpcRequest::WriteData { .. } => "WriteData",
             IpcRequest::DeleteFile { .. } => "DeleteFile",
+            IpcRequest::Truncate { .. } => "Truncate",
             IpcRequest::ResolvePath { .. } => "ResolvePath",
             IpcRequest::ResolveParent { .. } => "ResolveParent",
             IpcRequest::ReadInode { .. } => "ReadInode",
@@ -695,6 +700,10 @@ impl IpcServer {
                 name,
             } => {
                 dm.delete_file(parent_inode_id, &name)?;
+                Ok(IpcResponseData::Unit)
+            }
+            IpcRequest::Truncate { inode_id, new_size } => {
+                dm.truncate(inode_id, new_size)?;
                 Ok(IpcResponseData::Unit)
             }
             IpcRequest::ResolvePath { path } => {

@@ -703,6 +703,27 @@ impl OifsSession {
         }
     }
 
+    /// Truncates or extends a file to the specified size in bytes
+    pub fn truncate(&self, inode_id: u64, new_size: u64) -> Result<(), SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.truncate(inode_id, new_size)?),
+            OifsSession::Remote { .. } => {
+                let resp = self.send_request(IpcRequest::Truncate { inode_id, new_size })?;
+
+                match resp {
+                    IpcResponseData::Unit => Ok(()),
+                    _ => Err(SessionError::UnexpectedResponse),
+                }
+            }
+        }
+    }
+
+    /// Truncates or extends a file by path
+    pub fn truncate_path(&self, path: &str, new_size: u64) -> Result<(), SessionError> {
+        let inode_id = self.resolve_path(path)?;
+        self.truncate(inode_id, new_size)
+    }
+
     /// Resolves a path (e.g. "docs/file.txt") to an Inode ID
     pub fn resolve_path(&self, path: &str) -> Result<u64, SessionError> {
         match self {

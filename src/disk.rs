@@ -3510,6 +3510,48 @@ impl DiskManager {
         Ok(blk)
     }
 
+    pub(crate) fn allocate_contiguous_blocks_internal(
+        guard: &mut DiskManagerInner,
+        count: usize,
+    ) -> Result<u64, DiskManagerError> {
+        if count == 0 {
+            return Ok(guard.free_block_hint);
+        }
+        let db_blk = guard.superblock.data_bitmap_block;
+        let db_start = guard.superblock.data_block_start;
+        let hint = guard.free_block_hint;
+        let blk = {
+            let slice = Self::get_block_mut_from_map(&mut guard.mmap, db_blk).unwrap();
+            let mut da = SimpleBlockAllocator::new(slice, db_start);
+            da.allocate_contiguous(count, Some(hint))
+                .map_err(DiskManagerError::Allocator)?
+        };
+        guard.free_block_hint = blk + count as u64;
+        Ok(blk)
+    }
+
+    pub(crate) fn free_contiguous_blocks_internal(
+        guard: &mut DiskManagerInner,
+        start_blk: u64,
+        count: usize,
+    ) -> Result<(), DiskManagerError> {
+        if count == 0 {
+            return Ok(());
+        }
+        let db_blk = guard.superblock.data_bitmap_block;
+        let db_start = guard.superblock.data_block_start;
+        {
+            let slice = Self::get_block_mut_from_map(&mut guard.mmap, db_blk).unwrap();
+            let mut da = SimpleBlockAllocator::new(slice, db_start);
+            da.free_contiguous(start_blk, count)
+                .map_err(DiskManagerError::Allocator)?;
+        }
+        if start_blk < guard.free_block_hint {
+            guard.free_block_hint = start_blk;
+        }
+        Ok(())
+    }
+
     #[inline]
     pub(crate) fn read_block_ptr(mmap: &MmapMut, block_id: u64, entry_idx: usize) -> u64 {
         if let Some(slice) = Self::get_block_from_map(mmap, block_id) {
@@ -4190,6 +4232,389 @@ impl DiskManager {
             guard.sync_mutation_ranges(&[])?;
         }
         Ok(())
+    }
+
+    /// Truncates or extends a file to the specified size in bytes.
+    ///
+    /// If `new_size` is less than current size, excess data is discarded and
+    /// unneeded blocks are freed back to the data bitmap.
+    /// If `new_size` is greater than current size, the file is extended (sparse
+    /// extension with zeroed reads for raw files; zero-padded for compressed/encrypted files).
+    pub fn truncate(&self, inode_id: u64, new_size: u64) -> Result<(), DiskManagerError> {
+        let mut guard = self.inner.write().unwrap();
+        Self::truncate_internal(&mut guard, inode_id, new_size)
+    }
+
+    /// Truncates or extends a file by its path.
+    pub fn truncate_path(&self, path: &str, new_size: u64) -> Result<(), DiskManagerError> {
+        let inode_id = self.resolve_path(path)?;
+        self.truncate(inode_id, new_size)
+    }
+
+    /// Writes data from offset 0 and truncates the file to exactly `data.len()` bytes.
+    pub fn write_data_truncated(
+        &self,
+        inode_id: u64,
+        data: &[u8],
+        compression_mode: CompressionMode,
+    ) -> Result<(), DiskManagerError> {
+        self.truncate(inode_id, 0)?;
+        self.write_data(inode_id, 0, data, compression_mode)
+    }
+
+    /// Allocates a contiguous run of `count` free data blocks.
+    pub fn allocate_contiguous_blocks(&self, count: usize) -> Result<u64, DiskManagerError> {
+        let mut guard = self.inner.write().unwrap();
+        Self::allocate_contiguous_blocks_internal(&mut guard, count)
+    }
+
+    /// Frees a contiguous run of `count` data blocks starting at `start_blk`.
+    pub fn free_contiguous_blocks(
+        &self,
+        start_blk: u64,
+        count: usize,
+    ) -> Result<(), DiskManagerError> {
+        let mut guard = self.inner.write().unwrap();
+        Self::free_contiguous_blocks_internal(&mut guard, start_blk, count)
+    }
+
+    pub(crate) fn truncate_internal(
+        guard: &mut DiskManagerInner,
+        inode_id: u64,
+        new_size: u64,
+    ) -> Result<(), DiskManagerError> {
+        let mut inode = Self::read_inode_internal(guard, inode_id)?;
+        if inode.mode != crate::inode::FileType::File {
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Cannot truncate non-file inode",
+            )));
+        }
+
+        if new_size == inode.size {
+            return Ok(());
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Case 1: Compressed / Encrypted / Filtered file
+        if inode.compressed_size > 0 || inode.encrypted || inode.filter_typesize > 0 {
+            let mut full_data = Self::read_data_internal(guard, &inode)?;
+            full_data.resize(new_size as usize, 0);
+
+            let filter_config = crate::filters::FilterConfig {
+                typesize: inode.filter_typesize,
+                delta: inode.filter_delta,
+                shuffle: inode.filter_shuffle,
+                bitshuffle: inode.filter_bitshuffle,
+            };
+            let compression_mode = if inode.compressed_size > 0 {
+                CompressionMode::Always
+            } else {
+                CompressionMode::Never
+            };
+
+            let plan = plan_write_prepared(
+                &inode,
+                0,
+                &full_data,
+                compression_mode,
+                &filter_config,
+                None,
+                guard.encryption_key.as_ref(),
+            )?;
+
+            if guard.superblock.has_journal_layout() {
+                return Self::write_data_journaled(guard, inode_id, 0, plan, filter_config);
+            }
+
+            if plan.case.frees_previous_blocks() {
+                let old_blocks = Self::collect_inode_blocks(&guard.mmap, &inode);
+                let mut min_freed_blk = u64::MAX;
+                {
+                    let db_blk = guard.superblock.data_bitmap_block;
+                    let db_start = guard.superblock.data_block_start;
+                    let slice =
+                        Self::get_block_mut_from_map(&mut guard.mmap, db_blk).ok_or_else(|| {
+                            DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
+                        })?;
+                    let mut da = SimpleBlockAllocator::new(slice, db_start);
+                    for blk in old_blocks {
+                        da.free(blk)?;
+                        min_freed_blk = min_freed_blk.min(blk);
+                    }
+                }
+                if min_freed_blk < guard.free_block_hint {
+                    guard.free_block_hint = min_freed_blk;
+                }
+                inode.blocks = [0; 12];
+                inode.triple_indirect = 0;
+            }
+
+            let mut touched = if guard.durability_mode().is_range_based() {
+                Some(Vec::new())
+            } else {
+                None
+            };
+            Self::write_buffer_at_offset(
+                guard,
+                &mut inode,
+                plan.phys_off,
+                &plan.buffer,
+                touched.as_mut(),
+            )?;
+
+            inode.size = plan.new_size;
+            inode.compressed_size = plan.new_compressed_size;
+            inode.modified_at = now;
+            if let Some(nonce) = plan.encryption_nonce {
+                inode.encrypted = true;
+                inode.encryption_nonce = nonce;
+            }
+            Self::write_inode_internal(guard, inode_id, &inode)?;
+            return Ok(());
+        }
+
+        // Case 2: Uncompressed Raw file - Expansion
+        if new_size > inode.size {
+            inode.size = new_size;
+            inode.modified_at = now;
+
+            if guard.superblock.has_journal_layout() {
+                let post_image = Self::build_inode_post_image(guard, inode_id, &inode)?;
+                let ops = vec![crate::journal::MetadataOp::WriteInode {
+                    inode_id,
+                    inode_bytes: Box::new(post_image),
+                }];
+                Self::commit_journal_tx(guard, &ops)?;
+                Self::apply_journal_ops(guard, &ops)?;
+                guard.inode_cache.insert(inode_id, inode);
+                Self::maybe_checkpoint(guard)?;
+            } else {
+                Self::write_inode_internal(guard, inode_id, &inode)?;
+                if guard.durability_mode().is_range_based() {
+                    let range = guard.inode_byte_range(inode_id);
+                    guard.sync_mutation_ranges(&[range])?;
+                }
+            }
+            return Ok(());
+        }
+
+        // Case 3: Uncompressed Raw file - Shrinking (new_size < inode.size)
+        let old_size = inode.size;
+        let new_blocks_needed = (new_size as usize).div_ceil(BLOCK_SIZE);
+        let old_blocks_needed = (old_size as usize).div_ceil(BLOCK_SIZE);
+
+        let mut ops = Vec::new();
+
+        // Zero out trailing slack bytes in the last surviving block
+        if !new_size.is_multiple_of(BLOCK_SIZE as u64) && new_blocks_needed > 0 {
+            let last_logical_idx = new_blocks_needed - 1;
+            let last_phys_blk =
+                Self::resolve_logical_block_id(&guard.mmap, &inode, last_logical_idx);
+            if last_phys_blk != 0 {
+                let slack_start = (new_size % BLOCK_SIZE as u64) as usize;
+                let slack_len = BLOCK_SIZE - slack_start;
+                if guard.superblock.has_journal_layout() {
+                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                        block_id: last_phys_blk,
+                        offset: slack_start as u32,
+                        data: vec![0u8; slack_len],
+                    });
+                } else if let Some(slice) =
+                    Self::get_block_mut_from_map(&mut guard.mmap, last_phys_blk)
+                {
+                    slice[slack_start..BLOCK_SIZE].fill(0);
+                }
+            }
+        }
+
+        // Free blocks beyond new_blocks_needed
+        let mut freed_blocks = Vec::new();
+        for blk_idx in new_blocks_needed..old_blocks_needed {
+            let phys_blk = Self::resolve_logical_block_id(&guard.mmap, &inode, blk_idx);
+            if phys_blk != 0 {
+                freed_blocks.push(phys_blk);
+                Self::clear_logical_block_ptr(guard, &mut inode, blk_idx);
+            }
+        }
+
+        // Prune empty indirect blocks
+        Self::prune_unused_indirect_blocks(guard, &mut inode, new_blocks_needed, &mut freed_blocks);
+
+        inode.size = new_size;
+        inode.modified_at = now;
+
+        if guard.superblock.has_journal_layout() {
+            let post_image = Self::build_inode_post_image(guard, inode_id, &inode)?;
+            for blk in &freed_blocks {
+                ops.push(crate::journal::MetadataOp::SetDataBitmap {
+                    block_id: *blk,
+                    allocated: false,
+                });
+            }
+            ops.push(crate::journal::MetadataOp::WriteInode {
+                inode_id,
+                inode_bytes: Box::new(post_image),
+            });
+            Self::commit_journal_tx(guard, &ops)?;
+            Self::apply_journal_ops(guard, &ops)?;
+
+            if let Some(min_freed) = freed_blocks.iter().copied().min()
+                && min_freed < guard.free_block_hint
+            {
+                guard.free_block_hint = min_freed;
+            }
+            guard.inode_cache.insert(inode_id, inode);
+
+            if guard.durability_mode().is_range_based() {
+                let mut ranges = vec![
+                    guard.data_bitmap_byte_range(),
+                    guard.inode_byte_range(inode_id),
+                ];
+                for blk in &freed_blocks {
+                    ranges.push(guard.block_byte_range(*blk));
+                }
+                guard.sync_mutation_ranges(&ranges)?;
+            } else {
+                guard.sync_mutation_ranges(&[])?;
+            }
+            Self::maybe_checkpoint(guard)?;
+        } else {
+            let mut min_freed_blk = u64::MAX;
+            {
+                let db_blk = guard.superblock.data_bitmap_block;
+                let db_start = guard.superblock.data_block_start;
+                let slice = Self::get_block_mut_from_map(&mut guard.mmap, db_blk).unwrap();
+                let mut da = SimpleBlockAllocator::new(slice, db_start);
+                for blk in &freed_blocks {
+                    let _ = da.free(*blk);
+                    min_freed_blk = min_freed_blk.min(*blk);
+                }
+            }
+            if min_freed_blk < guard.free_block_hint {
+                guard.free_block_hint = min_freed_blk;
+            }
+            Self::write_inode_internal(guard, inode_id, &inode)?;
+            if guard.durability_mode().is_range_based() {
+                let mut ranges = vec![
+                    guard.data_bitmap_byte_range(),
+                    guard.inode_byte_range(inode_id),
+                ];
+                for blk in &freed_blocks {
+                    ranges.push(guard.block_byte_range(*blk));
+                }
+                guard.sync_mutation_ranges(&ranges)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn clear_logical_block_ptr(
+        guard: &mut DiskManagerInner,
+        inode: &mut Inode,
+        logical_block_idx: usize,
+    ) {
+        use crate::inode::BlockPath;
+        match BlockPath::from_logical(logical_block_idx) {
+            Some(BlockPath::Direct(i)) => {
+                inode.blocks[i] = 0;
+            }
+            Some(BlockPath::Single(i)) => {
+                let sib = inode.blocks[10];
+                if sib != 0 {
+                    Self::write_block_ptr(&mut guard.mmap, sib, i, 0);
+                }
+            }
+            Some(BlockPath::Double(a, b)) => {
+                let dib = inode.blocks[11];
+                if dib != 0 {
+                    let sib = Self::read_block_ptr(&guard.mmap, dib, a);
+                    if sib != 0 {
+                        Self::write_block_ptr(&mut guard.mmap, sib, b, 0);
+                    }
+                }
+            }
+            Some(BlockPath::Triple(a, b, c)) => {
+                let tib = inode.triple_indirect;
+                if tib != 0 {
+                    let dib = Self::read_block_ptr(&guard.mmap, tib, a);
+                    if dib != 0 {
+                        let sib = Self::read_block_ptr(&guard.mmap, dib, b);
+                        if sib != 0 {
+                            Self::write_block_ptr(&mut guard.mmap, sib, c, 0);
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn prune_unused_indirect_blocks(
+        guard: &mut DiskManagerInner,
+        inode: &mut Inode,
+        new_blocks_needed: usize,
+        freed_blocks: &mut Vec<u64>,
+    ) {
+        if new_blocks_needed <= 10 && inode.blocks[10] != 0 {
+            freed_blocks.push(inode.blocks[10]);
+            inode.blocks[10] = 0;
+        }
+
+        if new_blocks_needed <= 522 {
+            if inode.blocks[11] != 0 {
+                if let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, inode.blocks[11]) {
+                    for chunk in dib_slice.as_chunks::<8>().0 {
+                        let sib = u64::from_le_bytes(*chunk);
+                        if sib != 0 {
+                            freed_blocks.push(sib);
+                        }
+                    }
+                }
+                freed_blocks.push(inode.blocks[11]);
+                inode.blocks[11] = 0;
+            }
+        } else if inode.blocks[11] != 0 {
+            let keep_sibs = (new_blocks_needed - 522).div_ceil(512);
+            if let Some(dib_slice) = Self::get_block_mut_from_map(&mut guard.mmap, inode.blocks[11])
+            {
+                for (a_idx, chunk) in dib_slice.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                    if a_idx >= keep_sibs {
+                        let sib = u64::from_le_bytes(*chunk);
+                        if sib != 0 {
+                            freed_blocks.push(sib);
+                            *chunk = [0u8; 8];
+                        }
+                    }
+                }
+            }
+        }
+
+        let max_double_blocks = 10 + 512 + 512 * 512;
+        if new_blocks_needed <= max_double_blocks && inode.triple_indirect != 0 {
+            if let Some(tib_slice) = Self::get_block_from_map(&guard.mmap, inode.triple_indirect) {
+                for dib_chunk in tib_slice.as_chunks::<8>().0 {
+                    let dib = u64::from_le_bytes(*dib_chunk);
+                    if dib != 0 {
+                        if let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, dib) {
+                            for sib_chunk in dib_slice.as_chunks::<8>().0 {
+                                let sib = u64::from_le_bytes(*sib_chunk);
+                                if sib != 0 {
+                                    freed_blocks.push(sib);
+                                }
+                            }
+                        }
+                        freed_blocks.push(dib);
+                    }
+                }
+            }
+            freed_blocks.push(inode.triple_indirect);
+            inode.triple_indirect = 0;
+        }
     }
 
     /// Analyzes disk fragmentation and returns statistics

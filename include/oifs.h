@@ -98,6 +98,19 @@ int64_t oifs_read_at(
 int64_t oifs_read_file(OIFSHandle *handle, const char *filename, uint8_t *buf, uint64_t buf_size);
 int32_t oifs_write_file(OIFSHandle *handle, const char *filename, const uint8_t *buf, uint64_t buf_size);
 
+/**
+ * Truncates or extends a file to the specified size in bytes.
+ *
+ * If new_size < current size, trailing bytes and unused blocks are discarded and freed.
+ * If new_size > current size, the file is extended (sparse for raw files).
+ *
+ * @param handle OIFS filesystem handle
+ * @param filename File path to truncate
+ * @param new_size Target file size in bytes
+ * @return 0 on success, -1 on failure (error string accessible via oifs_last_error)
+ */
+int32_t oifs_truncate_file(OIFSHandle *handle, const char *filename, uint64_t new_size);
+
 /*
  * Diagnostics and Error Handling
  */

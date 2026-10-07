@@ -62,14 +62,39 @@
 └────────┴───────┴────────┴───────┴────────┴───────┘
 ```
 
-### 3.2 局部 Read-Modify-Recompress
-若應用層覆寫 `offset = 20KB, len = 5KB`（落在 `Chunk 1 [16KB..32KB)`）：
-1. 僅需從磁碟讀取 `Chunk 1` 對應的實體區塊。
-2. 解壓為 16KB 暫存緩衝區。
-3. 覆寫其中的 5KB 資料。
-4. 以 Zstd 重新壓縮該 16KB Chunk。
-5. 將壓縮後的區塊寫回磁碟（釋放多餘區塊或按需增配）。
-6. **完全不觸碰 Chunk 0 與 Chunk 2+**，寫入延遲由數百毫秒驟降至數十微秒。
+### 3.2 回退寫入與崩潰一致性策略：策略 B (Copy-on-Write / COW Extent Swap)
+
+在回退修改（如覆寫 64KB Chunk 中的某個片段）時，重壓後的資料大小往往會產生浮動（例如從 44KB 變為 48KB，或縮小為 36KB）。OIFS 嚴格採用**策略 B（寫入時複製，Copy-on-Write）**保障資料安全與極致的崩潰一致性 (Crash Consistency)：
+
+```text
+舊區塊: [ Blk 101 ~ 111 (11 blocks / 44KB) ] ─── 保持原樣不動 (安全防護屏障)
+                                                      
+新區塊: [ Blk 201 ~ 212 (12 blocks / 48KB) ] ─── 在磁碟空閒處直接寫入新資料
+            │
+            ▼ 步驟 3: 寫入完成後原子切換
+Inode 指標原子替換指向 [ Blk 201 ~ 212 ]
+舊的 [ Blk 101 ~ 111 ] 釋放回 Data Bitmap (步驟 4)
+```
+
+#### 具體操作流程：
+1. **讀取與局部重壓**：
+   - 僅從磁碟讀出該目標 Chunk 對應的舊實體區塊（如 11 個 blocks）。
+   - 解壓為暫存緩衝區，覆寫應用層指定的偏移片段。
+   - 以 Zstd (Level 1) 重新壓縮該 Chunk，計算新實體需求：$N_{new} = \lceil \text{new\_comp\_size} / 4096 \rceil$（如 $48\text{KB} \to 12$ 個區塊）。
+2. **全新空間配置 (COW Allocate)**：
+   - 從 `data_bitmap` 申請配置全新 $N_{new}$ 個實體區塊（如 12 個 blocks），**完全不覆蓋舊區塊**。
+3. **無鎖/安全寫入**：
+   - 將新壓縮資料寫入新配置的區塊中。
+4. **原子指標切換 (Atomic Pointer Swap)**：
+   - 更新 Inode Direct / Indirect 指標樹，將該 Chunk 的映射指向全新區塊集合，並更新 `compressed_size`。
+   - 若啟用了 Metadata WAL Journal，指標切換會作為一筆原子交易提交。
+5. **舊區塊回收 (Reclaim)**：
+   - 指標切換確認持久化後，將舊有的 $N_{old}$ 個區塊（如 11 個 blocks）歸還給 `data_bitmap`。
+
+#### 崩潰安全優勢：
+* **零損壞視窗**：若在資料壓縮、新區塊寫入的任何瞬間發生斷電或系統當機，Inode 指標依然指向舊區塊，重開機後舊資料 100% 完好無損，絕不會出現「寫了一半的半殘 Chunk」。
+* **極端膨脹防禦 (Anti-Inflation Fallback)**：
+  若該 Chunk 修改後寫入高熵資料（如隨機數或加密流），導致壓縮後 $N_{new} \ge N_{raw}$（例如 64KB 壓縮後 $> 64\text{KB}$），系統自動放棄壓縮，改為分配 16 個 Raw blocks 以未壓縮形式寫入，並標記該 Chunk 為 Raw，防止負壓縮效益。
 
 ---
 

@@ -1,8 +1,11 @@
 ---
-type: task_routing_map
-title: Quick Start
-description: Refresh task-routing map to reflect updated pages and provide guided navigation through the OIFS documentation hierarchy.
-tags: [quickstart, navigation, documentation, guide, tutorial]
+type: quickstart_guide
+title: Quick Start Guide
+description: Step-by-step instructions to build OIFS, create disk images, and perform basic file operations.
+tags: [quickstart, getting-started, tutorial, cli]
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-07T12:20:29.772Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -10,28 +13,53 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-06T14:52:27.072Z
-generated: { by: "openwiki/0.6.1", at: "2026-10-06T14:52:27.072Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
 ---
 
-# Task Routing Map
+# Quick Start Guide
 
-This page provides a routing map to recently updated documentation and the overall OIFS documentation hierarchy.
+This guide provides a quick introduction to building and using OIFS.
 
-## Recently Updated Pages
+## Build
 
-- [Async I/O and Engines](architecture/async_io_and_engines.md) — Update to address stale claim and reflect current I/O engine implementation.
-- [Concurrency and Session Management](architecture/concurrency_and_session.md) — Update to address stale and unresolved claims regarding IPC, session registry, and block-level merge policy.
-- [Disk Manager and Persistence](architecture/disk_manager_and_persistence.md) — Update to address stale and unresolved claims regarding block allocation, persistence, and metadata updates.
-- [Crash Safety Testing](testing/crash_safety_testing.md) — Update to address unresolved claim regarding metadata mutation sync-on-write semantics.
+To build the project in release mode:
 
-## Documentation Hierarchy
+```bash
+cargo build --release
+```
 
-- [Architecture](architecture/index.md) — Core subsystem designs and implementations.
-- [Concepts](concepts/index.md) — Fundamental ideas and configuration.
-- [Integrations](integrations/index.md) — External tool and service integrations.
-- [Operations](operations/index.md) — CLI usage, testing, and verification.
-- [Testing](testing/index.md) — Testing methodologies and verification.
-- [Workflows](workflows/index.md) — Step-by-step guides for common tasks.
+## Create an Image
+
+Create a standard 10MB image:
+
+```bash
+cargo run --bin oifs -- -i disk.img create --size 10
+```
+
+Create an encrypted image (prompts for password securely):
+
+```bash
+cargo run --bin oifs -- -i encrypted.img create --size 10 --encrypt
+```
+
+## File Import and Export
+
+Import a file from the host into the image:
+
+```bash
+cargo run --bin oifs -- -i disk.img put dataset.bin
+```
+
+Export a file from the image to the host:
+
+```bash
+cargo run --bin oifs -- -i disk.img get dataset.bin extracted.bin
+```
+
+## Next Steps
+
+For more information, see:
+<!-- openwiki: broken internal link [../workflows/basic_operations.md] file "../workflows/basic_operations.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [Basic Operations](../workflows/basic_operations.md)
+<!-- openwiki: broken internal link [../operations/index.md] file "../operations/index.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [Operations](../operations/index.md)

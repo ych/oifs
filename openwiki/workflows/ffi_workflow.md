@@ -1,22 +1,22 @@
 ---
 type: workflow
 title: FFI Usage Workflow
-description: Step-by-step guide to using the C FFI interface for integrating OIFS with C/C++ applications, covering lifecycle management, file operations, error handling, and version compatibility.
+description: Step-by-step guide to using the C FFI interface for integrating OIFS with C/C++ applications, covering lifecycle management, file operations, directory operations, error handling, version compatibility, and I/O backend configuration.
 tags: [ffi, c, integration, workflow]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-c9e5b32aad7cafdb095c81a4
     resource: repo://src/ffi.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-07T12:20:29.772Z
 ---
 
 # FFI Usage Workflow
 
 <!-- openwiki: broken internal link [../include/oifs.h] file "../include/oifs.h" does not exist. Fix the href or restore the target, then delete this comment. -->
 <!-- openwiki: broken internal link [../src/ffi.rs] file "../src/ffi.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-This document outlines the typical workflow for using the OIFS C FFI interface from a C or C++ application. The FFI bindings are defined in [`oifs.h`](../include/oifs.h) and implemented in [`src/ffi.rs`](../src/ffi.rs).
+This document outlines the typical workflow for using the OIFS C FFI interface from a C or C++ application. The FFI bindings are defined in [oifs.h](../include/oifs.h) and implemented in [src/ffi.rs](../src/ffi.rs).
 
 ## 1. Include the Header and Link the Library
 

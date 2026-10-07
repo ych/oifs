@@ -3,15 +3,15 @@ type: architecture
 title: C FFI Interface
 description: How OIFS exposes its storage engine as a standard C shared library (liboifs) through an opaque handle model, callback-driven directory iteration, zero-copy offset reads, pluggable I/O backend configuration, and thread-safe error reporting.
 tags: [ffi, c-api, shared-library, handles, callbacks, abi, io_engine, no-mangle]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-03T11:29:24.571Z
 sources:
   - id: openwiki-source-f9a8a5ec259e5381eba4c51a
     resource: repo://include/oifs.h
   - id: openwiki-source-c9e5b32aad7cafdb095c81a4
     resource: repo://src/ffi.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-07T12:20:29.772Z
 ---
 
 # C FFI Interface
@@ -34,7 +34,7 @@ All operations require an opaque pointer to `OIFSHandle` (`src/ffi.rs#L11-L14`):
 ```rust
 pub struct OIFSHandle {
     pub dm: DiskManager,
-    pub last_error: Option<String>,
+    pub last_error: std::sync::Mutex<Option<String>>,
 }
 ```
 
@@ -43,7 +43,7 @@ In C (`include/oifs.h#L52`):
 typedef struct OIFSHandle OIFSHandle;
 ```
 
-- **Thread-Local / Handle-Isolated Errors**: Rather than using a global `errno` that risks race conditions in multithreaded host programs, each `OIFSHandle` maintains its own `last_error: Option<String>`. Successful calls clear `last_error` to `None`, while errors store human-readable descriptions.
+- **Thread-Local / Handle-Isolated Errors**: Rather than using a global `errno` that risks race conditions in multithreaded host programs, each `OIFSHandle` maintains its own `last_error: std::sync::Mutex<Option<String>>`. Successful calls lock the mutex and set the Option to `None`, while errors lock the mutex and set the Option to `Some(String)`.
 - **Underlying Engine**: `OIFSHandle` embeds a cloned `DiskManager` (`src/disk.rs`). Because `DiskManager` wraps its inner state in `Arc<RwLock<DiskManagerInner>>`, cloning is lightweight and shares the underlying memory maps, cache layers, and locks.
 
 ## Handle Lifecycle: Open, Session Reuse, and Close
@@ -135,7 +135,7 @@ int32_t oifs_ls(OIFSHandle* handle, ListCallback cb, void* user_data);
 
 ## I/O Engine Backend Configuration (P3.2)
 
-In P3.2, OIFS exposed runtime configuration of the payload-block read engine to foreign callers (`include/oifs.h#L106-L119`, `src/ffi.rs#L446-L468`):
+In P3.2, OIFS exposed runtime configuration of the payload-block read engine to foreign callers (`include/oifs.h#L114-L119`, `src/ffi.rs#L582-L603`):
 
 ```c
 #define OIFS_IO_BACKEND_MMAP     0
@@ -152,7 +152,9 @@ int32_t oifs_get_io_backend(OIFSHandle *handle);
 ## Error Handling Conventions
 
 1. **Integer Status Codes**: Mutating functions return `int32_t` (`0` = success, `-1` = failure). Reading functions return `int64_t` (bytes read = success, `-1` = failure). Constructors return non-null pointer on success, `NULL` on failure.
-2. **Defensive Pointer and String Validation**: Every function verifies `if handle.is_null()`. String parameters are converted via `CStr::from_ptr`. Non-UTF-8 strings set `last_error = Some("Invalid UTF-8 ...")` and return `-1`.
+2. **Defensive Pointer and String Validation**: Every function verifies `if handle.is_null()`. String parameters are converted via `CStr::from_ptr`. 
+   - For constructor functions (`oifs_open*`, `oifs_get_or_open*`), non-UTF-8 strings return `NULL` without setting `last_error`.
+   - For all other functions, non-UTF-8 strings set `last_error = Some("Invalid UTF-8 ...")` and return `-1`.
 3. **Retrieving Last Error Message**:
    `oifs_last_error` (`src/ffi.rs#L413-L444`):
    ```c

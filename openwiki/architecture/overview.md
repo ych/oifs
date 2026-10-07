@@ -3,6 +3,9 @@ type: architecture
 title: OIFS Architecture Overview
 description: High-level architectural overview of OIFS (O's Inode File System), detailing its single-file on-disk image model, module layout, multi-target crate compilation, and subsystem interactions across CLI, C FFI, and MCP entry points.
 tags: [architecture, overview, modules, crate-type, mcp-feature, subsystems, block-size, io_engine]
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-07T12:20:29.772Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -10,15 +13,12 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-ed8bf05e307c6278442542c2
     resource: repo://src/lib.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T13:48:44.224Z" }
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
 ---
 
 # OIFS Architecture Overview
 
-OIFS (O's Inode File System) is a Rust-based inode filesystem that packages an entire hierarchical filesystem into a single portable `.img` container file. It combines traditional Unix-like semantics with advanced features for large-scale data management, security, and extensibility.
+OIFS (O's Inode File System) is a high-performance, embedded, multi-process inode filesystem engine implemented in Rust. It delivers crash-resilient storage, fine-grained concurrency, military-grade AEAD encryption, scientific data pre-compression filters, pluggable asynchronous I/O engines, a native Model Context Protocol (MCP) server for AI agents, and a stable C/C++ FFI interface, all packaged in a single portable `.img` container file.
 
 ## Core Design Principles
 

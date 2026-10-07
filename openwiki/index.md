@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Quick Start](quickstart.md) - Refresh task-routing map to reflect updated pages and provide guided navigation through the OIFS documentation hierarchy.
+- [Quick Start Guide](quickstart.md) - Step-by-step instructions to build OIFS, create disk images, and perform basic file operations.
 
 # Directories
 

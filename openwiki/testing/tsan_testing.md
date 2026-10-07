@@ -3,6 +3,9 @@ type: concept
 title: ThreadSanitizer Testing
 description: Details on ThreadSanitizer integration for detecting data races and ensuring memory safety under concurrency.
 tags: [testing, concurrency, ThreadSanitizer, memory safety]
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-07T12:20:29.772Z
 sources:
   - id: openwiki-source-120f0cc600d844dc98f88d46
     resource: repo://tests/concurrency_stress_test.rs
@@ -12,10 +15,7 @@ sources:
     resource: repo://tests/rwlock_concurrency_test.rs
   - id: openwiki-source-4dd96a71b25353481dd09366
     resource: repo://tests/session_ipc_test.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
 ---
 
 ThreadSanitizer (TSan) is a dynamic data race detector integrated into the OIFS testing suite to identify memory safety issues arising from concurrent access. The project includes specialized stress tests designed to expose data races, atomicity violations, and other concurrency-related bugs when executed under TSan's instrumentation.
@@ -59,13 +59,13 @@ While not exclusively designed for TSan, these tests additionally run under Thre
 
 ## Running TSan Locally
 
-ThreadSanitizer tests can be executed locally using the standard cargo test command with the `tsan` feature:
+ThreadSanitizer tests can be executed locally using the nightly Rust toolchain with the `-Zsanitizer=thread` flag:
 
 ```bash
-cargo test --features tsan --test concurrency_stress
+cargo +nightly test -Zsanitizer=thread --test concurrency_stress
 ```
 
-This builds the test binary with ThreadSanitizer instrumentation enabled (via `-Zsanitizer=thread`) and executes all stress test scenarios. The CI pipeline runs equivalent configurations on every pull request to prevent regressions.
+This builds the test binary with ThreadSanitizer instrumentation enabled and executes all stress test scenarios. The CI pipeline runs equivalent configurations on every pull request to prevent regressions.
 
 ## TSan-Specific Considerations
 

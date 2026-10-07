@@ -6,10 +6,10 @@ tags: [disk-manager, mmap, persistence, durability, io_engine, io_uring, rwlock,
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-05T16:55:45.523Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-06T14:52:27.072Z
+    at: 2026-10-07T12:20:29.772Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
 ---
 
 # DiskManager and Persistence Model
@@ -29,14 +29,19 @@ Internally, state is maintained by `DiskManagerInner` (`src/disk.rs#L191-L213`),
 
 ## Lifecycle, Image Locking, and Initialization
 
-`DiskManager` instances are constructed via `DiskManager::open` (`src/disk.rs#L331-L333`), `open_with_password` (`src/disk.rs#L336-L342`), or `create_encrypted` (`src/disk.rs#L345-L351`), all delegating to the unified `init_or_open` routine (`src/disk.rs#L1131-L1273`):
+`DiskManager` instances are constructed via `DiskManager::open` (`src/disk.rs#L331-L333`), `open_with_password` (`src/disk.rs#L336-L342`), or `create_encrypted` (`src/disk.rs#L345-L351`), all delegating to the unified `init_or_open` routine (`src/disk.rs#L1048-L1213`):
 
-1. **File Opening and Locking**: Opens the image with read/write permissions. Immediately attempts an exclusive whole-file advisory lock using `libc::F_SETLK` (`src/disk.rs#L1148-L1156`). This prevents independent host processes from concurrently accessing the same raw image without going through the Master-Proxy IPC protocol.
-2. **Sizing and Memory Mapping**: New images are sized to `total_size` via `file.set_len(total_size)`. The full image is mapped into process address space using `MmapOptions::new().map_mut(&file)` (`src/disk.rs#L1163`).
+1. **File Opening and Locking**: Opens the image with read/write permissions. Immediately attempts an exclusive whole-file advisory lock using `libc::F_SETLK` (`src/disk.rs#L1076-L1084`). This prevents independent host processes from concurrently accessing the same raw image without going through the Master-Proxy IPC protocol.
+
+2. **Sizing and Memory Mapping**: New images are sized to `total_size` via `file.set_len(total_size)`. The full image is mapped into process address space using `MmapOptions::new().map_mut(&file)` (`src/disk.rs#L1091`).
+
 3. **Superblock Verification**:
-   - For new files: Constructs a fresh `SuperBlock`, configures encryption salt/flags if requested, writes the serialized block to offset 0, and initializes root directory inode 0 (`src/disk.rs#L1167-L1186`, `L1208-L1213`).
-   - For existing files: Reads and deserializes `SuperBlock` from block 0. Verifies magic bytes (`OIFS`) against `SuperBlock::MAGIC` (`src/disk.rs#L1187-L1194`).
-4. **Key Derivation**: If `superblock.encrypted` is true, derives the 256-bit AEAD key using Argon2id with `superblock.encryption_salt` (`src/disk.rs#L1196-L1202`).
+   - For new files: Constructs a fresh `SuperBlock`, configures encryption salt/flags if requested, writes the serialized block to offset 0, and initializes root directory inode 0 (`src/disk.rs#L1095-L1121`, `L1193-L1202`).
+   - For existing files: Reads and deserializes `SuperBlock` from block 0. Verifies magic bytes (`OIFS`) against `SuperBlock::MAGIC` (`src/disk.rs#L1122-L1141`).
+
+4. **Key Derivation**: If `superblock.encrypted` is true, derives the 256-bit AEAD key using Argon2id with `superblock.encryption_salt` (`src/disk.rs#L1131-L1141`).
+
+5. **Journal Handling**: For journaled images, formats journal if new or recovers journal if existing before publishing the manager (`src/disk.rs#L1144-L1210`).
 
 ## Durability Policies and Flush Behavior (P3.3)
 
@@ -44,14 +49,17 @@ OIFS provides configurable durability policies through the `DurabilityMode` enum
 
 - **`DurabilityMode::Lazy` (Default, value `0`)**:
   Mutations update the shared mmap and OS page cache without issuing per-mutation `msync` syscalls. Changes are immediately visible to all processes and survive application crashes. Persistence across machine power loss is ensured via explicit `flush()`, upon `Drop`, or by periodic OS kernel writeback. Delivers up to ~45x–51x faster write throughput in bulk operations.
+
 - **`DurabilityMode::RangeAsync` (Value `1`)**:
   Asynchronously flushes only the modified byte ranges via `msync(MS_ASYNC)` on each mutation (`sync_mutation_ranges`, `src/disk.rs#L241-L272`), scheduling dirty pages for early writeback without scanning the entire virtual memory address space.
+
 - **`DurabilityMode::Strict` (Value `2`)**:
   Synchronously flushes modified byte ranges via `msync(MS_SYNC)` on every mutation. Guarantees physical media persistence before mutating functions return.
+
 - **`DurabilityMode::LegacyWholeMmapAsync` (Value `3`)**:
   Asynchronously flushes the entire virtual memory map after every mutation (`mmap.flush_async()`).
 
-Mutating operations (`create_entry_internal`, `write_data_with_filters`, `delete_file_internal`) compute modified ranges and invoke `sync_mutation_ranges` (`src/disk.rs#L241-L272`). The `Drop` implementation for `DiskManagerInner` (`src/disk.rs#L308-L313`) executes `self.mmap.flush()`, while explicit synchronous flushing is exposed via `DiskManager::flush` (`src/disk.rs#L2090-L2093`).
+Mutating operations (`create_entry_internal`, `write_data_with_filters`, `delete_file`) compute modified ranges and invoke `sync_mutation_ranges` (`src/disk.rs#L241-L272`). The `Drop` implementation for `DiskManagerInner` (`src/disk.rs#L308-L313`) executes `self.mmap.flush()`, while explicit synchronous flushing is exposed via `DiskManager::flush` (`src/disk.rs#L2090-L2093`).
 
 ## Concurrency Model: Reader-Writer Lock
 
@@ -77,8 +85,21 @@ Complete file reads via `read_data_internal` (`src/disk.rs#L1229-L1303`) execute
 
 ## The Write Pipeline (`write_data_with_filters`)
 
-File mutation via `write_data_with_filters` (`src/disk.rs#L3392-L3486`) delegates to `plan_write` (`src/disk.rs#L975-L1083`) which selects among four cases:
-1. **FullOverwrite**: offset-0 rewrite that runs the full filter-compression-encryption staging when rewriting the entire file.
-2. **CompressedAppend**: fast Zstd multi-frame append at EOF for eligible compressed, unencrypted, unfiltered files.
-3. **Recompress**: read-modify-recompress fallback for compressed files when the fast path is unavailable (random writes, encrypted files, or active filters).
-4. **Raw**: direct block writes for uncompressed files, either extending or overwriting in place.
+File mutation via `write_data_with_filters` (`src/disk.rs#L3218-L3486`) uses a three-stage approach to minimize lock contention:
+1. **Out-of-Lock Preparation** (shared read lock): Inspects inode state, reads existing data if needed, and prepares a write plan via `plan_write_prepared` (`src/disk.rs#L850-L946`).
+2. **CPU-Bound Processing**: Performs filtering, compression, and encryption outside any filesystem lock.
+3. **Exclusive Lock Acquisition & Commit**: Acquires exclusive write lock only to verify preconditions, potentially replan via `plan_write` (`src/disk.rs#L948-L986`) if raced, then commit the transaction.
+
+The write plan selects among four cases:
+1. **FullOverwrite**: Offset-0 rewrite that runs the full filter-compression-encryption staging when rewriting the entire file.
+2. **CompressedAppend**: Fast Zstd multi-frame append at EOF for eligible compressed, unencrypted, unfiltered files.
+3. **Recompress**: Read-modify-recompress fallback for compressed files when the fast path is unavailable (random writes, encrypted files, or active filters).
+4. **Raw**: Direct block writes for uncompressed files, either extending or overwriting in place.
+
+## Inode Caching (P2.2)
+
+`DiskManagerInner` maintains an in-memory inode cache (`RwLock<BoundedInodeCache>`) that:
+- Serves as a fast path for `read_inode_internal` hits, avoiding bincode deserialization.
+- Is populated on cache misses during inode reads (`src/disk.rs#L3463-L3479`).
+- Is updated whenever inodes are modified via `write_inode_internal` (`src/disk.rs#L3494-L3495`).
+- Does not require explicit invalidation on file deletion; cache entries for deleted inodes are naturally overwritten when those inode IDs are reused for new files.

@@ -8,7 +8,10 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-ea9e30b0c99ad48bf309d4ab
     resource: repo://src/io_engine.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-07T12:20:29.772Z
 ---
 
 # Asynchronous I/O and Pluggable Engines
@@ -17,8 +20,7 @@ The OIFS file system separates metadata operations from payload data reading. Wh
 
 In P3.2, OIFS introduced a pluggable data-block read engine (`src/io_engine.rs`) that decouples physical payload I/O from memory-mapped page faults, enabling applications to select between `Mmap`, positional `Pread`, and high-concurrency Linux `io_uring` backends.
 
-<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Heuristic: an unescaped angle bracket inside a label breaks rendering; rephrase the label. -->
-```text
+```mermaid
 flowchart TD
     UserReq["DiskManager::read_at / read_at_batch"] --> Guard["Acquire Read Lock (inner.read())"]
     Guard --> Prepare["read_at_prepare (Block Traversal)"]
@@ -27,7 +29,7 @@ flowchart TD
     
     EngineSelect -->|"Mmap (Default)"| MmapPath["read_mmap: Direct slice copy from mmap"]
     EngineSelect -->|"Pread"| PreadPath["read_pread: Positional pread(2) per extent"]
-    EngineSelect -->|"IoUring (Linux >= 5.15)"| RingCheckout["Checkout Ring from RingPool"]
+    EngineSelect -->|"IoUring (Linux 5.15+)"| RingCheckout["Checkout Ring from RingPool"]
     
     RingCheckout --> SubQueue["Populate SQEs (up to 64 in-flight)"]
     SubQueue --> KernelWait["submit_and_wait(1)"]

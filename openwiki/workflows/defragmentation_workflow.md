@@ -3,9 +3,6 @@ type: workflow
 title: Defragmentation Workflow
 description: Step-by-step guide to analyzing filesystem fragmentation, executing safe defragmentation, and verifying results while maintaining data integrity.
 tags: [defragmentation, fragmentation-analysis, safe-mode, atomic-rename, workflow]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
@@ -14,6 +11,9 @@ sources:
   - id: openwiki-source-bb40fa17bd09d24ebba1a72a
     resource: repo://tests/defrag_test.rs
 generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-07T12:20:29.772Z
 ---
 
 ## Fragmentation Analysis

@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:ea6535033f6ba6d450b9a28d72d9e74d795580d6f8b2566a25e73a066c4e81c0",
+  "pageVersion": "sha256:d422d6387c3eecd6ed82826fb1c7cb625aed0caa9cbf847a6312d0c018da076a",
   "claims": [
     {
       "id": "claim_b41d3ddcf5224bbe8a8b154bb6e354e7",
       "statement": "IoBackend defines three selectable payload reading mechanisms — Mmap (default memory-map copies), Pread (positional pread(2) per extent), and IoUring (asynchronous kernel submission via pooled io_uring rings) — while metadata and mutations consistently remain on the shared memory map.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L532-L559",
+          "resource": "repo://src/disk.rs#L1376-L1403",
           "version": "repo-lines-v1:sha256:bdac45a911b6c16afa29013cb9db98185df606d5018e8b9c13587a3424973142:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhMzViMmIxMDg4MjJjMWQ3NTVhMTMxNzEyZDAzNDU2ZmRjN2JjNTg5YThiZDZiZWE2MmQ0NThlMTg0MTYyODciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhNjc1NTRmMDhmNGU3NjQwMGJjNGRmZmMwNzM1ZTUzNjA5NDZiYzMwZTI3MjQzZThkZmVmYjIyNWMzMWY2MTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2YmMwODcwM2U2ZTY5MWYzODFjNjYxOTkyZjI2YjIzNTdhYThiYWY1YzkwODAxZjQ0OWYzMjYwMjI5NjM0YTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2YmMwODcwM2U2ZTY5MWYzODFjNjYxOTkyZjI2YjIzNTdhYThiYWY1YzkwODAxZjQ0OWYzMjYwMjI5NjM0YTcifQ"
         },
         {
@@ -21,11 +21,11 @@
       "statement": "ExtentList automatically merges physically and logically contiguous data transfers on push, collapsing sequential multi-block reads into single syscalls or io_uring SQEs with verified coverage preservation.",
       "evidence": [
         {
-          "resource": "repo://src/io_engine.rs#L232-L286",
-          "version": "repo-lines-v1:sha256:7f38e1b8ca9a68c3e6246d0561908706d44074af4d3c26a228711cfa2907e9ab:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxYzgwZmI1ZmUxNmQxNjMyNzNiZWM4Y2MzMWM3Zjg4ZWQwMGNiNDAwOWMyMjkwMzFkMGZjYjg4ZWM4ZGRhNGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE1MzAwMTJlMWM2NjRmY2ExNGYyZGVlOWRjMjI0MmRlYzIzZTI2NmQ3MTlhNGRjYmUyZjZhNjViZDYxYWUyNjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxMWZiNTU0NDAxM2Y1NDQ2NWM3NWZlNGMwMzhmNzkzNDBmYjhmMDkxZWUxNDQ0NWUyMzQwZjlhNDY2NmEwNGYifQ"
+          "resource": "repo://src/io_engine.rs#L232-L287",
+          "version": "repo-lines-v1:sha256:d685baf362fa762a5d02ca43e773b36f4d90800fea61eea6ec33d1810031789a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxYzgwZmI1ZmUxNmQxNjMyNzNiZWM4Y2MzMWM3Zjg4ZWQwMGNiNDAwOWMyMjkwMzFkMGZjYjg4ZWM4ZGRhNGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE1MzAwMTJlMWM2NjRmY2ExNGYyZGVlOWRjMjI0MmRlYzIzZTI2NmQ3MTlhNGRjYmUyZjZhNjViZDYxYWUyNjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxMWZiNTU0NDAxM2Y1NDQ2NWM3NWZlNGMwMzhmNzkzNDBmYjhmMDkxZWUxNDQ0NWUyMzQwZjlhNDY2NmEwNGYifQ"
         },
         {
-          "resource": "repo://src/io_engine.rs#L834-L858",
+          "resource": "repo://src/io_engine.rs#L850-L874",
           "version": "repo-lines-v1:sha256:c7d3cd42c4930cece06026247ec320f116873c5e454594daa38b817cdd8cc84d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4NmI0MjYxOTUxZTZhYTFmZDc2ZTg2ZTc0Y2UzNjkwOTJhNjQ5MTQ2OWNkYjk3MTkwZTBhYzFkYzFkYTI3NTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcyM2M5NzFiYWQzMzk5OGQ3MTkyYjdjOTIxMTBjZDFhNDA0ODAwYzRmM2I4NTZjZGQ4YTgxNGYzNzk5MTRlNzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4NmM4Mzg1NDE4ZmYwMTI3NWM4MTFiNmE2ZWZlZTMxNjUzOGRjZjBmZWNjNGVlOGRmNzA5NjIwMWE0Zjg1ZTUifQ"
         }
       ]
@@ -39,7 +39,7 @@
           "version": "repo-lines-v1:sha256:caeb72648b2861ec1d613b6e5c16e3feab66f8546e536d57e123c290b88b4a24:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlMjIzNzVhYzdmYzFjNWUwN2JlNWVjNjRlMjUyZjkxOTFhZDYyZGU4ZmFiNjUzZGM1MWI5ZDFjYThhMjU0NGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhNzI3NjFjNTFmNjJlMTg1OTQwYWQ1MTE4MmY5ZWI5NTM5NjgwMDQxMjAzYzJiMTA4OGFlMGE0YzVlODc2NWEifQ"
         },
         {
-          "resource": "repo://src/io_engine.rs#L433-L453",
+          "resource": "repo://src/io_engine.rs#L434-L454",
           "version": "repo-lines-v1:sha256:2e957cd50e5be24d186c2a32be0332077892920ed0fac6cf4f96c72afb8be2a0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlNDViMzUzYzNjYTRkMjg4MTNiZTAzZTRkMWMxODIxMGQ4ODRiMjJmNjlkYzczMGE5YjA1ODM1YTIzYmJkNWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM1ZjZmNDY2ZTU5Y2ZjMzA3MDNjNDVmNzJhZjY1ZGU1NGFjMzYzZDM1NGNjMWEzMzMwMzUwYWNkNDUyNDM0YzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdlYjRkMGY5NDQ0MDg1NzBhYjQ3N2NhMzBiNjA1NWE1YzA1ZTM4MWU5ZGMxNjU5NTQxZWJjNmRiNzYyNGY4ZDEifQ"
         }
       ]
@@ -49,11 +49,11 @@
       "statement": "IoUring RingPool pools pre-initialized 64-entry io_uring instances and guarantees that read loops never return while submission queue entries remain in flight to prevent memory corruption.",
       "evidence": [
         {
-          "resource": "repo://src/io_engine.rs#L456-L533",
+          "resource": "repo://src/io_engine.rs#L457-L534",
           "version": "repo-lines-v1:sha256:99d76b1488ac8a264f2c5bec2d583d4d6cc19619a10053b7bd8269b6bda1d1ee:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1OTlkNWY2ZDUyNmExMzU4Y2MyY2IwZTY1MzFlZmE3Y2JhYmFiZWM2YmExNGZiNjYyOTlhNWRlZjAwODYwOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliZjcwOTQwMTVlMTQ1YWM5NTA1YzIzMjE5NjYzOTI1Mjc1ZGJhNTBhYmYxMWRlMWE4MjVmZjM4ZTdjNjgwYTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwMWRkZTg1YzE1ZTI2OTAyZjcyYjAxZmFjY2Y4OTkyZjM4NjZmMzU0YzkwMGFhMDFiYjJmMWExZDIxYWI0NzAifQ"
         },
         {
-          "resource": "repo://src/io_engine.rs#L564-L651",
+          "resource": "repo://src/io_engine.rs#L565-L652",
           "version": "repo-lines-v1:sha256:a8c63904b666c74fb6d719c5281bc721511bf621259f5e6ec11d492e50eec0d7:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2MGJkOWU1NmYyNjYwODFlMWNiYjRkNzJkYmI3YmNlNTVhMDNkNzY5MTQwOGM2Nzg5OGI5NGY3ZDlkYTBiY2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE1MjE2MDRiMzVmYzQwYWYwMGNiYTRlZWEyZmQ1ZTJjM2FmMTg2M2IzOTExODVkN2JmNGJiMDllNzJkMGM4YjMifQ"
         }
       ]
@@ -63,7 +63,7 @@
       "statement": "DiskManager::read_at_batch processes multiple concurrent ReadRequests under a single read lock, gathering extents into batched I/O engine targets for high-throughput parallel execution.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1377-L1426",
+          "resource": "repo://src/disk.rs#L2781-L2830",
           "version": "repo-lines-v1:sha256:2d89a9e2fffd0b4a9081a8450ed72ab28caea2ea3dde261d835735801ab8f27c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZTIxMDFiZTk2NTY2YTM3NGI0NTBkNzkwZmRjNjAyYWNlYTA1MTNhYjVlZDg5YzkyODdlNTEyZjRiMDcwMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxNTMwMGU2NzNmZmNjMWI3MzcyYzNhYjczY2VmNzUzMWNlYzVhNDllNzNlMTZmMTJlMTI1ZDNkM2QzOTc2OTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNhYjM3Y2EyMjU0ZDBkOTgyZmM2ZjE4MjdiMDYwYzIyYTA0OWQwZWY5ZTQxYTA1YzA3N2RlMDdjOTc0Zjc5ZDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM2ODZjN2IxNzM1M2UyODNkZDMyMzJkYjEzZjJlYzQyNWNjN2UzNTc3MDc5YzAwYmE1MTQwYTg3MzUxMTI5NDQifQ"
         }
       ]
@@ -71,6 +71,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-04T06:56:29.774Z"
+    "at": "2026-10-07T12:20:29.772Z"
   }
 }

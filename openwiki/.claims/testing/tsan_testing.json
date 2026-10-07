@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:6e743804f4b4a8be696662f80f33ee7c9603eac4de2e882734ff67d79066b718",
+  "pageVersion": "sha256:bf7d79071a25aa3f8af194224125d844af7955f3da1e5a6824ccf885b927e6ba",
   "claims": [
     {
       "id": "claim_a6750493d45a4249aff843ec899f04e3",
@@ -50,7 +50,7 @@
         },
         {
           "resource": "repo://tests/rwlock_concurrency_test.rs",
-          "version": "repo-file-v1:sha256:83b7ea1dfa400e6ace94673c1d55ef0303e31279138c201a0627dbecd56650ee"
+          "version": "repo-file-v1:sha256:60819a8a238f7cceaead4035f43d2fcbe5e110daaceaf44fe43d81af040c6bc2"
         },
         {
           "resource": "repo://tests/session_ipc_test.rs",
@@ -60,7 +60,7 @@
     },
     {
       "id": "claim_49ed991f95b04a7baf435509adb77cb2",
-      "statement": "ThreadSanitizer tests can be executed locally using 'cargo test --features tsan --test concurrency_stress'.",
+      "statement": "ThreadSanitizer tests can be executed locally using the nightly Rust toolchain with the `-Zsanitizer=thread` flag: `cargo +nightly test -Zsanitizer=thread --test concurrency_stress`",
       "evidence": [
         {
           "resource": "repo://tests/concurrency_stress_test.rs",
@@ -71,6 +71,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-05T16:55:45.523Z"
+    "at": "2026-10-07T12:20:29.772Z"
   }
 }

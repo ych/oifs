@@ -3,9 +3,6 @@ type: integration guide
 title: FFI Integration Guide
 description: Detailed instructions for integrating OIFS shared library with C/C++ projects, including build linking and error handling.
 tags: [ffi, integration, c, cpp, build]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -14,6 +11,9 @@ sources:
   - id: openwiki-source-c9e5b32aad7cafdb095c81a4
     resource: repo://src/ffi.rs
 generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-07T12:20:29.772Z
 ---
 
 # OIFS FFI Integration Guide

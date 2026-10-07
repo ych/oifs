@@ -6,10 +6,10 @@ tags: [defragmentation, fragmentation, atomic-rename, contiguous-allocation, fil
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-03T08:18:49.684Z
+    at: 2026-10-07T12:20:29.772Z
 ---
 
 ## Responsibility and ownership
@@ -19,7 +19,7 @@ verified:
 <!-- openwiki: broken internal link [src/disk.rs#L1604-L1609] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 Defragmentation and space reorganization logic reside entirely within [`DiskManager`](src/disk.rs#L1475-L1759). It evaluates disk layout health through [`analyze_fragmentation`](src/disk.rs#L1475-L1593), which measures free-block scattering across physical data space. Defragmentation execution is exposed via [`DiskManager::defragment`](src/disk.rs#L1604-L1609), supporting two operational modes:
 - `DefragMode::Safe` (default): An out-of-place reorganization in a temporary image followed by transactional verification and rename.
-- `DefragMode::InPlace`: Direct modification of the existing image (currently reserved and returns an error).
+- `DefragMode::InPlace`: Direct modification of the existing image (implemented).
 
 ## Fragmentation analysis
 

@@ -51,8 +51,10 @@ This document consolidates deep codebase investigations and findings recovered f
   - **Full C/C++ FFI Integration**: Exposed `oifs_write_file_with_policy` and `OIFS_WRITE_POLICY_SEEKABLE_64K (0x08)` for native consumers.
   - **CLI Integration**: Added `--chunked` flag to `oifs put` for seamless shell and multi-process usage.
 * **Impact & Verification Results** ([`tests/seekable_chunked_test.rs`](file:///Users/ych/oifs/tests/seekable_chunked_test.rs), [`tests/seekable_chunked_concurrency_test.rs`](file:///Users/ych/oifs/tests/seekable_chunked_concurrency_test.rs)):
-  - 14 comprehensive integration tests covering end-to-end roundtrip, random rewind overwriting, anti-inflation fallback, shrink/expand truncation, filesystem remount persistence, zero block leakage validation, and C FFI API.
-  - **Multithreaded Concurrency**:
+  - 16 comprehensive integration tests covering end-to-end roundtrip, random rewind overwriting, anti-inflation fallback, shrink/expand truncation, filesystem remount persistence, zero block leakage validation, and C FFI API.
+  - **Multithreaded Concurrency on Rewindable (Seekable) Files**:
+    - 4 writer threads concurrently performing unaligned random rewind writes (`offset < size`) while 4 reader threads continuously read via `read_at`.
+    - Mutator threads dynamically triggering anti-inflation fallback (RAW vs Compressed transitions) under concurrent reader access.
     - 16 concurrent reader threads performing random aligned/unaligned sliced `read_at` on shared seekable files.
     - 16 parallel threads simultaneously writing non-overlapping 64KB partitioned chunks into a single shared file.
     - Continuous reader threads concurrent with rapid writer chunk replacements (verifying COW atomic replacement prevents torn/corrupted Zstd frames).

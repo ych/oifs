@@ -456,6 +456,9 @@ fn test_multiprocess_cli_chunked_concurrency() {
         fs::write(&payload_path, &data).unwrap();
     }
 
+    // Maintain a persistent Master session so background OS processes transparently proxy to it
+    let master_session = OifsSession::open(&img_str, 0).expect("open master session");
+
     // 3. Concurrently launch 4 independent OS processes running `oifs put --chunked`
     let mut put_handles = Vec::new();
     for i in 0..num_procs {
@@ -553,6 +556,9 @@ fn test_multiprocess_cli_chunked_concurrency() {
         );
     }
 
+    // Drop master session to flush all data to disk before running fsck
+    drop(master_session);
+
     // 7. Verify fsck via CLI
     let fsck_output = Command::new(bin_path)
         .args(["--image", &img_str, "fsck"])
@@ -560,8 +566,9 @@ fn test_multiprocess_cli_chunked_concurrency() {
         .expect("CLI fsck failed");
     assert!(
         fsck_output.status.success(),
-        "CLI fsck failed: {}",
-        String::from_utf8_lossy(&fsck_output.stderr)
+        "CLI fsck failed:\nSTDERR:\n{}\nSTDOUT:\n{}",
+        String::from_utf8_lossy(&fsck_output.stderr),
+        String::from_utf8_lossy(&fsck_output.stdout),
     );
 }
 
@@ -785,4 +792,269 @@ fn test_multiprocess_network_single_file_chunked_writes() {
 
     let fsck = master.verify_integrity().expect("fsck");
     assert!(fsck.is_clean, "FSCK should be clean: {:?}", fsck);
+}
+
+// =========================================================================
+// 8. Multithread: Concurrent Arbitrary Rewind Overwrites (offset < size) & Reads
+// =========================================================================
+
+#[test]
+fn test_multithread_concurrent_random_rewind_writes_and_reads() {
+    let ctx = TempImageContext::new("test_mt_rewind_writes_reads");
+    let dm = Arc::new(DiskManager::open(&ctx.path, 30 * 1024 * 1024).expect("open"));
+    let root = dm.superblock().root_inode;
+    let file_id = dm
+        .create_file(root, "rewindable_shared.dat")
+        .expect("create file");
+
+    let num_chunks = 8;
+    let total_size = num_chunks * CHUNK_SIZE_64K;
+
+    // Initialize with predictable compressible pattern
+    let mut initial = Vec::with_capacity(total_size);
+    for c in 0..num_chunks {
+        let pattern = format!("CHUNK_{:02}_INITIAL_REWINDABLE_DATA_PATTERN_PADDING_", c);
+        let mut chunk = pattern
+            .repeat(CHUNK_SIZE_64K / pattern.len() + 1)
+            .into_bytes();
+        chunk.truncate(CHUNK_SIZE_64K);
+        initial.extend_from_slice(&chunk);
+    }
+
+    dm.write_data_with_filters(
+        file_id,
+        0,
+        &initial,
+        CompressionMode::Seekable {
+            chunk_size: CHUNK_SIZE_64K as u32,
+            level: 1,
+        },
+        FilterConfig::none(),
+    )
+    .expect("init write");
+
+    let num_writers = 4;
+    let num_readers = 4;
+    let barrier = Arc::new(Barrier::new(num_writers + num_readers));
+    let running = Arc::new(AtomicBool::new(true));
+    let total_reads = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::new();
+
+    // 4 Writer threads performing random unaligned rewind writes (offset < total_size)
+    for writer_id in 0..num_writers {
+        let dm_clone = Arc::clone(&dm);
+        let b = Arc::clone(&barrier);
+
+        let h = thread::spawn(move || {
+            b.wait();
+
+            for step in 0..30 {
+                // Rewind to an arbitrary offset inside the file (offset < total_size)
+                // Across chunk boundaries or inside chunks
+                let offset =
+                    (((writer_id * 31 + step * 17) % (num_chunks - 1)) * 32 * 1024 + 100) as u64;
+                let len = 500 + (step % 5) * 200; // 500 to 1300 bytes
+
+                let tag = format!("W_{:02}_S_{:03}_", writer_id, step);
+                let mut patch = tag.repeat(len / tag.len() + 1).into_bytes();
+                patch.truncate(len);
+
+                dm_clone
+                    .write_data_with_filters(
+                        file_id,
+                        offset,
+                        &patch,
+                        CompressionMode::Seekable {
+                            chunk_size: CHUNK_SIZE_64K as u32,
+                            level: 1,
+                        },
+                        FilterConfig::none(),
+                    )
+                    .expect("rewind write");
+
+                thread::yield_now();
+            }
+        });
+        handles.push(h);
+    }
+
+    // 4 Reader threads continuously performing read_at across random slices
+    for reader_id in 0..num_readers {
+        let dm_clone = Arc::clone(&dm);
+        let b = Arc::clone(&barrier);
+        let running_ref = Arc::clone(&running);
+        let read_counter = Arc::clone(&total_reads);
+
+        let h = thread::spawn(move || {
+            b.wait();
+
+            let mut iter = 0;
+            while running_ref.load(Ordering::Relaxed) {
+                let offset =
+                    (((reader_id * 13 + iter * 7) % num_chunks) * CHUNK_SIZE_64K + 50) as u64;
+                let mut buf = vec![0u8; 1024];
+
+                let bytes = dm_clone
+                    .read_at(file_id, offset, &mut buf)
+                    .expect("read_at");
+                assert_eq!(bytes, 1024);
+
+                read_counter.fetch_add(1, Ordering::Relaxed);
+                iter += 1;
+                thread::yield_now();
+            }
+        });
+        handles.push(h);
+    }
+
+    // Wait for writers (first 4 handles)
+    for h in handles.drain(..num_writers) {
+        h.join().expect("writer join");
+    }
+
+    running.store(false, Ordering::Relaxed);
+    for h in handles {
+        h.join().expect("reader join");
+    }
+
+    assert!(total_reads.load(Ordering::Relaxed) > 50);
+
+    // Verify whole file can be decompressed and read without corruption
+    let final_data = dm.read_data(file_id).expect("read final data");
+    assert_eq!(final_data.len(), total_size);
+
+    // Verify zero leaked blocks and clean filesystem
+    let fsck = dm.verify_integrity().expect("fsck");
+    assert!(
+        fsck.is_clean,
+        "FSCK must be clean after concurrent rewind overwrites: {:?}",
+        fsck
+    );
+}
+
+// =========================================================================
+// 9. Multithread: Anti-Inflation Fallback (RAW vs Compressed) Concurrency
+// =========================================================================
+
+#[test]
+fn test_multithread_fallback_to_raw_and_recompress_under_concurrency() {
+    let ctx = TempImageContext::new("test_mt_fallback_raw_race");
+    let dm = Arc::new(DiskManager::open(&ctx.path, 30 * 1024 * 1024).expect("open"));
+    let root = dm.superblock().root_inode;
+    let file_id = dm
+        .create_file(root, "mixed_raw_compressed.dat")
+        .expect("create file");
+
+    let num_chunks = 6;
+    let total_size = num_chunks * CHUNK_SIZE_64K;
+
+    // Start with all compressible data
+    let initial_zeros = vec![0x42u8; total_size];
+    dm.write_data_with_filters(
+        file_id,
+        0,
+        &initial_zeros,
+        CompressionMode::Seekable {
+            chunk_size: CHUNK_SIZE_64K as u32,
+            level: 1,
+        },
+        FilterConfig::none(),
+    )
+    .expect("init write");
+
+    let num_workers = 6;
+    let barrier = Arc::new(Barrier::new(num_workers));
+    let mut handles = Vec::new();
+
+    // 3 Mutator threads: Alternate making chunks incompressible (RAW fallback) vs compressible (Compressed)
+    for worker_id in 0..3 {
+        let dm_clone = Arc::clone(&dm);
+        let b = Arc::clone(&barrier);
+
+        let h = thread::spawn(move || {
+            b.wait();
+
+            for step in 0..15 {
+                let target_chunk = (worker_id + step) % num_chunks;
+                let offset = (target_chunk * CHUNK_SIZE_64K) as u64;
+
+                let payload = if step % 2 == 0 {
+                    // High-entropy pseudorandom data (anti-inflation fallback to RAW)
+                    let mut noise = vec![0u8; CHUNK_SIZE_64K];
+                    let mut seed = ((worker_id + 1) * 1000 + step) as u32;
+                    for byte in &mut noise {
+                        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                        *byte = (seed >> 16) as u8;
+                    }
+                    noise
+                } else {
+                    // Highly compressible repetitive text (transitions back to COMPRESSED)
+                    let pattern = format!(
+                        "WORKER_{}_STEP_{}_HIGHLY_COMPRESSIBLE_PATTERN_",
+                        worker_id, step
+                    );
+                    let mut data = pattern
+                        .repeat(CHUNK_SIZE_64K / pattern.len() + 1)
+                        .into_bytes();
+                    data.truncate(CHUNK_SIZE_64K);
+                    data
+                };
+
+                dm_clone
+                    .write_data_with_filters(
+                        file_id,
+                        offset,
+                        &payload,
+                        CompressionMode::Seekable {
+                            chunk_size: CHUNK_SIZE_64K as u32,
+                            level: 1,
+                        },
+                        FilterConfig::none(),
+                    )
+                    .expect("write chunk");
+
+                thread::yield_now();
+            }
+        });
+        handles.push(h);
+    }
+
+    // 3 Reader threads: Continuously reading both RAW chunks and COMPRESSED chunks
+    for reader_id in 0..3 {
+        let dm_clone = Arc::clone(&dm);
+        let b = Arc::clone(&barrier);
+
+        let h = thread::spawn(move || {
+            b.wait();
+
+            for iter in 0..30 {
+                let target_chunk = (reader_id + iter) % num_chunks;
+                let offset = (target_chunk * CHUNK_SIZE_64K) as u64;
+                let mut buf = vec![0u8; 2048];
+
+                let bytes = dm_clone
+                    .read_at(file_id, offset, &mut buf)
+                    .expect("read_at");
+                assert_eq!(bytes, 2048);
+
+                thread::yield_now();
+            }
+        });
+        handles.push(h);
+    }
+
+    for h in handles {
+        h.join().expect("thread join");
+    }
+
+    // Verify whole file read and fsck integrity
+    let final_data = dm.read_data(file_id).expect("read final data");
+    assert_eq!(final_data.len(), total_size);
+
+    let fsck = dm.verify_integrity().expect("fsck");
+    assert!(
+        fsck.is_clean,
+        "FSCK must be clean after RAW and Compressed fallback mutations: {:?}",
+        fsck
+    );
 }

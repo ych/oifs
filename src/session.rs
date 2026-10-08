@@ -600,6 +600,20 @@ impl OifsSession {
         }
     }
 
+    /// Opens a file with the specified [`OpenMode`] matching standard POSIX semantics.
+    pub fn open_file(
+        &self,
+        parent_inode_id: u64,
+        name: &str,
+        mode: crate::disk::OpenMode,
+    ) -> Result<u64, SessionError> {
+        match mode {
+            crate::disk::OpenMode::OpenExisting => self.lookup(parent_inode_id, name),
+            crate::disk::OpenMode::CreateNew => self.create_file(parent_inode_id, name),
+            crate::disk::OpenMode::CreateOrOpen => self.create_or_open_file(parent_inode_id, name),
+        }
+    }
+
     /// Creates a new directory in a parent directory
     pub fn create_directory(&self, parent_inode_id: u64, name: &str) -> Result<u64, SessionError> {
         match self {

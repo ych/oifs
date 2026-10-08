@@ -420,3 +420,151 @@ fn test_session_concurrent_create_or_open_same_filename() {
     let fsck = session.verify_integrity().expect("fsck");
     assert!(fsck.is_clean, "FSCK must be clean: {:?}", fsck);
 }
+
+// =========================================================================
+// 6. OpenMode::CreateNew Strict Mutual Exclusion & EEXIST Guarantee
+// =========================================================================
+
+#[test]
+fn test_multithread_open_mode_create_new_eexist_guarantee() {
+    use oifs::disk::OpenMode;
+
+    let ctx = TempImageContext::new("test_same_file_open_mode_create_new");
+    let dm = Arc::new(DiskManager::open(&ctx.path, 20 * 1024 * 1024).expect("open"));
+    let root = dm.superblock().root_inode;
+
+    let num_threads = 16;
+    let barrier = Arc::new(Barrier::new(num_threads));
+    let successes = Arc::new(AtomicUsize::new(0));
+    let eexist_count = Arc::new(AtomicUsize::new(0));
+    let created_inode_id = Arc::new(Mutex::new(None));
+    let mut handles = Vec::new();
+
+    // 16 threads concurrently request OpenMode::CreateNew on a non-existent filename
+    for _ in 0..num_threads {
+        let dm_clone = Arc::clone(&dm);
+        let b = Arc::clone(&barrier);
+        let s_count = Arc::clone(&successes);
+        let e_count = Arc::clone(&eexist_count);
+        let created_id_slot = Arc::clone(&created_inode_id);
+
+        let h = thread::spawn(move || {
+            b.wait();
+
+            match dm_clone.open_file(root, "exclusive_posix.dat", OpenMode::CreateNew) {
+                Ok(inode_id) => {
+                    s_count.fetch_add(1, Ordering::SeqCst);
+                    let mut lock = created_id_slot.lock().unwrap();
+                    *lock = Some(inode_id);
+                }
+                Err(DiskManagerError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    e_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(other) => {
+                    panic!("Unexpected error from open_file CreateNew: {:?}", other);
+                }
+            }
+        });
+        handles.push(h);
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // Must guarantee: exactly 1 thread succeeded, all other 15 threads received AlreadyExists (EEXIST)
+    assert_eq!(
+        successes.load(Ordering::SeqCst),
+        1,
+        "Exactly one thread must succeed in OpenMode::CreateNew"
+    );
+    assert_eq!(
+        eexist_count.load(Ordering::SeqCst),
+        num_threads - 1,
+        "All other threads must fail with AlreadyExists (EEXIST)"
+    );
+
+    let winner_id = created_inode_id.lock().unwrap().unwrap();
+    let lookup_id = dm
+        .open_file(root, "exclusive_posix.dat", OpenMode::OpenExisting)
+        .expect("open existing");
+    assert_eq!(lookup_id, winner_id);
+
+    let fsck = dm.verify_integrity().expect("fsck");
+    assert!(fsck.is_clean);
+}
+
+// =========================================================================
+// 7. OpenMode::OpenExisting Fails with ENOENT When Absent, Succeeds When Present
+// =========================================================================
+
+#[test]
+fn test_multithread_open_mode_open_existing_enoent_before_creation() {
+    use oifs::disk::OpenMode;
+
+    let ctx = TempImageContext::new("test_same_file_open_existing");
+    let dm = Arc::new(DiskManager::open(&ctx.path, 20 * 1024 * 1024).expect("open"));
+    let root = dm.superblock().root_inode;
+
+    let num_threads = 8;
+    let barrier = Arc::new(Barrier::new(num_threads));
+    let enoent_count = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::new();
+
+    // 1. When file does not exist, all threads requesting OpenExisting must get NotFound (ENOENT)
+    for _ in 0..num_threads {
+        let dm_clone = Arc::clone(&dm);
+        let b = Arc::clone(&barrier);
+        let not_found_count = Arc::clone(&enoent_count);
+
+        let h = thread::spawn(move || {
+            b.wait();
+
+            match dm_clone.open_file(root, "must_exist.dat", OpenMode::OpenExisting) {
+                Ok(_) => panic!("File should not exist yet"),
+                Err(DiskManagerError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    not_found_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(other) => panic!("Unexpected error: {:?}", other),
+            }
+        });
+        handles.push(h);
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    assert_eq!(
+        enoent_count.load(Ordering::SeqCst),
+        num_threads,
+        "All threads must get NotFound when file does not exist"
+    );
+
+    // 2. File is created
+    let created_id = dm
+        .open_file(root, "must_exist.dat", OpenMode::CreateNew)
+        .expect("create");
+
+    // 3. Now all threads requesting OpenExisting succeed
+    let mut open_handles = Vec::new();
+    let barrier2 = Arc::new(Barrier::new(num_threads));
+
+    for _ in 0..num_threads {
+        let dm_clone = Arc::clone(&dm);
+        let b = Arc::clone(&barrier2);
+
+        let h = thread::spawn(move || {
+            b.wait();
+            dm_clone
+                .open_file(root, "must_exist.dat", OpenMode::OpenExisting)
+                .expect("open existing")
+        });
+        open_handles.push(h);
+    }
+
+    for h in open_handles {
+        let id = h.join().unwrap();
+        assert_eq!(id, created_id);
+    }
+}

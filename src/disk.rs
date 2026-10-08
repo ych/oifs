@@ -84,6 +84,17 @@ pub enum CompressionMode {
     },
 }
 
+/// File opening mode matching standard POSIX semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpenMode {
+    /// Open an existing file. Fails with NotFound (ENOENT) if the file does not exist.
+    OpenExisting,
+    /// Atomically create a new file exclusively. Fails with AlreadyExists (EEXIST) if the file already exists.
+    CreateNew,
+    /// Open the file if it exists, or create it if it does not exist.
+    CreateOrOpen,
+}
+
 /// Statistics about disk fragmentation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FragmentationStats {
@@ -2478,6 +2489,20 @@ impl DiskManager {
                 self.lookup(parent_inode_id, name)
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// Opens a file with the specified [`OpenMode`] matching standard POSIX semantics.
+    pub fn open_file(
+        &self,
+        parent_inode_id: u64,
+        name: &str,
+        mode: OpenMode,
+    ) -> Result<u64, DiskManagerError> {
+        match mode {
+            OpenMode::OpenExisting => self.lookup(parent_inode_id, name),
+            OpenMode::CreateNew => self.create_file(parent_inode_id, name),
+            OpenMode::CreateOrOpen => self.create_or_open_file(parent_inode_id, name),
         }
     }
 

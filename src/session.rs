@@ -583,6 +583,23 @@ impl OifsSession {
         }
     }
 
+    /// Creates a file if it does not exist, or opens (looks up) the existing file.
+    pub fn create_or_open_file(
+        &self,
+        parent_inode_id: u64,
+        name: &str,
+    ) -> Result<u64, SessionError> {
+        match self.create_file(parent_inode_id, name) {
+            Ok(inode_id) => Ok(inode_id),
+            Err(SessionError::DiskManager(crate::disk::DiskManagerError::Io(e)))
+                if e.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                self.lookup(parent_inode_id, name)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Creates a new directory in a parent directory
     pub fn create_directory(&self, parent_inode_id: u64, name: &str) -> Result<u64, SessionError> {
         match self {

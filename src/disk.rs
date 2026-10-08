@@ -2464,6 +2464,23 @@ impl DiskManager {
         self.create_entry_internal(parent_inode_id, name, crate::inode::FileType::File)
     }
 
+    /// Creates a file if it does not exist, or opens (looks up) the existing file.
+    ///
+    /// This provides safe idempotent file opening under multi-threaded concurrency.
+    pub fn create_or_open_file(
+        &self,
+        parent_inode_id: u64,
+        name: &str,
+    ) -> Result<u64, DiskManagerError> {
+        match self.create_file(parent_inode_id, name) {
+            Ok(inode_id) => Ok(inode_id),
+            Err(DiskManagerError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.lookup(parent_inode_id, name)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Creates a new directory in a parent directory
     pub fn create_directory(
         &self,

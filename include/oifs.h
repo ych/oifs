@@ -73,6 +73,7 @@ int32_t oifs_mkdir(OIFSHandle *handle, const char *path);
  * File Operations
  */
 int32_t oifs_create_file(OIFSHandle *handle, const char *path);
+int32_t oifs_create_or_open_file(OIFSHandle *handle, const char *path);
 int32_t oifs_delete_file(OIFSHandle *handle, const char *path);
 
 /*

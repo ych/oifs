@@ -377,3 +377,60 @@ fn test_shuttle_nested_directory_and_path_resolution_race() {
         40,
     );
 }
+
+/// Test 7: Multiple threads concurrently creating the EXACT SAME filename under Shuttle.
+/// Proves that double-checked locking prevents duplicate directory entries,
+/// exactly one thread succeeds (and other threads cleanly receive AlreadyExists),
+/// and fsck is completely clean across randomized thread interleavings.
+#[test]
+fn test_shuttle_concurrent_same_filename_creation() {
+    use oifs::disk::DiskManagerError;
+
+    shuttle::check_random(
+        || {
+            let dir = tempdir().unwrap();
+            let img_path = dir.path().join("shuttle_same_name.img");
+
+            let dm = DiskManager::open(&img_path, 2 * 1024 * 1024).expect("create image");
+            let root = dm.resolve_path(".").unwrap();
+            let dm = Arc::new(dm);
+
+            let mut handles = Vec::new();
+            for _ in 0..3 {
+                let dm_clone = dm.clone();
+                let h = thread::spawn(move || {
+                    let res = dm_clone.create_file(root, "shuttle_same.txt");
+                    match res {
+                        Ok(id) => Ok(id),
+                        Err(DiskManagerError::Io(e))
+                            if e.kind() == std::io::ErrorKind::AlreadyExists =>
+                        {
+                            Err(e.kind())
+                        }
+                        Err(other) => panic!("Unexpected error: {:?}", other),
+                    }
+                });
+                handles.push(h);
+            }
+
+            let mut success_count = 0;
+            let mut created_inode = None;
+            for h in handles {
+                let res = h.join().unwrap();
+                if let Ok(id) = res {
+                    success_count += 1;
+                    created_inode = Some(id);
+                }
+            }
+
+            assert_eq!(success_count, 1, "Exactly one thread must create the file");
+            let winner_id = created_inode.unwrap();
+            let lookup_id = dm.lookup(root, "shuttle_same.txt").expect("lookup");
+            assert_eq!(winner_id, lookup_id);
+
+            let report = dm.verify_integrity().expect("fsck");
+            assert!(report.is_clean);
+        },
+        40,
+    );
+}

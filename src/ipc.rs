@@ -188,6 +188,11 @@ pub enum IpcRequest {
     ReadData {
         inode_id: u64,
     },
+    ReadAt {
+        inode_id: u64,
+        file_offset: u64,
+        len: usize,
+    },
     WriteData {
         inode_id: u64,
         file_offset: u64,
@@ -240,6 +245,7 @@ impl IpcRequest {
             IpcRequest::CreateDirectory { .. } => "CreateDirectory",
             IpcRequest::Lookup { .. } => "Lookup",
             IpcRequest::ReadData { .. } => "ReadData",
+            IpcRequest::ReadAt { .. } => "ReadAt",
             IpcRequest::WriteData { .. } => "WriteData",
             IpcRequest::DeleteFile { .. } => "DeleteFile",
             IpcRequest::Truncate { .. } => "Truncate",
@@ -678,6 +684,16 @@ impl IpcServer {
             IpcRequest::ReadData { inode_id } => {
                 let data = dm.read_data(inode_id)?;
                 Ok(IpcResponseData::Data(data))
+            }
+            IpcRequest::ReadAt {
+                inode_id,
+                file_offset,
+                len,
+            } => {
+                let mut buf = vec![0u8; len];
+                let n = dm.read_at(inode_id, file_offset, &mut buf)?;
+                buf.truncate(n);
+                Ok(IpcResponseData::Data(buf))
             }
             IpcRequest::WriteData {
                 inode_id,

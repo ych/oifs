@@ -71,6 +71,9 @@ enum Commands {
         /// Never compress the file
         #[arg(long)]
         no_compress: bool,
+        /// Seekable 64KB chunked compression
+        #[arg(long, aliases = ["seekable", "chunked-64k"])]
+        chunked: bool,
         /// Pre-compression filter to apply: none, delta, shuffle, both (numeric), or auto
         #[arg(long, default_value = "none")]
         filter: String,
@@ -451,6 +454,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             remote_name,
             compress,
             no_compress,
+            chunked,
             filter,
             typesize,
         } => {
@@ -465,7 +469,12 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .clone()
                 .unwrap_or_else(|| host_path.file_name().unwrap().to_string_lossy().to_string());
 
-            let compression_mode = if *compress {
+            let compression_mode = if *chunked {
+                CompressionMode::Seekable {
+                    chunk_size: 64 * 1024,
+                    level: 3,
+                }
+            } else if *compress {
                 CompressionMode::Always
             } else if *no_compress {
                 CompressionMode::Never

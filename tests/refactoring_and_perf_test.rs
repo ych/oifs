@@ -189,6 +189,15 @@ fn test_ipc_request_names_coverage() {
     );
     assert_eq!(IpcRequest::ReadData { inode_id: 1 }.name(), "ReadData");
     assert_eq!(
+        IpcRequest::ReadAt {
+            inode_id: 1,
+            file_offset: 0,
+            len: 10,
+        }
+        .name(),
+        "ReadAt"
+    );
+    assert_eq!(
         IpcRequest::WriteData {
             inode_id: 1,
             file_offset: 0,

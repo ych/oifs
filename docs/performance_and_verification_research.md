@@ -49,8 +49,18 @@ This document consolidates deep codebase investigations and findings recovered f
   - **Anti-Inflation Fallback**: If compressed frame size $\ge \text{chunk\_valid\_len}$ or $\ge 65536$, automatically falls back to uncompressed `FLAG_RAW` storage, avoiding negative compression ratio and CPU overhead.
   - **Allocation & FSCK Consistency**: `collect_inode_blocks` properly extracts physical extents `start_block..start_block + block_count` for seekable inodes, ensuring zero leaked blocks on file deletion and complete FSCK and defragmenter consistency.
   - **Full C/C++ FFI Integration**: Exposed `oifs_write_file_with_policy` and `OIFS_WRITE_POLICY_SEEKABLE_64K (0x08)` for native consumers.
-* **Impact & Verification Results** (`tests/seekable_chunked_test.rs`):
-  - 7 comprehensive integration tests covering end-to-end roundtrip, random rewind overwriting, anti-inflation fallback, shrink/expand truncation, filesystem remount persistence, zero block leakage validation, and C FFI API.
+  - **CLI Integration**: Added `--chunked` flag to `oifs put` for seamless shell and multi-process usage.
+* **Impact & Verification Results** ([`tests/seekable_chunked_test.rs`](file:///Users/ych/oifs/tests/seekable_chunked_test.rs), [`tests/seekable_chunked_concurrency_test.rs`](file:///Users/ych/oifs/tests/seekable_chunked_concurrency_test.rs)):
+  - 14 comprehensive integration tests covering end-to-end roundtrip, random rewind overwriting, anti-inflation fallback, shrink/expand truncation, filesystem remount persistence, zero block leakage validation, and C FFI API.
+  - **Multithreaded Concurrency**:
+    - 16 concurrent reader threads performing random aligned/unaligned sliced `read_at` on shared seekable files.
+    - 16 parallel threads simultaneously writing non-overlapping 64KB partitioned chunks into a single shared file.
+    - Continuous reader threads concurrent with rapid writer chunk replacements (verifying COW atomic replacement prevents torn/corrupted Zstd frames).
+    - Concurrent dynamic `truncate` (shrinking and expanding) stress race against active `read_at` readers.
+  - **Multiprocess Concurrency**:
+    - Real OS processes concurrently invoking CLI `oifs put --chunked`, `oifs get`, and `oifs fsck`.
+    - Multi-client Remote IPC proxy session concurrent sliced `read_at` and partitioned chunk writes over Unix domain sockets.
+    - Multi-node TCP network session concurrent partitioned 64KB chunk writes and sliced reads on a shared matrix file.
   - Formal Kani proof `proof_chunk_entry_roundtrip_all` exhaustively verifies bitfield pack/unpack invariants for all possible 64-bit inputs.
 
 ---

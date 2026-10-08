@@ -634,6 +634,34 @@ impl OifsSession {
         }
     }
 
+    /// Reads up to `buf.len()` bytes at `file_offset` from a file.
+    pub fn read_at(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.read_at(inode_id, file_offset, buf)?),
+            OifsSession::Remote { .. } => {
+                let resp = self.send_request(IpcRequest::ReadAt {
+                    inode_id,
+                    file_offset,
+                    len: buf.len(),
+                })?;
+
+                match resp {
+                    IpcResponseData::Data(data) => {
+                        let to_copy = data.len().min(buf.len());
+                        buf[..to_copy].copy_from_slice(&data[..to_copy]);
+                        Ok(to_copy)
+                    }
+                    _ => Err(SessionError::UnexpectedResponse),
+                }
+            }
+        }
+    }
+
     /// Writes data to a file (default: no pre-compression filters)
     pub fn write_data(
         &self,

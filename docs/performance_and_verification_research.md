@@ -33,15 +33,25 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.2: Chunked Compression & Decoder Context Reuse for `read_at`
-* **File & Lines**: [`src/disk.rs:1439-1447`](file:///Users/ych/oifs/src/disk.rs#L1439-L1447), [`src/disk.rs:1284-1290`](file:///Users/ych/oifs/src/disk.rs#L1284-L1290)
-* **Current Behavior**:
-  When reading small slices (`read_at(offset, 128)`) from a compressed or encrypted file, the engine invokes `read_data_internal`, decompressing the **entire file** into a newly allocated `Vec<u8>`, copying 128 bytes, and immediately deallocating the vector. Furthermore, `zstd::stream::decode_all` constructs a new decoder context on every invocation.
-* **Proposed Remedy**:
-  1. **Chunked Zstd Frames**: Compress large files in independent 64KB or 128KB chunks; `read_at` calculates the target chunk and only decompresses the required frame.
-  2. **Decompressed Block Cache**: Introduce a small LRU cache for hot decompressed file blocks.
-  3. **Context Reuse**: Use `zstd::bulk::Decompressor` or thread-local decoder scratch buffers to avoid allocation churn.
-* **Impact**: **High** (Reduces random read latency from $O(\text{FileSize})$ to $O(\text{ChunkSize})$).
+### P4.2: Seekable 64KB Chunked Compression for `read_at` & Random COW Writes [RESOLVED]
+* **File & Lines**: [`src/inode.rs:30-90`](file:///Users/ych/oifs/src/inode.rs#L30-L90), [`src/inode_format.rs:43-150`](file:///Users/ych/oifs/src/inode_format.rs#L43-L150), [`src/disk.rs:3480-4170`](file:///Users/ych/oifs/src/disk.rs#L3480-L4170), [`src/ffi.rs:180-240`](file:///Users/ych/oifs/src/ffi.rs#L180-L240), [`include/oifs.h:60-75`](file:///Users/ych/oifs/include/oifs.h#L60-L75)
+* **Status**: **Completed & Verified**
+* **Implementation Details**:
+  - **Fixed 64KB Logical Chunks**: Fixed chunk size (`CHUNK_SIZE_64K = 64 * 1024`) mapping any file offset to `chunk_idx = offset / 65536`.
+  - **Zero-Disruption Isomorphic Block Tree**: Direct and multi-level indirect block pointers are reused directly as 64-bit transparent `ChunkEntry(pub u64)` values:
+    - `bits [0..32]`: `start_block: u32` (physical block allocation)
+    - `bits [32..40]`: `block_count: u8` (1..16 contiguous 4KB blocks)
+    - `bits [40..48]`: `flags: u8` (0 = Empty/Hole, 1 = Compressed Zstd, 2 = Raw Fallback)
+    - `bits [48..64]`: `compressed_len: u16` (exact compressed size $\le 65535$)
+  - **Format v2 Inode Flag**: `INODE_FLAG_SEEKABLE_64K: u32 = 0x0001` serialized in Format v2 reserved padding at bytes 167..171, ensuring 100% backwards compatibility with v1 and standard stream-compressed files.
+  - **$O(1)$ Random Writes (COW Read-Modify-Recompress)**: Rewriting arbitrary bytes at random offsets only decompresses and recompresses the touched 64KB chunks instead of the entire file. Previous chunk blocks are cleanly freed.
+  - **$O(1)$ Sliced Reads (`read_at`)**: `read_at_chunked_64k` directly resolves affected chunk entries and decompresses only the required 64KB chunk frames, avoiding memory blow-up on multi-hundred megabyte files.
+  - **Anti-Inflation Fallback**: If compressed frame size $\ge \text{chunk\_valid\_len}$ or $\ge 65536$, automatically falls back to uncompressed `FLAG_RAW` storage, avoiding negative compression ratio and CPU overhead.
+  - **Allocation & FSCK Consistency**: `collect_inode_blocks` properly extracts physical extents `start_block..start_block + block_count` for seekable inodes, ensuring zero leaked blocks on file deletion and complete FSCK and defragmenter consistency.
+  - **Full C/C++ FFI Integration**: Exposed `oifs_write_file_with_policy` and `OIFS_WRITE_POLICY_SEEKABLE_64K (0x08)` for native consumers.
+* **Impact & Verification Results** (`tests/seekable_chunked_test.rs`):
+  - 7 comprehensive integration tests covering end-to-end roundtrip, random rewind overwriting, anti-inflation fallback, shrink/expand truncation, filesystem remount persistence, zero block leakage validation, and C FFI API.
+  - Formal Kani proof `proof_chunk_entry_roundtrip_all` exhaustively verifies bitfield pack/unpack invariants for all possible 64-bit inputs.
 
 ---
 

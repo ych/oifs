@@ -488,6 +488,93 @@ pub extern "C" fn oifs_write_file(
     }
 }
 
+pub const OIFS_WRITE_POLICY_DEFAULT: u32 = 0x00;
+pub const OIFS_WRITE_POLICY_RAW: u32 = 0x01;
+pub const OIFS_WRITE_POLICY_STREAM: u32 = 0x02;
+pub const OIFS_WRITE_POLICY_SEEKABLE_64K: u32 = 0x08;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_write_file_with_policy(
+    handle: *mut OIFSHandle,
+    filename: *const c_char,
+    offset: u64,
+    buf: *const u8,
+    buf_size: u64,
+    policy_flags: u32,
+    zstd_level: i32,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    if filename.is_null() {
+        handle_ref.set_last_error(Some("Null filename provided".to_string()));
+        return -1;
+    }
+
+    let c_str = unsafe { CStr::from_ptr(filename) };
+    let filename_str = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
+            return -1;
+        }
+    };
+
+    let compression_mode = if policy_flags & OIFS_WRITE_POLICY_SEEKABLE_64K != 0 {
+        crate::disk::CompressionMode::Seekable {
+            chunk_size: crate::inode::CHUNK_SIZE_64K as u32,
+            level: zstd_level,
+        }
+    } else if policy_flags & OIFS_WRITE_POLICY_RAW != 0 {
+        crate::disk::CompressionMode::Never
+    } else if policy_flags & OIFS_WRITE_POLICY_STREAM != 0 {
+        crate::disk::CompressionMode::Stream { level: zstd_level }
+    } else {
+        crate::disk::CompressionMode::Auto
+    };
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dm = &handle_ref.dm;
+        match (|| -> Result<(), Box<dyn std::error::Error>> {
+            let (parent_id, name) = dm.resolve_parent(filename_str)?;
+            let inode_id = match dm.lookup(parent_id, &name) {
+                Ok(existing_id) => existing_id,
+                Err(_) => dm.create_file(parent_id, &name)?,
+            };
+            let data = if buf.is_null() {
+                &[][..]
+            } else {
+                unsafe { std::slice::from_raw_parts(buf, buf_size as usize) }
+            };
+            dm.write_data(inode_id, offset, data, compression_mode)?;
+            Ok(())
+        })() {
+            Ok(_) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some(
+                "Panic occurred during write_file_with_policy".to_string(),
+            ));
+            -1
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn oifs_mkdir(handle: *mut OIFSHandle, path: *const c_char) -> i32 {
     let handle_ref = unsafe {

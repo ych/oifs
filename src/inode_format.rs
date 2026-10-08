@@ -37,7 +37,8 @@
 //! [157]      u8     filter_bitshuffle
 //! [158..166] u64    triple_indirect
 //! [166]      u8     record_version        (see below)
-//! [167..256] zero padding
+//! [167..171] u32    flags                 (extended inode flags, e.g. seekable 64K)
+//! [171..256] zero padding
 //!
 //! # Versioning
 //!
@@ -82,8 +83,11 @@ pub const INODE_V2_RECORD_VERSION_OFFSET: usize = 166;
 /// `record_version` written by this implementation.
 pub const INODE_V2_RECORD_VERSION: u8 = 2;
 
+/// Byte offset of the flags field inside a format v2 inode slot.
+pub const INODE_V2_FLAGS_OFFSET: usize = 167;
+
 /// First byte not yet assigned by any record revision; reserved for future fields.
-pub const INODE_V2_RESERVED_START: usize = INODE_V2_RECORD_VERSION_OFFSET + 1;
+pub const INODE_V2_RESERVED_START: usize = INODE_V2_FLAGS_OFFSET + 4;
 
 /// On-disk format version that introduced the fixed 256-byte inode record.
 ///
@@ -129,6 +133,18 @@ fn get_u64(buf: &[u8], off: usize) -> u64 {
 }
 
 #[inline]
+fn put_u32(buf: &mut [u8], off: usize, v: u32) {
+    buf[off..off + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+#[inline]
+fn get_u32(buf: &[u8], off: usize) -> u32 {
+    let mut tmp = [0u8; 4];
+    tmp.copy_from_slice(&buf[off..off + 4]);
+    u32::from_le_bytes(tmp)
+}
+
+#[inline]
 fn tag_to_file_type(tag: u8) -> Result<FileType, InodeFormatError> {
     match tag {
         0 => Ok(FileType::File),
@@ -151,7 +167,7 @@ fn file_type_to_tag(ft: FileType) -> u8 {
 
 /// Encode `inode` into a fixed 256-byte format v2 record.
 ///
-/// The returned array is fully deterministic: every byte, including the 90 bytes
+/// The returned array is fully deterministic: every byte, including the 85 bytes
 /// of padding, is explicitly written, so encoding the same inode twice always
 /// produces identical output.
 pub fn encode_v2(inode: &Inode) -> [u8; INODE_SLOT_SIZE] {
@@ -173,6 +189,7 @@ pub fn encode_v2(inode: &Inode) -> [u8; INODE_SLOT_SIZE] {
     buf[157] = u8::from(inode.filter_bitshuffle);
     put_u64(&mut buf, 158, inode.triple_indirect);
     buf[INODE_V2_RECORD_VERSION_OFFSET] = INODE_V2_RECORD_VERSION;
+    put_u32(&mut buf, INODE_V2_FLAGS_OFFSET, inode.flags);
     // buf[INODE_V2_RESERVED_START..256] stays zero.
 
     debug_assert_eq!(INODE_V2_PAYLOAD_LEN, 166);
@@ -211,6 +228,7 @@ pub fn decode_v2(slot: &[u8]) -> Result<Inode, InodeFormatError> {
         filter_shuffle: s[156] != 0,
         filter_bitshuffle: s[157] != 0,
         triple_indirect: get_u64(s, 158),
+        flags: get_u32(s, INODE_V2_FLAGS_OFFSET),
     })
 }
 
@@ -289,6 +307,7 @@ mod tests {
         i.filter_shuffle = true;
         i.filter_bitshuffle = true;
         i.triple_indirect = 0xDEAD_BEEF_CAFE_BABE;
+        i.flags = 0x1234_5678;
         i
     }
 
@@ -310,6 +329,7 @@ mod tests {
         assert_eq!(decoded.filter_shuffle, original.filter_shuffle);
         assert_eq!(decoded.filter_bitshuffle, original.filter_bitshuffle);
         assert_eq!(decoded.triple_indirect, original.triple_indirect);
+        assert_eq!(decoded.flags, original.flags);
     }
 
     #[test]
@@ -351,6 +371,7 @@ mod tests {
         let decoded = decode_v2(&slot).expect("must still decode");
         assert_eq!(decoded.size, sample().size);
         assert_eq!(decoded.triple_indirect, sample().triple_indirect);
+        assert_eq!(decoded.flags, sample().flags);
     }
 
     #[test]
@@ -371,6 +392,7 @@ mod tests {
         assert_eq!(slot[156], 1, "filter_shuffle");
         assert_eq!(slot[157], 1, "filter_bitshuffle");
         assert_eq!(&slot[158..166], &0xDEAD_BEEF_CAFE_BABEu64.to_le_bytes());
+        assert_eq!(&slot[167..171], &0x1234_5678u32.to_le_bytes());
     }
 
     #[test]
@@ -403,11 +425,11 @@ mod tests {
 
     #[test]
     fn test_v2_ignores_stale_bytes_in_padding() {
-        // The frozen field region must decode identically regardless of what sits
-        // after it, which is what makes the format safe to write in place.
+        // The frozen field region and newly added fields must decode identically
+        // regardless of what sits in the reserved tail, which is what makes the format safe to write in place.
         let mut slot = encode_v2(&sample());
         let want = decode_v2(&slot).expect("d");
-        slot[INODE_V2_PAYLOAD_LEN..].fill(0xEE);
+        slot[INODE_V2_RESERVED_START..].fill(0xEE);
         assert_eq!(decode_v2(&slot).expect("d"), want);
     }
 

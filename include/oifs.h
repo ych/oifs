@@ -98,6 +98,36 @@ int64_t oifs_read_at(
 int64_t oifs_read_file(OIFSHandle *handle, const char *filename, uint8_t *buf, uint64_t buf_size);
 int32_t oifs_write_file(OIFSHandle *handle, const char *filename, const uint8_t *buf, uint64_t buf_size);
 
+/*
+ * Write Policy Flags
+ */
+#define OIFS_WRITE_POLICY_DEFAULT       0x00  /* Auto / Full-file stream compression (default) */
+#define OIFS_WRITE_POLICY_RAW           0x01  /* Never compress (Raw) */
+#define OIFS_WRITE_POLICY_STREAM        0x02  /* Stream compression (with custom zstd_level) */
+#define OIFS_WRITE_POLICY_SEEKABLE_64K  0x08  /* Seekable 64KB chunked compression */
+
+/**
+ * Extended write interface supporting write policies, offsets, and custom zstd compression level.
+ *
+ * @param handle OIFS filesystem handle
+ * @param filename Target file path
+ * @param offset Logical byte offset to write at
+ * @param buf Data buffer pointer
+ * @param buf_size Number of bytes to write
+ * @param policy_flags Policy flags (OIFS_WRITE_POLICY_*)
+ * @param zstd_level Zstd compression level (1 ~ 19, or 0 for default)
+ * @return 0 on success, -1 on failure (error accessible via oifs_last_error)
+ */
+int32_t oifs_write_file_with_policy(
+    OIFSHandle *handle,
+    const char *filename,
+    uint64_t offset,
+    const uint8_t *buf,
+    uint64_t buf_size,
+    uint32_t policy_flags,
+    int32_t zstd_level
+);
+
 /**
  * Truncates or extends a file to the specified size in bytes.
  *

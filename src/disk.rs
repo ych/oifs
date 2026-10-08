@@ -6430,4 +6430,61 @@ mod verification {
         assert!(actual <= to_read_total);
         assert!(actual <= full_data_len);
     }
+
+    /// Prove that 64KB chunk index and offset slicing calculations for Seekable 64K Chunked Compression
+    /// are strictly safe and preserve byte conservation across all arbitrary symbolic offsets and lengths.
+    /// Invariants mathematically proven:
+    /// 1. first_chunk <= last_chunk
+    /// 2. For every chunk index in first_chunk..=last_chunk:
+    ///    - chunk_offset_start < chunk_offset_end <= CHUNK_SIZE_64K
+    ///    - data_start < data_end <= data_len
+    ///    - Strict length conservation: (data_end - data_start) == (chunk_offset_end - chunk_offset_start)
+    ///    - chunk_offset_end <= chunk_valid_len
+    /// 3. Neither arithmetic overflow nor slice indexing out-of-bounds can occur.
+    #[kani::proof]
+    fn proof_chunked_64k_offset_and_slicing_soundness() {
+        let file_offset: u64 = kani::any();
+        let data_len: usize = kani::any();
+        let current_file_size: u64 = kani::any();
+
+        kani::assume(data_len > 0 && data_len <= 256 * 1024);
+        kani::assume(file_offset <= 1024 * 1024 * 1024);
+        kani::assume(current_file_size <= 1024 * 1024 * 1024);
+
+        let new_file_size = current_file_size.max(file_offset + data_len as u64);
+        let first_chunk = (file_offset as usize) / crate::inode::CHUNK_SIZE_64K;
+        let last_chunk =
+            ((file_offset + data_len as u64 - 1) as usize) / crate::inode::CHUNK_SIZE_64K;
+
+        assert!(first_chunk <= last_chunk);
+
+        // Pick an arbitrary chunk index in [first_chunk, last_chunk]
+        let chunk_idx: usize = kani::any();
+        kani::assume(chunk_idx >= first_chunk && chunk_idx <= last_chunk);
+
+        let chunk_file_start = (chunk_idx * crate::inode::CHUNK_SIZE_64K) as u64;
+        let chunk_file_end = chunk_file_start + crate::inode::CHUNK_SIZE_64K as u64;
+
+        let write_file_start = file_offset.max(chunk_file_start);
+        let write_file_end = (file_offset + data_len as u64).min(chunk_file_end);
+
+        assert!(write_file_start < write_file_end);
+
+        let data_start = (write_file_start - file_offset) as usize;
+        let data_end = (write_file_end - file_offset) as usize;
+        let chunk_offset_start = (write_file_start - chunk_file_start) as usize;
+        let chunk_offset_end = (write_file_end - chunk_file_start) as usize;
+
+        assert!(data_start < data_end);
+        assert!(data_end <= data_len);
+        assert!(chunk_offset_start < chunk_offset_end);
+        assert!(chunk_offset_end <= crate::inode::CHUNK_SIZE_64K);
+
+        // Exact byte conservation: the sliced input chunk matches the target buffer slice
+        assert_eq!(data_end - data_start, chunk_offset_end - chunk_offset_start);
+
+        let chunk_valid_len =
+            ((new_file_size - chunk_file_start) as usize).min(crate::inode::CHUNK_SIZE_64K);
+        assert!(chunk_offset_end <= chunk_valid_len);
+    }
 }

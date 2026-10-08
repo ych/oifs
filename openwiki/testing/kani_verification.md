@@ -67,6 +67,11 @@ Additional proofs cover:
 - FFI version checking and ABI compatibility (`ffi.rs`)
 - Allocator bump pointer safety and reset properties (`allocator.rs`)
 
+### Seekable 64K Chunked Compression (`disk.rs`, `inode.rs`)
+Proofs validate:
+- Invertibility and lossless roundtrip of 64-bit `ChunkEntry` bitfield serialization (`proof_chunk_entry_roundtrip_all`)
+- Slicing conservation and boundary invariants across arbitrary symbolic write offsets and lengths (`proof_chunked_64k_offset_and_slicing_soundness`)
+
 ## Running Kani Proofs
 
 To execute the formal verification suite:
@@ -79,12 +84,13 @@ Kani harnesses the CBMC model checker and CaDiCaL SAT solver to discharge proof 
 
 ## Proof Coverage
 
-As documented in the testing strategy, OIFS maintains **49 formal proofs** spanning core data structures and algorithms. These proofs provide mathematical guarantees that complement empirical testing by verifying properties hold across the entire input space, not just exercised test cases.
+As documented in the testing strategy, OIFS maintains **50 formal proofs** spanning core data structures and algorithms. These proofs provide mathematical guarantees that complement empirical testing by verifying properties hold across the entire input space, not just exercised test cases.
 
 The verification focuses on safety-critical components where bugs would compromise data durability or correctness, particularly:
 - Data transformation pipelines (filters)
 - Metadata layout and allocation (superblock, inode, bitmap)
 - Low-level I/O and memory operations
 - Concurrency control primitives
+- Chunked compression slicing bounds and layout invariants
 
 Together with Shuttle concurrency testing and traditional unit/integration tests, Kani proofs form a layered verification strategy aimed at eliminating entire classes of bugs before they can manifest in practice.

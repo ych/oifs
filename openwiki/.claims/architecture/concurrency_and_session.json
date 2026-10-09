@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:bdf74b8c4e8faa4751377a9ce37f27f67338e6f8b6e5238472a712e5f2b9f2d3",
+  "pageVersion": "sha256:f88b78533c57025ca7b96a9b5d2589e30a86c274e5144b6da3cb44209020ebd4",
   "claims": [
     {
       "id": "claim_ccf982a2acb94220b5a4016b54d25dda",
       "statement": "OifsSession is a two-variant enum: Direct (Master) holds a DiskManager plus a background IpcServer with zero IPC overhead for its own calls, while Remote (Proxy) forwards every method through send_request.",
       "evidence": [
         {
-          "resource": "repo://src/ipc.rs#L334-L474",
+          "resource": "repo://src/ipc.rs#L345-L485",
           "version": "repo-lines-v1:sha256:d798d5dc2f37ab2143e4ab4b3e33d09ea10f1277a0bc72e83def361fc3e1c33a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNDU1MDliYjI4NDFiM2Y5NjRmYTlkYzc5NjVlNzljM2ViM2VlMjAxNmIwZmE5ZTBmY2M0OWVjNzJjYmYyNDFkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NzdlZjMxMDFmNDYxMzJmMmVmYzQxOWVkMzExZTU2MjhmMjJiNDExYjcxNGM5YzY5ODA3MWM4MjU4MzRjMDdmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MjcxZGFmZTI3YTA1OTMyYWExMjkzNjgyNTdlNDg2ZTg4YTEwNjAxYTc1ZmQ0YmNlZGQxOWY5NmRiOGZlZmIwIn0"
         },
         {
@@ -43,22 +43,22 @@
           "version": "repo-lines-v1:sha256:3b8aff922db3134a2ccb76ff0be087a23bc1bd85fd6794ae1ef26b60d09337fc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4NDVkNGZkMjZlYzlkMDhmZTJjMGZiNjQxMzQyMmE0MDdlMmUxYmQ3NTc1YjkxOWI4NGZiZWQ5ODA4MmRmZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhYTM3MjU2ODQ2NWQzMGQ1ZjllMTQ2OWY3ZmI2NDBkNTZhOWVkODgwYTk2NDRlMTk3MzM4YjcxNmI1MjEyYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmMTY2YjA2YTY5OWRmODgyMzgzOTNmZWViNDIzYmY1MzdkMjQxMTljOGM5MDBlOTlmNTE2M2VlNDY5NzMwODgifQ"
         },
         {
-          "resource": "repo://src/ipc.rs#L334-L474",
+          "resource": "repo://src/ipc.rs#L345-L485",
           "version": "repo-lines-v1:sha256:d798d5dc2f37ab2143e4ab4b3e33d09ea10f1277a0bc72e83def361fc3e1c33a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNDU1MDliYjI4NDFiM2Y5NjRmYTlkYzc5NjVlNzljM2ViM2VlMjAxNmIwZmE5ZTBmY2M0OWVjNzJjYmYyNDFkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NzdlZjMxMDFmNDYxMzJmMmVmYzQxOWVkMzExZTU2MjhmMjJiNDExYjcxNGM5YzY5ODA3MWM4MjU4MzRjMDdmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MjcxZGFmZTI3YTA1OTMyYWExMjkzNjgyNTdlNDg2ZTg4YTEwNjAxYTc1ZmQ0YmNlZGQxOWY5NmRiOGZlZmIwIn0"
         }
       ]
     },
     {
       "id": "claim_958a3fc1275e4dd4a9230b2beecd3e20",
-      "statement": "IPC messages are length-prefixed Bincode frames (128MB cap); IpcServer::handle_request is the single dispatcher mapping each IpcRequest to a DiskManager call, with one poll-based worker thread per peer.",
+      "statement": "IPC messages are length-prefixed Bincode frames (128MB cap); IpcServer::handle_request is the single dispatcher mapping each IpcRequest to a DiskManager call; the server uses poll to accept connections and spawns a dedicated worker thread per peer.",
       "evidence": [
         {
-          "resource": "repo://src/ipc.rs#L282-L310",
+          "resource": "repo://src/ipc.rs#L293-L321",
           "version": "repo-lines-v1:sha256:d6ad765047b19c8d47a50d21729b0cb464217dd045fa4d9beaafb617d81ebcc7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyZjI4MGUxMjAwMWUwNGMxODg3YmVjNzc5NjI1MTJhNzdlZGJiN2MyNDAwZjVhNzU1YjJiZjhlNzcyNzc0YTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVmZjQ1MzBmMmE4MzcxN2ZhODE2N2I2ZjVhYTlmNGFlOTJjMTYyZjgwZTNmNjY1ZjExMzliZDVmZDlmMDljMDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1NmU2ZWZmZmZiNTg1MWNhZjNkZWQwYTRjOGYzMmIxZmMzMTRhY2EzMjMzYzc4NWI2ZjFlMzA0YTU4MDIyYWMifQ"
         },
         {
-          "resource": "repo://src/ipc.rs#L646-L749",
-          "version": "repo-lines-v1:sha256:76d169a49cbe1e089c01441a513fed31f16cf60bb579b8ea8279966fb186678f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3YzA3ODBmOWY4OTIxZGJhNmYwN2IzOThmYWMxZjU0ODZhMzk1YWU3MGQ0NDM1ODVmMDg1Nzc1MGU0MjZkZDg0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNTUwMGRhMWU2ZDUzZDQ2ZWQ3ZWFiNGRhOTU0YTRjNTBjZDAyZmZiNzFjMmQwNjMwZjNlMjEyZDE3YWZlOWNlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2MmI2N2I1NmJjNjdkNGMxZGRiOWU5OGFhYTM0YTBmNmEwZDFiZDEzOTEwYjY3ODUzOGIwZWVkMzY1MjNmYjA2In0"
+          "resource": "repo://src/ipc.rs#L657-L774",
+          "version": "repo-lines-v1:sha256:ab87d2ce9c5fc8c7e4fafbfe78b8bf693bdfc11c747188d13638d0ce1b42cec3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3YzA3ODBmOWY4OTIxZGJhNmYwN2IzOThmYWMxZjU0ODZhMzk1YWU3MGQ0NDM1ODVmMDg1Nzc1MGU0MjZkZDg0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNTUwMGRhMWU2ZDUzZDQ2ZWQ3ZWFiNGRhOTU0YTRjNTBjZDAyZmZiNzFjMmQwNjMwZjNlMjEyZDE3YWZlOWNlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2MmI2N2I1NmJjNjdkNGMxZGRiOWU5OGFhYTM0YTBmNmEwZDFiZDEzOTEwYjY3ODUzOGIwZWVkMzY1MjNmYjA2In0"
         }
       ]
     },
@@ -81,7 +81,7 @@
       "statement": "The block-level merge policy is enforced by the Master's single DiskManagerInner mutex rather than per-block locks: disjoint byte offsets merge in place, overlapping offsets are last-writer-wins, and compressed writes use multi-frame append or read-modify-recompress.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L400-L405",
+          "resource": "repo://src/disk.rs#L423-L428",
           "version": "repo-lines-v1:sha256:9cfd3ecc749162fd747dbf4a764555772994f3f8573f47c7a0d2257ef55b642e:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjkwNmNhZmJkMzc4MzU2ZDZlMjU1YmIwYTg1Y2NhYzIzMzMwNmYyNDA2ZWI3ZDAzMzUyNGE0Nzk4YzkwMzRjMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDE0MWUyZmE0M2RlODNjYjYyOWI3MzlhODY2MTc3NTI2YTRiYjM2YTEyYmMyNThkYmYzMWE3MmIzOTEzYWU4ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzQxNjVmYjI3ZTFlNGJiMDc1ZDRlNGYyMGJiMGY0MmEzNjE3OTJhZDliZjVkMWE0YzM5ZmE2Yzk2ZDllNDVlNiJ9"
         },
         {
@@ -113,6 +113,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-06T14:52:27.072Z"
+    "at": "2026-10-09T15:04:29.410Z"
   }
 }

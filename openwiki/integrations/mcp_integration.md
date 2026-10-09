@@ -3,15 +3,15 @@ type: integration guide
 title: MCP Integration Guide
 description: Guide to integrating AI agents and IDEs with OIFS via the Model Context Protocol server.
 tags: [mcp, integration, ai-agents, ide]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-1d8ff572dc201d9ae2619645
     resource: repo://src/bin/oifs_mcp.rs
   - id: openwiki-source-b0f9117e3c34930435de9b17
     resource: repo://tests/mcp_server_test.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-09T15:04:29.410Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-09T15:04:29.410Z
 ---
 
 # MCP Integration Guide
@@ -113,6 +113,13 @@ Delete a file.
 - **Parameters**:
   - `path`: Path of the file to delete (e.g., `"notes/old.txt"`)
 - **Returns**: JSON with `ok` on success; or error JSON on failure.
+
+### `truncate_file`
+Truncate or extend a file to the specified size in bytes.
+- **Parameters**:
+  - `path`: Path inside the OIFS image (e.g., `"data/log.txt"`)
+  - `size`: New size in bytes
+- **Returns**: JSON with `ok` and `size` on success; or error JSON on failure.
 
 ### `append_file`
 Append a line to a file (creates the file if it does not exist). Ideal for JSONL memory logs.

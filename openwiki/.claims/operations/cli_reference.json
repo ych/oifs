@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:50897a0a261645897d1d8950faf4a36935a6e4feeb64c57a181d8e2f2e6b11db",
+  "pageVersion": "sha256:6e33fdc5e18af18e6d92f1fbb833b7d6dd161e6abbbced32ba3f8c52d015d065",
   "claims": [
     {
       "id": "claim_a8093693f6464b828a109f1806432183",
       "statement": "The oifs CLI defines subcommands (ls, create, put, filter-analyze, get, append, mkdir, rm, analyze, defrag, fsck, migrate) and global flags for image path, password, network mode, bind address, and JSON output.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L10-L128",
-          "version": "repo-lines-v1:sha256:ebe5d7d8f9a981196d0e33442fa80e1a0585e5846c6af832b0e01dc7e2a1ae22:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5OTliOTNjYjg1ZGQ2MGY5OTU3MjlmNjYxOWI5N2Y5N2YwYzM0MzUwMDljZTc1MzkwNTcwYmRkNTgzZjAwYWVhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhZTA1ZWEwZGRkNTM3MDE2NGRlNzNiYWQzNGU0NzA3ZGRkNzVhOTJhMWQ5OWFiMDJjYjkxNzYyM2RjOWQ0YjM5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYmQ3MjRkMzg0ZTMxOWFhZWY0NTNkMDU1ZmY0NTQ2ODdlY2NiMTBkNWQxMDBhMGExYWM5Njc5NGYwNDNjZjNjIn0"
+          "resource": "repo://src/bin/oifs.rs#L10-L139",
+          "version": "repo-lines-v1:sha256:eea7be16aef635ef5dae43b6e185b6d6d4a02ac545ec23ee26c476935d8fc0d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5OTliOTNjYjg1ZGQ2MGY5OTU3MjlmNjYxOWI5N2Y5N2YwYzM0MzUwMDljZTc1MzkwNTcwYmRkNTgzZjAwYWVhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhZTA1ZWEwZGRkNTM3MDE2NGRlNzNiYWQzNGU0NzA3ZGRkNzVhOTJhMWQ5OWFiMDJjYjkxNzYyM2RjOWQ0YjM5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYmQ3MjRkMzg0ZTMxOWFhZWY0NTNkMDU1ZmY0NTQ2ODdlY2NiMTBkNWQxMDBhMGExYWM5Njc5NGYwNDNjZjNjIn0"
         }
       ]
     },
@@ -17,7 +17,7 @@
       "statement": "Password resolution follows a 3-tier hierarchy: --password flag takes highest precedence, followed by the OIFS_PASSWORD environment variable, then an interactive masked prompt that is suppressed in --json mode.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L170-L216",
+          "resource": "repo://src/bin/oifs.rs#L181-L227",
           "version": "repo-lines-v1:sha256:ed362505b642949b6f708c12fad79b0491196caaf1c617bd56e6b34d914bdadd:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlMDYzM2Q3YTcyOGZlMTI3YmJmZTBmN2NiYThiMmExNmQzZTc0YjU4MmM2OGNmNjVjZjQwOWY0ZWEyNjlkY2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmMGRhNjI1ZDNhMDVkZDU4NGRkMTljZDc2YWRlNWVmYzZiOTkyYjM2MDMxMmRmYjA4OTI5ZmI2YmI3ODRlZDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMjI2MWQ1Mzg4MjliZTAxYmI2ZGRhNGFlMmZlNzRhMWU2N2Q5MTdiNWMxNDVjYzM5NDZiZjFiNmQ2ZGU1OTEifQ"
         }
       ]
@@ -27,7 +27,7 @@
       "statement": "Creating an encrypted image requires password confirmation in interactive mode and warns when the passphrase is shorter than 8 characters.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L369-L382",
+          "resource": "repo://src/bin/oifs.rs#L380-L393",
           "version": "repo-lines-v1:sha256:3150159ef3e8d322d01e54e0ac93e1edc6cb51a20beb0c987a86116803cfa65d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiZjlhMTZhN2FmM2YwYWI4OWI3ZmU1N2ZhOTVhYTYwN2JhYjk1OTNiOGZhMTlmYjM3NWZjOTcxNDc2N2Q2MTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNjQ3OWNjMjMwNDQwZmQ0MWU4MjI0MjE4Njc5Njk4NTU5ZDI4OTNiZDY3YjQzODBhZmFiODExYjM4YTU1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFjZDViZjRiZWNiYmQ4NmY4MzYzZGY1NjVjODMyYTRiYTFkYTE5YzM3NjBjNDRlZTdhMWNjYjQ0ZmRlZGU2NmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MzQ4ZWU3NWU1NmRlNWY4YmIzM2EyNWMzOTIwZTViYWVjOTU5MzcwZDZmY2FjZmM4OGU0NGJhMmM2ZTE1ZTgifQ"
         }
       ]
@@ -37,7 +37,7 @@
       "statement": "The --network and --bind options configure SessionMode::Network, allowing multiple host processes to coordinate over NFS or a multi-node cluster via the master-proxy session.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L241-L247",
+          "resource": "repo://src/bin/oifs.rs#L252-L258",
           "version": "repo-lines-v1:sha256:dba21f38fbf9603db1227134f72411a7046a98f2208aa192cda4ce28b2b7df58:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjIxY2FmMGIyMTEzOTAwMjQ1ZjYwZTAxY2MyNjJiZTIwMjFkMTQ3NzgwN2UwZjMyMzg0YjNkNTQzZjgxYWNhYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5ZTEyNTQ2NDI1NTc2ZDNkZWFlOGM5YjlkYmYxMjhkNWQ2ZGRhZjVkN2ZlODU3OTM0OTI3ZGVmZmEzYjlkZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODc1MmY1MDI4YjEzMGEwZDc0NmIzNTZlYTYyZjU5MjgzMGU4NDUxYTdhNWQxMmFlZDYxNDMwYTU1NTZkNjJjOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWNjZDg4MWEzYTYyYzFhY2QyYzkyY2I5ZDczOTIyZGE1NGVjN2FhZTQ3OTM4MGY4NDI2Y2NkNWRiMDg5MGNjZSJ9"
         }
       ]
@@ -47,7 +47,7 @@
       "statement": "The filter-analyze subcommand operates directly on host files without an image, measuring Shannon entropy across candidate blosc2-style filter pipelines to recommend the best compression configuration.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L249-L254",
+          "resource": "repo://src/bin/oifs.rs#L260-L265",
           "version": "repo-lines-v1:sha256:bf1972502d72313793de12d15c2ff6c20d45bcdb88c64d462fadeacc02de7609:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmM2YzhiZDU4Y2ViMzU1NjllZGQzZmY5MDdhZDM0ZTc0ZTY0YThiMTVkODA5OTljYmZhYjNjNDU1MjYxMmVjNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZhOGIzMDlkODEwZDU2NTQ3MGQ4ZmJiZWRjNmJmNGQ1NTA5NWE3MmMzNzMwZWQ0M2Q5NTAyN2M4M2Y3ZTNmMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjljODQ4OTQ5MzcxNTY4OTEyMjk3MWQ5NDc2MjIwNDk5ZmFmYjdiMGVkYTA1NjhmMDZiZGI2YjU4MjJmODVmMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTQzYTU5NDBhM2VjODRjZjAxZGVlMDkyOWI1YTUxYjdiMmRmZWQyNWE2ZWEwMjkxNWZjMjFkNjRhN2ViMGMxNiJ9"
         }
       ]
@@ -55,6 +55,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-05T16:55:45.523Z"
+    "at": "2026-10-09T15:04:29.410Z"
   }
 }

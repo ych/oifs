@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:deae6171ac3d8334a455c40135093c5fddb2bd9426c1b13e78d570bc9ec0db09",
+  "claims": [
+    {
+      "id": "claim_c0fbeb62287b4344be11113a4441a362",
+      "statement": "The journal subsystem records metadata mutations as checksummed transactions in a fixed-size circular ring buffer before applying them in place, enabling crash recovery without a full filesystem check.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L1-L9",
+          "version": "repo-lines-v1:sha256:22cf3c693f43cb82054912a1d100b6ac08381d189bcfac1c28812e0ac4feb01e:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2MyNDBjMzg4NzAyYTc5MTdkOTFkZDliNTg2MzEyYjg5ZThlODRhZDQyMTkxOTdiOTViOTRjNWI0NmZmY2NkZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjA2NTczN2UwNzFmOWZiY2RmNTRiOGFkMzhlNjZlNGI2ZjFmOWZhMWMwMWVkNmFmOWQ5NjY0ZDIyMmE5NjQwMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjU2N2VmMzk1NzlhZGRkODRlNzBiMWNhOWE5MjE1NmVmMGQyZjViOGVmMzI2YTBmNGE1MzRjY2M0ZThjZTc4MCJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-10-09T15:04:29.410Z"
+  }
+}

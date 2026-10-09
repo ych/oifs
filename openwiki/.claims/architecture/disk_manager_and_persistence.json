@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:eb011dc60622bdc784d855aa5a54134852f04ff9b25fa13b1c07feece76154c7",
+  "pageVersion": "sha256:6c3019ab80c1186564661458668b8e7dc4c8e1793255808ea87f3681da37490c",
   "claims": [
     {
       "id": "claim_2ab581ececd1487b994cf6cdc99cea2a",
       "statement": "DiskManager initializes and opens filesystem images via init_or_open, acquiring an exclusive POSIX advisory lock (F_SETLK) on the file and either creating a fresh superblock or validating an existing one.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1034-L1212",
+          "resource": "repo://src/disk.rs#L1057-L1235",
           "version": "repo-lines-v1:sha256:e0f6783d4918aaabb31811bb55a3b62fecb857c7c8c605648ac60def71a9f37b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTc5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjZTc3ZGMwMmQxZWZjMTQyMWZkNWI5ZDQ5MGEyNzkzNDYwYjQ4OTg1MzljYjA0NmE1ZmFlMTk2OGYwZDQwMjBiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5MTljODMyNzM1NzQwYzI4MmIyZDcxZTJhYjQwMzgzODRhYzY3MjdjMGEzMjI0ZjQwZWYxZmJmOTNjNTc5ZDJiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1ZGI3MDA3ZmExNmZiMmMzMzFjYzllNmEzZjc0NTE4MjlkNTIyZmU2NzgwZGZjNjY0ZWYwODUzZGRlZjc0ODlhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2OWU0OTBlOThhZmQxNWU1MzZkNWM1OTI5ZWU1ZmI1ODg0MGQ4NWI2MjExMDM2MGViM2VhOGRmNTMzNDRlYmIxIn0"
         }
       ]
@@ -17,11 +17,11 @@
       "statement": "DiskManager enforces configurable durability via DurabilityMode (Lazy default, RangeAsync, Strict, LegacyWholeMmapAsync): sync_mutation_ranges issues msync(MS_ASYNC) for RangeAsync, msync(MS_SYNC) for Strict on each mutation, while Lazy issues no per-mutation flush and relies on explicit flush, Drop, or OS writeback for persistence.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L127-L149",
+          "resource": "repo://src/disk.rs#L150-L172",
           "version": "repo-lines-v1:sha256:aa09562420cffddfff457b5d52a2bea0d243ad02d591b90b45f9c0d3aabe0788:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzMDRlNzFjZmUzYzdkNGQzMjdhNmU2OTRlNjNjZTc4MDRiYTdmZTMxOTU0MmFlMTlkNWJhNjViMDdiZDQ1NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4ZjEwMTBlNmFkMjg5Njg3MTYyMmE0ODc1N2EzOTkyNzRiOWFiNzY3NzAxOWE3NTQ0ZDBkZjVkODU4MTU4ZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMxZDZlZDQ4NWEwNDkwM2NlOTMzMjZjNjg5N2I3YjcxZDRkOGM0Y2QxYjgwYmYxZTdjMzI5Yjc0ZjRmOWE5MDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxMDU1NjQzNDJmODgwYzgzMGRjYTU2YmM1NzQ0Y2UwYTNkOTY4NzZmMDg0MGQ4MDU3ODM0MmU0Yjg3Njk0NjkifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L328-L374",
+          "resource": "repo://src/disk.rs#L351-L397",
           "version": "repo-lines-v1:sha256:5a756759eb8ed73c9c2575ba5fb6d66c85331e391547f9db768c700b3ee98fed:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NDkzM2JlYmY3OGIxOGFkNjc4Mjk0MzM1NjdjYzk4MWNlYjdiM2FlOGIyZTRlNjA5NjRlOWYwNDQ4MjJmNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2NGY3YTA2MTU3Y2NjYzUxYzM1ZDk2NjUxNjVkMWM1YmE2ZjNjY2I3N2IzODdlYzFkYjI4NTU5ODk1NTM5MjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0ODk4OGRhNGI5NWQzN2M3YzhjN2Y4OWNmMDJhMGQzMGFmOTIwZjlmMTExYzU0ODExMzdjMmY5YWEzYmRjZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2Y2I0MDQ1MjQ1YTllZDM0N2U4ZjgwZTk1Zjc2MmQwZGFmNjFhOWFmNTVmMWNiYmZkY2RmODVmMzg5NGJjMjkifQ"
         }
       ]
@@ -31,8 +31,8 @@
       "statement": "DiskManager::read_data_internal gathers physical blocks across direct, single-indirect, double-indirect, and triple-indirect tiers using 64-bit word pointer resolution, followed by a reverse pipeline of XChaCha20-Poly1305 decryption, Zstd decompression, and pre-compression filter unapplication.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2486-L2719",
-          "version": "repo-lines-v1:sha256:d2888a894dc2c35bed479e584e15fafb380e9f6fdfd303a72a3b35fcdfbe32eb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjM0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZDk3NDk3MjNmYjNjNDliZDJiMTZlMTNiNWE0YWUwYjJiYzQ1NWM4NmU1YWQ0ZDc5NTlkNmZlODYxYzg4OGI1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3Nzk3YmUxYTUzY2I1NGIxMzFkM2NmZTc3ZmI1Y2EwMTVjZTU0ZGY5MDI5Y2NhNmM0YTcxOTM4OWQ0ZDYwMWI0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5NDU1MWMxMjUxNzA3Zjc2Y2M2OGE2ZjVhMzhjZjE2YzMzOGM4ODQ4MWE0OGRhMTQwNGM5OTIzZmQwZGI4YjM0In0"
+          "resource": "repo://src/disk.rs#L2557-L2794",
+          "version": "repo-lines-v1:sha256:631009c01c49c247d212912e8156612c7f910ef7bbbdf16856fddccc59f573f9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjM4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZDk3NDk3MjNmYjNjNDliZDJiMTZlMTNiNWE0YWUwYjJiYzQ1NWM4NmU1YWQ0ZDc5NTlkNmZlODYxYzg4OGI1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3Nzk3YmUxYTUzY2I1NGIxMzFkM2NmZTc3ZmI1Y2EwMTVjZTU0ZGY5MDI5Y2NhNmM0YTcxOTM4OWQ0ZDYwMWI0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5NDU1MWMxMjUxNzA3Zjc2Y2M2OGE2ZjVhMzhjZjE2YzMzOGM4ODQ4MWE0OGRhMTQwNGM5OTIzZmQwZGI4YjM0In0"
         }
       ]
     },
@@ -41,11 +41,11 @@
       "statement": "DiskManager::write_data_with_filters delegates to plan_write which selects among four cases: FullOverwrite (offset 0 rewrite with full filter-compression-encryption pipeline), CompressedAppend (fast Zstd frame append at EOF for eligible compressed files), Recompress (read-modify-recompress for compressed files when fast path unavailable), and Raw (direct block writes for uncompressed files).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L3217-L3273",
-          "version": "repo-lines-v1:sha256:87c945ef76c7be61e1ff086336226094390cbc8ed67af81d4c3844cda81de2cd:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxZDYzY2FmNjFhOGE1YWVkNmRhNDdkNWU4MGRjNjM1ZmFhOTliY2YxZjQ0NzhkYTNjYTNiNjhhYTAxY2E1OGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxOTA2NjBkZThhZmYyZDAzOWI1OGFhNzMzYzA4YzNmZTQ5ZDAwZTY1ZmUwYTg5OGE0MjlmZjgxZDY0MzVkM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYxYThmMmM0NDg0ZmVmMWMzMmUxYWRjY2ZjMTY3MTZmZDFjYTc5NmE5YzY4ODkzYjk2N2UyYjgxZjA2MTg4ZGIifQ"
+          "resource": "repo://src/disk.rs#L3308-L3387",
+          "version": "repo-lines-v1:sha256:c9d1cf803c834ba35849e9bb9a60aff9b6e2818cd7e77ff542d715a29a52275a:eyJzZWxlY3RlZExpbmVDb3VudCI6ODAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxZDYzY2FmNjFhOGE1YWVkNmRhNDdkNWU4MGRjNjM1ZmFhOTliY2YxZjQ0NzhkYTNjYTNiNjhhYTAxY2E1OGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxOTA2NjBkZThhZmYyZDAzOWI1OGFhNzMzYzA4YzNmZTQ5ZDAwZTY1ZmUwYTg5OGE0MjlmZjgxZDY0MzVkM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYxYThmMmM0NDg0ZmVmMWMzMmUxYWRjY2ZjMTY3MTZmZDFjYTc5NmE5YzY4ODkzYjk2N2UyYjgxZjA2MTg4ZGIifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L820-L946",
+          "resource": "repo://src/disk.rs#L843-L969",
           "version": "repo-lines-v1:sha256:9e2125e030d659f0189103b8fe58f00cbddbb724db2934f5f6e1a92a14987ad8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhODc1NTdlYzdhYmFkZGRkNzRmZjEwMWJkZTYyY2FjYTNiZTc2NjY4ZWNiYzQwZTU4ODYyMWQyZGJkZWRlNDQ1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1MWYzN2U0YWM2OGY3NzdiYzE5YmQzMDljMjM5ZTdjMTUxNGY0YzYxNWZmNjkxMDMyYzg1YjQyOTkyYmZkYWM5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxODFhNjVjOGEyZWEzNTA5OTk5ZjZkNjBmNTAxNmNhMDJmYzRkNThlYTAwNDk4NjE1ZTEwYzAwZDNhMWVmNmZmIn0"
         }
       ]
@@ -55,11 +55,11 @@
       "statement": "DiskManager wraps DiskManagerInner in Arc<RwLock<DiskManagerInner>> for concurrent multi-threaded access, and exposes read_at for zero-copy reads directly from memory-mapped blocks into user buffers without heap allocation for raw files.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2745-L2774",
+          "resource": "repo://src/disk.rs#L2820-L2849",
           "version": "repo-lines-v1:sha256:a92618fe1a1e44062c47641c3af45d3b83e03ad54c097b915e51809faec4a5e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxNDE3MWZhNWE5MmY1NGQ2YzRlMGVlMDM1YjE3NWViYTQzMTU1Zjk5YjBkMjI1NTg4NDE1NDdiZGM4MThjMDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhYTBlZDQzMzdhNmIxOTYyNTAzOGYxMzg4YWQzZDMyNGExYTNjY2VhZmQzN2I3ZTJlYWFkNjE0YTA5OTJkOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2ZThiMjliODkyNDc0NTE0ODQyZmY5NTU2MmY0OGZiZDBmZGE5OWJjMzlmYjY1ZTJiMjZhMjcwM2ZkMjc4YTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0NWMyYzU1MTZiMjQyZTUxZGZkOTZhNGZhZTAxNTJhY2M2YzFjNDA3MGI0MzViMjkyOTRmM2IwZTg4NTk4NDIifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L400-L405",
+          "resource": "repo://src/disk.rs#L423-L428",
           "version": "repo-lines-v1:sha256:9cfd3ecc749162fd747dbf4a764555772994f3f8573f47c7a0d2257ef55b642e:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjkwNmNhZmJkMzc4MzU2ZDZlMjU1YmIwYTg1Y2NhYzIzMzMwNmYyNDA2ZWI3ZDAzMzUyNGE0Nzk4YzkwMzRjMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDE0MWUyZmE0M2RlODNjYjYyOWI3MzlhODY2MTc3NTI2YTRiYjM2YTEyYmMyNThkYmYzMWE3MmIzOTEzYWU4ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzQxNjVmYjI3ZTFlNGJiMDc1ZDRlNGYyMGJiMGY0MmEzNjE3OTJhZDliZjVkMWE0YzM5ZmE2Yzk2ZDllNDVlNiJ9"
         }
       ]
@@ -69,15 +69,15 @@
       "statement": "DurabilityMode is a four-valued enum (Lazy/0, RangeAsync/1, Strict/2, LegacyWholeMmapAsync/3) with companion Kani proofs proof_durability_mode_from_u8_soundness and proof_durability_mode_is_range_based_consistency guaranteeing lossless enum round-tripping and consistent is_range_based semantics.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L127-L149",
+          "resource": "repo://src/disk.rs#L150-L172",
           "version": "repo-lines-v1:sha256:aa09562420cffddfff457b5d52a2bea0d243ad02d591b90b45f9c0d3aabe0788:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzMDRlNzFjZmUzYzdkNGQzMjdhNmU2OTRlNjNjZTc4MDRiYTdmZTMxOTU0MmFlMTlkNWJhNjViMDdiZDQ1NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4ZjEwMTBlNmFkMjg5Njg3MTYyMmE0ODc1N2EzOTkyNzRiOWFiNzY3NzAxOWE3NTQ0ZDBkZjVkODU4MTU4ZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMxZDZlZDQ4NWEwNDkwM2NlOTMzMjZjNjg5N2I3YjcxZDRkOGM0Y2QxYjgwYmYxZTdjMzI5Yjc0ZjRmOWE5MDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxMDU1NjQzNDJmODgwYzgzMGRjYTU2YmM1NzQ0Y2UwYTNkOTY4NzZmMDg0MGQ4MDU3ODM0MmU0Yjg3Njk0NjkifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L328-L374",
+          "resource": "repo://src/disk.rs#L351-L397",
           "version": "repo-lines-v1:sha256:5a756759eb8ed73c9c2575ba5fb6d66c85331e391547f9db768c700b3ee98fed:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NDkzM2JlYmY3OGIxOGFkNjc4Mjk0MzM1NjdjYzk4MWNlYjdiM2FlOGIyZTRlNjA5NjRlOWYwNDQ4MjJmNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2NGY3YTA2MTU3Y2NjYzUxYzM1ZDk2NjUxNjVkMWM1YmE2ZjNjY2I3N2IzODdlYzFkYjI4NTU5ODk1NTM5MjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0ODk4OGRhNGI5NWQzN2M3YzhjN2Y4OWNmMDJhMGQzMGFmOTIwZjlmMTExYzU0ODExMzdjMmY5YWEzYmRjZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2Y2I0MDQ1MjQ1YTllZDM0N2U4ZjgwZTk1Zjc2MmQwZGFmNjFhOWFmNTVmMWNiYmZkY2RmODVmMzg5NGJjMjkifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L5010-L5022",
+          "resource": "repo://src/disk.rs#L6267-L6279",
           "version": "repo-lines-v1:sha256:463a25b90cda5441618db6a88f0e91a10129529dece9d329f753a1017a30f652:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NDRiYzcxMDM5ZjA3ZWIzY2E5ZDU5MmI0MGE4MDE1YWE2MjRlMDEwZWEyMjM4MTUxMDllNWY4MGEzNzJjNmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNzBhYzhhMmY4ZjA5YTYyMTYxNGM3ODBjZWJmYTc1YWRlNTc4Mzg1MDU1NDU2OTAxYTQzNjA5OWQ3NzU5ZWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0Y2QzMjM0Y2I4NjZkNGE1NzgyZGMwNGJhZWRjYjY4YjdmMzBmMjI5MGMyN2M0MGVmM2NhOTgxYmZlM2RkNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmOTE1ZDdiMzEwNzk3YjNhMjVjMDI3YmNlZjI4OTAxZGYxMTNmZGRhOWJjMDZjYWI0MTViNjlmZmI2Y2RiYWQifQ"
         }
       ]
@@ -87,11 +87,11 @@
       "statement": "DiskManager enforces write durability through configurable DurabilityMode policies (Lazy default, RangeAsync, Strict, and LegacyWholeMmapAsync); mutating operations calculate modified byte ranges and route them through sync_mutation_ranges.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L126-L150",
+          "resource": "repo://src/disk.rs#L149-L173",
           "version": "repo-lines-v1:sha256:993a277f15e62eceeb9f566e72ad1bcbabf5a92965cfbc0f05d799657a2fe7f7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxNjUwZjNhNTNiZmUyNTMxMjFhNDNjYWVhMjAwNzZiNDI4NTgyZmI2YzM1NzEwN2E3ODU4N2MzNmVlZTk3OGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA2MjE1ZDM5OWMzOGRmZjU5OWQ2NWI4MWI1NDYyN2ZiMzNkMjQ0MWZkMDg3ZjFlMDc5MWNiNjc2NmU2MzgyNjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEwZTk3OTA4ODM4YmEyODMzMTI4NWU3NWEzMzQ0NmViMmVkOWNkMzM2Mzg3ZmQ4ODk5MGZmOTY5OGUzOWJhYzMifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L331-L355",
+          "resource": "repo://src/disk.rs#L354-L378",
           "version": "repo-lines-v1:sha256:589cf3baacb337f5b2420938b2f1054b5911b073d260dac76726eba1ac17f429:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxOTg3ZDAyNTY2MGZkOGU2YTRlMDFkZTUwY2M0NDYwMzJmOGY0MzBmNTE2N2QyZTYwMmZjZTY3ZWQ5N2FmOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMwNDg3NGFmNjM4MDNjZWU5MTFmZDZjMzBlYzBlNmFmOWQzNTRmZjcwYTA5NzE4YTlhMTA1MmVjZjY3MDFkMTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRiMWI1YTZjZWNlMzE2YzEzYThlYWUzNWIwNDc5YmE4M2MyMTUzOTkzNDJmOGZmNTMwNmRmZGRiYzJkZjA2ZDUifQ"
         }
       ]
@@ -101,11 +101,11 @@
       "statement": "DiskManager integrates a pluggable IoEngine allowing runtime switching between Mmap, Pread, and IoUring backends via set_io_backend, and supports batched concurrent reads across files via read_at_batch under a single lock.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2781-L2827",
+          "resource": "repo://src/disk.rs#L2856-L2902",
           "version": "repo-lines-v1:sha256:3da7e2f181ccd0b6aaba164cf71601f7a961f1bddcb5cc397610e6a23bffbc9f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZTIxMDFiZTk2NTY2YTM3NGI0NTBkNzkwZmRjNjAyYWNlYTA1MTNhYjVlZDg5YzkyODdlNTEyZjRiMDcwMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhMzU4ZjYwYTMyOGQ3ZWRmZDE2M2VkNDEwNjRlY2FjMDY2MmQzNjJlM2MyMTEzMWMwZjllMjAzOWZmNWFkNGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNhYjM3Y2EyMjU0ZDBkOTgyZmM2ZjE4MjdiMDYwYzIyYTA0OWQwZWY5ZTQxYTA1YzA3N2RlMDdjOTc0Zjc5ZDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1NDY3NWVhYjBiZDIyNmI4MTcxZjYyMGM5YjMzMmViZjAyMjFjZmVjNjI3YmFkN2EzZDMyZTM5YWIxM2NjM2YifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L1376-L1403",
+          "resource": "repo://src/disk.rs#L1399-L1426",
           "version": "repo-lines-v1:sha256:bdac45a911b6c16afa29013cb9db98185df606d5018e8b9c13587a3424973142:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhMzViMmIxMDg4MjJjMWQ3NTVhMTMxNzEyZDAzNDU2ZmRjN2JjNTg5YThiZDZiZWE2MmQ0NThlMTg0MTYyODciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhNjc1NTRmMDhmNGU3NjQwMGJjNGRmZmMwNzM1ZTUzNjA5NDZiYzMwZTI3MjQzZThkZmVmYjIyNWMzMWY2MTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2YmMwODcwM2U2ZTY5MWYzODFjNjYxOTkyZjI2YjIzNTdhYThiYWY1YzkwODAxZjQ0OWYzMjYwMjI5NjM0YTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2YmMwODcwM2U2ZTY5MWYzODFjNjYxOTkyZjI2YjIzNTdhYThiYWY1YzkwODAxZjQ0OWYzMjYwMjI5NjM0YTcifQ"
         }
       ]
@@ -113,6 +113,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-07T12:20:29.772Z"
+    "at": "2026-10-09T15:04:29.410Z"
   }
 }

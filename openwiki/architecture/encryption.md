@@ -6,10 +6,10 @@ tags: [encryption, security, aead, xchacha20-poly1305, argon2id, siv, zeroize]
 sources:
   - id: openwiki-source-88657ea41344918d5e874716
     resource: repo://src/encryption.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-09T15:04:29.410Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-03T08:18:49.684Z
+    at: 2026-10-09T15:04:29.410Z
 ---
 
 ## Responsibility and ownership
@@ -20,12 +20,12 @@ The encryption subsystem ([`src/encryption.rs`](src/encryption.rs)) provides cry
 It isolates cryptographic primitives into three clean layers:
 <!-- openwiki: broken internal link [src/encryption.rs#L13-L34] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 1. **Key Management and Hygiene**: Passphrase hashing and automatic secret erasing via [`EncryptionKey`](src/encryption.rs#L13-L34).
-<!-- openwiki: broken internal link [src/encryption.rs#L71-L93] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/encryption.rs#L95-L117] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-2. **File Payload AEAD**: Authenticated payload confidentiality via [`encrypt_data`](src/encryption.rs#L71-L93) and [`decrypt_data`](src/encryption.rs#L95-L117).
-<!-- openwiki: broken internal link [src/encryption.rs#L142-L178] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/encryption.rs#L184-L232] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-3. **Deterministic Filename Privacy**: Directory structure and file naming privacy via Synthetic Initialization Vector (SIV) encryption in [`encrypt_filename`](src/encryption.rs#L142-L178) and [`decrypt_filename`](src/encryption.rs#L184-L232).
+<!-- openwiki: broken internal link [src/encryption.rs#L81-L118] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [src/encryption.rs#L105-L118] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+2. **File Payload AEAD**: Authenticated payload confidentiality via [`encrypt_data`](src/encryption.rs#L81-L118) and [`decrypt_data`](src/encryption.rs#L105-L118).
+<!-- openwiki: broken internal link [src/encryption.rs#L143-L179] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [src/encryption.rs#L185-L233] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+3. **Deterministic Filename Privacy**: Directory structure and file naming privacy via Synthetic Initialization Vector (SIV) encryption in [`encrypt_filename`](src/encryption.rs#L143-L179) and [`decrypt_filename`](src/encryption.rs#L185-L233).
 
 ## Key derivation and memory hygiene
 
@@ -92,8 +92,8 @@ Plain directory entry storage exposes sensitive filename patterns, extensions, a
 
 ### SIV construction and directory tweak
 
-<!-- openwiki: broken internal link [src/encryption.rs#L142-L178] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-[`encrypt_filename`](src/encryption.rs#L142-L178) deterministically generates a synthetic nonce using Blake2b-512 over a domain-separated context:
+<!-- openwiki: broken internal link [src/encryption.rs#L143-L179] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+[`encrypt_filename`](src/encryption.rs#L143-L179) deterministically generates a synthetic nonce using Blake2b-512 over a domain-separated context:
 
 ```
 Synthetic Nonce = Blake2b-512("OIFS_SIV_FILENAME_V1" || key || parent_inode || filename)[0..12]
@@ -109,11 +109,13 @@ Synthetic Nonce = Blake2b-512("OIFS_SIV_FILENAME_V1" || key || parent_inode || f
 
 ### Decryption and verification
 
-<!-- openwiki: broken internal link [src/encryption.rs#L184-L232] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-[`decrypt_filename`](src/encryption.rs#L184-L232) decodes the Base64URL string, extracts the 12-byte synthetic nonce, verifies the Poly1305 authentication tag, and re-computes the Blake2b hash to ensure the synthetic nonce matches `(key, parent_inode, plaintext)`:
-- If a filename does not start with `_e_` or fails authentication, it gracefully returns the original name (`src/encryption.rs#L189-L191`), maintaining backward compatibility with unencrypted images.
+<!-- openwiki: broken internal link [src/encryption.rs#L185-L233] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+[`decrypt_filename`](src/encryption.rs#L185-L233) decodes the Base64URL string, extracts the 12-byte synthetic nonce, verifies the Poly1305 authentication tag, and re-computes the Blake2b hash to ensure the synthetic nonce matches `(key, parent_inode, plaintext)`:
+<!-- openwiki: broken internal link [src/encryption.rs#L189-L191] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- If a filename does not start with `_e_` or fails authentication, it gracefully returns the original name ([`src/encryption.rs#L189-L191`](src/encryption.rs#L189-L191)), maintaining backward compatibility with unencrypted images.
 
 ## Error handling
+
 
 <!-- openwiki: broken internal link [src/encryption.rs#L236-L248] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 All cryptographic failures map to [`EncryptionError`](src/encryption.rs#L236-L248):

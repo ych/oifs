@@ -3,28 +3,30 @@ type: workflow
 title: Compression and Filter Workflows
 description: Guide to using Blosc2 pre-compression filters, compression modes, and filter pipelines for optimal space savings.
 tags: [compression, filters, workflow, blosc2]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
   - id: openwiki-source-95790d7cf7011b1d80e862fd
     resource: repo://tests/compression_modes_test.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-09T15:04:29.410Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-09T15:04:29.410Z
 ---
 
 ## Overview
 
-OIFS integrates Blosc2 compression with configurable pre-compression filters to achieve optimal space savings. The system supports three compression modes and a flexible filter pipeline system that can be tuned for specific data patterns.
+OIFS integrates Blosc2 compression with configurable pre-compression filters to achieve optimal space savings. The system supports five compression modes and a flexible filter pipeline system that can be tuned for specific data patterns.
 
 ## Compression Modes
 
-Compression mode determines when Blosc2 compression is applied during write operations:
+Compression mode determines when and how Blosc2 compression is applied during write operations:
 
 - **Always**: Compress all data regardless of size
 - **Never**: Store data uncompressed (compressed_size = 0)
-- **Auto** (default): Compress only when data size >= 8KB
+- **Auto** (default): Compress only when data size >= 8KB, and only keep the compressed result if it is actually smaller than the working data
+- **Stream**: Full-file stream compression with explicit Zstd compression level (1-22)
+- **Seekable**: Seekable chunked compression (64KB independent chunks) with configurable chunk size and compression level
 
 The compression mode is specified per write operation and stored in the inode metadata. During read operations, the system automatically decompresses data if it was stored compressed.
 

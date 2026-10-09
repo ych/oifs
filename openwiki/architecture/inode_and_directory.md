@@ -1,37 +1,28 @@
 ---
 type: architecture
-title: Inode and Directory Entries
-description: How OIFS defines the 256-byte Inode metadata layout, the dual FileType model, variable-length directory records, streaming directory iteration, and zero-allocation block lookup.
+title: Inode and Directory Management
+description: How OIFS implements Unix-like inode architecture, manages directory entries, handles dynamic multi-block directories, and maintains second-precision timestamps.
 tags: [inode, directory, directory-entry, zero-allocation, block-pointers, filetype, kani-verified]
 sources:
   - id: openwiki-source-577ab4c8720ea065ae15ce27
     resource: repo://src/directory.rs
   - id: openwiki-source-bc305a37042018e1ebd6d860
     resource: repo://src/inode.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-03T08:18:49.684Z
+    at: 2026-10-09T15:04:29.410Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-09T15:04:29.410Z" }
 ---
 
 ## Responsibility and ownership
 
 The inode and directory subsystem defines the structural foundation of the OIFS filesystem across two modules:
-<!-- openwiki: broken internal link [src/inode.rs] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/inode.rs#L31-L66] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/inode.rs#L9-L15] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [`src/inode.rs`](src/inode.rs): Defines the 256-byte fixed-size [`Inode`](src/inode.rs#L31-L66) struct, the [`FileType`](src/inode.rs#L9-L15) discrimination model, block pointer tiers, encryption nonces, and filter flags.
-<!-- openwiki: broken internal link [src/directory.rs] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/directory.rs#L5-L10] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/directory.rs#L81-L108] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/directory.rs#L113-L133] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/directory.rs#L137-L151] file "src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [`src/directory.rs`](src/directory.rs): Defines the on-disk variable-length [`DirectoryEntry`](src/directory.rs#L5-L10) record format, streaming [`DirectoryIterator`](src/directory.rs#L81-L108), and zero-allocation lookup algorithms ([`find_entry_in_block`](src/directory.rs#L113-L133) and [`find_insert_offset_in_block`](src/directory.rs#L137-L151)).
+- [`src/inode.rs`](../../src/inode.rs): Defines the 256-byte fixed-size [`Inode`](../../src/inode.rs#L33-L69) struct, the [`FileType`](../../src/inode.rs#L9-L15) discrimination model, block pointer tiers, encryption nonces, and filter flags.
+- [`src/directory.rs`](../../src/directory.rs): Defines the on-disk variable-length [`DirectoryEntry`](../../src/directory.rs#L5-L10) record format, streaming [`DirectoryIterator`](../../src/directory.rs#L81-L108), and zero-allocation lookup algorithms ([`find_entry_in_block`](../../src/directory.rs#L113-L133) and [`find_insert_offset_in_block`](../../src/directory.rs#L137-L151)).
 
 ## The 256-byte Inode structure
 
-<!-- openwiki: broken internal link [src/inode.rs#L31-L66] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-Every file and directory in OIFS is represented by an [`Inode`](src/inode.rs#L31-L66) stored within the contiguous Inode Table starting at `superblock.inode_table_block`.
+Every file and directory in OIFS is represented by an [`Inode`](../../src/inode.rs#L31-L66) stored within the contiguous Inode Table starting at `superblock.inode_table_block`.
 
 To ensure consistent on-disk packing and cache alignment, the struct is marked with `#[repr(C)]` and serialized into a 256-byte block slot:
 
@@ -84,15 +75,13 @@ The 4KB block pointer architecture supports files ranging from small configurati
 
 ### Formal verification with Kani
 
-<!-- openwiki: broken internal link [src/inode.rs#L103-L149] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-`src/inode.rs` includes automated formal proofs ([`kani_proofs`](src/inode.rs#L103-L149)):
+`src/inode.rs` includes automated formal proofs ([`kani_proofs`](../../src/inode.rs#L103-L149)):
 - `proof_inode_new_file` and `proof_inode_new_directory`: Formally verifies that `Inode::new` creates zero-initialized sizes, disabled filters, unencrypted states, and valid modes across all execution branches.
 - `proof_inode_no_dangling_blocks`: Proves that all 12 direct/indirect block pointers and the triple-indirect pointer are strictly `0` upon initialization, guaranteeing that newly created inodes never reference uninitialized or dangling physical storage blocks.
 
 ## FileType discrimination
 
-<!-- openwiki: broken internal link [src/inode.rs#L9-L15] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-[`FileType`](src/inode.rs#L9-L15) classifies storage entities:
+[`FileType`](../../src/inode.rs#L9-L15) classifies storage entities:
 
 ```rust
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
@@ -102,8 +91,7 @@ pub enum FileType {
 }
 ```
 
-<!-- openwiki: broken internal link [src/disk.rs] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-In [`DiskManager`](src/disk.rs), `inode.mode` gates operations:
+In [`DiskManager`](../../src/disk.rs), `inode.mode` gates operations:
 - Attempting to write payload data via `write_data_with_filters` to an inode with `mode == FileType::Directory` returns `DiskManagerError::Io("Cannot write data to non-file inode")` (`src/disk.rs#L1059`).
 - Attempting directory operations (`lookup`, `list_dir`, `delete_file`) on an inode with `mode == FileType::File` returns `DiskManagerError::Io("Not a directory")` (`src/disk.rs#L569, L1353, L1397`).
 

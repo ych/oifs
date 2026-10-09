@@ -1,8 +1,11 @@
 ---
 type: concept
-title: Configuration and Features
-description: Build-time features (mpi, compression, encryption), runtime options (durability mode, io backend selection), and environment variables affecting OIFS behavior.
+title: Configuration and Durability Policies
+description: Build-time features (mcp, compression, encryption), runtime options (durability mode, io backend selection), and environment variables affecting OIFS behavior.
 tags: [configuration, features, environment-variables, cli-options, build-flags]
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-09T15:04:29.410Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -12,10 +15,9 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-ea9e30b0c99ad48bf309d4ab
     resource: repo://src/io_engine.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
+  - id: openwiki-source-ef0afc6eaf5c925c9975314d
+    resource: repo://src/ipc.rs
+generated: { by: "openwiki/0.6.1", at: "2026-10-09T15:04:29.410Z" }
 ---
 
 OIFS provides multiple configuration mechanisms to tailor functionality for different use cases, from embedded systems to high-performance clusters. Configuration occurs at build time via Cargo features, at runtime via CLI flags and environment variables, and through persistent filesystem properties.
@@ -73,6 +75,10 @@ Controls when files are automatically compressed using Zstandard:
 - `Always`: Compress all files regardless of size
 - `Never`: Disable compression entirely
 - `Auto` (default): Compress files ≥ 8KB
+- `Stream`: Full-file stream compression with explicit Zstd compression level
+- `Seekable`: Seekable chunked compression (64KB independent chunks)
+- `Stream`: Full-file stream compression with explicit Zstd compression level
+- `Seekable`: Seekable chunked compression (64KB independent chunks)
 
 Set via `DiskManager::set_compression_mode()` or CLI `put` command flags.
 
@@ -94,6 +100,6 @@ Set via `DiskManager::set_durability_mode()`; current mode readable via `durabil
 ## Feature Interaction Notes
 
 - Encryption and compression are independent: encrypted files may still be compressed
-- Network mode requires the `mcp` feature flag
+- Network mode does not require the `mcp` feature flag; it uses standard TCP transport
 - io_uring backend provides greatest benefit with `RangeAsync` or `Strict` durability modes where asynchronous msync can overlap with I/O submissions
 - In `--json` mode, interactive password prompts are disabled; encryption requires `--password` or `OIFS_PASSWORD`

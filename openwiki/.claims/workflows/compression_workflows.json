@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f0136fef0dfb6047f52a3e477808203fddcf67557d0ef2237c9825851584948c",
+  "pageVersion": "sha256:ff93eaa11dfcfd0fea262fd38a2cf898d77864292fc3750a957a08b809100250",
   "claims": [
     {
       "id": "claim_269cf6c26a6f4bf59d8a091af2ac4c4c",
-      "statement": "OIFS supports three compression modes: Always (compress all data), Never (store uncompressed), and Auto (default: compress when data size >= 8KB)",
+      "statement": "OIFS supports five compression modes: Always (compress all data), Never (store uncompressed), Auto (default: compress when data size >= 8KB and keep compressed result only if smaller), Stream (full-file stream compression with explicit Zstd compression level), and Seekable (seekable 64KB chunked compression with configurable chunk size and compression level).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L57-L65",
-          "version": "repo-lines-v1:sha256:d518484ed029f66a7c3fcfde7f67da1cc17347c672e23b888879df3d5fb3bda9:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzI5NjE2NWYxN2Q4NTI3OGQ3Mjc4NjAwNGJkNDkyOWEwYjZlNGUyNDE0YmZmMjc4MGYxYzlkNDg5NjBlZTEzNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDRlOGFiODVjMmNiZDk2NGIyZjVjZmQyNWM5NjlhMGJlMWVhZjU5NWI5MDlmYzY2ZjA3OTYzMGJhMDM0N2Q1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGYwNjYzNjMyYTQ0MDU4OGQ5NjM3MzI4YzY0MTBlMGZhMDhlNjUwNTQzZmRiYzkzOThlZTIxZDA5YjM5NjZjYSJ9"
+          "resource": "repo://src/disk.rs#L65-L96",
+          "version": "repo-lines-v1:sha256:0309d400fc25a6e943041ad858adf02463068a853101c94f9fe6b2b84a553503:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyOTYxNjVmMTdkODUyNzhkNzI3ODYwMDRiZDQ5MjlhMGI2ZTRlMjQxNGJmZjI3ODBmMWM5ZDQ4OTYwZWUxMzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ0ZThhYjg1YzJjYmQ5NjRiMmY1Y2ZkMjVjOTY5YTBiZTFlYWY1OTViOTA5ZmM2NmYwNzk2MzBiYTAzNDdkNTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmMDY2MzYzMmE0NDA1ODhkOTYzNzMyOGM2NDEwZTBmYTA4ZTY1MDU0M2ZkYmM5Mzk4ZWUyMWQwOWIzOTY2Y2EifQ"
         },
         {
           "resource": "repo://tests/compression_modes_test.rs#L27-L48",
@@ -27,6 +27,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-04T10:12:53.730Z"
+    "at": "2026-10-09T15:04:29.410Z"
   }
 }

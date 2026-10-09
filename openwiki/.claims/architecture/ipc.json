@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:94b5cf390f8a2e9e8c845fbb39c0b89f7df9bb0c0dac33f1948e5ecf071027c8",
+  "claims": [
+    {
+      "id": "claim_2021ef0166aa4e2b815d973030bfd55e",
+      "statement": "The IPC subsystem's bind_or_connect function performs master election by attempting to connect to an existing endpoint and, if unavailable, binding as master, supporting both Unix Domain Socket and TCP transports.",
+      "evidence": [
+        {
+          "resource": "repo://src/ipc.rs#L345-L485",
+          "version": "repo-lines-v1:sha256:d798d5dc2f37ab2143e4ab4b3e33d09ea10f1277a0bc72e83def361fc3e1c33a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNDU1MDliYjI4NDFiM2Y5NjRmYTlkYzc5NjVlNzljM2ViM2VlMjAxNmIwZmE5ZTBmY2M0OWVjNzJjYmYyNDFkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NzdlZjMxMDFmNDYxMzJmMmVmYzQxOWVkMzExZTU2MjhmMjJiNDExYjcxNGM5YzY5ODA3MWM4MjU4MzRjMDdmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MjcxZGFmZTI3YTA1OTMyYWExMjkzNjgyNTdlNDg2ZTg4YTEwNjAxYTc1ZmQ0YmNlZGQxOWY5NmRiOGZlZmIwIn0"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-10-09T15:04:29.410Z"
+  }
+}

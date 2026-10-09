@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a7b5990472777bc40f4ea9f46ae38e36631d4f431c96de45a3274fe7a46b4f87",
+  "pageVersion": "sha256:8242a7e666b49f4c09c2bf690d322f8421e074550982e90bd3b8c6f6a2949001",
   "claims": [
     {
       "id": "claim_3508f00b61be48f591d00c38e50b5dd8",
@@ -17,7 +17,7 @@
       "statement": "The ServerHandler implementation configures ServerInfo instructions describing the OIFS memory sandbox and enables MCP tool capabilities.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L294-L307",
+          "resource": "repo://src/bin/oifs_mcp.rs#L312-L325",
           "version": "repo-lines-v1:sha256:0088e0e03dbc5143874ded33992d191f181daf0715becb90eae41cde2241fa93:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMjkyYTAwMTdmOGRkMjU0ZjVmY2M4OWM0MzY2ZmJhMDUzNTgzMTY3MGUzOTE1MmU3ZjI3MDY1MWNhMzVmNGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEzYWMyNTBlNDcyNmZmYzk2MDhhM2Y4ODc1MzE0OWUyOTc1YTU4YmJhYjNjZjkyNDBlMThkYjRmZTZhNzJlYmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM3NDkzZWE4ODcxZDI4MzFjZmU1NzdmMDdlYzQ0MzkwYTZkYTQ1OWNiMWI3ZDAyMTU5ZjRlNTNkMTVhNzI0ZGEifQ"
         }
       ]
@@ -27,11 +27,11 @@
       "statement": "oifs_mcp exposes write_file with automatic compression, read_file returning UTF-8 text, and append_file for uncompressed JSONL memory logs.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L136-L179",
-          "version": "repo-lines-v1:sha256:db2c372e139d4552923a7279b25d388d760aa5531c7f474e860acb0a3789f8db:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiMmIwYjA5YTk2MzVkZTNlN2NlZDkyYmYxNzdlNWJlMzM3MzRiMTgyNGZmMDkxN2Y0MTc0YjY4Y2UxYzg1YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2YWI0OTIxYzdiODEyMTgwMjRhMzgzZDUwYTMyNzU0ZDc2MTlhZGJiY2E0NWI5OWI2MDJkMGVhYTM5MjllYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhNmM5YTk4N2U5NjkyZGUwYTQ2Yjg5MzY0NzgxOWUxMWJiZjhjZjdkYjFhZTZiYzgxZjJhMTI0ZTJhNmNiMDgifQ"
+          "resource": "repo://src/bin/oifs_mcp.rs#L144-L182",
+          "version": "repo-lines-v1:sha256:5b298d90381f58caf6e5579586fabb583053d9695ecd74d1d22ce2bc75e51de2:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiMmIwYjA5YTk2MzVkZTNlN2NlZDkyYmYxNzdlNWJlMzM3MzRiMTgyNGZmMDkxN2Y0MTc0YjY4Y2UxYzg1YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2YWI0OTIxYzdiODEyMTgwMjRhMzgzZDUwYTMyNzU0ZDc2MTlhZGJiY2E0NWI5OWI2MDJkMGVhYTM5MjllYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhNmM5YTk4N2U5NjkyZGUwYTQ2Yjg5MzY0NzgxOWUxMWJiZjhjZjdkYjFhZTZiYzgxZjJhMTI0ZTJhNmNiMDgifQ"
         },
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L239-L267",
+          "resource": "repo://src/bin/oifs_mcp.rs#L257-L285",
           "version": "repo-lines-v1:sha256:942d01af4ca150ad207e2ffeef72e3bc9ac0451aaedc92a1725a965d72a9dd76:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiMmIwYjA5YTk2MzVkZTNlN2NlZDkyYmYxNzdlNWJlMzM3MzRiMTgyNGZmMDkxN2Y0MTc0YjY4Y2UxYzg1YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzMDE2MWMwODA5ZmUyZDVkYWRkNzM1MjE5ZTdhYzEzZTVjZDczNzk3MGI0MDM3ZmE5NDI2NDMxN2UwNDMwZTQifQ"
         }
       ]
@@ -41,11 +41,11 @@
       "statement": "oifs_mcp provides list_dir returning newline-delimited JSON (JSONL) entry streams, mkdir and delete_file for directory hierarchy management, and a status tool reporting image block utilization.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L181-L237",
+          "resource": "repo://src/bin/oifs_mcp.rs#L184-L240",
           "version": "repo-lines-v1:sha256:89ee3cfe44255b473c02ad0ec8b9185902b22ef0379bb8a3935a84dd4e069940:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiMmIwYjA5YTk2MzVkZTNlN2NlZDkyYmYxNzdlNWJlMzM3MzRiMTgyNGZmMDkxN2Y0MTc0YjY4Y2UxYzg1YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwMzdlYWZlNmQwNTVmY2I0OWQ5N2JiMDQ3OGQ0ZjlhMGNmM2ZiNmYzMzIxMWEwNGIyMDRmNTI2YmYwNjQzNmYifQ"
         },
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L269-L290",
+          "resource": "repo://src/bin/oifs_mcp.rs#L287-L308",
           "version": "repo-lines-v1:sha256:30ac0f0274cbb7482e6a7e5ebfb545385e3a2bf9f7b7853d1132e4a50dfa3e66:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiMmIwYjA5YTk2MzVkZTNlN2NlZDkyYmYxNzdlNWJlMzM3MzRiMTgyNGZmMDkxN2Y0MTc0YjY4Y2UxYzg1YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzYWMyNTBlNDcyNmZmYzk2MDhhM2Y4ODc1MzE0OWUyOTc1YTU4YmJhYjNjZjkyNDBlMThkYjRmZTZhNzJlYmIifQ"
         }
       ]
@@ -53,6 +53,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-04T06:56:29.774Z"
+    "at": "2026-10-09T15:04:29.410Z"
   }
 }

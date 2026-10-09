@@ -1,24 +1,22 @@
 ---
 type: architecture
 title: C FFI Interface
-description: How OIFS exposes its storage engine as a standard C shared library (liboifs) through an opaque handle model, callback-driven directory iteration, zero-copy offset reads, pluggable I/O backend configuration, and thread-safe error reporting.
-tags: [ffi, c-api, shared-library, handles, callbacks, abi, io_engine, no-mangle]
+description: How OIFS exposes its storage engine as a standard C shared library (liboifs) through an opaque handle model, callback-driven directory iteration, zero-copy offset reads, pluggable I/O backend configuration, thread-safe error reporting, and version handshake for ABI stability.
+tags: [ffi, c-api, shared-library, handles, callbacks, abi, io_engine, no-mangle, version]
 sources:
   - id: openwiki-source-f9a8a5ec259e5381eba4c51a
     resource: repo://include/oifs.h
   - id: openwiki-source-c9e5b32aad7cafdb095c81a4
     resource: repo://src/ffi.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-07T12:20:29.772Z
+    at: 2026-10-09T15:04:29.410Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-09T15:04:29.410Z" }
 ---
 
 # C FFI Interface
 
-<!-- openwiki: broken internal link [src/ffi.rs] file "src/ffi.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [include/oifs.h] file "include/oifs.h" does not exist. Fix the href or restore the target, then delete this comment. -->
-The C Foreign Function Interface ([`src/ffi.rs`](src/ffi.rs), [`include/oifs.h`](include/oifs.h)) exports the OIFS storage engine as a standard C-compatible shared library (`liboifs.so` on Linux, `liboifs.dylib` on macOS).
+The C Foreign Function Interface ([`src/ffi.rs`](../../src/ffi.rs), [`include/oifs.h`](../../include/oifs.h)) exports the OIFS storage engine as a standard C-compatible shared library (`liboifs.so` on Linux, `liboifs.dylib` on macOS).
 
 It bridges the idiomatic Rust engine (`DiskManager`, `OifsSession`, `RwLock`, `IoEngine`) to C/C++, Python, Go, and other host runtimes:
 - Manages raw memory boundaries using opaque boxed pointers.
@@ -26,6 +24,7 @@ It bridges the idiomatic Rust engine (`DiskManager`, `OifsSession`, `RwLock`, `I
 - Preserves detailed error messages per handle via `oifs_last_error`.
 - Exports unmangled C symbols via `#[unsafe(no_mangle)] pub extern "C" fn`.
 - Exposes runtime I/O engine configuration (`oifs_set_io_backend`, `oifs_get_io_backend`) for P3.2.
+- Provides version handshake functions for ABI stability.
 
 ## The Opaque Handle Model
 
@@ -148,6 +147,18 @@ int32_t oifs_get_io_backend(OIFSHandle *handle);
 
 - `oifs_set_io_backend`: Configures the active I/O backend on the underlying `DiskManager`. If `OIFS_IO_BACKEND_IO_URING` is requested on an unsupported OS or kernel (< Linux 5.15), it automatically falls back to `Pread` and returns `1`. Returns `-1` if `handle` is null.
 - `oifs_get_io_backend`: Queries the currently active effective backend (`0` for Mmap, `1` for Pread, `2` for IoUring).
+
+## Version Handshake for ABI Stability
+
+To ensure ABI stability across versions, the FFI exports version query functions and a compatibility check.
+
+- `oifs_version_major`, `oifs_version_minor`, `oifs_version_patch`: Return the respective version components.
+- `oifs_version_code`: Returns a monotonic 64-bit code: (major << 32) | (minor << 16) | patch.
+- `oifs_version_string`: Returns a null-terminated string (e.g., "0.1.0").
+- `oifs_check_version`: Compares the requested version with the loaded library and returns:
+  - 0 (`OIFS_VERSION_COMPAT_OK`) for exact match,
+  - 1 (`OIFS_VERSION_COMPAT_WARN`) for newer library (allowed to proceed),
+  - -1 (`OIFS_VERSION_COMPAT_ERR`) for older library (error out, blocked).
 
 ## Error Handling Conventions
 

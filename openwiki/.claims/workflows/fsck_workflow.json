@@ -1,25 +1,25 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f535049155f716900109017d9e44d88a6984a1d9848dee52038fe30106829df0",
+  "pageVersion": "sha256:aac0baae6a1d2a2b6c1297f96eee2e5214733db5fa4a51b3289fcaca84bcc7aa",
   "claims": [
     {
       "id": "claim_a6c85595ff0142c2b651088cccc715a1",
       "statement": "The OIFS fsck subcommand verifies structural consistency by comparing allocation bitmaps with directory reachability to detect orphan inodes, leaked blocks, missing blocks, and cross-linked blocks.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L124-L124",
+          "resource": "repo://src/bin/oifs.rs#L127-L127",
           "version": "repo-lines-v1:sha256:eed2cdaccae6cc97becd2701876928e7ec0c7250a34915aecc4028d668cd5c4e:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWVkMmNkYWNjYWU2Y2M5N2JlY2QyNzAxODc2OTI4ZTdlYzBjNzI1MGEzNDkxNWFlY2M0MDI4ZDY2OGNkNWM0ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZWVkMmNkYWNjYWU2Y2M5N2JlY2QyNzAxODc2OTI4ZTdlYzBjNzI1MGEzNDkxNWFlY2M0MDI4ZDY2OGNkNWM0ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjA4OThlZWE1NDZlZWRmMzQzMGNmOWNiZWM5MmViNTJkM2EyMGQ0ODlkM2EwOTJiODliNGY4NGQ5ODcwZDkzMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWM0ZmE5OTZkYTU5Y2U4Zjg1OWU4NjZmYjgxZGM0YzQxYWRlMDlhYmUwMTMzYjhjMjk2N2I4MTIzMDI5YzQyYyJ9"
         },
         {
-          "resource": "repo://src/bin/oifs.rs#L937-L983",
+          "resource": "repo://src/bin/oifs.rs#L954-L1000",
           "version": "repo-lines-v1:sha256:2947c810c21290b2e05b14f71f894e346e03f451415fe767f5c7c55605167510:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxZjkzNTUwY2UwNzgzNGUwODliYzM1NDBlZjhjN2YxZTdiMTFkYmI5MTQzODY3Yzk5Mjg0ZGI1OTJmNWM1ZjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmMTAwZTM4NjQyN2NjZWVmYWJjM2M2YzdlYjkyM2Y1ZGU2NTQ3YWNkZDg1N2I3YmNiMjljYWY3MGNmZjQyMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM3OTRkMDJhODEyMTk0NGQxNzZkMjY1ZTliYjljYzU5ZjZhYjg5MGJjYWRmOGFlZmRlYmRiYmI0ZjJlYTg0NDQifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L171-L182",
+          "resource": "repo://src/disk.rs#L194-L205",
           "version": "repo-lines-v1:sha256:ffd817362d35f6dfa1e3a10690e04a3ecb41db2259ecd457dd345e09687d962b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNjc4NjY2ZGY4ZGI4N2MxNDM1OThjZmEwMWI5YmZiM2U3NmE5NmEyMzI3N2ZhNzhkN2UyNGE0OTA1N2QwMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjNjAzMTE2ODdlMTBmOWZjNWU4MWE1YWUwNGJmODQ2MjhlNDYyNjc2YjY0YWMzOTQ1ZDEyZWJmOGY0MmRmOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc4YmM0ZTA4MGZmODdhMjlmODEzNTkwMzQ2YTRmZjExMzI4ZmY1NWI4NWZlYzBkM2U5ODNlNzZiMDhiMzQ0YzYifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L4492-L4610",
+          "resource": "repo://src/disk.rs#L6134-L6252",
           "version": "repo-lines-v1:sha256:ce907445cba197d4612fe134c512e1cb3d7c6e8f00fd88d3cf36e3a94d7b768b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlOTQxYTU4N2UwMTlmNmYzNjk2NmUxODFkNGE1MmNkOTU3YmE5N2RhMjVlNWZjZTM4Y2JiZDI5YTM5ZDNmYmQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxNzk3NmY3ZGE2MWY2Y2EzZWIxNGVjNjZjZTRjZWRlMjIwNzM3M2Q4Nzg5OTM3ODQ4M2I0ZTIyMjk4MDE4MDdmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhZDAyZTI3MTUxMTY3Y2ZiOWUxYzBmNmExOTFiODNhMjg5NGI0YTE4ZTEwM2I2OWYyOWUwY2Q5YjI1Y2MzZjc4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1MTZjN2U0ZjA0NzQ5MzkwMWY1YTc5YTI5ZjExZjBmNTU0Yjc3MTRmZjU1NWY0N2MxNDRmMDFkYzVjYjkyOGVjIn0"
         }
       ]
@@ -29,23 +29,23 @@
       "statement": "The fsck command is invoked via CLI as `oifs fsck --image /path/to/image.img` or through IPC layer using `IpcRequest::VerifyIntegrity` which returns `IpcResponseData::Fsck` with serialized FsckReport.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L124-L125",
+          "resource": "repo://src/bin/oifs.rs#L127-L128",
           "version": "repo-lines-v1:sha256:d83727ff35ed17767cacd1302c413f72fa6df421a0929ac573c576c64b0802c0:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWVkMmNkYWNjYWU2Y2M5N2JlY2QyNzAxODc2OTI4ZTdlYzBjNzI1MGEzNDkxNWFlY2M0MDI4ZDY2OGNkNWM0ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2ExYTljNmUxZGE5NDZmOWQzNzQ3NDQ4OGVjMzFmMmY1ZWEzZjI4ODVlODM1ODg5YzlkYWFjNTM0OTg5ZGZjMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjA4OThlZWE1NDZlZWRmMzQzMGNmOWNiZWM5MmViNTJkM2EyMGQ0ODlkM2EwOTJiODliNGY4NGQ5ODcwZDkzMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjFhYjllZWI4NzBmNDZiZWMxZjc1YTk4NDliMzRkYTNjYmIxNzlmYTg1MjZlMmFlZWUyYjgxNDY0ZTQyMGEyZCJ9"
         },
         {
-          "resource": "repo://src/bin/oifs.rs#L937-L970",
+          "resource": "repo://src/bin/oifs.rs#L954-L987",
           "version": "repo-lines-v1:sha256:b497e90b5173a8eb29b7fde547a7c84ce65fadde2674b7baede0e5e6cb95c64b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxZjkzNTUwY2UwNzgzNGUwODliYzM1NDBlZjhjN2YxZTdiMTFkYmI5MTQzODY3Yzk5Mjg0ZGI1OTJmNWM1ZjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxZDA1M2NhYTViZTc4ZWQ0YjExZDM4MmJhZTJlYzM0YTE3YTcyNWJlMTYxYjlkM2E0MTM4MWRhMjc3MDkzNjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmMTAwZTM4NjQyN2NjZWVmYWJjM2M2YzdlYjkyM2Y1ZGU2NTQ3YWNkZDg1N2I3YmNiMjljYWY3MGNmZjQyMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ3YTk2NTIwMzIzNTY2MzllZmVhMWYzYTQ3NjlkYWQ5NzRjMDQwM2FiOTcyYmY1MTRkZGUyOTM0MWNjNDI3NDkifQ"
         },
         {
-          "resource": "repo://src/ipc.rs#L222-L222",
+          "resource": "repo://src/ipc.rs#L227-L227",
           "version": "repo-lines-v1:sha256:5a63c0909105ae7d54b24ed71e335d2b38467d2eed21b5a13f13ebf6eafca3db:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWE2M2MwOTA5MTA1YWU3ZDU0YjI0ZWQ3MWUzMzVkMmIzODQ2N2QyZWVkMjFiNWExM2YxM2ViZjZlYWZjYTNkYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWE2M2MwOTA5MTA1YWU3ZDU0YjI0ZWQ3MWUzMzVkMmIzODQ2N2QyZWVkMjFiNWExM2YxM2ViZjZlYWZjYTNkYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNWU1MWJiOTc1MTU4Y2I5NzIwNTQ5ZTJiYzdiZjk3OTQzZTg2MWM2MzgzMTJhNzk3NjVhYjgyZTI5ZGU5ZWJmOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjliMTM4ODgzY2E0YzY5OWNjMWI0ZDZlMWI2ZDE0YTY5MGNiZTMyMDgyMTg3YWMwNzczNTc3ZmY3MTk0NGJlOCJ9"
         },
         {
-          "resource": "repo://src/ipc.rs#L269-L269",
+          "resource": "repo://src/ipc.rs#L280-L280",
           "version": "repo-lines-v1:sha256:f1c85543aab2e72dc8d4153cb6e9f7a30baaf360ceb7e506a119f2ea911ace8e:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjFjODU1NDNhYWIyZTcyZGM4ZDQxNTNjYjZlOWY3YTMwYmFhZjM2MGNlYjdlNTA2YTExOWYyZWE5MTFhY2U4ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjFjODU1NDNhYWIyZTcyZGM4ZDQxNTNjYjZlOWY3YTMwYmFhZjM2MGNlYjdlNTA2YTExOWYyZWE5MTFhY2U4ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDg1NzZlN2RlNjkwOGEyMWE3NGNmOWI2MTE3OTQ2MzEzODZiNTFjMWI2MGVkMDM4YWE0ZWY1YTVjN2VmOGI5NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTIzZTBlNDljMDhlZjJhYjA3N2ZjNDVhODY4ZjI0NDQ1ODM3OWZlODVmY2FhZjhlNzk0NGQ0NDY0ZjQxNjc5NSJ9"
         },
         {
-          "resource": "repo://src/session.rs#L866-L878",
+          "resource": "repo://src/session.rs#L946-L958",
           "version": "repo-lines-v1:sha256:2d8401ed947786957c0306b0d4fc8bbc1caa63977deb9bd9743beebea514ce7d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzU3Y2I3ODAyOWNkZmY4MzkzYTE5MmU5N2QzMzVhYjMxMjBjN2EyZmVkMGJlNzFjOWI2NWI2ODZjNGJlZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRiODQyM2Q5YWQ0MTZkMzczZDk3NzM3NzRkZWJkNGY3MGFlNjcxNWQxZjMxYzY1NmQ4NzJiNGVmOTZlZGMyZjcifQ"
         }
       ]
@@ -55,7 +55,7 @@
       "statement": "The FsckReport structure contains five fields: is_clean (bool), orphan_inodes (Vec<u64>), leaked_blocks (Vec<u64>), missing_blocks (Vec<u64>), and cross_linked_blocks (Vec<u64>).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L171-L182",
+          "resource": "repo://src/disk.rs#L194-L205",
           "version": "repo-lines-v1:sha256:ffd817362d35f6dfa1e3a10690e04a3ecb41db2259ecd457dd345e09687d962b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNjc4NjY2ZGY4ZGI4N2MxNDM1OThjZmEwMWI5YmZiM2U3NmE5NmEyMzI3N2ZhNzhkN2UyNGE0OTA1N2QwMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjNjAzMTE2ODdlMTBmOWZjNWU4MWE1YWUwNGJmODQ2MjhlNDYyNjc2YjY0YWMzOTQ1ZDEyZWJmOGY0MmRmOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc4YmM0ZTA4MGZmODdhMjlmODEzNTkwMzQ2YTRmZjExMzI4ZmY1NWI4NWZlYzBkM2U5ODNlNzZiMDhiMzQ0YzYifQ"
         }
       ]
@@ -65,8 +65,8 @@
       "statement": "Orphan inodes are allocated inodes not referenced by any directory entries (AllocatedInodes \\ ReferencedInodes), leaked blocks are data blocks marked allocated in bitmap but not mapped by any inode (AllocatedBlocks \\ ReferencedBlocks), missing blocks are data blocks mapped by inodes but marked free in bitmap (ReferencedBlocks \\ AllocatedBlocks), and cross-linked blocks are data blocks referenced by multiple inodes ({b | Count(References(b)) > 1}).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L66-L71",
-          "version": "repo-lines-v1:sha256:f31fe3afb748ca42eb810c616845c843aaf457db382e0902ad31dae1bb2e90d5:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjljMjljNmNhYzM0YmViYTM1ZDI5MDc2OTYyN2I5NDNkOTNiMjM2MWNhZmQ4YjFiYjdlM2U0MzIwMzQxMDk5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODFmNzFhNWFkMzVlMjNkZDhhNDkxMmQzM2E4YjdhNjFlMmVjYTM2ZDhkNDIxZTIwMDIzZDc5MTBiZDc3OGE5YSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2Y4MDdjYjBjMWY4Yzc1MTQwODJlM2ZkODQyYmJiMThkMDdlYzVmNWI3ODQ4OTE5ZDg0NDQ4Y2MzZDQ4NGE4NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDQ4ZmU5OWY3NDNhMDIwNWU2OGYwMjU5YTVmOGYyMjFiZWM5Njk0ZTZlZWJmMjZhZmRhYjJiNTI5OTM0N2QzZSJ9"
+          "resource": "repo://src/disk.rs#L6203-L6240",
+          "version": "repo-lines-v1:sha256:6ee62be9e3f701f481cef787f7c7a3db4c3c873ee02944d5b5c1d7ab8a1badd6:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2YmMxMWZmMDk1ODRhNDdjZTJhNGZjOTY1NmMxMGU3NmU1YjJkNWI0MmE3YTQ2NzFmMjM0OGM3MzZmYjc4NDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRhOWY4NmQyOGU3ODRmOWZkMzFmYjcyZDE1ZjYwY2JjZWFhZmRkNjY5Y2JkNWI2ZGE3ODg4YTAyMzMyMWViYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM0Nzg2OTJmNmFjZDcyZjkyNzQwN2E5NjIzZDg5MjliMzczYTE4M2QzOTMyMWE3OTk5M2IzODc0MTdlYjU2YmMifQ"
         }
       ]
     },
@@ -75,11 +75,11 @@
       "statement": "OIFS fsck is a diagnostic tool that reports inconsistencies without performing automatic repairs; users must stop using the filesystem, backup the image, determine corruption cause, and consider recreating the filesystem for safe recovery.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L947-L975",
+          "resource": "repo://src/bin/oifs.rs#L964-L992",
           "version": "repo-lines-v1:sha256:3c8a3608c284fb13585b8fb512c291680eead0cb81e06091850d54619f380c39:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiODgzMjZkZjZkYWQwZTViNWZkZDY0NTdiM2UxM2JiYjA0ZDkzNWZlNzM4YzU5YmU2Mzg3YmZlMWY2ZTczYTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3YTVmZmEzZTA5NWRmMDViNmIzMzMzODcxYWJhMWMxYjNlMjVhYjNkYmYxZDQ5MmYxNTRjMmNjMmIxMjJmNTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhY2FiMTM2OGRlMGI3MDQ5MjY3ZjE1MzU1NTE5NjFjZDZmZWUzM2M3N2Q2NTJiMmQ2ZTZiZmM4OTMwMDljZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmNzQyNzhmNzg0YWRiNWQwODI1ZDNkYzI4MWJkMmIwZGUyNTFhZjk0OGQ2Yzc1OGIyZjNhNGE3Yzc3ZjBiZDEifQ"
         },
         {
-          "resource": "repo://src/bin/oifs.rs#L973-L975",
+          "resource": "repo://src/bin/oifs.rs#L990-L992",
           "version": "repo-lines-v1:sha256:f324169d26fd4fd2f51db5347b76faf0100a837bcd4d51c36a44cf8fc14cdf6f:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjJiNDc1OTJhMjcwYTdhMmY2NmRlODVhNjQ0ZjM5ZjJjNDA2ZTY3MTNkMGRjOGNmNjdkN2IzZTI2ZGU3YmRjZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTdhNWZmYTNlMDk1ZGYwNWI2YjMzMzM4NzFhYmExYzFiM2UyNWFiM2RiZjFkNDkyZjE1NGMyY2MyYjEyMmY1NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzdlZGE1OTZiY2VlYzQ2NjFlM2YzODZmMWRjZWI3MTFjMTNmMTkyMTY2NTU5YjA4OTNkZmNjYjNlMDhkNjNmYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGY3NDI3OGY3ODRhZGI1ZDA4MjVkM2RjMjgxYmQyYjBkZTI1MWFmOTQ4ZDZjNzU4YjJmM2E0YTdjNzdmMGJkMSJ9"
         }
       ]
@@ -87,6 +87,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-05T16:55:45.523Z"
+    "at": "2026-10-09T15:04:29.410Z"
   }
 }

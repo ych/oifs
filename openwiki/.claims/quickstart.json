@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:1e03602cf870cb3cb9d4b4b6b369539a47afcd7a62efe9ecac8cb42eba675802",
+  "pageVersion": "sha256:6d5d377243febb4575522d75f742bb7b1318de4095cf4c30b81a8322f32e19b3",
   "claims": [
     {
       "id": "claim_ca87b04153364f858e7d747421cc8f79",
       "statement": "The oifs CLI exposes a Commands enum (create, put, get, append, mkdir, list, defrag, fsck, filter-analyze) covering every operation the quickstart exercises end to end.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L36-L128",
-          "version": "repo-lines-v1:sha256:4c85b586a83efb3d04d2234e9e23440999c541c7befad91c1aac3b538d57213b:eyJzZWxlY3RlZExpbmVDb3VudCI6OTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwOGI1NTMxM2ZkMzBkNWY2NmQxYzMyYWU3YTQwZGJkNmUzNDhjYzQ5YWYyYWJkYjg1NGFmOTM1MWNhN2U2NGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIzMDM0ZDMxNjAyOWRmYzkyOWM2ZTg2NTQ2OTBkYmQ5OTFjNGMxODVjNGQzOTA1MjMwYjA4YTgzOTAzZjVhNzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJiZDcyNGQzODRlMzE5YWFlZjQ1M2QwNTVmZjQ1NDY4N2VjY2IxMGQ1ZDEwMGEwYTFhYzk2Nzk0ZjA0M2NmM2MifQ"
+          "resource": "repo://src/bin/oifs.rs#L36-L139",
+          "version": "repo-lines-v1:sha256:9aa12adc9d43a9934bb10a81738ca7307b0e11d878fd54b0c89398a67065c2af:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMDhiNTUzMTNmZDMwZDVmNjZkMWMzMmFlN2E0MGRiZDZlMzQ4Y2M0OWFmMmFiZGI4NTRhZjkzNTFjYTdlNjRlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyMzAzNGQzMTYwMjlkZmM5MjljNmU4NjU0NjkwZGJkOTkxYzRjMTg1YzRkMzkwNTIzMGIwOGE4MzkwM2Y1YTc3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYmQ3MjRkMzg0ZTMxOWFhZWY0NTNkMDU1ZmY0NTQ2ODdlY2NiMTBkNWQxMDBhMGExYWM5Njc5NGYwNDNjZjNjIn0"
         }
       ]
     },
@@ -31,11 +31,11 @@
       "statement": "Encrypted images are created with the --encrypt flag and interactive password confirmation, then later accessed via a masked prompt or the OIFS_PASSWORD environment variable / --password argument.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L149-L186",
+          "resource": "repo://src/bin/oifs.rs#L160-L197",
           "version": "repo-lines-v1:sha256:0bf3bf1553ad1d2c42d3f0f3b57d0c6e84cc7f94df5bdb8da159ca5d9e31acaf:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0YjBlODY5NmUyN2Y5OWE1Yjg0YzVhMmQ5YzJhNWY1ZWNkOWEwM2VmNDc0M2MzNzZjMWYxMDc3NTA5MzQ3YWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI3ZTU5ODQxYmYxOGM0ZmM1MjQxMDcxNTA2NGRiNjc0YWU2NTFlNjZiOTkwZmJlYjA5MTg2MDliZTVkYWJlYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlMGRiZmQ4OGZiZmMyYmQ5MTA2ZDE4MTZmNThkYWMyYTFlNTIxNGE2MzUyMTQxMDY4NTE4Zjg3ZjFiOWM0N2MifQ"
         },
         {
-          "resource": "repo://src/bin/oifs.rs#L352-L401",
+          "resource": "repo://src/bin/oifs.rs#L363-L412",
           "version": "repo-lines-v1:sha256:4a8a9cf258d4ab3b892c5e87f965cd807e3b77d2f82cfe059e0e74b33df9d84c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyOTI2MThjOTk1YTEzMTEwYzkzOTZjYzdlYTY1NDNmZGY3YTZmNzU1YTdiYTExOTBlNjJhMzg3NmFmZDEzNjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlYzA2YTY1OTg1NTdjZTIzYmRiMmZjY2U2ZDRlZDZlNjdiNDZjOTZmZTY4NGQzMjQ5ZWFiNzY0Njk3MTQ1MWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkZWZkMjJmYjE0ODVkMDAxOTdmZmFlNGUwMzdmYzM0MDI3MDI0MzlhOTJjZjczMTZmMDgxZGJjZmI0OTFlNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVhN2VlMDA5MDc0NjM3N2E3OWExNDRlMDQyNDIwNTAyMWUwMmMxMDQ0NmU0MDczYTg3YzdjZTllYzgyNWMxMTIifQ"
         }
       ]
@@ -57,6 +57,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-07T12:20:29.772Z"
+    "at": "2026-10-09T15:04:29.410Z"
   }
 }

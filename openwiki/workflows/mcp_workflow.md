@@ -3,15 +3,15 @@ type: workflow
 title: MCP Server Workflow
 description: A step-by-step guide to using the OIFS MCP server for AI agent integration, including setup, tool usage, and common operations.
 tags: [mcp, workflow, ai-agents, claude-desktop, cursor, tools]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-1d8ff572dc201d9ae2619645
     resource: repo://src/bin/oifs_mcp.rs
   - id: openwiki-source-b0f9117e3c34930435de9b17
     resource: repo://tests/mcp_server_test.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-09T15:04:29.410Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-09T15:04:29.410Z
 ---
 
 # MCP Server Workflow
@@ -60,7 +60,7 @@ See the [MCP server test](repo://tests/mcp_server_test.rs) for a minimal example
 
 ## Available Tools
 
-The server exposes seven tools, each with JSON-Schema validated parameters. Tools return a JSON string indicating success (`{ "ok": true, ... }`) or failure (`{ "ok": false, "error": "..." }`).
+The server exposes eight tools, each with JSON-Schema validated parameters. Tools return a JSON string indicating success (`{ "ok": true, ... }`) or failure (`{ "ok": false, "error": "..." }`).
 
 ### 1. `write_file`
 Write (create or overwrite) a file. Parent directories must exist.
@@ -132,14 +132,21 @@ Delete a file.
 **Parameters**:
 - `path`: Path of the file to delete
 
-### 6. `append_file`
+### 6. `truncate_file`
+Truncate or extend a file to the specified size in bytes.
+
+**Parameters**:
+- `path`: File path inside the image (e.g., `"notes/todo.txt"`)
+- `size`: Target file size in bytes
+
+### 7. `append_file`
 Append a line to a file (creates the file if it does not exist). Ideal for JSONL memory logs.
 
 **Parameters**:
 - `path`: File path inside the image
 - `content`: UTF-8 content to append (a newline is auto-added if missing)
 
-### 7. `status`
+### 8. `status`
 Show filesystem status: image path, total/used/free blocks, and fragmentation ratio.
 
 **Parameters**: None

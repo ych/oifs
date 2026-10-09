@@ -6,10 +6,10 @@ tags: [disk-manager, mmap, persistence, durability, io_engine, io_uring, rwlock,
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
+generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-07T12:20:29.772Z
-generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
+    at: 2026-10-09T15:04:29.410Z
 ---
 
 # DiskManager and Persistence Model

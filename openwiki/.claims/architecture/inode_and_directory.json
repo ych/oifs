@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f6ba6a8246742f4885fb72c9cb2f993ed3781623c62a73999c3848c8e4c528dd",
+  "pageVersion": "sha256:54673db855d5e051973f3b62319fe3144d5feb7a2629d4ef27a731820dcee9cf",
   "claims": [
     {
       "id": "claim_eee6149ed80a41e688eb92aa53776a94",
       "statement": "The 256-byte Inode struct encodes file type, logical and compressed sizes, Unix timestamps, 12 direct/indirect block pointers plus a triple-indirect pointer addressing up to 513GB.",
       "evidence": [
         {
-          "resource": "repo://src/inode.rs#L33-L109",
-          "version": "repo-lines-v1:sha256:a06b3e5eec3bf93ecbf94673658101ae1bb500ccf7f14272afe497c76b866711:eyJzZWxlY3RlZExpbmVDb3VudCI6NzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5OTAxZjYzNWUzZGU5ZjkyNmI5YjJiNjAzY2FjOGEzYWU1YjM1ZDJkNDcyNjFhMTVkZGJjNDllOTQ3NGIxMTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViOWRjYzdjMmZmOTAwYjI0N2EwNjg0OWRiOGUzMjIzYTkxYmM0YjgyMjlhNTMzNmJmYWQ5YzFjYmI1NjlmNTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2NWE3MzYzNzAxZmY2ZWJjMzJkNjA3NTJiNmVlNjI5YzRkYTUwZGQ1Mzc0NTU2OTU3YTNlYmEwMTg1OGE2NDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczYzJkNTlmZTMwZjBjMTgyYjZmMWU5ZjUwOWIyODI2ODQ0NTU3OWYyZWU1ZmRiMTUxNGIyMWViMzQ4ZGNmYmEifQ"
+          "resource": "repo://src/inode.rs#L33-L69",
+          "version": "repo-lines-v1:sha256:5ee276811967de04c1d5286d06fec28ab02999140bff84d29e0aef98aacda95a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5OTAxZjYzNWUzZGU5ZjkyNmI5YjJiNjAzY2FjOGEzYWU1YjM1ZDJkNDcyNjFhMTVkZGJjNDllOTQ3NGIxMTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUxMzFlODJmMWM1NWM5ZWFlMTFmMDU1N2Q5MDE4Nzk4ZmJiZTA3ZDE3ZWNkNjI5OThjZTFkZWUyMDZjZGI4MmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmN2Q4YTkzZDhhMWUzOGJhMjZmN2FjZTg4YzkyYjhkZDhlYWNjNWEwNDg0NWEyNzkwM2MzZTNjOGUyMTRmYjEifQ"
         }
       ]
     },
@@ -17,8 +17,8 @@
       "statement": "Formal verification proofs using Kani prove that Inode::new produces zero-initialized sizes, default-disabled filter flags, and correct FileType for both File and Directory cases.",
       "evidence": [
         {
-          "resource": "repo://src/inode.rs#L197-L283",
-          "version": "repo-lines-v1:sha256:50e646224d67a0ff95920722e24a0efa58535961a84cadcbd7636242051c1442:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZTZkMTBjMTFkNmJiM2M4NGY1YzRiMjVmZjcxNTI5ODk4NzA2ZDk1MWEzZWMzMzFmNjdhMDMzZjBlN2E4NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzMjU4NmExYmQzYWU3YzVjZTU0NjBiMjMxNjk3NTRjY2ZmY2Q4MDgxODQyMmEwYjg1YmQwMzM1NGFhZjA0NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
+          "resource": "repo://src/inode.rs#L323-L351",
+          "version": "repo-lines-v1:sha256:db397f108e1edf9cca697cb8e99d8ef2cac39d8a000716e637a552f02ea6ae70:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmMTQ1ZmUyZDA5ZGRmMTQwM2E1MmU5YThiMjQ5MjgwZjQ2M2VhMzk1YjJiZTJhZjFkMDFhZjkzM2I0YTE5ODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzYWFjZTc3MzMwYTc2Mzk3N2QyNzYwYWJlMzQyMGM5NWUxZTMwYWMwM2M0ZTRlOGQ1ZGFjNzAyNjBhODkxYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlZDg4Njk2ZGVjZmVlNmM1MjliOTEzZDlkYTg1ZjExMmFiOGYzMDBmMjc3ZWFkZDllMGNmNmU2YWI1NjM3MmYifQ"
         }
       ]
     },
@@ -55,6 +55,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-03T08:18:49.684Z"
+    "at": "2026-10-09T15:04:29.410Z"
   }
 }

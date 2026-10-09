@@ -1,11 +1,8 @@
 ---
 type: quickstart_guide
-title: Quick Start Guide
+title: Getting Started with OIFS
 description: Step-by-step instructions to build OIFS, create disk images, and perform basic file operations.
 tags: [quickstart, getting-started, tutorial, cli]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-07T12:20:29.772Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -13,10 +10,13 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-09T15:04:29.410Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-09T15:04:29.410Z" }
 ---
 
-# Quick Start Guide
+# Getting Started with OIFS
 
 This guide provides a quick introduction to building and using OIFS.
 
@@ -61,5 +61,5 @@ cargo run --bin oifs -- -i disk.img get dataset.bin extracted.bin
 For more information, see:
 <!-- openwiki: broken internal link [../workflows/basic_operations.md] file "../workflows/basic_operations.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 - [Basic Operations](../workflows/basic_operations.md)
-<!-- openwiki: broken internal link [../operations/index.md] file "../operations/index.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [Operations](../operations/index.md)
+<!-- openwiki: broken internal link [../operations/cli_reference.md] file "../operations/cli_reference.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [CLI Reference](../operations/cli_reference.md)

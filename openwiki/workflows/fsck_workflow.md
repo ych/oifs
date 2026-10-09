@@ -12,10 +12,10 @@ sources:
     resource: repo://src/ipc.rs
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-09T15:04:29.410Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
+    at: 2026-10-09T15:04:29.410Z
 ---
 
 ## Purpose
@@ -36,8 +36,7 @@ Options:
 - `--image`: Path to the OIFS image file (required)
 - `--password`: Provide password for encrypted filesystems (optional, prompts if omitted)
 - `--json`: Output machine-readable JSON instead of human-readable text
-<!-- openwiki: broken internal link [../quickstart.md#network-mode] heading anchor "network-mode" does not exist in "../quickstart.md". Fix the href or restore the target, then delete this comment. -->
-- `--network`: Enable network mode for remote images (see [basic operations](../quickstart.md#network-mode))
+- `--network`: Enable network mode for remote images (see [basic operations](../workflows/basic_operations.md))
 
 ### IPC interface
 

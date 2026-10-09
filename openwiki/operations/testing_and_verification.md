@@ -12,12 +12,15 @@ sources:
     resource: repo://src/io_engine.rs
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
-  - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
-    resource: repo://src/disk.rs
-  - id: openwiki-source-bc305a37042018e1ebd6d860
-    resource: repo://src/inode.rs
+  - id: openwiki-source-ac22c6c75748af0e3789862c
+    resource: repo://tests/ffi_test.rs
+  - id: openwiki-source-8ab3a63a56b627706c5b2737
+    resource: repo://tests/integration_test.rs
   - id: openwiki-source-5b30823597738f668b07d33c
     resource: repo://tests/shuttle_concurrency_test.rs
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-09T15:04:29.410Z
 ---
 
 # Testing and Formal Verification

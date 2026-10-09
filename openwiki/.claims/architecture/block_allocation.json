@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:390eb8cec1d668fb1a9dfdc7510d664cd3e53d8ca838c4332ba01147512ed763",
+  "pageVersion": "sha256:d13251554692c5912772e50d0f73c0c89ed8f08dd023c1b6b8e1e0d0f5558c58",
   "claims": [
     {
       "id": "claim_a54bbd734e5f48d39aebfd777213aead",
       "statement": "Block and inode allocation is centralized in SimpleBlockAllocator (src/allocator.rs) operating on 4KB bitmap slices, with the DiskManagerInner maintaining free_block_hint and free_inode_hint search hints.",
       "evidence": [
         {
-          "resource": "repo://src/allocator.rs#L40-L85",
-          "version": "repo-lines-v1:sha256:5b9e36a653d3c932092a75b097e53fd2b3bde2938f243ee3d68a18708a20b0b7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5YTMzNzdmNzU5MWE4OWJlNzNjMGQ2MTg2NzlkMzcxY2E3YWIwYjg3M2IxNmYxZDViMDkyNTIxYzUwMjJkNTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4NDk5NTFmMzAzMDU5MTZjMmUwNzg0NGYyNzBlYWFmNmFlMTRlMWY4NGU2ZjlhNzAyYjY3NzlmNmRjYzM2ODEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzMDM4NjhiZTljNmNkN2E1ZTI5MzQyN2Y5YmZiZDFiM2Y5OTM5Mjk1MDdiMjExNjU5ZDYyNDAxZDE0OGM5MmYifQ"
+          "resource": "repo://src/allocator.rs#L40-L124",
+          "version": "repo-lines-v1:sha256:a567e8b40e15197c8f06f3558c3a2077f11c53dc143e4bf01e331f477bb06872:eyJzZWxlY3RlZExpbmVDb3VudCI6ODUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5YTMzNzdmNzU5MWE4OWJlNzNjMGQ2MTg2NzlkMzcxY2E3YWIwYjg3M2IxNmYxZDViMDkyNTIxYzUwMjJkNTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4NDk5NTFmMzAzMDU5MTZjMmUwNzg0NGYyNzBlYWFmNmFlMTRlMWY4NGU2ZjlhNzAyYjY3NzlmNmRjYzM2ODEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzMDM4NjhiZTljNmNkN2E1ZTI5MzQyN2Y5YmZiZDFiM2Y5OTM5Mjk1MDdiMjExNjU5ZDYyNDAxZDE0OGM5MmYifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L201-L205",
+          "resource": "repo://src/disk.rs#L232-L236",
           "version": "repo-lines-v1:sha256:ba2e6e8b095b51033e2d115a681fc4b7b5fb9d29d8d2b66f93e7cec328f91806:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg1M2MxZGI0YzQyMTViN2NmNzkwZDMwY2QzMDUwNWQxYTdlOTQyNTlmMmE5ZWFiMzI4N2E0N2EwMTg0YzFlOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjFkOGRhZDllZjU1Y2JjNTk3YzhhMjJmOWRiMGNlMDNkZmEzM2RmZjhmNWI1NGVmYzg2MTUyZTI4NjhjNDU4ZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDkwYzA1OTM5ZjNmYTZmMGY4ZjI2YmMxYzQ4ZGY3ZDdkZjk2YWNkYTE2NWI3MTA4ODRlOGU5YzQyMDQyMzBlNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmVjNTk5M2E4YTVlNzMzMTdmYzMxYTYyMWVmMjY5NjM5MjdjYjNmN2U1YzdmMTFiMzRkN2ZhZGUzYjdkNTkxYiJ9"
         }
       ]
@@ -21,7 +21,7 @@
       "statement": "The bitmap subsystem uses 64-bit word scanning with the tzcnt instruction (!word.trailing_zeros) and popcount-style word &= word-1 iteration, avoiding per-bit loops for free scanning and set-bit enumeration.",
       "evidence": [
         {
-          "resource": "repo://src/bitmap.rs#L106-L135",
+          "resource": "repo://src/bitmap.rs#L188-L217",
           "version": "repo-lines-v1:sha256:34a988ce9d93b8fba84c59ee9390b698eb5ec640c4e1023cbedd92a898145e32:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1NGZkZDc0OTE4YjE1NTZhOGFjZjU4MDhlMmEyN2QwZjVlZWY2NTdhNmQ5YjgzOTM0ZjY2NmEzMDcwZGM2YjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUzZGNlMzYyMDE0NWFkMDNlZWRlZjhkNzcxZTI3ODBjN2QyN2UwMjM2ZTA2ZWFiYTI1MzU2ZmYwMmNlYWY4NDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImExOGVjZTEzNzJjM2I2MDZjN2U1NDIzZTY2MWJkMTZjMTJkOTIzNzY5M2MxMThkYTk5ZDA1ZjA4OTg0OWEwZjAifQ"
         },
         {
@@ -35,8 +35,8 @@
       "statement": "allocate_with_hint enables amortized O(1) sequential allocation by translating a hint block ID to a bit index and calling find_next_free_wrapped, which wraps to bit 0 when no higher bit is free.",
       "evidence": [
         {
-          "resource": "repo://src/allocator.rs#L67-L85",
-          "version": "repo-lines-v1:sha256:989412c2ff18809a60551c4def6a15ff1e50e4bb66e38ea09ea267846bb8049a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwYzU5ZTM3OWQ3YzU1MTBhODM5Yjg5MzBiNzM5Y2JlYWRmYTgyMzA5NjRjMTMzMTIxMTQwMTcyMjU2YWJjOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhMjk2Y2Y2M2ZhYTc5MzJlYzJhY2EwMTExOGFhMzQyMjIyZDk3MGMwOWMyOTFiNzE2NGNhZDlhZmZkM2U2ZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzMDM4NjhiZTljNmNkN2E1ZTI5MzQyN2Y5YmZiZDFiM2Y5OTM5Mjk1MDdiMjExNjU5ZDYyNDAxZDE0OGM5MmYifQ"
+          "resource": "repo://src/allocator.rs#L67-L124",
+          "version": "repo-lines-v1:sha256:9a36e6821d21d09c1817610477be249e0566f2769c1b1a2f5823d4387348d950:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwYzU5ZTM3OWQ3YzU1MTBhODM5Yjg5MzBiNzM5Y2JlYWRmYTgyMzA5NjRjMTMzMTIxMTQwMTcyMjU2YWJjOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhMjk2Y2Y2M2ZhYTc5MzJlYzJhY2EwMTExOGFhMzQyMjIyZDk3MGMwOWMyOTFiNzE2NGNhZDlhZmZkM2U2ZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzMDM4NjhiZTljNmNkN2E1ZTI5MzQyN2Y5YmZiZDFiM2Y5OTM5Mjk1MDdiMjExNjU5ZDYyNDAxZDE0OGM5MmYifQ"
         },
         {
           "resource": "repo://src/bitmap.rs#L90-L99",
@@ -49,12 +49,12 @@
       "statement": "OIFS files map to physical blocks via direct blocks[0..10], a single indirect block (512 entries), a double indirect block (512*512), and a triple indirect pointer (512*512*512), capping files at 134,480,394 blocks (~513GB).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L807-L892",
-          "version": "repo-lines-v1:sha256:d96c2d1cc89bab8e174eb480e06e9a10094ea31018685863b4f8f664b1393805:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyODA3OWE1ODZmZGQ5NThhMDhiYzZmYjg1NmMwZDg5MzI5MTczZjFiMmE4YWZlYjgxN2M1ZWMwOGZjODk4MWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczNDc5Njg0MGNhYmIyZmI5MDBlZDBhZTc2OWRmYWNhZDZlOWYwNjM5Y2YyNTI5YjcyMTM2YjlhZTg0ZTQxYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhOTQ2NWZhODQxNTQ4NTEwMTAwYjczMDkyMjQ5OWQ5MzAxNjRlMjA1NzBkMzZlODJmNThkNDQ2MzEzOTE1MzQifQ"
+          "resource": "repo://src/disk.rs#L1841-L1945",
+          "version": "repo-lines-v1:sha256:30d71fc58377832cc08a98c36375c3f5463b86c63b319d5c15238a3daf728e1d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxMjY3YTNjMjAyZTdkY2NkMmNhZDgyMzliNGM5Nzg4NTNkNDU5NGUxZjEyZjdlOTgyZjA0ZDIzNTIwNzI1MDEyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjMjgwNzlhNTg2ZmRkOTU4YTA4YmM2ZmI4NTZjMGQ4OTMyOTE3M2YxYjJhOGFmZWI4MTdjNWVjMDhmYzg5ODFkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3MzQ3OTY4NDBjYWJiMmZiOTAwZWQwYWU3NjlkZmFjYWQ2ZTlmMDYzOWNmMjUyOWI3MjEzNmI5YWU4NGU0MWEyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YTk0NjVmYTg0MTU0ODUxMDEwMGI3MzA5MjI0OTlkOTMwMTY0ZTIwNTcwZDM2ZTgyZjU4ZDQ0NjMxMzkxNTM0In0"
         },
         {
-          "resource": "repo://src/inode.rs#L44-L66",
-          "version": "repo-lines-v1:sha256:54cf759ffb3fdd1e03880b0658da3e13bbda48326b32c37d4f6476af55b0ba0a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkZDE1NjZlMzQ4MWQzNTg4NTIyMTAyNmZiOGYwZTlkNjBhM2M4NGRkOWM4ZGFmMDFjMjVmZmIwZWQ4OTk5NWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzZjMzMjkyNWFmNjBjMmNhMGIwNGQ4NzFhZjEyMTk3MDA5NzcyYTQ3YzZiNTY5NTdmZWNmNWY4ZjM3ZDcyYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFiMWRmMDcxMGY2YThmNGRiYzYzYTE1ZjJiNzJmYTZmMTQ0ZmZkMGU1MjJiNmU4ZjJlNTI1NWEzYTY1M2ExZjMifQ"
+          "resource": "repo://src/inode.rs#L44-L153",
+          "version": "repo-lines-v1:sha256:8442a0dc4fcd7ae58a9aa8f9e33494896bbcd1f03d3781f7350423ef9e516436:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ZGQxNTY2ZTM0ODFkMzU4ODUyMjEwMjZmYjhmMGU5ZDYwYTNjODRkZDljOGRhZjAxYzI1ZmZiMGVkODk5OTViIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2YzMzI5MjVhZjYwYzJjYTBiMDRkODcxYWYxMjE5NzAwOTc3MmE0N2M2YjU2OTU3ZmVjZjVmOGYzN2Q3MmEyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxYjFkZjA3MTBmNmE4ZjRkYmM2M2ExNWYyYjcyZmE2ZjE0NGZmZDBlNTIyYjZlOGYyZTUyNTVhM2E2NTNhMWYzIn0"
         }
       ]
     },
@@ -63,7 +63,7 @@
       "statement": "Indirect-tree traversal skips entire zero sub-trees lazily and is capped by the file's logical/compressed size, which reduced sparse large-file read latency from 6.91s to 0.01s.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1070-L1232",
+          "resource": "repo://src/disk.rs#L2557-L2719",
           "version": "repo-lines-v1:sha256:3f01f782401ceb542cc707d81628bd65a18383a7a777f2d58898581f50aa460d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZDk3NDk3MjNmYjNjNDliZDJiMTZlMTNiNWE0YWUwYjJiYzQ1NWM4NmU1YWQ0ZDc5NTlkNmZlODYxYzg4OGI1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyZDg1OGEyZTFkNTU2M2ZjM2Q5YzAzMDE2YjIxODY4ZWUzNjZmMmQxZGNlODc0MTgzYzQzNjIzOGVkM2U4MjliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3Nzk3YmUxYTUzY2I1NGIxMzFkM2NmZTc3ZmI1Y2EwMTVjZTU0ZGY5MDI5Y2NhNmM0YTcxOTM4OWQ0ZDYwMWI0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0MzdiOGQzMWU1Nzk2NjEyNzI0YWIyMWJmNmE0OGRkODBhODkzMzk3M2NhODkxYzUyZjE2NjlkNWRmYjljNmQyIn0"
         }
       ]
@@ -71,6 +71,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-03T11:29:24.571Z"
+    "at": "2026-10-09T15:04:29.410Z"
   }
 }

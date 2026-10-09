@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Quick Start Guide](quickstart.md) - Step-by-step instructions to build OIFS, create disk images, and perform basic file operations.
+- [Getting Started with OIFS](quickstart.md) - Step-by-step instructions to build OIFS, create disk images, and perform basic file operations.
 
 # Directories
 

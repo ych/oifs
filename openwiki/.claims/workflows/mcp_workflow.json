@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:aca42e69e35fe29d830ed2e47611158cd8b8642babb8d8cd0e49c4290d189b89",
+  "pageVersion": "sha256:f2454ae2b93265ba67e8ce317b14346d963b9858d8652e9556041dd9a3391727",
   "claims": [
     {
       "id": "claim_0db87b81151d443bb48e7980dabbd1b6",
@@ -17,7 +17,7 @@
       "statement": "The server is launched via stdio, requires an image path argument, accepts an optional --size flag, and uses the OIFS_PASSWORD environment variable for encryption.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L326-L340",
+          "resource": "repo://src/bin/oifs_mcp.rs#L344-L358",
           "version": "repo-lines-v1:sha256:72a720b4dab1d1718a1336502a5b2de98c3234d3d8b6df5763a325bdf74ae015:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExZDA2ZTA0OGNkMjcyNzM4ZDgzN2IwYzBlYzZhYWIwYjAzMTQ1N2U0NzVmZDQ5YWJiY2JhZmM1ZjczYzAyMGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1ZWNkMzQzNTk4MDRjMzkyY2I0YmYwZjFmOWM2YWM2NWRiMDM2YzcyZWMzOTAyYjk3NzZiODAxY2ZiN2M4NGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliMmJiODBlZGUyNTNjNjRlN2VlMzdiZTUwMzc3OTMxYzYyOGFlZDNlZmM5YWYwZTY4ZGRiZDEyMjBjMTcxNTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmY2Y3YWYxMmI0ZjgzNWEyZjBjOTQ3MGFlMWI3Y2U5YjUyY2EzNDhkNjlkNjM2OTI1NTk2ZjNhMjQ0MjkxZTcifQ"
         }
       ]
@@ -34,11 +34,11 @@
     },
     {
       "id": "claim_7a2596939c884e4092bfcb5c1daf9c79",
-      "statement": "The server registers seven tools via the #[tool_router] macro: write_file, read_file, list_dir, mkdir, delete_file, append_file, and status.",
+      "statement": "The server registers eight tools via the #[tool_router] macro: write_file, read_file, list_dir, mkdir, delete_file, truncate_file, append_file, and status.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L134-L290",
-          "version": "repo-lines-v1:sha256:11f7a8107a1b1a7788ca48132e1b60b1a17cf2eb273f0a19e43f5227e78260a6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlMDY3Y2RlNWRkMGFhNWNlYjM2MjZmZWVmZWFjMjg5YmU1NTRjN2ZlZDAzZDEzY2E2MDhjNDQwYjQ0NDEzMmVkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyNjk0ZWMzNjdmNjA5ZGVhNmM1MTgzYjFhYjdjOGExNzA1MWIyNDYwYmVhNmY4MmY1NTg2ZjQ2ZjU4OWQ1N2ZhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhM2FjMjUwZTQ3MjZmZmM5NjA4YTNmODg3NTMxNDllMjk3NWE1OGJiYWIzY2Y5MjQwZTE4ZGI0ZmU2YTcyZWJiIn0"
+          "resource": "repo://src/bin/oifs_mcp.rs#L142-L308",
+          "version": "repo-lines-v1:sha256:253e0f4118ec84dec33a4411d525664d89fa531393fe88deebbc16f566ed955b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlMDY3Y2RlNWRkMGFhNWNlYjM2MjZmZWVmZWFjMjg5YmU1NTRjN2ZlZDAzZDEzY2E2MDhjNDQwYjQ0NDEzMmVkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyNjk0ZWMzNjdmNjA5ZGVhNmM1MTgzYjFhYjdjOGExNzA1MWIyNDYwYmVhNmY4MmY1NTg2ZjQ2ZjU4OWQ1N2ZhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhM2FjMjUwZTQ3MjZmZmM5NjA4YTNmODg3NTMxNDllMjk3NWE1OGJiYWIzY2Y5MjQwZTE4ZGI0ZmU2YTcyZWJiIn0"
         }
       ]
     },
@@ -47,15 +47,15 @@
       "statement": "The write_file tool creates or overwrites a file at a given path (requiring parent directories to exist), read_file returns a file's UTF-8 contents, and append_file appends content to a file (creating it if necessary) and is suited for JSONL memory logs.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L139-L163",
-          "version": "repo-lines-v1:sha256:23ca7f4755ccb41d42f85c7f0f66238b63a08da0ec5be67eabfe7d9fb0fcac93:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwZGNhNTAwNzk5ODRjYTIxMWI5N2FmNmU4MDRhYTFjNjk0YmZhODdkNTQ5NTkxYTdiMzVlMGI1MGI4MWI1MDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVhZjZiZTZjMjJjMjFjNmU1NGE1MTNiYTExN2E1NGNmNDkwOTkwZDg1ZmY1MjQxZWUzZjhmZTUxODNhOGVhMDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4ZTdjNTNkMWIzM2U1Njc5MjAwMDA3NGI1M2M1MTU4MTY5NWY2ZGI3Zjk4ZjUwZWU5OTdlMjNmNTk5YzViYzkifQ"
+          "resource": "repo://src/bin/oifs_mcp.rs#L147-L166",
+          "version": "repo-lines-v1:sha256:b035341ee975a57d67e0d98399326ccadc9b7223ba22012c7c743b35b5a86bb5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwZGNhNTAwNzk5ODRjYTIxMWI5N2FmNmU4MDRhYTFjNjk0YmZhODdkNTQ5NTkxYTdiMzVlMGI1MGI4MWI1MDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVhZjZiZTZjMjJjMjFjNmU1NGE1MTNiYTExN2E1NGNmNDkwOTkwZDg1ZmY1MjQxZWUzZjhmZTUxODNhOGVhMDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4ZTdjNTNkMWIzM2U1Njc5MjAwMDA3NGI1M2M1MTU4MTY5NWY2ZGI3Zjk4ZjUwZWU5OTdlMjNmNTk5YzViYzkifQ"
         },
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L168-L179",
+          "resource": "repo://src/bin/oifs_mcp.rs#L171-L182",
           "version": "repo-lines-v1:sha256:b6e8894e30c7f52ac975bf65ea4d704c116755cbe9eb0c7c9a9f7497cb225031:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5MGIzYzIwNWU2NjUzOWU3YTlhYzA1NzcyY2UwNDU5YjI5NjMxZDdmYTc5NzI3MDFhZjNjODM0OWVkNDFkMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2OWM0YTkxYWRlZWQzMDY1MWVkODJlZmQ1MTIxMWQwM2ViNWMwMmFmMTRjNjViOTY5MTExNTc5MDI0OTM3NmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhNmM5YTk4N2U5NjkyZGUwYTQ2Yjg5MzY0NzgxOWUxMWJiZjhjZjdkYjFhZTZiYzgxZjJhMTI0ZTJhNmNiMDgifQ"
         },
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L242-L267",
+          "resource": "repo://src/bin/oifs_mcp.rs#L260-L285",
           "version": "repo-lines-v1:sha256:6663044b0e5a64f6f0784fb75f90bcf79e20646afcd1716c7050032d629867fe:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmZjU5YmFhZjcyNGU3OTBkMWI5Y2JhZDUwNzBhODYyY2U5N2VjNjM2ODg4NWU2MGExMWI4ZDdkZDhlN2M3ZGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmYjk5NmFlNzlkZWVkMjQ2MDczMTc5MTEyMDFlZDcxNmE1MzU3NTUzMDUyNGEzNTQwM2VkMTMyZTE0MmM1NzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzMDE2MWMwODA5ZmUyZDVkYWRkNzM1MjE5ZTdhYzEzZTVjZDczNzk3MGI0MDM3ZmE5NDI2NDMxN2UwNDMwZTQifQ"
         }
       ]
@@ -65,7 +65,7 @@
       "statement": "Each tool returns a JSON string indicating success ({\"ok\": true, ...}) or failure ({\"ok\": false, \"error\": \"...\"}), and all file and directory paths are relative to the root of the OIFS image.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs_mcp.rs#L159-L163",
+          "resource": "repo://src/bin/oifs_mcp.rs#L162-L166",
           "version": "repo-lines-v1:sha256:5bb5e414c2a14bbb8fd77c6e3f0c17f4158b39cd0a0dc6936d03f0f942858cf3:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDMyOTE1YjIxZDhjODM0NDc0ZTQ3NjhiMTRlMTc0MTI2YWZlOTllNTVkMWU1MmY1ZGU3ODBjMTZkNDNiNzUxZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzI3ZTkxMmQ1MDQ0ZDhiZjcwZDYwODJmYzY2ZmU2YTg5Y2E4ODBlNThhNzFkNDkwNWNlYzk3M2ZlNDYzNGI1YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzhlN2M1M2QxYjMzZTU2NzkyMDAwMDc0YjUzYzUxNTgxNjk1ZjZkYjdmOThmNTBlZTk5N2UyM2Y1OTljNWJjOSJ9"
         },
         {
@@ -77,6 +77,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-04T10:12:53.730Z"
+    "at": "2026-10-09T15:04:29.410Z"
   }
 }

@@ -12,18 +12,18 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-bc305a37042018e1ebd6d860
     resource: repo://src/inode.rs
-generated: { by: "antigravity", at: "2026-10-03T11:29:24.571Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-13T15:40:56.857Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-03T11:29:24.571Z
+    at: 2026-10-13T15:40:56.857Z
 ---
 
 ## Responsibility and ownership
 
 Block allocation is the responsibility of the bitmap subsystem
-(`src/bitmap.rs`) combined with the 
-(`src/allocator.rs#L36-L88`). The 
-(`src/disk.rs`) owns the actual bitmap slices in the image and drives
+(`../src/bitmap.rs`) combined with the 
+(`../src/allocator.rs#L36-L88`). The 
+(`../src/disk.rs`) owns the actual bitmap slices in the image and drives
 allocation through cached search hints stored in
 `DiskManagerInner` (`free_block_hint`, `free_inode_hint`). Every allocation,
 deallocation, directory write, and indirect-block expansion on the write path
@@ -40,11 +40,11 @@ blocks starting at `data_block_start`).
 
 Two views wrap the raw bytes:
 
-<!-- openwiki: broken internal link [src/bitmap.rs#L2-L111] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [`BitmapRef`](src/bitmap.rs#L2-L111) — read-only view used for analysis,
+<!-- openwiki: broken internal link [../src/bitmap.rs#L2-L111] file "../src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [`BitmapRef`](../src/bitmap.rs#L2-L111) — read-only view used for analysis,
   scanning, and fsck.
-<!-- openwiki: broken internal link [src/bitmap.rs#L186-L245] file "src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [`Bitmap`](src/bitmap.rs#L186-L245) — mutable view that forwards `set` /
+<!-- openwiki: broken internal link [../src/bitmap.rs#L186-L245] file "../src/bitmap.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [`Bitmap`](../src/bitmap.rs#L186-L245) — mutable view that forwards `set` /
   `clear` and delegates search helpers to a `BitmapRef`.
 
 ## 64-bit word scanning and hardware population
@@ -90,11 +90,11 @@ keeping sequential allocation compact.
 
 ## Indirect block addressing scheme
 
-<!-- openwiki: broken internal link [src/disk.rs] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-[`DiskManager`](src/disk.rs) maps logical file blocks to physical blocks using
+<!-- openwiki: broken internal link [../src/disk.rs] file "../src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+[`DiskManager`](../src/disk.rs) maps logical file blocks to physical blocks using
 a hybrid direct + indirect index tree. Each block pointer entry is an 8-byte
 little-endian `u64`, so a 4KB block holds 512 pointers. The layout
-(`src/disk.rs#L197-L325` for allocation, `collect_inode_blocks` for collection):
+(`../src/disk.rs#L197-L325` for allocation, `collect_inode_blocks` for collection):
 
 | Level | Pointer field | Capacity | Logical block index range |
 | --- | --- | --- | --- |
@@ -122,8 +122,8 @@ under concurrent access serialized by the DiskManager mutex.
 
 ## Extension seams
 
-<!-- openwiki: broken internal link [src/allocator.rs#L13-L26] file "src/allocator.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-Allocation is centralized behind the [`BlockAllocator`](src/allocator.rs#L13-L26)
+<!-- openwiki: broken internal link [../src/allocator.rs#L13-L26] file "../src/allocator.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+Allocation is centralized behind the [`BlockAllocator`](../src/allocator.rs#L13-L26)
 trait (`allocate`/`free`), so alternative allocation strategies could be added
 without touching the write path. The hint machinery, bitmap word scanning, and
 the indirect addressing tree are independent seams — each was optimized without

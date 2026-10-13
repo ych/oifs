@@ -3,15 +3,15 @@ type: workflow
 title: Compression and Filter Workflows
 description: Guide to using Blosc2 pre-compression filters, compression modes, and filter pipelines for optimal space savings.
 tags: [compression, filters, workflow, blosc2]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
   - id: openwiki-source-95790d7cf7011b1d80e862fd
     resource: repo://tests/compression_modes_test.rs
 generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-13T15:40:56.857Z
 ---
 
 ## Overview

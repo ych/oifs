@@ -15,7 +15,7 @@ sources:
 generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
+    at: 2026-10-13T15:40:56.857Z
 ---
 
 ## Purpose

@@ -1,8 +1,8 @@
 {
-  "updatedAt": "2026-10-08T17:52:41.624Z",
+  "updatedAt": "2026-10-13T17:49:03.217Z",
   "command": "update",
   "gitHead": "1c90958b982f99a04b52af56789794d94bc4f022",
-  "model": "host-agent/antigravity",
+  "model": "nvidia/nemotron-3-super-120b-a12b:free",
   "status": "interrupted",
   "language": "en"
 }

@@ -316,3 +316,41 @@ fn bench_read_path_unaffected() {
         );
     }
 }
+
+/// Benchmarks multi-megabyte writes and overwrites on a journaled image to demonstrate
+/// the P0-2 O(N^2) elimination (AllocSim fresh set and used blocks FxHashSet).
+#[test]
+#[ignore]
+fn bench_large_file_journaled_write_and_append() {
+    println!("\n=== Large File Journaled Write & Overwrite (P0-2 Optimization Benchmark) ===");
+    for size_mb in [1, 2, 4, 8, 16, 32] {
+        let size = (size_mb * MB) as usize;
+        let img = Img::new(&format!("large_{size_mb}mb"));
+        let dm = DiskManager::open_journaled(&img.0, 300 * MB).expect("create");
+        let root = dm.superblock().root_inode;
+        let file = dm.create_file(root, "large.bin").expect("create");
+        let payload = vec![0x3cu8; size];
+
+        // 1. Initial multi-MB allocation & write
+        let t0 = Instant::now();
+        dm.write_data(file, 0, &payload, CompressionMode::Never)
+            .expect("write");
+        let write_dur = t0.elapsed();
+
+        // 2. Overwrite multi-MB
+        let t1 = Instant::now();
+        dm.write_data(file, 0, &payload, CompressionMode::Never)
+            .expect("overwrite");
+        let overwrite_dur = t1.elapsed();
+
+        println!(
+            "  {:>2} MB ({:>4} blocks) | Initial write: {:>8.2?} ({:>6.1} MB/s) | Overwrite: {:>8.2?} ({:>6.1} MB/s)",
+            size_mb,
+            size / 4096,
+            write_dur,
+            (size_mb as f64) / write_dur.as_secs_f64(),
+            overwrite_dur,
+            (size_mb as f64) / overwrite_dur.as_secs_f64(),
+        );
+    }
+}

@@ -327,3 +327,40 @@ fn test_large_indirect_file_defragmentation() {
     let fsck = dm.verify_integrity().expect("verify integrity");
     assert!(fsck.is_clean);
 }
+
+#[test]
+fn test_defragment_path_injection_defense() {
+    let ctx = TestContext::new("test_defrag_path_injection");
+    let dm = DiskManager::open(&ctx.image_path, 10 * 1024 * 1024).expect("open dm");
+
+    // 1. Mismatched source path must be rejected with PermissionDenied
+    let other_file = "Cargo.toml";
+    let res_mismatch = dm.defragment(other_file, DefragMode::Safe, None);
+    assert!(res_mismatch.is_err());
+    let err_str = res_mismatch.unwrap_err().to_string();
+    assert!(
+        err_str.contains("Permission denied") || err_str.contains("does not match"),
+        "Error: {}",
+        err_str
+    );
+
+    // 2. Output path attempting directory traversal outside directory
+    let res_traversal = dm.defragment(&ctx.image_path, DefragMode::Safe, Some("../escaped.tmp"));
+    assert!(res_traversal.is_err());
+    let err_str = res_traversal.unwrap_err().to_string();
+    assert!(
+        err_str.contains("Permission denied") || err_str.contains("Invalid defragment output path"),
+        "Error: {}",
+        err_str
+    );
+
+    // 3. Output path pointing directly to source image must be rejected
+    let res_overwrite = dm.defragment(&ctx.image_path, DefragMode::Safe, Some(&ctx.image_path));
+    assert!(res_overwrite.is_err());
+    let err_str = res_overwrite.unwrap_err().to_string();
+    assert!(
+        err_str.contains("Permission denied") || err_str.contains("cannot overwrite"),
+        "Error: {}",
+        err_str
+    );
+}

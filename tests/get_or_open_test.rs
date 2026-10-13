@@ -506,26 +506,27 @@ fn test_symlink_inter_process_cli_and_session() {
     }
 
     let total_size = 10 * 1024 * 1024;
-    // 1. Create real image and symlinks via get_or_open
-    let _master_session = OifsSession::get_or_open(real_img, total_size).expect("create master");
+    // 1. Create real image and symlinks via get_or_open_ipc
+    let _master_session =
+        OifsSession::get_or_open_ipc(real_img, total_size).expect("create master");
 
     symlink(real_img, link_master).expect("symlink master");
     symlink(real_img, link_cli).expect("symlink cli");
 
     // 2. Open Direct Session via link_master in this process
     let master_session =
-        OifsSession::get_or_open(link_master, total_size).expect("open via link_master");
+        OifsSession::get_or_open_ipc(link_master, total_size).expect("open via link_master");
     assert!(
         master_session.is_direct(),
         "Master session should be Direct"
     );
 
-    // 3. Subprocess CLI accesses the filesystem via link_cli
+    // 3. Subprocess CLI accesses the filesystem via link_cli with --ipc
     let test_file = "payload_from_cli.txt";
     fs::write(test_file, b"Cross-process data written via symlink").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_oifs"))
-        .args(["--image", link_cli, "put", test_file])
+        .args(["--ipc", "--image", link_cli, "put", test_file])
         .output()
         .expect("CLI put execution failed");
 

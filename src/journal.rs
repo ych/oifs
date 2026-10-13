@@ -244,6 +244,15 @@ pub enum MetadataOp {
         /// `true` to mark allocated, `false` to mark free.
         allocated: bool,
     },
+    /// Set or clear a contiguous run of bits in the data bitmap (P4.11).
+    SetDataBitmapRange {
+        /// Starting data block id.
+        start_block: u64,
+        /// Number of contiguous blocks.
+        count: u32,
+        /// `true` to mark allocated, `false` to mark free.
+        allocated: bool,
+    },
     /// Overwrite the 256-byte inode record for `inode_id`.
     WriteInode {
         /// Target inode id.
@@ -269,6 +278,7 @@ const OP_SET_INODE_BITMAP: u8 = 1;
 const OP_SET_DATA_BITMAP: u8 = 2;
 const OP_WRITE_INODE: u8 = 3;
 const OP_WRITE_BLOCK_SLICE: u8 = 4;
+const OP_SET_DATA_BITMAP_RANGE: u8 = 5;
 
 impl MetadataOp {
     /// Append the wire encoding of this op to `out`.
@@ -290,6 +300,16 @@ impl MetadataOp {
             } => {
                 out.push(OP_SET_DATA_BITMAP);
                 out.extend_from_slice(&block_id.to_le_bytes());
+                out.push(u8::from(*allocated));
+            }
+            MetadataOp::SetDataBitmapRange {
+                start_block,
+                count,
+                allocated,
+            } => {
+                out.push(OP_SET_DATA_BITMAP_RANGE);
+                out.extend_from_slice(&start_block.to_le_bytes());
+                out.extend_from_slice(&count.to_le_bytes());
                 out.push(u8::from(*allocated));
             }
             MetadataOp::WriteInode {
@@ -318,6 +338,7 @@ impl MetadataOp {
     pub fn encoded_size(&self) -> usize {
         match self {
             MetadataOp::SetInodeBitmap { .. } | MetadataOp::SetDataBitmap { .. } => 1 + 8 + 1,
+            MetadataOp::SetDataBitmapRange { .. } => 1 + 8 + 4 + 1,
             MetadataOp::WriteInode { .. } => 1 + 8 + INODE_BYTES,
             MetadataOp::WriteBlockSlice { data, .. } => 1 + 8 + 4 + 4 + data.len(),
         }
@@ -352,6 +373,19 @@ impl MetadataOp {
                         allocated: bytes[9] != 0,
                     },
                     10,
+                ))
+            }
+            OP_SET_DATA_BITMAP_RANGE => {
+                if bytes.len() < 14 {
+                    return None;
+                }
+                Some((
+                    MetadataOp::SetDataBitmapRange {
+                        start_block: u64::from_le_bytes(bytes[1..9].try_into().ok()?),
+                        count: u32::from_le_bytes(bytes[9..13].try_into().ok()?),
+                        allocated: bytes[13] != 0,
+                    },
+                    14,
                 ))
             }
             OP_WRITE_INODE => {
@@ -403,6 +437,155 @@ impl MetadataOp {
     }
 }
 
+/// Coalesce contiguous operations into compact single operations (P4.11).
+///
+/// Merges adjacent `SetDataBitmap` allocations into `SetDataBitmapRange` and
+/// contiguous `WriteBlockSlice` updates into single slice writes, shrinking
+/// WAL frame sizes for multi-block operations by orders of magnitude.
+pub fn coalesce_ops(ops: Vec<MetadataOp>) -> Vec<MetadataOp> {
+    if ops.len() <= 1 {
+        return ops;
+    }
+
+    let mut inode_bitmap_ops = Vec::new();
+    let mut data_bitmap_ops = Vec::new();
+    let mut block_slice_ops: std::collections::BTreeMap<(u64, u32), Vec<u8>> =
+        std::collections::BTreeMap::new();
+    let mut inode_ops: rustc_hash::FxHashMap<u64, Box<[u8; INODE_BYTES]>> =
+        rustc_hash::FxHashMap::default();
+
+    for op in ops {
+        match op {
+            MetadataOp::SetInodeBitmap {
+                inode_id,
+                allocated,
+            } => {
+                inode_bitmap_ops.push((inode_id, allocated));
+            }
+            MetadataOp::SetDataBitmap {
+                block_id,
+                allocated,
+            } => {
+                data_bitmap_ops.push((block_id, 1u32, allocated));
+            }
+            MetadataOp::SetDataBitmapRange {
+                start_block,
+                count,
+                allocated,
+            } => {
+                data_bitmap_ops.push((start_block, count, allocated));
+            }
+            MetadataOp::WriteBlockSlice {
+                block_id,
+                offset,
+                data,
+            } => {
+                block_slice_ops.insert((block_id, offset), data);
+            }
+            MetadataOp::WriteInode {
+                inode_id,
+                inode_bytes,
+            } => {
+                inode_ops.insert(inode_id, inode_bytes);
+            }
+        }
+    }
+
+    let mut coalesced = Vec::new();
+
+    // 1. Inode bitmap ops
+    for (inode_id, allocated) in inode_bitmap_ops {
+        coalesced.push(MetadataOp::SetInodeBitmap {
+            inode_id,
+            allocated,
+        });
+    }
+
+    // 2. Data bitmap ops: sort by allocated, then start_block
+    data_bitmap_ops.sort_unstable_by_key(|&(blk, _, alloc)| (alloc, blk));
+    let mut cur_range: Option<(u64, u32, bool)> = None;
+    for (blk, count, alloc) in data_bitmap_ops {
+        match cur_range {
+            Some((start, cur_count, cur_alloc)) => {
+                if cur_alloc == alloc && start + cur_count as u64 == blk {
+                    cur_range = Some((start, cur_count + count, cur_alloc));
+                } else {
+                    if cur_count == 1 {
+                        coalesced.push(MetadataOp::SetDataBitmap {
+                            block_id: start,
+                            allocated: cur_alloc,
+                        });
+                    } else {
+                        coalesced.push(MetadataOp::SetDataBitmapRange {
+                            start_block: start,
+                            count: cur_count,
+                            allocated: cur_alloc,
+                        });
+                    }
+                    cur_range = Some((blk, count, alloc));
+                }
+            }
+            None => {
+                cur_range = Some((blk, count, alloc));
+            }
+        }
+    }
+    if let Some((start, count, alloc)) = cur_range {
+        if count == 1 {
+            coalesced.push(MetadataOp::SetDataBitmap {
+                block_id: start,
+                allocated: alloc,
+            });
+        } else {
+            coalesced.push(MetadataOp::SetDataBitmapRange {
+                start_block: start,
+                count,
+                allocated: alloc,
+            });
+        }
+    }
+
+    // 3. Block slice ops: merge contiguous slices on the same block
+    let mut cur_slice: Option<(u64, u32, Vec<u8>)> = None;
+    for ((blk, off), data) in block_slice_ops {
+        match cur_slice {
+            Some((cur_blk, cur_off, mut cur_data)) => {
+                if cur_blk == blk && cur_off as usize + cur_data.len() == off as usize {
+                    cur_data.extend_from_slice(&data);
+                    cur_slice = Some((cur_blk, cur_off, cur_data));
+                } else {
+                    coalesced.push(MetadataOp::WriteBlockSlice {
+                        block_id: cur_blk,
+                        offset: cur_off,
+                        data: cur_data,
+                    });
+                    cur_slice = Some((blk, off, data));
+                }
+            }
+            None => {
+                cur_slice = Some((blk, off, data));
+            }
+        }
+    }
+    if let Some((blk, off, data)) = cur_slice {
+        coalesced.push(MetadataOp::WriteBlockSlice {
+            block_id: blk,
+            offset: off,
+            data,
+        });
+    }
+
+    // 4. Inode post-images (deduplicated)
+    for (inode_id, inode_bytes) in inode_ops {
+        coalesced.push(MetadataOp::WriteInode {
+            inode_id,
+            inode_bytes,
+        });
+    }
+
+    coalesced
+}
+
 /// Encode a whole operation list into a transaction payload.
 pub fn encode_ops(ops: &[MetadataOp]) -> Vec<u8> {
     let mut out = Vec::with_capacity(ops.iter().map(MetadataOp::encoded_size).sum());
@@ -430,7 +613,8 @@ fn crc_input(tx_seq: u64, payload_len: u32, payload: &[u8]) -> Vec<u8> {
 /// Frame layout: `magic(4) tx_seq(8) payload_len(4) crc32c(4) payload commit(4)`.
 /// The CRC32C covers `tx_seq || payload_len || payload`.
 pub fn encode_frame(tx_seq: u64, ops: &[MetadataOp]) -> Vec<u8> {
-    let payload = encode_ops(ops);
+    let coalesced = coalesce_ops(ops.to_vec());
+    let payload = encode_ops(&coalesced);
     let payload_len = payload.len() as u32;
     let crc = crc32c(&crc_input(tx_seq, payload_len, &payload));
 
@@ -563,6 +747,26 @@ pub fn apply_op_in_place(
                 byte[byte_idx] |= mask;
             } else {
                 byte[byte_idx] &= !mask;
+            }
+            Ok(())
+        }
+        MetadataOp::SetDataBitmapRange {
+            start_block,
+            count,
+            allocated,
+        } => {
+            let blk = sb.data_bitmap_block;
+            let byte = block_range_mut(image, bs, blk)
+                .ok_or(JournalError::BlockOutOfRange { block_id: blk })?;
+            let start_bit = usize::try_from(start_block.saturating_sub(sb.data_block_start))
+                .map_err(|_| JournalError::BlockOutOfRange {
+                    block_id: *start_block,
+                })?;
+            let mut bm = crate::bitmap::Bitmap::new(byte);
+            if *allocated {
+                bm.set_range(start_bit, *count as usize);
+            } else {
+                bm.clear_range(start_bit, *count as usize);
             }
             Ok(())
         }
@@ -834,19 +1038,37 @@ impl<'a> JournalRing<'a> {
         F: FnMut(&MetadataOp) -> Result<(), JournalError>,
     {
         let ring = self.ring_bytes;
+        if ring == 0 {
+            self.state.head = 0;
+            self.state.tail = 0;
+            self.state.cleanly_unmounted = true;
+            self.persist();
+            return Ok(0);
+        }
+
+        let target_head = self.state.head % ring;
         let mut cursor = self.state.tail % ring;
         let mut replayed = 0usize;
+        let mut bytes_traversed = 0u64;
 
-        while cursor != self.state.head % ring {
+        while cursor != target_head && bytes_traversed < ring {
             let off = usize::try_from(cursor).unwrap_or(0);
-            let buf = &self.ring()[off..];
+            let ring_slice = self.ring();
+            if off >= ring_slice.len() {
+                break;
+            }
+            let buf = &ring_slice[off..];
             match decode_frame(buf) {
                 Some((tx, total)) => {
+                    if total == 0 {
+                        break;
+                    }
                     for op in &tx.ops {
                         apply(op)?;
                     }
                     let total64 = total as u64;
                     cursor = (cursor + total64) % ring;
+                    bytes_traversed = bytes_traversed.saturating_add(total64);
                     replayed += 1;
                 }
                 None => {
@@ -2113,6 +2335,9 @@ pub(crate) struct AllocSim {
     pub(crate) free_block_hint: u64,
     /// Blocks allocated during this simulation, in order.
     pub(crate) fresh_blocks: Vec<u64>,
+    fresh_set: rustc_hash::FxHashSet<u64>,
+    /// Simulated pointer modifications: (parent_blk, entry_idx) -> child_blk
+    pub(crate) pointers: rustc_hash::FxHashMap<(u64, usize), u64>,
 }
 
 impl AllocSim {
@@ -2133,6 +2358,8 @@ impl AllocSim {
             free_inode_hint,
             free_block_hint,
             fresh_blocks: Vec::new(),
+            fresh_set: rustc_hash::FxHashSet::default(),
+            pointers: rustc_hash::FxHashMap::default(),
         })
     }
 
@@ -2152,11 +2379,42 @@ impl AllocSim {
             .map_err(DiskManagerError::Allocator)?;
         self.free_block_hint = blk + 1;
         self.fresh_blocks.push(blk);
+        self.fresh_set.insert(blk);
         Ok(blk)
     }
 
     pub(crate) fn is_fresh(&self, block_id: u64) -> bool {
-        self.fresh_blocks.contains(&block_id)
+        if self.fresh_blocks.is_empty() {
+            return false;
+        }
+        self.fresh_set.contains(&block_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        inode_bitmap: Vec<u8>,
+        data_bitmap: Vec<u8>,
+        data_start: u64,
+        free_inode_hint: u64,
+        free_block_hint: u64,
+    ) -> Self {
+        Self {
+            inode_bitmap,
+            data_bitmap,
+            data_start,
+            free_inode_hint,
+            free_block_hint,
+            fresh_blocks: Vec::new(),
+            fresh_set: rustc_hash::FxHashSet::default(),
+            pointers: rustc_hash::FxHashMap::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_fresh(&mut self) {
+        self.fresh_blocks.clear();
+        self.fresh_set.clear();
+        self.pointers.clear();
     }
 }
 
@@ -2197,6 +2455,9 @@ pub(crate) fn sim_get_or_alloc_block(
         sim: &mut AllocSim,
         ops: &mut Vec<crate::journal::MetadataOp>,
     ) -> Result<u64, DiskManagerError> {
+        if let Some(&cached) = sim.pointers.get(&(parent_blk, idx)) {
+            return Ok(cached);
+        }
         // A freshly allocated pointer block reads as all-zero, so its entries are 0.
         let existing = if sim.is_fresh(parent_blk) {
             0
@@ -2207,6 +2468,7 @@ pub(crate) fn sim_get_or_alloc_block(
             return Ok(existing);
         }
         let blk = sim.alloc_block()?;
+        sim.pointers.insert((parent_blk, idx), blk);
         ops.push(crate::journal::MetadataOp::SetDataBitmap {
             block_id: blk,
             allocated: true,
@@ -2737,14 +2999,13 @@ mod alloc_sim_and_staging_tests {
 
     #[test]
     fn test_alloc_sim_exhaustion() {
-        let mut sim = AllocSim {
-            inode_bitmap: vec![0xFF; 64], // all bits set
-            data_bitmap: vec![0xFF; 64],  // all bits set
-            data_start: 10,
-            free_inode_hint: 0,
-            free_block_hint: 10,
-            fresh_blocks: Vec::new(),
-        };
+        let mut sim = AllocSim::new_for_test(
+            vec![0xFF; 64], // all bits set
+            vec![0xFF; 64], // all bits set
+            10,
+            0,
+            10,
+        );
         match sim.alloc_inode() {
             Err(DiskManagerError::Allocator(AllocatorError::NoSpace)) => {}
             other => panic!("expected NoSpace, got {other:?}"),
@@ -2760,14 +3021,7 @@ mod alloc_sim_and_staging_tests {
 
     #[test]
     fn test_alloc_sim_allocation_and_fresh_tracking() {
-        let mut sim = AllocSim {
-            inode_bitmap: vec![0u8; 16],
-            data_bitmap: vec![0u8; 16],
-            data_start: 100,
-            free_inode_hint: 0,
-            free_block_hint: 100,
-            fresh_blocks: Vec::new(),
-        };
+        let mut sim = AllocSim::new_for_test(vec![0u8; 16], vec![0u8; 16], 100, 0, 100);
 
         let ino1 = sim.alloc_inode().expect("alloc inode 1");
         let ino2 = sim.alloc_inode().expect("alloc inode 2");
@@ -2819,14 +3073,7 @@ mod alloc_sim_and_staging_tests {
     fn test_sim_get_or_alloc_block_out_of_range() {
         let (_f, mmap) = prune_pointer_tests::scratch();
         let mut inode = Inode::new(crate::inode::FileType::File);
-        let mut sim = AllocSim {
-            inode_bitmap: vec![0u8; 16],
-            data_bitmap: vec![0u8; 16],
-            data_start: 10,
-            free_inode_hint: 0,
-            free_block_hint: 10,
-            fresh_blocks: Vec::new(),
-        };
+        let mut sim = AllocSim::new_for_test(vec![0u8; 16], vec![0u8; 16], 10, 0, 10);
         let mut ops = Vec::new();
 
         const MAX_LOGICAL_BLOCKS: usize = 10 + 512 + 512 * 512 + 512 * 512 * 512;
@@ -2844,14 +3091,7 @@ mod alloc_sim_and_staging_tests {
     fn test_sim_get_or_alloc_block_direct_allocation_and_idempotency() {
         let (_f, mmap) = prune_pointer_tests::scratch();
         let mut inode = Inode::new(crate::inode::FileType::File);
-        let mut sim = AllocSim {
-            inode_bitmap: vec![0u8; 16],
-            data_bitmap: vec![0u8; 16],
-            data_start: 20,
-            free_inode_hint: 0,
-            free_block_hint: 20,
-            fresh_blocks: Vec::new(),
-        };
+        let mut sim = AllocSim::new_for_test(vec![0u8; 16], vec![0u8; 16], 20, 0, 20);
         let mut ops = Vec::new();
 
         // Direct block 0: not yet allocated
@@ -2886,14 +3126,7 @@ mod alloc_sim_and_staging_tests {
     fn test_sim_get_or_alloc_block_single_indirect_lifecycle() {
         let (_f, mut mmap) = prune_pointer_tests::scratch();
         let mut inode = Inode::new(crate::inode::FileType::File);
-        let mut sim = AllocSim {
-            inode_bitmap: vec![0u8; 16],
-            data_bitmap: vec![0u8; 16],
-            data_start: 30,
-            free_inode_hint: 0,
-            free_block_hint: 30,
-            fresh_blocks: Vec::new(),
-        };
+        let mut sim = AllocSim::new_for_test(vec![0u8; 16], vec![0u8; 16], 30, 0, 30);
         let mut ops = Vec::new();
 
         // 1. First block in single indirect (idx = 10)
@@ -2947,7 +3180,7 @@ mod alloc_sim_and_staging_tests {
         );
 
         // 3. Plant pointer in mmap for non-fresh root test
-        sim.fresh_blocks.clear();
+        sim.clear_fresh();
         let off = 30 * BLOCK_SIZE + 2 * 8;
         mmap[off..off + 8].copy_from_slice(&99u64.to_le_bytes());
 
@@ -2961,14 +3194,7 @@ mod alloc_sim_and_staging_tests {
     fn test_sim_get_or_alloc_block_double_indirect_lifecycle() {
         let (_f, mut mmap) = prune_pointer_tests::scratch();
         let mut inode = Inode::new(crate::inode::FileType::File);
-        let mut sim = AllocSim {
-            inode_bitmap: vec![0u8; 16],
-            data_bitmap: vec![0u8; 16],
-            data_start: 50,
-            free_inode_hint: 0,
-            free_block_hint: 50,
-            fresh_blocks: Vec::new(),
-        };
+        let mut sim = AllocSim::new_for_test(vec![0u8; 16], vec![0u8; 16], 50, 0, 50);
         let mut ops = Vec::new();
 
         // 10 + 512 = 522
@@ -3016,7 +3242,7 @@ mod alloc_sim_and_staging_tests {
         );
 
         // Preexisting double-indirect tree:
-        sim.fresh_blocks.clear();
+        sim.clear_fresh();
         let dib_off = 50 * BLOCK_SIZE + 8;
         mmap[dib_off..dib_off + 8].copy_from_slice(&60u64.to_le_bytes());
         let sib_off = 60 * BLOCK_SIZE;
@@ -3037,14 +3263,7 @@ mod alloc_sim_and_staging_tests {
     fn test_sim_get_or_alloc_block_triple_indirect_lifecycle() {
         let (_f, mut mmap) = prune_pointer_tests::scratch();
         let mut inode = Inode::new(crate::inode::FileType::File);
-        let mut sim = AllocSim {
-            inode_bitmap: vec![0u8; 16],
-            data_bitmap: vec![0u8; 16],
-            data_start: 20,
-            free_inode_hint: 0,
-            free_block_hint: 20,
-            fresh_blocks: Vec::new(),
-        };
+        let mut sim = AllocSim::new_for_test(vec![0u8; 16], vec![0u8; 16], 20, 0, 20);
         let mut ops = Vec::new();
 
         // 10 + 512 + 512*512 = 262666
@@ -3107,7 +3326,7 @@ mod alloc_sim_and_staging_tests {
         );
 
         // Preexisting triple-indirect tree:
-        sim.fresh_blocks.clear();
+        sim.clear_fresh();
         let tib_off = 20 * BLOCK_SIZE + 8;
         mmap[tib_off..tib_off + 8].copy_from_slice(&30u64.to_le_bytes());
         let dib_off = 30 * BLOCK_SIZE + 2 * 8;
@@ -3191,5 +3410,19 @@ mod alloc_sim_and_staging_tests {
 
         let b0_slice2 = DiskManager::get_block_from_map(&guard.mmap, blk0).unwrap();
         assert_eq!(&b0_slice2[4050..4070], &[0xFF; 20]);
+    }
+
+    #[test]
+    fn test_recovery_zero_ring_and_cycle_termination() {
+        let (_f, mut mmap) = prune_pointer_tests::scratch();
+        let mut ring = JournalRing::create(&mut mmap[..], 4096).unwrap();
+        ring.ring_bytes = 0;
+        assert_eq!(ring.recover(|_| Ok(())).unwrap(), 0);
+
+        let (_f2, mut mmap2) = prune_pointer_tests::scratch();
+        let mut ring2 = JournalRing::create(&mut mmap2[..], 4096).unwrap();
+        ring2.state.head = 1000;
+        ring2.state.tail = 0;
+        assert_eq!(ring2.recover(|_| Ok(())).unwrap(), 0);
     }
 }

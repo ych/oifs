@@ -206,6 +206,63 @@ fn old_bitshuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
 }
 
 // =========================================================================
+// Benchmark 9: WAL AllocSim Fresh Block Membership (O(N^2) vs O(1))
+// =========================================================================
+
+fn old_simulate_fresh_allocations(block_count: usize) -> usize {
+    let mut fresh_blocks = Vec::with_capacity(block_count);
+    let mut hits = 0;
+    for blk in 0..block_count as u64 {
+        if fresh_blocks.contains(&blk) {
+            hits += 1;
+        }
+        fresh_blocks.push(blk);
+    }
+    hits
+}
+
+fn new_simulate_fresh_allocations(block_count: usize) -> usize {
+    let mut fresh_set = rustc_hash::FxHashSet::default();
+    let mut hits = 0;
+    for blk in 0..block_count as u64 {
+        if fresh_set.contains(&blk) {
+            hits += 1;
+        }
+        fresh_set.insert(blk);
+    }
+    hits
+}
+
+// =========================================================================
+// Benchmark 10: write_data_journaled Overwrite & Append Check (O(N^2) vs O(1))
+// =========================================================================
+
+fn old_write_used_blocks_check(existing_blocks: usize, written_blocks: usize) -> usize {
+    let used: Vec<u64> = (0..existing_blocks as u64).collect();
+    let mut new_allocs = 0;
+    for blk in 0..written_blocks as u64 {
+        if !used.contains(&blk) {
+            new_allocs += 1;
+        }
+    }
+    new_allocs
+}
+
+fn new_write_used_blocks_check(existing_blocks: usize, written_blocks: usize) -> usize {
+    if existing_blocks == 0 {
+        return written_blocks;
+    }
+    let used_set: rustc_hash::FxHashSet<u64> = (0..existing_blocks as u64).collect();
+    let mut new_allocs = 0;
+    for blk in 0..written_blocks as u64 {
+        if !used_set.contains(&blk) {
+            new_allocs += 1;
+        }
+    }
+    new_allocs
+}
+
+// =========================================================================
 // TEST RUNNER & DETAILED REPORT
 // =========================================================================
 
@@ -548,6 +605,80 @@ fn bench_comprehensive_performance_proof() {
     println!(
         "  New (Zero-byte block bypass)              : {:>8.2?} (throughput: {:.1} MB/s)",
         new_time, throughput_new
+    );
+    println!("  --> SPEEDUP: \x1b[1;32m{:.2}x FASTER\x1b[0m", speedup);
+
+    // -------------------------------------------------------------------------
+    // CASE 9: WAL AllocSim Fresh Block Tracking (4,096 blocks = 16 MB File)
+    // -------------------------------------------------------------------------
+    println!("\n--- [CASE 9] WAL AllocSim Fresh Block Tracking (4,096 blocks = 16 MB payload) ---");
+    let alloc_blocks = 4096;
+    let alloc_iters = 100;
+
+    assert_eq!(
+        old_simulate_fresh_allocations(alloc_blocks),
+        new_simulate_fresh_allocations(alloc_blocks)
+    );
+
+    let start = Instant::now();
+    for _ in 0..alloc_iters {
+        black_box(old_simulate_fresh_allocations(alloc_blocks));
+    }
+    let old_time = start.elapsed();
+
+    let start = Instant::now();
+    for _ in 0..alloc_iters {
+        black_box(new_simulate_fresh_allocations(alloc_blocks));
+    }
+    let new_time = start.elapsed();
+
+    let speedup = old_time.as_nanos() as f64 / new_time.as_nanos() as f64;
+    println!(
+        "  Old (O(N^2) linear scan in Vec<u64>)     : {:>8.2?} ({:.1} µs/batch)",
+        old_time,
+        old_time.as_micros() as f64 / alloc_iters as f64
+    );
+    println!(
+        "  New (O(1) FxHashSet lookup)              : {:>8.2?} ({:.1} µs/batch)",
+        new_time,
+        new_time.as_micros() as f64 / alloc_iters as f64
+    );
+    println!("  --> SPEEDUP: \x1b[1;32m{:.2}x FASTER\x1b[0m", speedup);
+
+    // -------------------------------------------------------------------------
+    // CASE 10: write_data_journaled Overwrite Membership (4,096 blocks)
+    // -------------------------------------------------------------------------
+    println!("\n--- [CASE 10] write_data_journaled Block Membership (4,096 blocks) ---");
+    let write_blocks = 4096;
+    let write_iters = 100;
+
+    assert_eq!(
+        old_write_used_blocks_check(write_blocks, write_blocks),
+        new_write_used_blocks_check(write_blocks, write_blocks)
+    );
+
+    let start = Instant::now();
+    for _ in 0..write_iters {
+        black_box(old_write_used_blocks_check(write_blocks, write_blocks));
+    }
+    let old_time = start.elapsed();
+
+    let start = Instant::now();
+    for _ in 0..write_iters {
+        black_box(new_write_used_blocks_check(write_blocks, write_blocks));
+    }
+    let new_time = start.elapsed();
+
+    let speedup = old_time.as_nanos() as f64 / new_time.as_nanos() as f64;
+    println!(
+        "  Old (O(N^2) Vec::contains linear scan)   : {:>8.2?} ({:.1} µs/batch)",
+        old_time,
+        old_time.as_micros() as f64 / write_iters as f64
+    );
+    println!(
+        "  New (O(1) FxHashSet membership lookup)   : {:>8.2?} ({:.1} µs/batch)",
+        new_time,
+        new_time.as_micros() as f64 / write_iters as f64
     );
     println!("  --> SPEEDUP: \x1b[1;32m{:.2}x FASTER\x1b[0m", speedup);
 

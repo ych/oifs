@@ -4,9 +4,10 @@
 //! to operate in Direct mode (Master: direct `mmap`, zero IPC overhead) or
 //! Remote mode (Client: transparent IPC proxy).
 //!
-//! Supports two transport modes:
-//! - `SessionMode::Local`: Default, uses Unix Domain Socket (UDS) in `/tmp`
-//! - `SessionMode::Network`: Opt-in, uses Rendezvous `.image.master` file in the image directory
+//! Supports three session modes:
+//! - `SessionMode::Standalone`: Default, direct `DiskManager` access with IPC disabled (zero sockets, zero background threads).
+//! - `SessionMode::Local`: Opt-in via `open_local`/`--ipc`, uses Unix Domain Socket (UDS) in `/tmp`
+//! - `SessionMode::Network`: Opt-in via `open_network`/`--network`, uses Rendezvous `.image.master` file in the image directory
 //!   + TCP transport + Clock-Free Active Ping Probe for NFS/Lustre/multi-node clusters.
 
 use std::collections::HashMap;
@@ -57,10 +58,10 @@ pub enum SessionError {
 /// - Automatically handles seamless failover/reconnection if Master exits.
 #[derive(Clone)]
 pub enum OifsSession {
-    /// Master mode with direct disk access and background IPC server
+    /// Direct mode with direct disk access (Standalone, or Master with background IPC server)
     Direct {
         dm: Arc<DiskManager>,
-        server: Arc<IpcServer>,
+        server: Option<Arc<IpcServer>>,
         event_rx: Arc<Mutex<Option<Receiver<SessionEvent>>>>,
         mode: SessionMode,
     },
@@ -131,16 +132,53 @@ pub(crate) fn canonicalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
 }
 
 impl OifsSession {
-    /// Gets an existing session for the given path from the process-wide registry, or opens a new one (Local UDS mode).
+    /// Gets an existing session for the given path from the process-wide registry, or opens a new one in Standalone mode (IPC disabled).
     ///
     /// Automatically resolves symbolic links and relative paths to their canonical form,
-    /// ensuring all threads in the same process share the same Master session with zero IPC overhead.
+    /// ensuring all threads in the same process share the same session with zero IPC overhead.
     pub fn get_or_open<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, SessionError> {
+        Self::get_or_open_with_mode(path, total_size, SessionMode::Standalone, None, false)
+    }
+
+    /// Gets an existing encrypted session or opens a new one with a password in Standalone mode (IPC disabled).
+    pub fn get_or_open_with_password<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>,
+    ) -> Result<Self, SessionError> {
+        Self::get_or_open_with_mode(path, total_size, SessionMode::Standalone, password, false)
+    }
+
+    /// Gets an existing encrypted session or creates a new one in Standalone mode (IPC disabled).
+    pub fn get_or_create_encrypted<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: &str,
+    ) -> Result<Self, SessionError> {
+        Self::get_or_open_with_mode(
+            path,
+            total_size,
+            SessionMode::Standalone,
+            Some(password),
+            true,
+        )
+    }
+
+    /// Gets an existing session in Local IPC mode (UDS in /tmp) or opens a new one.
+    pub fn get_or_open_local<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+    ) -> Result<Self, SessionError> {
         Self::get_or_open_with_mode(path, total_size, SessionMode::Local, None, false)
     }
 
-    /// Gets an existing encrypted session or opens a new one with a password using default Local mode (UDS).
-    pub fn get_or_open_with_password<P: AsRef<Path>>(
+    /// Alias for `get_or_open_local`.
+    pub fn get_or_open_ipc<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, SessionError> {
+        Self::get_or_open_local(path, total_size)
+    }
+
+    /// Gets an existing encrypted session or opens a new one with a password in Local IPC mode (UDS in /tmp).
+    pub fn get_or_open_local_with_password<P: AsRef<Path>>(
         path: P,
         total_size: u64,
         password: Option<&str>,
@@ -148,13 +186,31 @@ impl OifsSession {
         Self::get_or_open_with_mode(path, total_size, SessionMode::Local, password, false)
     }
 
-    /// Gets an existing encrypted session or creates a new one using default Local mode (UDS).
-    pub fn get_or_create_encrypted<P: AsRef<Path>>(
+    /// Alias for `get_or_open_local_with_password`.
+    pub fn get_or_open_ipc_with_password<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>,
+    ) -> Result<Self, SessionError> {
+        Self::get_or_open_local_with_password(path, total_size, password)
+    }
+
+    /// Gets an existing encrypted session or creates a new one in Local IPC mode (UDS in /tmp).
+    pub fn get_or_create_encrypted_local<P: AsRef<Path>>(
         path: P,
         total_size: u64,
         password: &str,
     ) -> Result<Self, SessionError> {
         Self::get_or_open_with_mode(path, total_size, SessionMode::Local, Some(password), true)
+    }
+
+    /// Alias for `get_or_create_encrypted_local`.
+    pub fn get_or_create_encrypted_ipc<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: &str,
+    ) -> Result<Self, SessionError> {
+        Self::get_or_create_encrypted_local(path, total_size, password)
     }
 
     /// Gets an existing session in Network mode or opens a new one.
@@ -228,13 +284,47 @@ impl OifsSession {
         guard.clear();
     }
 
-    /// Opens an existing filesystem or creates a new one using default Local mode (UDS)
+    /// Opens an existing filesystem or creates a new one in Standalone mode (IPC disabled).
     pub fn open<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, SessionError> {
+        Self::open_with_mode(path, total_size, SessionMode::Standalone, None, false)
+    }
+
+    /// Opens an encrypted filesystem with a password in Standalone mode (IPC disabled).
+    pub fn open_with_password<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>,
+    ) -> Result<Self, SessionError> {
+        Self::open_with_mode(path, total_size, SessionMode::Standalone, password, false)
+    }
+
+    /// Creates a new encrypted filesystem in Standalone mode (IPC disabled).
+    pub fn create_encrypted<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: &str,
+    ) -> Result<Self, SessionError> {
+        Self::open_with_mode(
+            path,
+            total_size,
+            SessionMode::Standalone,
+            Some(password),
+            true,
+        )
+    }
+
+    /// Opens an existing filesystem or creates a new one in Local IPC mode (UDS in /tmp).
+    pub fn open_local<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, SessionError> {
         Self::open_with_mode(path, total_size, SessionMode::Local, None, false)
     }
 
-    /// Opens an encrypted filesystem with a password using default Local mode (UDS)
-    pub fn open_with_password<P: AsRef<Path>>(
+    /// Alias for `open_local`.
+    pub fn open_ipc<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, SessionError> {
+        Self::open_local(path, total_size)
+    }
+
+    /// Opens an encrypted filesystem with a password in Local IPC mode (UDS in /tmp).
+    pub fn open_local_with_password<P: AsRef<Path>>(
         path: P,
         total_size: u64,
         password: Option<&str>,
@@ -242,13 +332,31 @@ impl OifsSession {
         Self::open_with_mode(path, total_size, SessionMode::Local, password, false)
     }
 
-    /// Creates a new encrypted filesystem using default Local mode (UDS)
-    pub fn create_encrypted<P: AsRef<Path>>(
+    /// Alias for `open_local_with_password`.
+    pub fn open_ipc_with_password<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>,
+    ) -> Result<Self, SessionError> {
+        Self::open_local_with_password(path, total_size, password)
+    }
+
+    /// Creates a new encrypted filesystem in Local IPC mode (UDS in /tmp).
+    pub fn create_encrypted_local<P: AsRef<Path>>(
         path: P,
         total_size: u64,
         password: &str,
     ) -> Result<Self, SessionError> {
         Self::open_with_mode(path, total_size, SessionMode::Local, Some(password), true)
+    }
+
+    /// Alias for `create_encrypted_local`.
+    pub fn create_encrypted_ipc<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: &str,
+    ) -> Result<Self, SessionError> {
+        Self::create_encrypted_local(path, total_size, password)
     }
 
     /// Opens an existing filesystem in Network mode (TCP + Rendezvous File)
@@ -325,6 +433,27 @@ impl OifsSession {
         Self::open_with_mode_ext(path, total_size, mode, password, create_encrypted, true)
     }
 
+    /// Opens or creates a journaled filesystem in Standalone mode (IPC disabled).
+    pub fn open_journaled<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, SessionError> {
+        Self::open_journaled_with_mode(path, total_size, SessionMode::Standalone, None, false)
+    }
+
+    /// Opens or creates a journaled filesystem in Local IPC mode (UDS in /tmp).
+    pub fn open_journaled_local<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+    ) -> Result<Self, SessionError> {
+        Self::open_journaled_with_mode(path, total_size, SessionMode::Local, None, false)
+    }
+
+    /// Alias for `open_journaled_local`.
+    pub fn open_journaled_ipc<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+    ) -> Result<Self, SessionError> {
+        Self::open_journaled_local(path, total_size)
+    }
+
     fn open_with_mode_ext<P: AsRef<Path>>(
         path: P,
         total_size: u64,
@@ -353,6 +482,30 @@ impl OifsSession {
         journal: bool,
         retry_count: usize,
     ) -> Result<Self, SessionError> {
+        if mode == SessionMode::Standalone {
+            let dm = if create_encrypted {
+                let pwd = password.unwrap_or_default();
+                if journal {
+                    DiskManager::create_encrypted_journaled(path_ref, total_size, pwd)?
+                } else {
+                    DiskManager::create_encrypted(path_ref, total_size, pwd)?
+                }
+            } else if let Some(pwd) = password {
+                DiskManager::open_with_password(path_ref, total_size, Some(pwd))?
+            } else if journal {
+                DiskManager::open_journaled(path_ref, total_size)?
+            } else {
+                DiskManager::open(path_ref, total_size)?
+            };
+
+            return Ok(OifsSession::Direct {
+                dm: Arc::new(dm),
+                server: None,
+                event_rx: Arc::new(Mutex::new(None)),
+                mode,
+            });
+        }
+
         let master_or_client = match bind_or_connect(path_ref, &mode) {
             Ok(res) => res,
             Err(_e) if retry_count < 5 => {
@@ -419,7 +572,7 @@ impl OifsSession {
 
                 Ok(OifsSession::Direct {
                     dm: dm_arc,
-                    server: Arc::new(server),
+                    server: Some(Arc::new(server)),
                     event_rx: Arc::new(Mutex::new(Some(rx))),
                     mode,
                 })
@@ -429,6 +582,29 @@ impl OifsSession {
                 target_path,
             } => {
                 let client = IpcClient::new(stream, target_path);
+                if let Err(e) = client.authenticate(password) {
+                    let msg = e.to_string();
+                    if msg.contains("Password required") {
+                        return Err(DiskManagerError::PasswordRequired.into());
+                    } else if msg.contains("check password") || msg.contains("Decryption failed") {
+                        return Err(DiskManagerError::DecryptionFailed.into());
+                    } else if Self::is_connection_error(&e) && retry_count < 5 {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            25 * (retry_count + 1) as u64,
+                        ));
+                        return Self::open_with_mode_retry(
+                            path_ref,
+                            total_size,
+                            mode,
+                            password,
+                            create_encrypted,
+                            journal,
+                            retry_count + 1,
+                        );
+                    } else {
+                        return Err(SessionError::Remote(msg));
+                    }
+                }
                 Ok(OifsSession::Remote {
                     client: Arc::new(client),
                     image_path: path_ref.to_path_buf(),
@@ -445,7 +621,7 @@ impl OifsSession {
         matches!(self, OifsSession::Direct { .. })
     }
 
-    /// Returns the session mode (Local or Network)
+    /// Returns the session mode (Standalone, Local, or Network)
     pub fn mode(&self) -> &SessionMode {
         match self {
             OifsSession::Direct { mode, .. } => mode,
@@ -453,10 +629,20 @@ impl OifsSession {
         }
     }
 
+    /// Returns the underlying DiskManager if this session is Direct (Standalone or Master).
+    pub fn disk_manager(&self) -> Option<Arc<DiskManager>> {
+        match self {
+            OifsSession::Direct { dm, .. } => Some(dm.clone()),
+            OifsSession::Remote { .. } => None,
+        }
+    }
+
     /// Returns the number of currently active peer processes connected to this Master
     pub fn peer_count(&self) -> usize {
         match self {
-            OifsSession::Direct { server, .. } => server.active_peers_count(),
+            OifsSession::Direct { server, .. } => {
+                server.as_ref().map_or(0, |s| s.active_peers_count())
+            }
             OifsSession::Remote { .. } => 0,
         }
     }
@@ -464,7 +650,9 @@ impl OifsSession {
     /// Returns the total number of peer connections accepted by this Master
     pub fn total_peers_served(&self) -> usize {
         match self {
-            OifsSession::Direct { server, .. } => server.total_peers_served(),
+            OifsSession::Direct { server, .. } => {
+                server.as_ref().map_or(0, |s| s.total_peers_served())
+            }
             OifsSession::Remote { .. } => 0,
         }
     }
@@ -515,13 +703,19 @@ impl OifsSession {
                                 15 * (attempt + 1) as u64,
                             ));
 
-                            let retry_session = Self::open_with_mode(
+                            let retry_session = match Self::open_with_mode(
                                 image_path,
                                 0,
                                 mode.clone(),
                                 password.as_deref(),
                                 false,
-                            )?;
+                            ) {
+                                Ok(s) => s,
+                                Err(_) if attempt < 4 => {
+                                    continue;
+                                }
+                                Err(e) => return Err(e),
+                            };
 
                             match retry_session {
                                 OifsSession::Direct { dm, .. } => {

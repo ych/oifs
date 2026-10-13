@@ -14,8 +14,8 @@ fn test_empty_zero_byte_files_across_ipc() {
         let _ = fs::remove_file(img_path);
     }
 
-    let master = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Master open failed");
-    let client = OifsSession::open(img_path, 0).expect("Client open failed");
+    let master = OifsSession::open_ipc(img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let client = OifsSession::open_ipc(img_path, 0).expect("Client open failed");
 
     let root = client.resolve_path(".").expect("Resolve root failed");
     let empty_fid = client
@@ -55,8 +55,8 @@ fn test_deep_nested_directory_tree_and_path_resolution_across_ipc() {
         let _ = fs::remove_file(img_path);
     }
 
-    let master = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Master open failed");
-    let client = OifsSession::open(img_path, 0).expect("Client open failed");
+    let master = OifsSession::open_ipc(img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let client = OifsSession::open_ipc(img_path, 0).expect("Client open failed");
 
     // Build hierarchy: lvl1/lvl2/lvl3/lvl4/lvl5
     let mut current_dir = client.resolve_path(".").unwrap();
@@ -108,8 +108,8 @@ fn test_invalid_lookups_and_nonexistent_operations_across_ipc() {
         let _ = fs::remove_file(img_path);
     }
 
-    let master = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Master open failed");
-    let client = OifsSession::open(img_path, 0).expect("Client open failed");
+    let master = OifsSession::open_ipc(img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let client = OifsSession::open_ipc(img_path, 0).expect("Client open failed");
 
     let root = client.resolve_path(".").unwrap();
     let valid_fid = client
@@ -168,8 +168,8 @@ fn test_file_deletion_lifecycle_and_reuse_across_ipc() {
         let _ = fs::remove_file(img_path);
     }
 
-    let master = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Master open failed");
-    let client = OifsSession::open(img_path, 0).expect("Client open failed");
+    let master = OifsSession::open_ipc(img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let client = OifsSession::open_ipc(img_path, 0).expect("Client open failed");
 
     let root = client.resolve_path(".").unwrap();
     let fid1 = client.create_file(root, "reusable.txt").unwrap();
@@ -224,8 +224,8 @@ fn test_large_multi_block_boundary_payloads_across_ipc() {
         let _ = fs::remove_file(img_path);
     }
 
-    let master = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Master open failed");
-    let client = OifsSession::open(img_path, 0).expect("Client open failed");
+    let master = OifsSession::open_ipc(img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let client = OifsSession::open_ipc(img_path, 0).expect("Client open failed");
 
     let root = client.resolve_path(".").unwrap();
 
@@ -315,7 +315,7 @@ fn test_high_concurrency_burst_operations_across_ipc() {
         let _ = fs::remove_file(img_path);
     }
 
-    let master = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let master = OifsSession::open_ipc(img_path, 10 * 1024 * 1024).expect("Master open failed");
     let master_arc = Arc::new(master);
 
     let num_threads = 6;
@@ -327,7 +327,7 @@ fn test_high_concurrency_burst_operations_across_ipc() {
     for t_idx in 0..num_threads {
         let path_clone = img_path_str.clone();
         let handle = thread::spawn(move || {
-            let client = OifsSession::open(&path_clone, 0).expect("Client open failed");
+            let client = OifsSession::open_ipc(&path_clone, 0).expect("Client open failed");
             let root = client.resolve_path(".").unwrap();
             let thread_dir_name = format!("dir_thread_{}", t_idx);
             let thread_dir = client
@@ -397,8 +397,8 @@ fn test_remote_defragmentation_and_fsck_across_ipc() {
         let _ = fs::remove_file(img_path);
     }
 
-    let master = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Master open failed");
-    let client = OifsSession::open(img_path, 0).expect("Client open failed");
+    let master = OifsSession::open_ipc(img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let client = OifsSession::open_ipc(img_path, 0).expect("Client open failed");
 
     let root = client.resolve_path(".").unwrap();
 
@@ -427,6 +427,13 @@ fn test_remote_defragmentation_and_fsck_across_ipc() {
         .expect("Remote defragment failed");
     assert!(defrag_stats.files_processed >= 10);
 
+    // Remote client attempting to defragment an arbitrary mismatched path must fail
+    let bad_remote_defrag = client.defragment("Cargo.toml", DefragMode::Safe, None);
+    assert!(
+        bad_remote_defrag.is_err(),
+        "Remote client defragmenting mismatched path must fail"
+    );
+
     // Remote client triggers integrity verification (fsck)
     let fsck_report = client.verify_integrity().expect("Remote fsck failed");
     assert!(fsck_report.is_clean);
@@ -449,8 +456,8 @@ fn test_interleaved_local_and_network_modes_on_different_images() {
     }
 
     // Start local session on img_local
-    let local_master = OifsSession::open(img_local, 10 * 1024 * 1024).unwrap();
-    let local_client = OifsSession::open(img_local, 0).unwrap();
+    let local_master = OifsSession::open_local(img_local, 10 * 1024 * 1024).unwrap();
+    let local_client = OifsSession::open_local(img_local, 0).unwrap();
     assert_eq!(local_master.mode(), &SessionMode::Local);
 
     // Start network session on img_net
@@ -488,4 +495,29 @@ fn test_interleaved_local_and_network_modes_on_different_images() {
 
     let _ = fs::remove_file(img_local);
     let _ = fs::remove_file(img_net);
+}
+
+#[test]
+fn test_standalone_session_mode_default() {
+    let img_path = "test_standalone_default.img";
+    if Path::new(img_path).exists() {
+        let _ = fs::remove_file(img_path);
+    }
+
+    let session = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Open failed");
+    assert_eq!(session.mode(), &SessionMode::Standalone);
+    assert!(session.is_direct());
+    assert_eq!(session.peer_count(), 0);
+    assert_eq!(session.total_peers_served(), 0);
+
+    let root = session.resolve_path(".").unwrap();
+    let fid = session.create_file(root, "standalone.txt").unwrap();
+    session
+        .write_data(fid, 0, b"Standalone mode works", CompressionMode::Auto)
+        .unwrap();
+    let data = session.read_data(fid).unwrap();
+    assert_eq!(data, b"Standalone mode works");
+
+    drop(session);
+    let _ = fs::remove_file(img_path);
 }

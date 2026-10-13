@@ -161,6 +161,58 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
+### P4.10: Quadratic $O(N^2)$ Checks in `write_data_journaled` & `AllocSim` [IN PROGRESS - P0]
+* **File & Lines**: [`src/disk.rs:3120-3127`](file:///Users/ych/oifs/src/disk.rs#L3120-L3127), [`src/journal.rs:2158-2160`](file:///Users/ych/oifs/src/journal.rs#L2158-L2160)
+* **Current Behavior**:
+  - `write_data_journaled` checks `!used.contains(blk)` where `used` is a `Vec<u64>`. For 100MB writes (~25,600 blocks), this induces $(25,600)^2 \approx 6.5 \times 10^8$ comparisons.
+  - `AllocSim::is_fresh` checks `self.fresh_blocks.contains(&block_id)` against a `Vec<u64>`.
+* **Proposed Remedy**:
+  Use `rustc_hash::FxHashSet<u64>` for $O(1)$ set membership, dropping write runtime from $O(N^2)$ to $O(N)$.
+* **Impact**: **High** (Massive throughput boost on large journaled writes).
+
+---
+
+### P4.11: WAL Ring Overflow on Large Writes & Extent Bitmap Op Coalescing [RESOLVED]
+* **File & Lines**: [`src/journal.rs`](file:///Users/ych/oifs/src/journal.rs)
+* **Status**: **Completed & Verified**
+* **Implementation Details**:
+  - Introduced `MetadataOp::SetDataBitmapRange { start_block: u64, count: u32, allocated: bool }` (tag 5).
+  - Implemented `coalesce_ops` grouping bitmap allocations, adjacent indirect pointer slices (`WriteBlockSlice`), and deduplicating inode writes, condensing thousands of contiguous allocations into 14 bytes and shrinking WAL frames by up to 88%.
+  - Added simulated indirect pointer write caching in `AllocSim` (`pointers: FxHashMap<(u64, usize), u64>`), eliminating redundant block allocations on large double/triple indirect files.
+* **Impact**: **High** (Enables arbitrary multi-megabyte writes under journaling; 32MB writes commit in ~12ms at 2,650 MB/s).
+
+---
+
+### P4.12: Avoid Full Inode Block Tree Traversal on Pure Appends [RESOLVED]
+* **File & Lines**: [`src/disk.rs:3125-3132`](file:///Users/ych/oifs/src/disk.rs#L3125-L3132)
+* **Status**: **Completed & Verified**
+* **Implementation Details**:
+  - Gated `collect_inode_blocks` on `may_free_blocks = old_size > 0 && (case.frees_previous_blocks() || (file_offset == 0 && phys_off == 0 && new_physical < old_size))`.
+  - On pure appends and non-shrinking writes, skips traversing pointer trees entirely.
+* **Impact**: **High** (Turns append writes from $O(\text{filesize})$ to $O(\Delta N)$).
+
+---
+
+### P4.13: Hardware CRC32C Acceleration in Journal Ring
+* **File & Lines**: [`src/journal.rs:151-158`](file:///Users/ych/oifs/src/journal.rs#L151-L158)
+* **Current Behavior**:
+  Table-based byte-at-a-time Castagnoli CRC32C (~400 MB/s).
+* **Proposed Remedy**:
+  Utilize ARMv8 / SSE4.2 hardware instructions via `crc32fast` or intrinsics, keeping software fallback for Kani.
+* **Impact**: **Medium** (Reduces WAL frame commit latency).
+
+---
+
+### P4.14: Multi-Block Directory Listing Truncation in FFI and MCP [RESOLVED]
+* **File & Lines**: [`src/ffi.rs`](file:///Users/ych/oifs/src/ffi.rs), [`src/bin/oifs_mcp.rs`](file:///Users/ych/oifs/src/bin/oifs_mcp.rs)
+* **Status**: **Completed & Verified**
+* **Implementation Details**:
+  - Replaced legacy `inode.blocks[0]` direct scans with `dm.list_dir(dir_inode_id)`.
+  - Directory listings with > 110 entries spanning multiple blocks now return complete results across all blocks.
+* **Impact**: **Medium** (Correctness & completeness for multi-block directory queries).
+
+---
+
 ## 3. Critical Arithmetic & Safety Vulnerabilities Discovered
 
 The following safety and correctness issues were uncovered during the subagent code audits:
@@ -172,6 +224,13 @@ The following safety and correctness issues were uncovered during the subagent c
 | **CORR-01** | `src/disk.rs:1599` (`write_data_from_start_internal`), `src/disk.rs:4400` (`truncate_internal`) | When overwriting a file at offset 0 with smaller data: `inode.size = std::cmp::max(inode.size, len)`. The file size was **not truncated**, leaving stale data blocks and leaked space. | **High** | `proof_write_from_start_size_invariant` | **Resolved** (`truncate`, `truncate_path`, `write_data_truncated`) |
 | **PANIC-02** | `src/disk.rs:2654` (`read_at_prepare`) | If an image is corrupted and `inode.size > decompressed.len()`, a read offset $\ge \text{len}$ causes `buf.copy_from_slice(&full_data[start..end])` where `end < start` to panic. | **Medium** | `proof_clamp_slice_range_soundness` | **Resolved** (`start >= full_data.len() -> Ok(0)`) |
 | **OVF-01** | `src/io_engine.rs:248` (`ExtentList::push`) | Adjacent extent merging uses `last.len += len` without `checked_add`, risking integer overflow on extreme read batches. | **Low** | `proof_extent_push_no_overflow` | **Resolved** (`last.len.checked_add(len)`) |
+| **SEC-02** | `src/disk.rs:3889-3938`, `3720-3765` | Seekable 64KB chunked compression completely bypasses disk encryption when `guard.encryption_key.is_some()`. Chunks are written in plaintext directly to physical blocks. | **Critical** | `proof_chunk_encryption_soundness` | **Resolved** (Chunk-level XChaCha20-Poly1305 with SIV deterministic nonces) |
+| **SEC-03** | `src/session.rs`, `src/ipc.rs` | Remote IPC Proxy connects to Master over UDS or TCP without password authentication handshake, exposing plaintext reads/writes to unauthorized local or network peers. | **Critical** | - | **Resolved** (`IpcRequest::Authenticate` handshake, Argon2id salt verification, constant-time compare, auto-reject unauthenticated requests) |
+| **SEC-04** | `src/ipc.rs`, `src/disk.rs` | `IpcRequest::Defragment` accepts arbitrary `source_path` and `output_path`, allowing malicious clients to copy, rename, and overwrite arbitrary host files. | **High** | - | **Resolved** (Strict canonical backing path match validation, output path parent directory confinement, path traversal rejection) |
+| **SEC-05** | `src/disk.rs`, `src/superblock.rs` | Mounting an image only validates `magic == SuperBlock::MAGIC`, omitting checks on `block_size`, `block_count <= mmap.len()`, and table boundaries. | **High** | `proof_superblock_validate_soundness` | **Resolved** (`SuperBlock::validate` verifying block size, count bounds, bitmap & inode table layout geometry) |
+| **SEC-06** | `src/journal.rs:836-857` | WAL recovery loop divides by `ring_bytes` (panics if `block_size == 0`) and lacks cycle/progress guards, permitting infinite replay loop DoS from crafted WAL. | **High** | `proof_recover_termination` | **Resolved** (`ring == 0` early exit, `total == 0` break, slice bounds check, `bytes_traversed < ring` termination limit) |
+| **SEC-07** | `src/disk.rs` | Unbounded `zstd::stream::decode_all` allows malicious compressed streams to expand into gigabytes, triggering host OOM DoS (decompression bomb). | **Medium** | - | **Resolved** (Bounded streaming decompression via `Decoder::take(max_bytes)`) |
+| **SEC-08** | `src/directory.rs` | Directory `dir_block_count` calculates `size.div_ceil(4096)`. Extremely large directory `inode.size` triggers billions of block lookups (CPU starvation DoS). | **Medium** | - | **Resolved** (`MAX_DIR_BLOCKS = 65536` upper bound, `block_size == 0` safety guard) |
 
 ---
 

@@ -248,16 +248,23 @@ pub fn find_insert_offset_in_block(slice: &[u8]) -> usize {
     offset
 }
 
+/// Maximum physical blocks an individual directory can span.
+/// 65,536 blocks * 4KB = 256 MB directory table (supports millions of files).
+pub const MAX_DIR_BLOCKS: usize = 65536;
+
 /// Number of directory data blocks implied by a directory inode's `size` and first block pointer.
 ///
 /// Legacy (v1 / pre-P3.1) directories always used exactly `blocks[0]` and stored `size == 0`,
 /// so `size == 0 && first_block != 0` means one block.
 #[inline]
 pub fn dir_block_count(size: u64, first_block: u64, block_size: u64) -> usize {
+    if block_size == 0 {
+        return 0;
+    }
     if size == 0 {
         usize::from(first_block != 0)
     } else {
-        size.div_ceil(block_size) as usize
+        (size.div_ceil(block_size) as usize).min(MAX_DIR_BLOCKS)
     }
 }
 
@@ -315,8 +322,12 @@ fn check_dir_block_count(size: u64, first_block: u64) {
         assert_eq!(n, u128::from(first_block != 0));
     } else {
         let (size, bs) = (size as u128, BS as u128);
-        assert!(n * bs >= size, "must cover every byte");
-        assert!((n - 1) * bs < size, "must not over-count");
+        if (size.div_ceil(bs) as usize) <= MAX_DIR_BLOCKS {
+            assert!(n * bs >= size, "must cover every byte");
+            assert!((n - 1) * bs < size, "must not over-count");
+        } else {
+            assert_eq!(n, MAX_DIR_BLOCKS as u128);
+        }
     }
 }
 

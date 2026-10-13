@@ -381,12 +381,13 @@ fn test_p4_1_reader_latency_under_heavy_writes() {
     let stop_reader = stop_flag.clone();
     let max_lat = max_reader_latency_micros.clone();
 
+    let target_reads = 2000;
     let reader_handle = thread::spawn(move || {
         let mut buf = vec![0u8; 1024];
         let mut total_reads = 0;
-        let mut latencies_us = Vec::with_capacity(10000);
+        let mut latencies_us = Vec::with_capacity(target_reads);
 
-        while !stop_reader.load(Ordering::Relaxed) {
+        for _ in 0..target_reads {
             let start = Instant::now();
             let n = dm_reader
                 .read_at(target_file, 0, &mut buf)
@@ -398,6 +399,8 @@ fn test_p4_1_reader_latency_under_heavy_writes() {
             max_lat.fetch_max(elapsed_us, Ordering::Relaxed);
             total_reads += 1;
         }
+
+        stop_reader.store(true, Ordering::Relaxed);
 
         latencies_us.sort_unstable();
         let p50 = latencies_us
@@ -413,12 +416,13 @@ fn test_p4_1_reader_latency_under_heavy_writes() {
 
     // Writer thread doing heavy compressed writes
     let dm_writer = dm.clone();
+    let stop_writer = stop_flag.clone();
     let writer_handle = thread::spawn(move || {
         let heavy_file = dm_writer
             .create_file(root_id, "heavy.bin")
             .expect("create heavy");
         let heavy_data = vec![0xabu8; 512 * 1024];
-        for _ in 0..10 {
+        while !stop_writer.load(Ordering::Relaxed) {
             dm_writer
                 .write_data_with_filters(
                     heavy_file,
@@ -431,10 +435,8 @@ fn test_p4_1_reader_latency_under_heavy_writes() {
         }
     });
 
-    writer_handle.join().expect("writer finished");
-    stop_flag.store(true, Ordering::Relaxed);
-
     let (total_reads, p50, p99) = reader_handle.join().expect("reader finished");
+    writer_handle.join().expect("writer finished");
     let max_observed = max_reader_latency_micros.load(Ordering::Relaxed);
 
     println!(

@@ -15,7 +15,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as TokioMutex;
 
-use oifs::directory::DirectoryIterator;
 use oifs::disk::{CompressionMode, DiskManager};
 use oifs::inode::FileType;
 
@@ -53,18 +52,9 @@ impl OifsMcpServer {
             anyhow::bail!("inode {} is not a directory", dir_inode_id);
         }
 
-        let block_id = inode.blocks[0];
-        if block_id == 0 {
-            return Ok(vec![]);
-        }
-
-        let block_data = dm
-            .get_block_copy(block_id)
-            .ok_or_else(|| anyhow::anyhow!("Failed to read directory block"))?;
-
-        let mut entries = Vec::new();
-        for entry_result in DirectoryIterator::new(&block_data) {
-            let entry = entry_result?;
+        let dir_entries = dm.list_dir(dir_inode_id)?;
+        let mut entries = Vec::with_capacity(dir_entries.len());
+        for entry in dir_entries {
             let child_inode = dm.read_inode(entry.inode)?;
             let kind = match child_inode.mode {
                 FileType::File => "file",

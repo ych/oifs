@@ -17,6 +17,10 @@ struct Cli {
     #[arg(short, long)]
     password: Option<String>,
 
+    /// Enable local IPC (Inter-Process Communication) mode for multi-process concurrency
+    #[arg(long = "ipc", global = true)]
+    ipc: bool,
+
     /// Enable cross-machine / network mode (for NFS, Lustre, or multi-node clusters)
     #[arg(short = 'n', long = "network", global = true)]
     network: bool,
@@ -253,8 +257,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         oifs::ipc::SessionMode::Network {
             bind_addr: cli.bind.clone(),
         }
-    } else {
+    } else if cli.ipc {
         oifs::ipc::SessionMode::Local
+    } else {
+        oifs::ipc::SessionMode::Standalone
     };
 
     if let Commands::FilterAnalyze { host_path } = &cli.command {

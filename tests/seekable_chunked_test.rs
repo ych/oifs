@@ -344,3 +344,121 @@ fn test_seekable_chunked_ffi_api() {
 
     oifs_close(handle);
 }
+
+#[test]
+fn test_seekable_chunked_encrypted_roundtrip_and_security() {
+    let (_dir, img_path) = unique_image_path();
+    let password = "super_secure_vault_pass_456";
+
+    // 1. Create encrypted filesystem
+    let dm = DiskManager::create_encrypted(&img_path, 30 * 1024 * 1024, password).unwrap();
+    let root_id = dm.superblock().root_inode;
+    let inode_id = dm.create_file(root_id, "encrypted_vault.bin").unwrap();
+
+    // 2. Build 192KB payload with a recognizable secret signature
+    let secret_marker = b"HIGHLY_CONFIDENTIAL_SENSITIVE_SECRET_DATA_MARKER";
+    let mut payload = vec![0u8; 3 * CHUNK_SIZE_64K];
+    for (i, b) in payload.iter_mut().enumerate() {
+        *b = secret_marker[i % secret_marker.len()];
+    }
+
+    // Write as seekable chunked file
+    dm.write_data(
+        inode_id,
+        0,
+        &payload,
+        CompressionMode::Seekable {
+            chunk_size: CHUNK_SIZE_64K as u32,
+            level: 1,
+        },
+    )
+    .unwrap();
+
+    let inode = dm.read_inode(inode_id).unwrap();
+    assert_eq!(inode.size, payload.len() as u64);
+    assert_ne!(inode.flags & INODE_FLAG_SEEKABLE_64K, 0);
+    assert!(
+        inode.encrypted,
+        "Seekable file on encrypted image MUST have inode.encrypted set"
+    );
+
+    // 3. Flushed and inspect raw on-disk bytes to verify NO plaintext leakage!
+    dm.flush().unwrap();
+    let disk_raw_bytes = std::fs::read(&img_path).unwrap();
+
+    // The secret marker MUST NOT appear in plaintext on disk
+    let leaked = disk_raw_bytes
+        .windows(secret_marker.len())
+        .any(|window| window == secret_marker);
+    assert!(
+        !leaked,
+        "SECURITY VIOLATION: Plaintext secret marker was found on disk in encrypted seekable file!"
+    );
+
+    // 4. Verify read_data returns exact plaintext
+    let read_back = dm.read_data(inode_id).unwrap();
+    assert_eq!(read_back, payload);
+
+    // 5. Verify sliced read_at across chunk boundaries
+    let mut slice_buf = vec![0u8; 128];
+    let n = dm.read_at(inode_id, 65500, &mut slice_buf).unwrap();
+    assert_eq!(n, 128);
+    assert_eq!(slice_buf, &payload[65500..65628]);
+
+    // 6. Test partial random rewind write
+    let patch_marker = b"UPDATED_SECRET_REPLACEMENT_PAYLOAD";
+    dm.write_data(
+        inode_id,
+        65520,
+        patch_marker,
+        CompressionMode::Seekable {
+            chunk_size: CHUNK_SIZE_64K as u32,
+            level: 1,
+        },
+    )
+    .unwrap();
+    payload[65520..65520 + patch_marker.len()].copy_from_slice(patch_marker);
+
+    // Flush and verify raw disk still contains no plaintext
+    dm.flush().unwrap();
+    let disk_raw_bytes2 = std::fs::read(&img_path).unwrap();
+    assert!(
+        !disk_raw_bytes2
+            .windows(patch_marker.len())
+            .any(|window| window == patch_marker),
+        "SECURITY VIOLATION: Updated plaintext secret was found on disk!"
+    );
+
+    let read_back2 = dm.read_data(inode_id).unwrap();
+    assert_eq!(read_back2, payload);
+
+    // 7. Test truncate (shrink and expand) on encrypted seekable file
+    dm.truncate(inode_id, (CHUNK_SIZE_64K + 500) as u64)
+        .unwrap();
+    payload.truncate(CHUNK_SIZE_64K + 500);
+    let shrunk = dm.read_data(inode_id).unwrap();
+    assert_eq!(shrunk, payload);
+
+    // Expand
+    dm.truncate(inode_id, (2 * CHUNK_SIZE_64K) as u64).unwrap();
+    payload.resize(2 * CHUNK_SIZE_64K, 0);
+    let expanded = dm.read_data(inode_id).unwrap();
+    assert_eq!(expanded, payload);
+
+    drop(dm);
+
+    // 8. Reopen with correct password
+    let dm_reopened =
+        DiskManager::open_with_password(&img_path, 30 * 1024 * 1024, Some(password)).unwrap();
+    let re_read = dm_reopened.read_data(inode_id).unwrap();
+    assert_eq!(re_read, payload);
+
+    // 9. Reopen with WRONG password must fail to decrypt
+    let dm_wrong =
+        DiskManager::open_with_password(&img_path, 30 * 1024 * 1024, Some("wrong_password"))
+            .unwrap();
+    assert!(
+        dm_wrong.read_data(inode_id).is_err(),
+        "Reading encrypted file with wrong password must fail"
+    );
+}

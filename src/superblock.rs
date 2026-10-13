@@ -219,6 +219,51 @@ impl SuperBlock {
     pub fn has_journal_layout(&self) -> bool {
         crate::journal::is_journaled_layout(self)
     }
+
+    /// Validates superblock bounds, layout geometry, and alignment invariants against mapped image size.
+    pub fn validate(&self, mmap_len: usize) -> Result<(), &'static str> {
+        if self.magic != Self::MAGIC {
+            return Err("Invalid filesystem magic number");
+        }
+        if self.block_size as usize != crate::BLOCK_SIZE {
+            return Err("Invalid block size (must be 4096)");
+        }
+        if self.block_count < 5 {
+            return Err("Total block count too small (minimum 5 blocks)");
+        }
+        let total_bytes = match self.block_count.checked_mul(crate::BLOCK_SIZE as u64) {
+            Some(bytes) => bytes,
+            None => return Err("Total block count integer overflow"),
+        };
+        if total_bytes as usize > mmap_len {
+            return Err("Filesystem block count exceeds mapped file image size");
+        }
+        if self.inode_bitmap_block != 1 {
+            return Err("Invalid inode bitmap block (must be block 1)");
+        }
+        if self.data_bitmap_block != 2 {
+            return Err("Invalid data bitmap block (must be block 2)");
+        }
+        if self.inode_table_block <= self.data_bitmap_block {
+            return Err("Inode table block overlaps bitmaps or superblock");
+        }
+        if self.inode_table_block > self.data_block_start {
+            return Err("Inode table block start exceeds data block start");
+        }
+        if self.data_block_start > self.block_count {
+            return Err("Data block start exceeds total block count");
+        }
+        if self.data_block_start == self.block_count {
+            return Err("No data blocks available in filesystem");
+        }
+        if self.inode_count == 0 {
+            return Err("Inode count cannot be zero");
+        }
+        if self.root_inode >= self.inode_count {
+            return Err("Root inode ID exceeds total inode count");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(kani)]
@@ -337,6 +382,19 @@ mod kani_proofs {
         assert!(journaled.data_block_start > legacy.data_block_start);
         // Inode capacity is unchanged; only the placement moves.
         assert_eq!(journaled.inode_count, legacy.inode_count);
+    }
+
+    /// Prove that SuperBlock::validate always accepts validly initialized superblocks.
+    #[kani::proof]
+    fn proof_superblock_validate_soundness() {
+        let total_blocks: u64 = kani::any();
+        kani::assume(total_blocks >= 1_200 && total_blocks <= 1_000_000);
+        let sb = SuperBlock::new(total_blocks);
+        let mmap_len = (total_blocks as usize) * crate::BLOCK_SIZE;
+        assert!(sb.validate(mmap_len).is_ok());
+
+        let sb_j = SuperBlock::new_journaled(total_blocks);
+        assert!(sb_j.validate(mmap_len).is_ok());
     }
 }
 

@@ -12,11 +12,11 @@ use crate::superblock::SuperBlock;
 use memmap2::{MmapMut, MmapOptions};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use thiserror::Error;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +56,9 @@ pub enum DiskManagerError {
     /// Decryption failed - wrong password or corrupted data
     #[error("Decryption failed - check password")]
     DecryptionFailed,
+    /// Superblock bounds or layout geometry invalid
+    #[error("Corrupted superblock layout or invalid bounds: {0}")]
+    CorruptedSuperblock(&'static str),
 }
 
 /// Compression mode for write operations
@@ -223,6 +226,8 @@ pub(crate) struct DiskManagerInner {
     /// Image file handle; payload reads use it directly under the `Pread` / `IoUring`
     /// backends (P3.2).
     file: File,
+    /// Canonical path of the underlying image file on host disk
+    pub(crate) backing_path: PathBuf,
     /// Memory-mapped view of the file system image
     pub(crate) mmap: MmapMut,
     /// Cached copy of the superblock
@@ -1150,6 +1155,9 @@ impl DiskManager {
             if superblock.magic != SuperBlock::MAGIC {
                 return Err(DiskManagerError::InvalidMagic);
             }
+            superblock
+                .validate(mmap.len())
+                .map_err(DiskManagerError::CorruptedSuperblock)?;
 
             if superblock.encrypted {
                 if let Some(key) = existing_key {
@@ -1174,9 +1182,11 @@ impl DiskManager {
             mmap.flush()?;
         }
 
+        let backing_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let free_block_hint = superblock.data_block_start;
         let inner = DiskManagerInner {
             file,
+            backing_path,
             mmap,
             superblock,
             encryption_key,
@@ -1254,6 +1264,43 @@ impl DiskManager {
     // Accessor for SuperBlock (Copy)
     pub fn superblock(&self) -> SuperBlock {
         self.inner.read().unwrap().superblock
+    }
+
+    /// Returns the canonical path of the underlying image file on host disk.
+    pub fn backing_path(&self) -> PathBuf {
+        self.inner.read().unwrap().backing_path.clone()
+    }
+
+    /// Returns `true` if this filesystem is encrypted.
+    pub fn is_encrypted(&self) -> bool {
+        self.inner.read().unwrap().superblock.encrypted
+    }
+
+    /// Authenticates a password against this disk manager.
+    ///
+    /// Returns `Ok(())` if the filesystem is unencrypted or if the password correctly
+    /// derives the master encryption key. Returns `Err(PasswordRequired)` if encrypted
+    /// and no password was provided, or `Err(DecryptionFailed)` if the password was incorrect.
+    pub fn authenticate(&self, password: Option<&str>) -> Result<(), DiskManagerError> {
+        let guard = self.inner.read().unwrap();
+        if !guard.superblock.encrypted {
+            return Ok(());
+        }
+        let master_key = match &guard.encryption_key {
+            Some(k) => k,
+            None => return Err(DiskManagerError::PasswordRequired),
+        };
+        let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
+        let derived = crate::encryption::derive_key(pwd, &guard.superblock.encryption_salt)?;
+        let mut diff = 0u8;
+        for (a, b) in master_key.as_bytes().iter().zip(derived.as_bytes().iter()) {
+            diff |= a ^ b;
+        }
+        if diff == 0 {
+            Ok(())
+        } else {
+            Err(DiskManagerError::DecryptionFailed)
+        }
     }
 
     // Private helper for Inner
@@ -2774,7 +2821,15 @@ impl DiskManager {
 
         // Decompress if this is a compressed file (natively decompresses concatenated multi-frame Zstd streams)
         if inode.mode == crate::inode::FileType::File && inode.compressed_size > 0 {
-            let decoded = zstd::stream::decode_all(std::io::Cursor::new(&decrypted_data))
+            use std::io::Read;
+            let max_decompressed_bytes = inode.size.saturating_add(65536).max(1024 * 1024);
+            let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(&decrypted_data))
+                .map_err(DiskManagerError::Io)?;
+            let mut decoded = Vec::with_capacity((inode.size as usize).min(1024 * 1024));
+            decoder
+                .by_ref()
+                .take(max_decompressed_bytes)
+                .read_to_end(&mut decoded)
                 .map_err(DiskManagerError::Io)?;
             decrypted_data = decoded;
         }
@@ -3056,12 +3111,6 @@ impl DiskManager {
             let p = std::cmp::max(old_compressed, old_size);
             (p / BLOCK_SIZE as u64) as usize + usize::from(p % BLOCK_SIZE as u64 != 0)
         };
-        let old_blocks = Self::collect_inode_blocks(&guard.mmap, &inode);
-
-        let mut sim =
-            crate::journal::AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
-        let mut ops: Vec<crate::journal::MetadataOp> = Vec::new();
-        let mut used: Vec<u64> = Vec::new();
 
         let WritePlan {
             case,
@@ -3071,6 +3120,21 @@ impl DiskManager {
             new_compressed_size,
             encryption_nonce,
         } = plan;
+
+        let new_physical = std::cmp::max(new_compressed_size, new_size);
+        let may_free_blocks = old_size > 0
+            && (case.frees_previous_blocks()
+                || (file_offset == 0 && phys_off == 0 && new_physical < old_size));
+        let old_blocks = if may_free_blocks {
+            Self::collect_inode_blocks(&guard.mmap, &inode)
+        } else {
+            Vec::new()
+        };
+
+        let mut sim =
+            crate::journal::AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
+        let mut ops: Vec<crate::journal::MetadataOp> = Vec::new();
+        let mut used: Vec<u64> = Vec::new();
 
         // 1. Stage payload (bitmap bits still clear).
         crate::journal::stage_payload_write(
@@ -3117,12 +3181,15 @@ impl DiskManager {
             .as_secs();
 
         // 2. Free blocks the new layout no longer references.
-        for blk in &old_blocks {
-            if !used.contains(blk) {
-                ops.push(crate::journal::MetadataOp::SetDataBitmap {
-                    block_id: *blk,
-                    allocated: false,
-                });
+        if !old_blocks.is_empty() {
+            let used_set: FxHashSet<u64> = used.iter().copied().collect();
+            for blk in &old_blocks {
+                if !used_set.contains(blk) {
+                    ops.push(crate::journal::MetadataOp::SetDataBitmap {
+                        block_id: *blk,
+                        allocated: false,
+                    });
+                }
             }
         }
         ops.push(crate::journal::MetadataOp::WriteInode {
@@ -3684,6 +3751,68 @@ impl DiskManager {
         }
     }
 
+    fn prepare_chunk_payload(
+        chunk_buf: &[u8],
+        chunk_valid_len: usize,
+        zstd_level: i32,
+        encryption_key: Option<&crate::encryption::EncryptionKey>,
+    ) -> Result<(Vec<u8>, u8, u16, usize), DiskManagerError> {
+        let level = if zstd_level <= 0 { 1 } else { zstd_level };
+        let compressed =
+            zstd::stream::encode_all(std::io::Cursor::new(&chunk_buf[..chunk_valid_len]), level)
+                .map_err(DiskManagerError::Io)?;
+
+        let is_compressed = compressed.len() < chunk_valid_len && compressed.len() < 65536;
+
+        if let Some(key) = encryption_key {
+            if is_compressed {
+                let nonce = crate::encryption::generate_nonce();
+                let enc = crate::encryption::encrypt_data(&compressed, key, &nonce)?;
+                let total_len = 24 + enc.len();
+                if total_len < chunk_valid_len && total_len <= 65535 {
+                    let mut payload = Vec::with_capacity(total_len);
+                    payload.extend_from_slice(&nonce);
+                    payload.extend_from_slice(&enc);
+                    let blks = payload.len().div_ceil(BLOCK_SIZE);
+                    let comp_len = payload.len() as u16;
+                    return Ok((
+                        payload,
+                        crate::inode::ChunkEntry::FLAG_COMPRESSED,
+                        comp_len,
+                        blks,
+                    ));
+                }
+            }
+
+            // Fallback to RAW with encryption
+            let nonce = crate::encryption::generate_nonce();
+            let enc = crate::encryption::encrypt_data(&chunk_buf[..chunk_valid_len], key, &nonce)?;
+            let mut payload = Vec::with_capacity(24 + enc.len());
+            payload.extend_from_slice(&nonce);
+            payload.extend_from_slice(&enc);
+            let blks = payload.len().div_ceil(BLOCK_SIZE);
+            let comp_len = (payload.len().min(65535)) as u16;
+            Ok((payload, crate::inode::ChunkEntry::FLAG_RAW, comp_len, blks))
+        } else if is_compressed {
+            let blks = compressed.len().div_ceil(BLOCK_SIZE);
+            let comp_len = compressed.len() as u16;
+            Ok((
+                compressed,
+                crate::inode::ChunkEntry::FLAG_COMPRESSED,
+                comp_len,
+                blks,
+            ))
+        } else {
+            let blks = chunk_valid_len.div_ceil(BLOCK_SIZE);
+            Ok((
+                chunk_buf[..chunk_valid_len].to_vec(),
+                crate::inode::ChunkEntry::FLAG_RAW,
+                chunk_valid_len as u16,
+                blks,
+            ))
+        }
+    }
+
     fn read_single_chunk_decompressed(
         guard: &DiskManagerInner,
         inode: &Inode,
@@ -3697,10 +3826,16 @@ impl DiskManager {
 
         let start_blk = entry.start_block() as u64;
         let blk_cnt = entry.block_count() as usize;
+        let is_encrypted = inode.encrypted;
 
         if entry.is_raw() {
-            let mut buf = Vec::with_capacity(chunk_valid_len);
-            let mut remaining = chunk_valid_len;
+            let needed_bytes = if is_encrypted {
+                chunk_valid_len + 40
+            } else {
+                chunk_valid_len
+            };
+            let mut buf = Vec::with_capacity(needed_bytes);
+            let mut remaining = needed_bytes;
             for i in 0..blk_cnt {
                 if remaining == 0 {
                     break;
@@ -3717,10 +3852,32 @@ impl DiskManager {
                     ))));
                 }
             }
-            if buf.len() < chunk_valid_len {
-                buf.resize(chunk_valid_len, 0);
+
+            if is_encrypted {
+                if buf.len() < 40 {
+                    return Err(DiskManagerError::DecryptionFailed);
+                }
+                let key = guard
+                    .encryption_key
+                    .as_ref()
+                    .ok_or(DiskManagerError::PasswordRequired)?;
+                let mut nonce = [0u8; 24];
+                nonce.copy_from_slice(&buf[0..24]);
+                let decrypted = crate::encryption::decrypt_data(&buf[24..], key, &nonce)
+                    .map_err(|_| DiskManagerError::DecryptionFailed)?;
+                let mut result = decrypted;
+                if result.len() > chunk_valid_len {
+                    result.truncate(chunk_valid_len);
+                } else if result.len() < chunk_valid_len {
+                    result.resize(chunk_valid_len, 0);
+                }
+                return Ok(result);
+            } else {
+                if buf.len() < chunk_valid_len {
+                    buf.resize(chunk_valid_len, 0);
+                }
+                return Ok(buf);
             }
-            return Ok(buf);
         }
 
         if entry.is_compressed() {
@@ -3744,7 +3901,30 @@ impl DiskManager {
                 }
             }
 
-            let decompressed = zstd::stream::decode_all(std::io::Cursor::new(&comp_data))
+            let zstd_data = if is_encrypted {
+                if comp_data.len() < 40 {
+                    return Err(DiskManagerError::DecryptionFailed);
+                }
+                let key = guard
+                    .encryption_key
+                    .as_ref()
+                    .ok_or(DiskManagerError::PasswordRequired)?;
+                let mut nonce = [0u8; 24];
+                nonce.copy_from_slice(&comp_data[0..24]);
+                crate::encryption::decrypt_data(&comp_data[24..], key, &nonce)
+                    .map_err(|_| DiskManagerError::DecryptionFailed)?
+            } else {
+                comp_data
+            };
+
+            use std::io::Read;
+            let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(&zstd_data))
+                .map_err(DiskManagerError::Io)?;
+            let mut decompressed = Vec::with_capacity(chunk_valid_len);
+            decoder
+                .by_ref()
+                .take((crate::inode::CHUNK_SIZE_64K * 2) as u64)
+                .read_to_end(&mut decompressed)
                 .map_err(DiskManagerError::Io)?;
 
             let mut result = decompressed;
@@ -3847,6 +4027,12 @@ impl DiskManager {
             ((file_offset + data.len() as u64 - 1) as usize) / crate::inode::CHUNK_SIZE_64K;
 
         inode.flags |= crate::inode::INODE_FLAG_SEEKABLE_64K;
+        if guard.encryption_key.is_some() {
+            inode.encrypted = true;
+            if inode.encryption_nonce == [0u8; 24] {
+                inode.encryption_nonce = crate::encryption::generate_nonce();
+            }
+        }
 
         let mut journal_ops: Vec<crate::journal::MetadataOp> = Vec::new();
 
@@ -3887,32 +4073,12 @@ impl DiskManager {
                 buf
             };
 
-            let level = if zstd_level <= 0 { 1 } else { zstd_level };
-            let compressed = zstd::stream::encode_all(
-                std::io::Cursor::new(&chunk_buf[..chunk_valid_len]),
-                level,
-            )
-            .map_err(DiskManagerError::Io)?;
-
-            let (payload, flag, comp_len, blocks_needed) =
-                if compressed.len() < chunk_valid_len && compressed.len() < 65536 {
-                    let blks = compressed.len().div_ceil(BLOCK_SIZE);
-                    let comp_len = compressed.len() as u16;
-                    (
-                        compressed,
-                        crate::inode::ChunkEntry::FLAG_COMPRESSED,
-                        comp_len,
-                        blks,
-                    )
-                } else {
-                    let blks = chunk_valid_len.div_ceil(BLOCK_SIZE);
-                    (
-                        chunk_buf,
-                        crate::inode::ChunkEntry::FLAG_RAW,
-                        chunk_valid_len as u16,
-                        blks,
-                    )
-                };
+            let (payload, flag, comp_len, blocks_needed) = Self::prepare_chunk_payload(
+                &chunk_buf,
+                chunk_valid_len,
+                zstd_level,
+                guard.encryption_key.as_ref(),
+            )?;
 
             // 1. Allocate new contiguous blocks (COW)
             let new_start_blk = Self::allocate_contiguous_blocks_internal(guard, blocks_needed)?;
@@ -4107,26 +4273,12 @@ impl DiskManager {
                         last_c_idx,
                         last_valid_len,
                     )?;
-                    let compressed = zstd::stream::encode_all(std::io::Cursor::new(&old_data), 1)
-                        .map_err(DiskManagerError::Io)?;
-
-                    let (payload, flag, comp_len, blocks_needed) =
-                        if compressed.len() < last_valid_len && compressed.len() < 65536 {
-                            let comp_len = compressed.len() as u16;
-                            (
-                                compressed,
-                                crate::inode::ChunkEntry::FLAG_COMPRESSED,
-                                comp_len,
-                                (comp_len as usize).div_ceil(BLOCK_SIZE),
-                            )
-                        } else {
-                            (
-                                old_data,
-                                crate::inode::ChunkEntry::FLAG_RAW,
-                                last_valid_len as u16,
-                                last_valid_len.div_ceil(BLOCK_SIZE),
-                            )
-                        };
+                    let (payload, flag, comp_len, blocks_needed) = Self::prepare_chunk_payload(
+                        &old_data,
+                        last_valid_len,
+                        1,
+                        guard.encryption_key.as_ref(),
+                    )?;
 
                     let new_start_blk =
                         Self::allocate_contiguous_blocks_internal(guard, blocks_needed)?;
@@ -5603,8 +5755,13 @@ impl DiskManager {
 
         let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
         let superblock: SuperBlock = bincode::deserialize(&mmap[0..BLOCK_SIZE])?;
+        superblock
+            .validate(mmap.len())
+            .map_err(DiskManagerError::CorruptedSuperblock)?;
 
         guard.file = file;
+        guard.backing_path =
+            std::fs::canonicalize(source_path).unwrap_or_else(|_| PathBuf::from(source_path));
         guard.mmap = mmap;
         guard.superblock = superblock;
         guard.free_block_hint = superblock.data_block_start;
@@ -5713,6 +5870,58 @@ impl DiskManager {
         mode: DefragMode,
         output_path: Option<&str>,
     ) -> Result<DefragStats, DiskManagerError> {
+        let backing = self.backing_path();
+        let canonical_source = std::fs::canonicalize(source_path).map_err(DiskManagerError::Io)?;
+        if canonical_source != backing {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "Defragment source path ({:?}) does not match opened disk image ({:?})",
+                    canonical_source, backing
+                ),
+            )));
+        }
+
+        if let Some(out) = output_path {
+            let out_path = Path::new(out);
+            if out.is_empty()
+                || out_path
+                    .components()
+                    .any(|c| c == std::path::Component::ParentDir)
+            {
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Invalid defragment output path",
+                )));
+            }
+            let out_parent = match out_path.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p,
+                _ => Path::new("."),
+            };
+            let canonical_out_parent =
+                std::fs::canonicalize(out_parent).map_err(DiskManagerError::Io)?;
+            let backing_parent = match backing.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p,
+                _ => Path::new("."),
+            };
+            let canonical_backing_parent = std::fs::canonicalize(backing_parent)
+                .unwrap_or_else(|_| backing_parent.to_path_buf());
+            if canonical_out_parent != canonical_backing_parent {
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Defragment output path must reside in the same directory as the disk image",
+                )));
+            }
+            if let Ok(canon_out) = std::fs::canonicalize(out_path)
+                && canon_out == backing
+            {
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Defragment output path cannot overwrite the source image directly",
+                )));
+            }
+        }
+
         match mode {
             DefragMode::Safe => self.defragment_safe(source_path, output_path),
             DefragMode::InPlace => self.defragment_inplace(),

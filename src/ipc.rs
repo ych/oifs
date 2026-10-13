@@ -30,14 +30,23 @@ use crate::superblock::SuperBlock;
 /// Session transport mode
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SessionMode {
-    /// Default: Local machine only, using Unix Domain Socket (UDS) in `/tmp`
+    /// Default: Standalone mode (IPC disabled, direct DiskManager access, no sockets or server threads)
     #[default]
+    Standalone,
+    /// Local machine IPC mode, using Unix Domain Socket (UDS) in `/tmp`
     Local,
     /// Network / Cluster mode: uses Rendezvous master file in the image directory + TCP transport + Active Ping Probe
     Network {
         /// Custom bind address (e.g. "0.0.0.0:9050" or "127.0.0.1:0")
         bind_addr: Option<String>,
     },
+}
+
+impl SessionMode {
+    /// Returns `true` if IPC is enabled (`Local` or `Network`).
+    pub fn is_ipc_enabled(&self) -> bool {
+        !matches!(self, SessionMode::Standalone)
+    }
 }
 
 /// Metadata stored in the `.image.master` rendezvous file for Network Mode
@@ -173,6 +182,9 @@ pub fn is_tcp_master_alive(addr_str: &str) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IpcRequest {
     Ping,
+    Authenticate {
+        password: Option<String>,
+    },
     CreateFile {
         parent_inode_id: u64,
         name: String,
@@ -241,6 +253,7 @@ impl IpcRequest {
     pub fn name(&self) -> &'static str {
         match self {
             IpcRequest::Ping => "Ping",
+            IpcRequest::Authenticate { .. } => "Authenticate",
             IpcRequest::CreateFile { .. } => "CreateFile",
             IpcRequest::CreateDirectory { .. } => "CreateDirectory",
             IpcRequest::Lookup { .. } => "Lookup",
@@ -347,6 +360,10 @@ pub fn bind_or_connect<P: AsRef<Path>>(
     mode: &SessionMode,
 ) -> io::Result<MasterOrClient> {
     match mode {
+        SessionMode::Standalone => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "IPC is disabled in Standalone mode",
+        )),
         SessionMode::Local => {
             let socket_path = get_socket_path(image_path);
 
@@ -613,13 +630,33 @@ impl IpcServer {
 
         let handle = thread::spawn(move || {
             let _ = stream.set_nonblocking(false);
+            let is_encrypted = dm_worker.is_encrypted();
+            let mut authenticated = !is_encrypted;
+
             while let Ok(req) = read_framed::<_, IpcRequest>(&mut stream) {
                 let short_name = req.name().to_string();
 
-                let resp_data = Self::handle_request(&dm_worker, req);
-                let resp = match resp_data {
-                    Ok(data) => IpcResponse::Success(data),
-                    Err(e) => IpcResponse::Error(e.to_string()),
+                let resp = match req {
+                    IpcRequest::Ping => IpcResponse::Success(IpcResponseData::Pong),
+                    IpcRequest::Authenticate { password } => {
+                        match dm_worker.authenticate(password.as_deref()) {
+                            Ok(()) => {
+                                authenticated = true;
+                                IpcResponse::Success(IpcResponseData::Unit)
+                            }
+                            Err(e) => IpcResponse::Error(e.to_string()),
+                        }
+                    }
+                    _ if !authenticated => IpcResponse::Error(
+                        "Password required to access encrypted filesystem".to_string(),
+                    ),
+                    _ => {
+                        let resp_data = Self::handle_request(&dm_worker, req);
+                        match resp_data {
+                            Ok(data) => IpcResponse::Success(data),
+                            Err(e) => IpcResponse::Error(e.to_string()),
+                        }
+                    }
                 };
 
                 if write_framed(&mut stream, &resp).is_err() {
@@ -660,6 +697,10 @@ impl IpcServer {
     ) -> Result<IpcResponseData, DiskManagerError> {
         match req {
             IpcRequest::Ping => Ok(IpcResponseData::Pong),
+            IpcRequest::Authenticate { password } => {
+                dm.authenticate(password.as_deref())?;
+                Ok(IpcResponseData::Unit)
+            }
             IpcRequest::CreateFile {
                 parent_inode_id,
                 name,
@@ -803,6 +844,17 @@ impl IpcClient {
         Self {
             stream: Mutex::new(stream),
             target_path,
+        }
+    }
+
+    /// Performs authentication handshake with the Master process
+    pub fn authenticate(&self, password: Option<&str>) -> Result<(), io::Error> {
+        let req = IpcRequest::Authenticate {
+            password: password.map(|s| s.to_string()),
+        };
+        match self.send(req)? {
+            IpcResponseData::Unit => Ok(()),
+            _ => Err(io::Error::other("Unexpected authentication response")),
         }
     }
 

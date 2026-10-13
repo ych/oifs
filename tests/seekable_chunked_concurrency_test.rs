@@ -457,7 +457,7 @@ fn test_multiprocess_cli_chunked_concurrency() {
     }
 
     // Maintain a persistent Master session so background OS processes transparently proxy to it
-    let master_session = OifsSession::open(&img_str, 0).expect("open master session");
+    let master_session = OifsSession::open_ipc(&img_str, 0).expect("open master session");
 
     // 3. Concurrently launch 4 independent OS processes running `oifs put --chunked`
     let mut put_handles = Vec::new();
@@ -470,6 +470,7 @@ fn test_multiprocess_cli_chunked_concurrency() {
             let remote = format!("remote_chunked_{}.dat", i);
             let output = Command::new(bin)
                 .args([
+                    "--ipc",
                     "--image",
                     &img,
                     "put",
@@ -496,7 +497,7 @@ fn test_multiprocess_cli_chunked_concurrency() {
 
     // 4. Verify directory listing via CLI
     let ls_output = Command::new(bin_path)
-        .args(["--image", &img_str, "ls"])
+        .args(["--ipc", "--image", &img_str, "ls"])
         .output()
         .expect("CLI ls failed");
     assert!(ls_output.status.success());
@@ -522,6 +523,7 @@ fn test_multiprocess_cli_chunked_concurrency() {
             let remote = format!("remote_chunked_{}.dat", i);
             let output = Command::new(bin)
                 .args([
+                    "--ipc",
                     "--image",
                     &img,
                     "get",
@@ -583,7 +585,7 @@ fn test_multiprocess_ipc_chunked_read_at_and_writes() {
     let total_size = num_chunks * CHUNK_SIZE_64K;
 
     // Master opens session
-    let master = OifsSession::open(&ctx.path, 30 * 1024 * 1024).expect("master open");
+    let master = OifsSession::open_ipc(&ctx.path, 30 * 1024 * 1024).expect("master open");
     assert!(master.is_direct(), "Master must be Direct mode");
 
     let root = master.resolve_path(".").expect("resolve root");
@@ -625,7 +627,7 @@ fn test_multiprocess_ipc_chunked_read_at_and_writes() {
         let data_ref = Arc::clone(&initial_arc);
 
         let h = thread::spawn(move || {
-            let client = OifsSession::open(&p, 0).expect("client open");
+            let client = OifsSession::open_ipc(&p, 0).expect("client open");
             assert!(!client.is_direct(), "Client must be Remote mode");
 
             b.wait();

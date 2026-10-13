@@ -4,9 +4,9 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use oifs::disk::CompressionMode;
+use oifs::disk::{CompressionMode, DiskManagerError};
 use oifs::ipc::{SessionEvent, get_master_info_path, get_socket_path};
-use oifs::session::OifsSession;
+use oifs::session::{OifsSession, SessionError};
 
 #[test]
 fn test_single_process_direct_mode() {
@@ -50,15 +50,15 @@ fn test_multi_process_transparent_proxy_and_concurrency() {
     }
 
     // 1. Master process starts
-    let master = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let master = OifsSession::open_ipc(img_path, 10 * 1024 * 1024).expect("Master open failed");
     assert!(master.is_direct(), "Master must be Direct mode");
 
     // 2. Client 1 connects
-    let client1 = OifsSession::open(img_path, 0).expect("Client 1 open failed");
+    let client1 = OifsSession::open_ipc(img_path, 0).expect("Client 1 open failed");
     assert!(!client1.is_direct(), "Client 1 must be Remote mode");
 
     // 3. Client 2 connects
-    let client2 = OifsSession::open(img_path, 0).expect("Client 2 open failed");
+    let client2 = OifsSession::open_ipc(img_path, 0).expect("Client 2 open failed");
     assert!(!client2.is_direct(), "Client 2 must be Remote mode");
 
     // Wait a brief moment for connection counters
@@ -146,7 +146,7 @@ fn test_event_notification_on_master() {
         let _ = fs::remove_file(img_path);
     }
 
-    let master = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let master = OifsSession::open_ipc(img_path, 10 * 1024 * 1024).expect("Master open failed");
     let event_rx = master
         .take_event_receiver()
         .expect("Must have event receiver");
@@ -154,7 +154,7 @@ fn test_event_notification_on_master() {
     // Spawn a peer client in a thread
     let img_path_clone = img_path.to_string();
     let peer_thread = thread::spawn(move || {
-        let client = OifsSession::open(&img_path_clone, 0).expect("Client open failed");
+        let client = OifsSession::open_ipc(&img_path_clone, 0).expect("Client open failed");
         let root = client.resolve_path(".").unwrap();
         let fid = client.create_file(root, "event_test.txt").unwrap();
         client
@@ -202,7 +202,7 @@ fn test_stale_socket_recovery() {
 
     // First create image
     {
-        let session = OifsSession::open(img_path, 10 * 1024 * 1024).expect("Open failed");
+        let session = OifsSession::open_ipc(img_path, 10 * 1024 * 1024).expect("Open failed");
         drop(session);
     }
 
@@ -212,7 +212,8 @@ fn test_stale_socket_recovery() {
     assert!(sock_path.exists(), "Dummy stale socket must exist");
 
     // Opening session now must detect that socket is dead, remove it, and become Master!
-    let new_session = OifsSession::open(img_path, 0).expect("Open with stale socket must recover");
+    let new_session =
+        OifsSession::open_ipc(img_path, 0).expect("Open with stale socket must recover");
     assert!(
         new_session.is_direct(),
         "Recovered session must be Master (Direct mode)"
@@ -231,13 +232,13 @@ fn test_encrypted_filesystem_with_session() {
 
     let password = "SecretMasterPassword123!";
 
-    // Create encrypted session as Master
-    let master = OifsSession::create_encrypted(img_path, 10 * 1024 * 1024, password)
+    // Create encrypted session as Master in IPC mode
+    let master = OifsSession::create_encrypted_ipc(img_path, 10 * 1024 * 1024, password)
         .expect("Create encrypted failed");
     assert!(master.is_direct());
 
-    // Connect Client session
-    let client = OifsSession::open_with_password(img_path, 0, Some(password))
+    // Connect Client session in IPC mode
+    let client = OifsSession::open_ipc_with_password(img_path, 0, Some(password))
         .expect("Client open encrypted failed");
     assert!(!client.is_direct());
 
@@ -254,6 +255,83 @@ fn test_encrypted_filesystem_with_session() {
     assert_eq!(read_back, secret_payload);
 
     drop(client);
+    drop(master);
+    let _ = fs::remove_file(img_path);
+}
+
+#[test]
+fn test_encrypted_ipc_authentication_handshake_security() {
+    let img_path = "test_encrypted_auth_handshake.img";
+    if Path::new(img_path).exists() {
+        let _ = fs::remove_file(img_path);
+    }
+
+    let password = "CorrectMasterPassword456!";
+
+    // Create encrypted session as Master in IPC mode
+    let master = OifsSession::create_encrypted_ipc(img_path, 10 * 1024 * 1024, password)
+        .expect("Create encrypted failed");
+    assert!(master.is_direct());
+
+    // 1. Client connects with NO password -> must fail with PasswordRequired
+    let client_no_pwd = OifsSession::open_ipc(img_path, 0);
+    match client_no_pwd {
+        Err(SessionError::DiskManager(DiskManagerError::PasswordRequired)) => {}
+        Err(e) => panic!("Expected PasswordRequired, got {:?}", e),
+        Ok(_) => panic!("Opening encrypted session with no password must fail"),
+    }
+
+    // 2. Client connects with WRONG password -> must fail with DecryptionFailed
+    let client_wrong_pwd =
+        OifsSession::open_ipc_with_password(img_path, 0, Some("WrongPasswordXYZ!"));
+    match client_wrong_pwd {
+        Err(SessionError::DiskManager(DiskManagerError::DecryptionFailed)) => {}
+        Err(e) => panic!("Expected DecryptionFailed, got {:?}", e),
+        Ok(_) => panic!("Opening encrypted session with wrong password must fail"),
+    }
+
+    // 3. Client connects with CORRECT password -> succeeds
+    let client_ok = OifsSession::open_ipc_with_password(img_path, 0, Some(password))
+        .expect("Client open with correct password should succeed");
+    assert!(!client_ok.is_direct());
+
+    // Write data from client, read back from master
+    let root = client_ok.resolve_path(".").unwrap();
+    let fid = client_ok
+        .create_file(root, "authenticated_file.txt")
+        .unwrap();
+    client_ok
+        .write_data(fid, 0, b"Secret Payload", CompressionMode::Auto)
+        .unwrap();
+    assert_eq!(master.read_data(fid).unwrap(), b"Secret Payload");
+
+    // 4. Rogue client connects directly over UDS socket and tries to ReadData without authenticating
+    let sock_path = oifs::ipc::get_socket_path(img_path);
+    if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sock_path) {
+        use oifs::ipc::{IpcRequest, IpcResponse, read_framed, write_framed};
+        // Ping works
+        write_framed(&mut stream, &IpcRequest::Ping).unwrap();
+        let ping_resp: IpcResponse = read_framed(&mut stream).unwrap();
+        assert!(matches!(ping_resp, IpcResponse::Success(_)));
+
+        // ReadData must be rejected with error
+        write_framed(&mut stream, &IpcRequest::ReadData { inode_id: fid }).unwrap();
+        let read_resp: IpcResponse = read_framed(&mut stream).unwrap();
+        match read_resp {
+            IpcResponse::Error(msg) => {
+                assert!(
+                    msg.contains("Password required"),
+                    "Expected Password required, got {}",
+                    msg
+                );
+            }
+            IpcResponse::Success(_) => {
+                panic!("Unauthenticated ReadData should have been rejected")
+            }
+        }
+    }
+
+    drop(client_ok);
     drop(master);
     let _ = fs::remove_file(img_path);
 }
@@ -387,6 +465,53 @@ fn test_cli_network_flag() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("remote_net.txt"));
+
+    let _ = fs::remove_file(host_file);
+    let _ = fs::remove_file(img_path);
+}
+
+#[test]
+fn test_cli_ipc_flag() {
+    let img_path = "test_cli_ipc_flag.img";
+    if Path::new(img_path).exists() {
+        let _ = fs::remove_file(img_path);
+    }
+
+    let bin = env!("CARGO_BIN_EXE_oifs");
+
+    // Create via CLI with --ipc
+    let res = Command::new(bin)
+        .args(["--ipc", "--image", img_path, "create", "--size", "10"])
+        .status()
+        .expect("Failed to run create");
+    assert!(res.success());
+
+    // Write a test payload file on host
+    let host_file = "test_ipc_payload.txt";
+    fs::write(host_file, b"CLI Local IPC Mode Test Content").unwrap();
+
+    // Put via CLI with --ipc
+    let res = Command::new(bin)
+        .args([
+            "--ipc",
+            "--image",
+            img_path,
+            "put",
+            host_file,
+            "remote_ipc.txt",
+        ])
+        .status()
+        .expect("Failed to run put");
+    assert!(res.success());
+
+    // Ls via CLI with --ipc
+    let output = Command::new(bin)
+        .args(["--ipc", "--image", img_path, "ls"])
+        .output()
+        .expect("Failed to run ls");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("remote_ipc.txt"));
 
     let _ = fs::remove_file(host_file);
     let _ = fs::remove_file(img_path);

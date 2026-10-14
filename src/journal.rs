@@ -2383,6 +2383,40 @@ impl AllocSim {
         Ok(blk)
     }
 
+    pub(crate) fn alloc_contiguous(&mut self, count: usize) -> Result<u64, DiskManagerError> {
+        if count == 0 {
+            return Ok(self.free_block_hint);
+        }
+        let mut a = SimpleBlockAllocator::new(&mut self.data_bitmap, self.data_start);
+        let blk = a
+            .allocate_contiguous(count, Some(self.free_block_hint))
+            .map_err(DiskManagerError::Allocator)?;
+        self.free_block_hint = blk + count as u64;
+        for i in 0..count {
+            let b = blk + i as u64;
+            self.fresh_blocks.push(b);
+            self.fresh_set.insert(b);
+        }
+        Ok(blk)
+    }
+
+    pub(crate) fn free_contiguous(
+        &mut self,
+        start_blk: u64,
+        count: usize,
+    ) -> Result<(), DiskManagerError> {
+        if count == 0 {
+            return Ok(());
+        }
+        let mut a = SimpleBlockAllocator::new(&mut self.data_bitmap, self.data_start);
+        a.free_contiguous(start_blk, count)
+            .map_err(DiskManagerError::Allocator)?;
+        if start_blk < self.free_block_hint {
+            self.free_block_hint = start_blk;
+        }
+        Ok(())
+    }
+
     pub(crate) fn is_fresh(&self, block_id: u64) -> bool {
         if self.fresh_blocks.is_empty() {
             return false;
@@ -2418,6 +2452,56 @@ impl AllocSim {
     }
 }
 
+fn sim_ensure_root(
+    slot: &mut u64,
+    sim: &mut AllocSim,
+    ops: &mut Vec<crate::journal::MetadataOp>,
+) -> Result<u64, DiskManagerError> {
+    if *slot == 0 {
+        let blk = sim.alloc_block()?;
+        ops.push(crate::journal::MetadataOp::SetDataBitmap {
+            block_id: blk,
+            allocated: true,
+        });
+        *slot = blk;
+    }
+    Ok(*slot)
+}
+
+fn sim_child(
+    mmap: &MmapMut,
+    parent_blk: u64,
+    idx: usize,
+    sim: &mut AllocSim,
+    ops: &mut Vec<crate::journal::MetadataOp>,
+) -> Result<u64, DiskManagerError> {
+    if let Some(&cached) = sim.pointers.get(&(parent_blk, idx)) {
+        return Ok(cached);
+    }
+    // A freshly allocated pointer block reads as all-zero, so its entries are 0.
+    let existing = if sim.is_fresh(parent_blk) {
+        0
+    } else {
+        DiskManager::read_block_ptr(mmap, parent_blk, idx)
+    };
+    if existing != 0 {
+        return Ok(existing);
+    }
+    let blk = sim.alloc_block()?;
+    sim.pointers.insert((parent_blk, idx), blk);
+    ops.push(crate::journal::MetadataOp::SetDataBitmap {
+        block_id: blk,
+        allocated: true,
+    });
+    // Record the pointer write into the parent pointer block.
+    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+        block_id: parent_blk,
+        offset: (idx * 8) as u32,
+        data: blk.to_le_bytes().to_vec(),
+    });
+    Ok(blk)
+}
+
 /// Mirror of [`DiskManager::get_or_alloc_block`] that allocates against [`AllocSim`].
 ///
 /// Instead of writing pointer blocks into the image it records the equivalent
@@ -2432,56 +2516,6 @@ pub(crate) fn sim_get_or_alloc_block(
 ) -> Result<u64, DiskManagerError> {
     use crate::inode::BlockPath;
 
-    fn ensure_root(
-        slot: &mut u64,
-        sim: &mut AllocSim,
-        ops: &mut Vec<crate::journal::MetadataOp>,
-    ) -> Result<u64, DiskManagerError> {
-        if *slot == 0 {
-            let blk = sim.alloc_block()?;
-            ops.push(crate::journal::MetadataOp::SetDataBitmap {
-                block_id: blk,
-                allocated: true,
-            });
-            *slot = blk;
-        }
-        Ok(*slot)
-    }
-
-    fn child(
-        mmap: &MmapMut,
-        parent_blk: u64,
-        idx: usize,
-        sim: &mut AllocSim,
-        ops: &mut Vec<crate::journal::MetadataOp>,
-    ) -> Result<u64, DiskManagerError> {
-        if let Some(&cached) = sim.pointers.get(&(parent_blk, idx)) {
-            return Ok(cached);
-        }
-        // A freshly allocated pointer block reads as all-zero, so its entries are 0.
-        let existing = if sim.is_fresh(parent_blk) {
-            0
-        } else {
-            DiskManager::read_block_ptr(mmap, parent_blk, idx)
-        };
-        if existing != 0 {
-            return Ok(existing);
-        }
-        let blk = sim.alloc_block()?;
-        sim.pointers.insert((parent_blk, idx), blk);
-        ops.push(crate::journal::MetadataOp::SetDataBitmap {
-            block_id: blk,
-            allocated: true,
-        });
-        // Record the pointer write into the parent pointer block.
-        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-            block_id: parent_blk,
-            offset: (idx * 8) as u32,
-            data: blk.to_le_bytes().to_vec(),
-        });
-        Ok(blk)
-    }
-
     match BlockPath::from_logical(logical_idx) {
         Some(BlockPath::Direct(i)) => {
             if inode.blocks[i] == 0 {
@@ -2495,43 +2529,183 @@ pub(crate) fn sim_get_or_alloc_block(
             Ok(inode.blocks[i])
         }
         Some(BlockPath::Single(i)) => {
-            let sib = ensure_root(&mut inode.blocks[10], sim, ops)?;
+            let sib = sim_ensure_root(&mut inode.blocks[10], sim, ops)?;
             if sib == 0 {
                 return Ok(0);
             }
-            child(mmap, sib, i, sim, ops)
+            sim_child(mmap, sib, i, sim, ops)
         }
         Some(BlockPath::Double(a, b)) => {
-            let dib = ensure_root(&mut inode.blocks[11], sim, ops)?;
+            let dib = sim_ensure_root(&mut inode.blocks[11], sim, ops)?;
             if dib == 0 {
                 return Ok(0);
             }
-            let sib = child(mmap, dib, a, sim, ops)?;
+            let sib = sim_child(mmap, dib, a, sim, ops)?;
             if sib == 0 {
                 return Ok(0);
             }
-            child(mmap, sib, b, sim, ops)
+            sim_child(mmap, sib, b, sim, ops)
         }
         Some(BlockPath::Triple(a, b, c)) => {
-            let tib = ensure_root(&mut inode.triple_indirect, sim, ops)?;
+            let tib = sim_ensure_root(&mut inode.triple_indirect, sim, ops)?;
             if tib == 0 {
                 return Ok(0);
             }
-            let dib = child(mmap, tib, a, sim, ops)?;
+            let dib = sim_child(mmap, tib, a, sim, ops)?;
             if dib == 0 {
                 return Ok(0);
             }
-            let sib = child(mmap, dib, b, sim, ops)?;
+            let sib = sim_child(mmap, dib, b, sim, ops)?;
             if sib == 0 {
                 return Ok(0);
             }
-            child(mmap, sib, c, sim, ops)
+            sim_child(mmap, sib, c, sim, ops)
         }
         None => Err(DiskManagerError::Io(std::io::Error::new(
             std::io::ErrorKind::FileTooLarge,
             "File too large (max 513GB)",
         ))),
     }
+}
+
+/// Sets a seekable 64K ChunkEntry pointer in an inode against [`AllocSim`].
+///
+/// Records needed indirect pointer table block allocations and slice writes into `ops`
+/// without mutating the underlying mmap until WAL commit.
+pub(crate) fn sim_set_logical_chunk_entry(
+    mmap: &MmapMut,
+    inode: &mut Inode,
+    chunk_idx: usize,
+    entry: crate::inode::ChunkEntry,
+    sim: &mut AllocSim,
+    ops: &mut Vec<crate::journal::MetadataOp>,
+) -> Result<(), DiskManagerError> {
+    use crate::inode::BlockPath;
+
+    if entry.is_empty() {
+        match BlockPath::from_logical(chunk_idx) {
+            Some(BlockPath::Direct(i)) => {
+                inode.blocks[i] = 0;
+            }
+            Some(BlockPath::Single(i)) => {
+                let sib = inode.blocks[10];
+                if sib != 0 {
+                    sim.pointers.insert((sib, i), 0);
+                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                        block_id: sib,
+                        offset: (i * 8) as u32,
+                        data: 0u64.to_le_bytes().to_vec(),
+                    });
+                }
+            }
+            Some(BlockPath::Double(a, b)) => {
+                let dib = inode.blocks[11];
+                if dib != 0 {
+                    let sib = sim_child(mmap, dib, a, sim, ops)?;
+                    if sib != 0 {
+                        sim.pointers.insert((sib, b), 0);
+                        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                            block_id: sib,
+                            offset: (b * 8) as u32,
+                            data: 0u64.to_le_bytes().to_vec(),
+                        });
+                    }
+                }
+            }
+            Some(BlockPath::Triple(a, b, c)) => {
+                let tib = inode.triple_indirect;
+                if tib != 0 {
+                    let dib = sim_child(mmap, tib, a, sim, ops)?;
+                    if dib != 0 {
+                        let sib = sim_child(mmap, dib, b, sim, ops)?;
+                        if sib != 0 {
+                            sim.pointers.insert((sib, c), 0);
+                            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                                block_id: sib,
+                                offset: (c * 8) as u32,
+                                data: 0u64.to_le_bytes().to_vec(),
+                            });
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+        return Ok(());
+    }
+
+    match BlockPath::from_logical(chunk_idx) {
+        Some(BlockPath::Direct(i)) => {
+            inode.blocks[i] = entry.0;
+            Ok(())
+        }
+        Some(BlockPath::Single(i)) => {
+            let sib = sim_ensure_root(&mut inode.blocks[10], sim, ops)?;
+            sim.pointers.insert((sib, i), entry.0);
+            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                block_id: sib,
+                offset: (i * 8) as u32,
+                data: entry.0.to_le_bytes().to_vec(),
+            });
+            Ok(())
+        }
+        Some(BlockPath::Double(a, b)) => {
+            let dib = sim_ensure_root(&mut inode.blocks[11], sim, ops)?;
+            let sib = sim_child(mmap, dib, a, sim, ops)?;
+            sim.pointers.insert((sib, b), entry.0);
+            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                block_id: sib,
+                offset: (b * 8) as u32,
+                data: entry.0.to_le_bytes().to_vec(),
+            });
+            Ok(())
+        }
+        Some(BlockPath::Triple(a, b, c)) => {
+            let tib = sim_ensure_root(&mut inode.triple_indirect, sim, ops)?;
+            let dib = sim_child(mmap, tib, a, sim, ops)?;
+            let sib = sim_child(mmap, dib, b, sim, ops)?;
+            sim.pointers.insert((sib, c), entry.0);
+            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                block_id: sib,
+                offset: (c * 8) as u32,
+                data: entry.0.to_le_bytes().to_vec(),
+            });
+            Ok(())
+        }
+        None => Err(DiskManagerError::Io(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            "Chunk index exceeds maximum addressable size",
+        ))),
+    }
+}
+
+/// Resolves a ChunkEntry for `chunk_idx` considering both simulated pointer writes and on-disk tables.
+pub(crate) fn sim_resolve_logical_chunk_entry(
+    mmap: &MmapMut,
+    inode: &Inode,
+    chunk_idx: usize,
+    sim: &AllocSim,
+) -> crate::inode::ChunkEntry {
+    use crate::inode::BlockPath;
+    let follow = |parent: u64, slot: usize| -> u64 {
+        if parent == 0 {
+            0
+        } else if let Some(&cached) = sim.pointers.get(&(parent, slot)) {
+            cached
+        } else if sim.is_fresh(parent) {
+            0
+        } else {
+            DiskManager::read_block_ptr(mmap, parent, slot)
+        }
+    };
+    let val = match BlockPath::from_logical(chunk_idx) {
+        Some(BlockPath::Direct(i)) => inode.blocks[i],
+        Some(BlockPath::Single(i)) => follow(inode.blocks[10], i),
+        Some(BlockPath::Double(a, b)) => follow(follow(inode.blocks[11], a), b),
+        Some(BlockPath::Triple(a, b, c)) => follow(follow(follow(inode.triple_indirect, a), b), c),
+        None => 0,
+    };
+    crate::inode::ChunkEntry(val)
 }
 
 /// Stage a payload write into the file described by `inode`.
@@ -2555,6 +2729,16 @@ pub(crate) fn stage_payload_write(
     ops: &mut Vec<crate::journal::MetadataOp>,
     used: &mut Vec<u64>,
 ) -> Result<(), DiskManagerError> {
+    if buf.is_empty() {
+        return Ok(());
+    }
+
+    let mut existing_set = if !used.is_empty() {
+        Some(used.iter().copied().collect::<rustc_hash::FxHashSet<u64>>())
+    } else {
+        None
+    };
+
     let mut written = 0usize;
     let mut cur = phys_off;
     while written < buf.len() {
@@ -2563,8 +2747,14 @@ pub(crate) fn stage_payload_write(
         let n = std::cmp::min(buf.len() - written, BLOCK_SIZE - in_blk_off);
 
         let phys = sim_get_or_alloc_block(&guard.mmap, inode, blk_idx, sim, ops)?;
-        if phys != 0 && !used.contains(&phys) {
-            used.push(phys);
+        if phys != 0 {
+            let is_new = match &mut existing_set {
+                Some(set) => set.insert(phys),
+                None => true,
+            };
+            if is_new {
+                used.push(phys);
+            }
         }
         if let Some(slice) = DiskManager::get_block_mut_from_map(&mut guard.mmap, phys) {
             slice[in_blk_off..in_blk_off + n].copy_from_slice(&buf[written..written + n]);

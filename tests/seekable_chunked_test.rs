@@ -1,4 +1,4 @@
-use oifs::disk::{CompressionMode, DiskManager};
+use oifs::disk::{CompressionMode, DiskManager, DurabilityMode};
 use oifs::inode::{CHUNK_SIZE_64K, INODE_FLAG_SEEKABLE_64K};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::tempdir;
@@ -460,5 +460,87 @@ fn test_seekable_chunked_encrypted_roundtrip_and_security() {
     assert!(
         dm_wrong.read_data(inode_id).is_err(),
         "Reading encrypted file with wrong password must fail"
+    );
+}
+
+#[test]
+fn test_seekable_chunked_journaled_crash_recovery_and_atomicity() {
+    let (_dir, img_path) = unique_image_path();
+    let dm = DiskManager::open_journaled(&img_path, 30 * 1024 * 1024).unwrap();
+    dm.set_durability_mode(DurabilityMode::Strict);
+    assert!(dm.superblock().has_journal_layout());
+
+    let root_id = dm.superblock().root_inode;
+    let inode_id = dm.create_file(root_id, "journaled_seekable.bin").unwrap();
+
+    // 256KB payload (4 chunks of 64KB)
+    let mut payload = vec![0u8; 4 * CHUNK_SIZE_64K];
+    for (i, b) in payload.iter_mut().enumerate() {
+        *b = ((i * 31 + 7) % 251) as u8;
+    }
+
+    dm.write_data(
+        inode_id,
+        0,
+        &payload,
+        CompressionMode::Seekable {
+            chunk_size: CHUNK_SIZE_64K as u32,
+            level: 1,
+        },
+    )
+    .unwrap();
+
+    let inode = dm.read_inode(inode_id).unwrap();
+    assert_eq!(inode.size, payload.len() as u64);
+    assert_ne!(inode.flags & INODE_FLAG_SEEKABLE_64K, 0);
+
+    // Verify read
+    let data = dm.read_data(inode_id).unwrap();
+    assert_eq!(data, payload);
+
+    // Partial rewind overwrite in chunk 1 and chunk 2
+    let patch = vec![0xEEu8; 80 * 1024]; // crosses chunk 1 -> chunk 2 boundary
+    dm.write_data(
+        inode_id,
+        50 * 1024,
+        &patch,
+        CompressionMode::Seekable {
+            chunk_size: CHUNK_SIZE_64K as u32,
+            level: 1,
+        },
+    )
+    .unwrap();
+    payload[50 * 1024..50 * 1024 + patch.len()].copy_from_slice(&patch);
+
+    let patched_data = dm.read_data(inode_id).unwrap();
+    assert_eq!(patched_data, payload);
+
+    // Truncate shrink
+    dm.truncate(inode_id, (CHUNK_SIZE_64K * 2 + 1024) as u64)
+        .unwrap();
+    payload.truncate(CHUNK_SIZE_64K * 2 + 1024);
+    let shrunk_data = dm.read_data(inode_id).unwrap();
+    assert_eq!(shrunk_data, payload);
+
+    // Truncate expand
+    dm.truncate(inode_id, (CHUNK_SIZE_64K * 3) as u64).unwrap();
+    payload.resize(CHUNK_SIZE_64K * 3, 0);
+    let expanded_data = dm.read_data(inode_id).unwrap();
+    assert_eq!(expanded_data, payload);
+
+    // Drop filesystem without explicit flush to test journal recovery / persistence
+    drop(dm);
+
+    // Reopen journaled image (mount automatically replays journal if needed)
+    let dm_reopened = DiskManager::open_journaled(&img_path, 30 * 1024 * 1024).unwrap();
+    let re_read = dm_reopened.read_data(inode_id).unwrap();
+    assert_eq!(re_read, payload);
+
+    // Verify fsck
+    let report = dm_reopened.verify_integrity().unwrap();
+    assert!(
+        report.is_clean,
+        "Journaled seekable fsck failed: {:?}",
+        report
     );
 }

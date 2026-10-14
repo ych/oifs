@@ -165,6 +165,7 @@ pub fn is_tcp_master_alive(addr_str: &str) -> bool {
 
     for addr in addrs {
         if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+            let _ = stream.set_nodelay(true);
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
             let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
             if write_framed(&mut stream, &IpcRequest::Ping).is_ok()
@@ -436,6 +437,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                     && is_tcp_master_alive(&info.addr)
                     && let Ok(stream) = TcpStream::connect(&info.addr)
                 {
+                    let _ = stream.set_nodelay(true);
                     return Ok(MasterOrClient::Client {
                         stream: IpcStream::Tcp(stream),
                         target_path: master_path,
@@ -477,6 +479,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                             && let Ok(info) = serde_json::from_str::<MasterInfo>(&content)
                             && let Ok(stream) = TcpStream::connect(&info.addr)
                         {
+                            let _ = stream.set_nodelay(true);
                             return Ok(MasterOrClient::Client {
                                 stream: IpcStream::Tcp(stream),
                                 target_path: master_path,
@@ -490,6 +493,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                     let info: MasterInfo = serde_json::from_str(&content)
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
                     let stream = TcpStream::connect(&info.addr)?;
+                    let _ = stream.set_nodelay(true);
                     Ok(MasterOrClient::Client {
                         stream: IpcStream::Tcp(stream),
                         target_path: master_path,
@@ -578,6 +582,7 @@ impl IpcServer {
                         if wait_for_fd_readable(raw_fd, 50) {
                             match listener.accept() {
                                 Ok((stream, _)) => {
+                                    let _ = stream.set_nodelay(true);
                                     Self::spawn_client_worker(
                                         IpcStream::Tcp(stream),
                                         &dm,
@@ -731,8 +736,15 @@ impl IpcServer {
                 file_offset,
                 len,
             } => {
-                let mut buf = vec![0u8; len];
-                let n = dm.read_at(inode_id, file_offset, &mut buf)?;
+                let inode = dm.read_inode(inode_id)?;
+                let available = inode.size.saturating_sub(file_offset) as usize;
+                let alloc_len = len.min(available).min(128 * 1024 * 1024);
+                let mut buf = vec![0u8; alloc_len];
+                let n = if alloc_len > 0 {
+                    dm.read_at(inode_id, file_offset, &mut buf)?
+                } else {
+                    0
+                };
                 buf.truncate(n);
                 Ok(IpcResponseData::Data(buf))
             }

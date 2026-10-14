@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-14
+
+### Added
+- **Seekable 64KB Chunked Compression & Out-of-Lock Parallel Pipeline (P4.2 / H2)**:
+  - Implemented 3-stage pipeline: Stage 1 shared read-lock inspection, Stage 2 zero-lock multi-threaded parallel Zstd compression and XChaCha20 encryption via Rayon, and Stage 3 atomic write-lock commit (`write_chunked_64k_pipeline`).
+  - Added sub-file random rewind writes with fine-grained chunk dirtying, read-modify-write decompressed chunk preservation, and anti-inflation raw chunk fallback.
+  - Added incremental $\Delta$ tracking for seekable chunk compressed size (H3).
+  - Added contiguous chunk block allocation (`allocate_contiguous`, `free_contiguous`, P4.4).
+- **Metadata WAL Journaling (M1–M5)**:
+  - Added opt-in 128KB journal ring buffer (`--journal` / `DiskManager::open_journaled`) with CRC32C-checksummed frames and torn-write detection.
+  - Implemented WAL-first atomic metadata transactions for `create_file`, `mkdir`, `delete_file`, `write_data`, and `truncate`.
+  - Ordered-mode payload data flush ensuring payload blocks reach disk before metadata commit.
+  - Automatic idempotent redo recovery on mount.
+  - Staged seekable 64K chunked writes and truncations through `AllocSim`, guaranteeing WAL-first ordering.
+- **On-Disk Inode Format v2**:
+  - Implemented fixed 256-byte deterministic inode records with explicit little-endian fields, file-type tags, and zeroed reserved space.
+  - Preserved backward compatibility with legacy v1 images, supported by in-place idempotent `oifs migrate`.
+- **POSIX-Style OpenMode API & Concurrency**:
+  - Added `OpenMode` (`Read`, `Write`, `Create`, `CreateNew`, `Truncate`, `Append`) supporting POSIX `O_CREAT | O_EXCL` atomic file creation.
+  - Implemented sharded bounded inode cache (`BoundedInodeCache`) with interior lock striping to eliminate global cache miss lock contention (P4.3).
+  - Implemented directory cache acceleration (`DirIndex`) and zero-alloc path resolution (P4.6).
+  - Defaulted `OifsSession` to high-performance standalone mode with opt-in IPC.
+- **Verification & Tooling**:
+  - Expanded formal verification suite to 59 Kani proofs covering filter bijectivity, block addressing, directory lookups, CRC32C, journal ring buffer invariants, and version compatibility soundness.
+  - Added TLA+ specification for Copy-on-Write seekable chunk replacement.
+
+### Changed
+- **Performance Optimizations**:
+  - Replaced $O(N^2)$ block deduplication scan in `stage_payload_write` with fast $O(1)$ set lookup (H1), doubling 32MB overwrite throughput from 8.8 GB/s to 18.5 GB/s (+110%).
+  - Added mutation range coalescing to merge adjacent and overlapping block ranges before `msync` syscalls.
+  - Enabled `TCP_NODELAY` on network IPC client and server sockets to eliminate Nagle's algorithm round-trip latency stalls (M5).
+
+### Fixed
+- **WAL Ordering on Seekable Writes**: Fixed issue where seekable 64K chunked writes and truncations mutated bitmaps and pointer tables prior to transaction commit; mutations are now fully staged via `AllocSim` and payload flushed before WAL frame commit.
+- **IPC Memory Safety**: Added memory boundary clamping for `IpcRequest::ReadAt` against file size and reasonable buffer limits to prevent excessive memory allocations.
+- **Durability Range Syncing**: Ensured modified bitmap and payload ranges are synchronized under range-based durability modes (`Strict`, `RangeAsync`) for seekable chunked writes.
+
+## [1.0.0] - 2026-10-04
+
 ### Added
 - **Hierarchical Indirect Block Skipping**:
   - Implemented subtree skipping in `DiskManager::read_data_internal` that skips up to 262,144 blocks in a single check when single, double, or triple indirect block pointers are zero, reducing sparse large-file read latency from 6.91s to 0.01s (>690x speedup).

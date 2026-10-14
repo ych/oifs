@@ -3,14 +3,15 @@ type: concept
 title: Journal and Write-Ahead Logging
 description: Describes the transactional metadata WAL (Write-Ahead Log) that ensures crash resilience, including its circular buffer design, replay mechanism, and durability modes.
 tags: ["journal", "WAL", "write-ahead logging", "transaction", "recovery", "durability"]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-13T15:40:56.857Z
 sources:
   - id: openwiki-source-813113339610c0170804687f
     resource: repo://src/journal.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-13T15:40:56.857Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-14T13:26:03.589Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-14T13:26:03.589Z" }
 ---
+
 # Journal and Write-Ahead Logging
 
 The journal subsystem implements a write-ahead log (WAL) for metadata mutations in OIFS. Before any metadata change (e.g., `create_file`, `delete_file`, `mkdir`, inode updates) is applied to the filesystem image, it is first recorded as a checksummed transaction in a fixed-size circular ring buffer residing in the journal region on disk. On crash recovery, the journal replays all durable-but-unapplied transactions to restore a consistent state, eliminating the need for a full `fsck` scan.
@@ -83,6 +84,7 @@ Represents a single idempotent metadata mutation. Variants:
 
 * `SetInodeBitmap` – allocate/free an inode
 * `SetDataBitmap` – allocate/free a data block
+* `SetDataBitmapRange` – allocate/free a contiguous range of data blocks
 * `WriteInode` – overwrite a full 256‑byte inode record (post‑image)
 * `WriteBlockSlice` – overwrite a byte range inside a data block (used for directory entry updates)
 

@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:4d6d9c968eeae320a3d3cdb1bd3fedd8c520fb16eaa0e7572b3ae186b3b8c038",
+  "pageVersion": "sha256:c6f6910b995b80c611ad651cbaf732c088dd78dd4728ec41ac98c2a9d92e3bf7",
   "claims": [
     {
       "id": "claim_3d28a4981936448fa050abdae37f6df1",
       "statement": "Fragmentation analysis is performed via the `analyze_fragmentation` method on a `DiskManager` instance, which scans the data bitmap in 64-bit word chunks to compute free-block statistics.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L4207-L4297",
+          "resource": "repo://src/disk.rs#L5616-L5706",
           "version": "repo-lines-v1:sha256:22ff27e0245ecf8b2882879744ac2c1d1fff2b7e223add8d9fae2c893a5a4023:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmOGE1NjE4MGY5MTAwNDhmY2ExNjZmYjBmMjdmMDA3NzA3NWZmZDlmYWQwMTgyMzg4MzQxZWY3NzdiNmM2NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4NDFjOTVjODk1N2NiZDM5YTg5OTYzMGJiYzIzNDAwMGQ1NmYyNDM0YTE2Mjg4ZDQzZWEzMjM2NjgxYTFmYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3MWVjNDU1ZWE1NGZhMGJhMjQxOGY4YjdhZmFlMTJmMjM3ZWEzNTRmZTljMzU0ZjA0ZjFkN2NiMzk2OGRlZTgifQ"
         }
       ]
@@ -17,16 +17,16 @@
       "statement": "Safe defragmentation is initiated via the `defrag` subcommand of the `oifs` CLI or via the `DiskManager::defragment` method with `DefragMode::Safe`.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L787-L787",
-          "version": "repo-lines-v1:sha256:de0ea3e21a100f11edc1b24d5969a0347bb832854fba2688e44d31a1a179cada:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGUwZWEzZTIxYTEwMGYxMWVkYzFiMjRkNTk2OWEwMzQ3YmI4MzI4NTRmYmEyNjg4ZTQ0ZDMxYTFhMTc5Y2FkYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGUwZWEzZTIxYTEwMGYxMWVkYzFiMjRkNTk2OWEwMzQ3YmI4MzI4NTRmYmEyNjg4ZTQ0ZDMxYTFhMTc5Y2FkYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjI4OGUxNzJmYTg2MjQ5ZmExZjlkMmQxN2I0NmM4YTJhN2NkOTRmZGM4OTE4Zjg3MWQ1ZjdmZGNmZjQxYWQwNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjYzMzU3MWEyMzQzYWEzOTYzZWQwNTdhNThhY2E3MDgxZDZmNDNkMmNjZmZhYzNjZjY4YzliZDdkMjY3YzBhYyJ9"
+          "resource": "repo://src/bin/oifs.rs#L859-L898",
+          "version": "repo-lines-v1:sha256:15c72aa88ae86df8c0f558fc74a523ff93e273ba1971b0d7a2f27fea9727be98:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1MzQ1ODUxYTFjMWMwMDA3NjcxZmVkYTg0OTA4YWJiZjU1YmIzZTAyYmVmZGNjNTc3Y2I4NWNkZjNlNDJjMTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5ZWIzZTZjZGZkMzYxNjRlNTJlZGIyZjNlM2JhZGM1ZDY5ZGNiYjgzOTBiN2Q1Zjg5ZjljMGI1YTU5MjMwMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmMTAwZTM4NjQyN2NjZWVmYWJjM2M2YzdlYjkyM2Y1ZGU2NTQ3YWNkZDg1N2I3YmNiMjljYWY3MGNmZjQyMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdhZjZlZGUwNzVjNmZjMWRjNWUyOWRkYzUwMWNhODA0NjRjOWRkNmYzM2I0YTQ1Mjc2MmIxMDk3N2Q4ZTI3ZmIifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L4453-L4460",
-          "version": "repo-lines-v1:sha256:acd3655185d53868d93da76601df3c21bc6f74f4eb84fc65e527db9836758669:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDhjNjdiNGY0Mjk3MDRlODc4MGEwMzJhM2Q3NmViYjE2MjE1YzViMjY0ZmUwZWYxYzM5ZTkxNTVkMzJjYWYxMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDFmYTg4YThjZjZlYzJmZDcwNTE3YTA4YWRhZTZkMDNjOTcyYTgyNDQ5YjM2Y2U5OGI1Mjk0OGEzODY0MjljYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjI4ODBiYjQ1ZjNjNGRjODhlNzA2MmU2ZThiN2FmODQwZTQwOWZiMWU1OGUyNzhmYTA5MjMzY2IwZGQ1ZjIyOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGQ1MTEzODg0OTcwNWNhYzEyMmRmYzZlYjY5Mzc5YjJlMzgxY2U4MTVkZWMxZmU2YTJmYmUwMDdkMzU0ZjU2MyJ9"
+          "resource": "repo://src/disk.rs#L5867-L5930",
+          "version": "repo-lines-v1:sha256:ce1ca264e519d705e7a80955f95e7cf049398b62e86efe242be8f52fa81681c4:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4YzY3YjRmNDI5NzA0ZTg3ODBhMDMyYTNkNzZlYmIxNjIxNWM1YjI2NGZlMGVmMWMzOWU5MTU1ZDMyY2FmMTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIyODgwYmI0NWYzYzRkYzg4ZTcwNjJlNmU4YjdhZjg0MGU0MDlmYjFlNThlMjc4ZmEwOTIzM2NiMGRkNWYyMjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEyOWM1YjBiMGZmZThkYjZkZTc2YWMwOWE3YzU5ZDdmOTEyM2QyYTExMjI1ODM4NTg5MzY1YjcxYjk0ODM0ZGYifQ"
         },
         {
-          "resource": "repo://tests/defrag_test.rs#L68-L68",
-          "version": "repo-lines-v1:sha256:6127ecb5d222f8974d74f6df17ce205b0a20ff875726c63c79c532953c209a03:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjEyN2VjYjVkMjIyZjg5NzRkNzRmNmRmMTdjZTIwNWIwYTIwZmY4NzU3MjZjNjNjNzljNTMyOTUzYzIwOWEwMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjEyN2VjYjVkMjIyZjg5NzRkNzRmNmRmMTdjZTIwNWIwYTIwZmY4NzU3MjZjNjNjNzljNTMyOTUzYzIwOWEwMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWIxZjQ1OTQ3NGQyOWY2ZmRhZDgyMWEzOWE2MDA2NjEzMzJjMTEwZGNlMGVhN2YwOTllMmJiMTQ5MTllM2E2YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2Q5NDk1NjI0M2M3ZjMyMTJhN2VkZmIwNDM4OTBkMjkzMTUzNzcyMjU2N2VhZWQwNDA0OTc0MzE2MzFlNTM0YiJ9"
+          "resource": "repo://tests/defrag_test.rs#L66-L69",
+          "version": "repo-lines-v1:sha256:48c96c9df5baa83ea574ae9e06f5f7e7fece2debd840317d57d2aad0e426f377:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmM0ZDRjMTRhMGE5NDBiNTg5ZGMyMzgxOWNmMDEzZWM0YTU0ZmI0OTY2YzBiOGQyMTYyNzI4MGU2ZWNkZmJjYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTU1YTc0NzQzNjRlYjIyMmEwODhhM2YyYzJmODQ4ZjlmZjhlNjZhODkxODUyN2I0ZjYxZmFmN2Y4YThmOGQxNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDU1OTkzZDNiNTA3OWFhMDkxYzA0YjVmNDBiNDA4ZjZmZjY5ODdhNjZiM2NhMTllZDE2OWZiZjU4YzM0ODA5NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjk5YmZhMDljNDNiMTczMzI1YThiYzc5MjM5ZjViMThhZWRhZjY0MzYwNmI0OGYyM2EzN2RjNTFmZDZkMGJjYSJ9"
         }
       ]
     },
@@ -35,7 +35,7 @@
       "statement": "The safe defragmentation process begins by copying the entire image to a temporary file (`{image}.defrag.tmp`), leaving the original untouched.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L4476-L4484",
+          "resource": "repo://src/disk.rs#L5942-L5950",
           "version": "repo-lines-v1:sha256:56ff6084b654ced258e7c2f938d4e7bb493de17e3ad392469dbc1478139fc6dc:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjI5OTM5ZjhmNjM4MDNiYzgyOTA1NjlmMjFhNTA4MDI5YmE1NTk2MzVjMWQ4N2U0MmQ5MGUzMWFmMDQxNjA1YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjhmNGU4NWI5M2MxMWIxZWY1Mzc0NTgwNmI5MGFlNDE2ZGRkYjU2YTVjZTdkMGQyODFiZDAzZTAzZjM0NWEyOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTQxNDAzNTY2M2YzOTRhNGQ0MWRjYmY3ZjhkNTdiMGY3ZTYyMTQwMzgxM2EwY2VhMTRjODVkZTFiYTQ5YTA5ZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODRkZTAzZmVkMWU2YjhlNzRhOTgwZDhkNDkxMjg3MDJhYTY0YmMzZjNhMzcwMDE5ZjNkZTgzYzI5ZGE3NTNkMiJ9"
         }
       ]
@@ -45,11 +45,11 @@
       "statement": "During defragmentation, directory block addresses are preserved to avoid breaking parent pointer graphs, and file data, compression status, and filter configurations are extracted.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L4513-L4521",
+          "resource": "repo://src/disk.rs#L5979-L5987",
           "version": "repo-lines-v1:sha256:9cbd7c22742d6871f590ef99761dafec07230a4b9bfb4a36430b8c22e4a941de:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTk5YmQwOGYyMmNiZmE1ZDRmMThmNzMyMWU2Y2QzYTJjYmMxYTBjNDAzYjkzODYyNTAwZjMzMGZjMDJkMmMyMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzU4ODE0NmVhNmIzMzk3YWJhMTEwMGM2YTE0MGE4OGRiMzdkNzlkMTY3NTc5Y2RmNmZhZjRhZTZiZjhhZmQzYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTczZmU5NWRkNjgxMDNjMGIzNmY5NWJjMDRiNTBkMGUzNzkyYTVlNDQ3ZDlhZDI3NmNjZTc2NWRmMjI4ZmVmNyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjY2MDQ4YzZjMmY3MmRhOWU2MDU5OWQ2ZDI1ZTJmMmQ1ODk2N2JiZDUyMTQxY2MzZWUwYzM1NzEwYzY5NGRlYiJ9"
         },
         {
-          "resource": "repo://src/disk.rs#L4535-L4550",
+          "resource": "repo://src/disk.rs#L6001-L6016",
           "version": "repo-lines-v1:sha256:25afcfb6689ae85e88f6ba356720951e37ade9cb295770941f9096d85b33b09d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5M2ZjOTc4OTQxNDA2MjMwOTZjYTlkYjcxNTQ0MjJkNDA0NGNkZGJmYzk1YWQ0MGRhYTc4NWY5YjkzNDJjZmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMwMzI0NTI3ZGYyMDk1ZTkyYjg0Njc2ZmFlYTNhYmNhMzNhOWVjMDVkYWNjMjc2MzkzNWQ4NDlhOTM2YWZiNWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1OGY4YzMwMDQyNGY0NjgxZjA2Nzc4ZDQ5MTdmN2ZjNDJmZjgwNmMwYTk2MmY2NjJlMDg3YjQ2MDgxNGM3YzAifQ"
         }
       ]
@@ -59,7 +59,7 @@
       "statement": "The temporary image's data bitmap is cleared and then only preserved directory blocks are re-marked as allocated, making all other data blocks free for contiguous reassignment.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L4534-L4550",
+          "resource": "repo://src/disk.rs#L6000-L6016",
           "version": "repo-lines-v1:sha256:ee502182f2a63b43bbffe3769cb9ce510a50d5ab224320e7e7196febadc41ad9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxYjkxODZlMDY4Zjk0ZGUzZWUwOTM3NWYwM2NjMmNhYTFlYmJhY2RlMTk3YmJmNjI2NDQwMGEwYTUwNDNiZmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRhOWY4NmQyOGU3ODRmOWZkMzFmYjcyZDE1ZjYwY2JjZWFhZmRkNjY5Y2JkNWI2ZGE3ODg4YTAyMzMyMWViYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk1NzA4NTE0OTJlNGFlODgzY2FlYTI4OTg5NWU2MzU2ZGJiZWNkZWMxMzZmZDE0NWJhY2M3ZTdlZWVmMzlmYzUifQ"
         }
       ]
@@ -69,7 +69,7 @@
       "statement": "Files are reallocated contiguously starting from the first data block using sequential hint-based allocation, and the original compression mode and filter settings are reapplied.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L4557-L4568",
+          "resource": "repo://src/disk.rs#L6023-L6034",
           "version": "repo-lines-v1:sha256:7caace13bf7044bf41d65b091ad34dbad2d60b5a0099028663ed03f087b4f947:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwYTljZDUzNzc4MzcwMmQxMDdmZTVlM2E5MzMyMjljMjVjYTUwY2IyNzQ3NzAxNGZiNGY2NDM5OGUwYTI1MmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAzZjU2NWI5MTY5NTYwMTg2NTE1YmJiMGYwNzYyMDczOGFhMDM2MjIwZDc5Yjg4N2I4MzhiOWVmMDhmNTljOWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiNjBhODZiYTNjNjQzYTQ3YTM0MGQ5NWZlOTQ2ZDc3OTExMDYxN2Q4MzcwZGU5Y2Y0MmI3OTAwZGYzNzM0NDgifQ"
         }
       ]
@@ -79,7 +79,7 @@
       "statement": "After flushing the temporary image to disk, an atomic rename sequence swaps images: original → backup, temporary → original, followed by verification and rollback on failure.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L4571-L4602",
+          "resource": "repo://src/disk.rs#L6037-L6068",
           "version": "repo-lines-v1:sha256:4c35f5b2440d341a6dd9ae672501c5d4d3db1b16245b81cbac407ec49bbffc20:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2NTRmMzgyYzNiZjZhODcxZTljZGI2ZTMyZDg1NjNjMjRiMjcxNjA4ZjQ0ZDk3NGFlMTAxMDM5MjE5YzBhZTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwNWFmMTM0OWUzZTRhMzliMjdhNzhmMjE5MTNlZDkxODY2YzBjMzJhYzhhNDA2OGI5NTRmNWFiYjI4NDZiMGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhZjllMTFkM2FkNmQ2ZDhlYzFiYTc2MTQyNDE2ZGM2NWY1MTJjNzVjZDRlMzEyNGJjNDk4ZmVlMTdkODkyNDUifQ"
         }
       ]
@@ -87,6 +87,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-07T12:20:29.772Z"
+    "at": "2026-10-14T13:26:03.589Z"
   }
 }

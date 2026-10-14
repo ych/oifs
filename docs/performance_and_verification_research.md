@@ -231,6 +231,39 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-06** | `src/journal.rs:836-857` | WAL recovery loop divides by `ring_bytes` (panics if `block_size == 0`) and lacks cycle/progress guards, permitting infinite replay loop DoS from crafted WAL. | **High** | `proof_recover_termination` | **Resolved** (`ring == 0` early exit, `total == 0` break, slice bounds check, `bytes_traversed < ring` termination limit) |
 | **SEC-07** | `src/disk.rs` | Unbounded `zstd::stream::decode_all` allows malicious compressed streams to expand into gigabytes, triggering host OOM DoS (decompression bomb). | **Medium** | - | **Resolved** (Bounded streaming decompression via `Decoder::take(max_bytes)`) |
 | **SEC-08** | `src/directory.rs` | Directory `dir_block_count` calculates `size.div_ceil(4096)`. Extremely large directory `inode.size` triggers billions of block lookups (CPU starvation DoS). | **Medium** | - | **Resolved** (`MAX_DIR_BLOCKS = 65536` upper bound, `block_size == 0` safety guard) |
+| **SEC-09** | `src/session.rs`, `src/ipc.rs` | Deterministic Unix Domain Socket path in shared `/tmp` (`/tmp/oifs_<hash>.sock`) derived with fixed-key SipHash allows local attackers on multi-user systems to pre-create or squat the socket before the master starts, intercepting client proxy connections. | **Medium** | - | **Mitigated** (SessionMode defaults to Standalone; IPC is explicit opt-in via `--ipc`) |
+| **SEC-10** | `src/ipc.rs`, `src/session.rs` | Network IPC transport transmits file data and session payloads over unencrypted raw TCP without TLS/mTLS, exposing all operations to network eavesdropping and tampering. | **High** | - | **Open / Architecture** (Requires external VPN/WireGuard or local-only `127.0.0.1` binding) |
+| **SEC-11** | `src/ffi.rs` | Several exported C FFI functions (e.g. `oifs_set_io_backend`, `oifs_get_io_backend`) lack `std::panic::catch_unwind`. Unwinding panics across the `extern "C"` boundary invokes Undefined Behavior. | **Medium** | - | **Open / In Progress** (Core operations protected; secondary getters require `catch_unwind` wraps) |
+| **SEC-12** | `src/encryption.rs`, `src/session.rs` | Encryption keys (`EncryptionKey`) and passwords are kept in standard unzeroized `String`/`Vec<u8>` heap memory, leaving key material exposed in core dumps or memory forensics. | **Low** | - | **Open** (Recommend integrating `zeroize::ZeroizeOnDrop`) |
+| **SEC-13** | `src/bin/oifs.rs` | Passing `--password <SECRET>` on CLI arguments exposes encryption passwords in plain text in `/proc/<pid>/cmdline` and `ps` process tables to other local users. | **Low** | - | **User Advisory** (`OIFS_PASSWORD` environment variable supported, interactive prompt recommended) |
+| **SEC-14** | `src/directory.rs` | Untrusted disk images with directory entry names containing path traversal components (`/`, `..`) can escape target export folders if unpacked naively by host tools. | **Medium** | - | **Open / Hardening** (Directory entry insertion should reject `/` and `\0`; host export must sanitize `Path::file_name`) |
+| **SEC-15** | `src/disk.rs:4410-4450` | Seekable 64K Chunked writes previously allocated contiguous blocks and updated on-disk indirect pointer tables in-place before committing the WAL transaction frame, corrupting replay on crash. | **High** | `test_seekable_chunked_journaled_crash_recovery_and_atomicity` | **Resolved in 1.1.0** (Staged through `AllocSim` + ordered payload flush before `commit_journal_tx`) |
+
+### 3.1 Detailed Threat Model & Residual Security Evaluation
+
+1. **Local Multi-User Isolation (SEC-09 & SEC-13)**:
+   - *Threat*: In a shared Linux host with multiple untrusted users, `/tmp` is world-writable with sticky bit permissions.
+   - *Analysis*: Because `resolve_ipc_socket_path` computes a predictable hash from the canonical image path, an unprivileged local user who discovers the target path could pre-create `/tmp/oifs_<hash>.sock`. When a victim user opens the image with `--ipc`, the client attempts to connect to the attacker's pre-created socket.
+   - *Resolution*: In release 1.1.0, `OifsSession` defaults to `Standalone` mode (zero socket files created). When `--ipc` is enabled, the recommended defense is binding sockets inside `$XDG_RUNTIME_DIR` (permissions `0700`) rather than world-writable `/tmp`.
+
+2. **Network Transport Security (SEC-10)**:
+   - *Threat*: Remote Master-Proxy synchronization over TCP.
+   - *Analysis*: `SEC-03` resolved authentication spoofing by introducing Argon2id salt hashing and constant-time password verification. However, the subsequent TCP communication stream is raw plaintext without TLS. An attacker on the local network segment (or Wi-Fi) can observe file read/write payloads or inject TCP packets.
+   - *Remediation*: Restrict default TCP bindings to `127.0.0.1`. Production multi-node OIFS deployments across machines must be tunnelled over WireGuard, IPsec, or SSH port forwarding.
+
+3. **FFI Boundary Panic Safety (SEC-11)**:
+   - *Threat*: Panic unwinding across C ABI (`extern "C"`).
+   - *Analysis*: In Rust 1.85+, a panic escaping an `extern "C"` function without `catch_unwind` is defined to abort the process, but prior toolchains consider it undefined behavior (UB). Critical file I/O operations (`oifs_read_file`, `oifs_write_file`, `oifs_create_file`) wrap logic in `catch_unwind`, but auxiliary utility functions (`oifs_set_io_backend`, `oifs_get_io_backend`) directly call Rust methods.
+   - *Remediation*: Wrap all remaining FFI entry points with `catch_unwind` to return `-1` on error.
+
+4. **Cryptographic Material Lifetime (SEC-12)**:
+   - *Threat*: Cold-boot attacks, core dump extraction, or process memory scrapers.
+   - *Analysis*: `XChaCha20Poly1305` keys are generated via Argon2id and stored in `EncryptionKey`. Rust's standard allocator does not wipe memory upon `drop()`.
+   - *Remediation*: Adopt the `zeroize` crate to implement `Zeroize` and `ZeroizeOnDrop` on `EncryptionKey` buffers.
+
+5. **Untrusted Image Defense & Journal Replay Invariants (SEC-15)**:
+   - *Threat*: A hostile or corrupted `.img` image file opened by OIFS.
+   - *Analysis*: In 1.1.0, Seekable 64K Chunked compression is fully integrated into the WAL journaling subsystem. All block allocations are simulated via `AllocSim`, and pointer table writes are recorded in memory before being committed to the journal ring. Crucially, raw payload blocks are flushed to physical backing pages *before* the WAL frame commits (Ordered Mode), ensuring that torn transactions never point to uninitialized or garbage data.
 
 ---
 

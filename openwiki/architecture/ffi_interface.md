@@ -1,20 +1,21 @@
 ---
 type: architecture
 title: C FFI Interface
-description: How OIFS exposes its storage engine as a standard C shared library (liboifs) through an opaque handle model, callback-driven directory iteration, zero-copy offset reads, pluggable I/O backend configuration, and thread-safe error reporting.
-tags: [ffi, c-api, shared-library, handles, callbacks, abi, io_engine, no-mangle]
+description: How OIFS exposes its storage engine as a standard C shared library (liboifs) through an opaque handle model, callback-driven directory iteration, zero-copy offset reads, pluggable I/O backend configuration, version handshake, and thread-safe error reporting.
+tags: [ffi, c-api, shared-library, handles, callbacks, abi, io_engine, no-mangle, versioning]
 sources:
   - id: openwiki-source-f9a8a5ec259e5381eba4c51a
     resource: repo://include/oifs.h
   - id: openwiki-source-c9e5b32aad7cafdb095c81a4
     resource: repo://src/ffi.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-14T13:26:03.589Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-07T12:20:29.772Z
+    at: 2026-10-14T13:26:03.589Z
 ---
 
 # C FFI Interface
+
 
 <!-- openwiki: broken internal link [src/ffi.rs] file "src/ffi.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
 <!-- openwiki: broken internal link [include/oifs.h] file "include/oifs.h" does not exist. Fix the href or restore the target, then delete this comment. -->
@@ -148,6 +149,18 @@ int32_t oifs_get_io_backend(OIFSHandle *handle);
 
 - `oifs_set_io_backend`: Configures the active I/O backend on the underlying `DiskManager`. If `OIFS_IO_BACKEND_IO_URING` is requested on an unsupported OS or kernel (< Linux 5.15), it automatically falls back to `Pread` and returns `1`. Returns `-1` if `handle` is null.
 - `oifs_get_io_backend`: Queries the currently active effective backend (`0` for Mmap, `1` for Pread, `2` for IoUring).
+
+## Version Handshake
+
+OIFS exports version information to allow host programs to verify compatibility with the loaded dynamic library:
+
+- `oifs_version_major()`, `oifs_version_minor()`, `oifs_version_patch()`: Return individual version components
+- `oifs_version_code()`: Returns a monotonic 64-bit encoded version: `(major << 32) | (minor << 16) | patch`
+- `oifs_version_string()`: Returns a null-terminated static C string (e.g., "0.1.0")
+- `oifs_check_version(req_major, req_minor, req_patch)`: Checks compatibility:
+  - Returns `0` (`OIFS_VERSION_COMPAT_OK`): Exact version match
+  - Returns `1` (`OIFS_VERSION_COMPAT_WARN`): Newer library (warning, allowed)
+  - Returns `-1` (`OIFS_VERSION_COMPAT_ERR`): Older library (error, blocked)
 
 ## Error Handling Conventions
 

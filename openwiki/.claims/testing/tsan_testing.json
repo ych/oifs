@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:bf7d79071a25aa3f8af194224125d844af7955f3da1e5a6824ccf885b927e6ba",
+  "pageVersion": "sha256:e948b4642cea1f3e7886787833e4c9f42496af84700702b6d60034d58d72ba4d",
   "claims": [
     {
       "id": "claim_a6750493d45a4249aff843ec899f04e3",
@@ -50,11 +50,11 @@
         },
         {
           "resource": "repo://tests/rwlock_concurrency_test.rs",
-          "version": "repo-file-v1:sha256:60819a8a238f7cceaead4035f43d2fcbe5e110daaceaf44fe43d81af040c6bc2"
+          "version": "repo-file-v1:sha256:7517d4f28d4ab2cd402f55d6f509b801f8b0a5042ec21c91b8191c44694e7e02"
         },
         {
           "resource": "repo://tests/session_ipc_test.rs",
-          "version": "repo-file-v1:sha256:cae219c35793b97335734299dcb6c0ee7355a4ce10014753605d66a2ea152121"
+          "version": "repo-file-v1:sha256:0401b787d6477c517bdc7029ad5f21c5507b788f80bb4cdf07f455429b314df7"
         }
       ]
     },
@@ -71,6 +71,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-07T12:20:29.772Z"
+    "at": "2026-10-14T13:26:03.589Z"
   }
 }

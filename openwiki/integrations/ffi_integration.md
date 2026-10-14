@@ -10,10 +10,10 @@ sources:
     resource: repo://include/oifs.h
   - id: openwiki-source-c9e5b32aad7cafdb095c81a4
     resource: repo://src/ffi.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-14T13:26:03.589Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-07T12:20:29.772Z
+    at: 2026-10-14T13:26:03.589Z
 ---
 
 # OIFS FFI Integration Guide

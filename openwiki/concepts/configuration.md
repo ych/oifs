@@ -1,8 +1,8 @@
 ---
 type: concept
 title: Configuration and Features
-description: Build-time features (mpi, compression, encryption), runtime options (durability mode, io backend selection), and environment variables affecting OIFS behavior.
-tags: [configuration, features, environment-variables, cli-options, build-flags]
+description: Build-time features (mcp, io_uring), runtime options (durability mode, io backend selection), environment variables, and filesystem properties affecting OIFS behavior.
+tags: [configuration, features, environment-variables, cli-options, build-flags, compression, durability]
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -12,10 +12,10 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-ea9e30b0c99ad48bf309d4ab
     resource: repo://src/io_engine.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
+    at: 2026-10-13T15:40:56.857Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-13T15:40:56.857Z" }
 ---
 
 OIFS provides multiple configuration mechanisms to tailor functionality for different use cases, from embedded systems to high-performance clusters. Configuration occurs at build time via Cargo features, at runtime via CLI flags and environment variables, and through persistent filesystem properties.
@@ -69,10 +69,12 @@ Command-specific configuration:
 Properties stored in the superblock and configurable via CLI or API:
 
 #### Compression Mode
-Controls when files are automatically compressed using Zstandard:
+Controls when files are compressed using Zstandard:
 - `Always`: Compress all files regardless of size
 - `Never`: Disable compression entirely
 - `Auto` (default): Compress files ≥ 8KB
+- `Stream`: Compress the entire file with a specified compression level
+- `Seekable`: Compress the file in independent chunks for random access
 
 Set via `DiskManager::set_compression_mode()` or CLI `put` command flags.
 
@@ -82,8 +84,7 @@ Determines how defragmentation operations are performed:
 - `InPlace`: Directly modify original image (faster but risks corruption on failure)
 
 #### Durability Mode
-<!-- openwiki: broken internal link [../architecture/async_io_and_engines.md#durability-modes] heading anchor "durability-modes" does not exist in "../architecture/async_io_and_engines.md". Fix the href or restore the target, then delete this comment. -->
-Balances power-loss resilience against write throughput ([detailed explanation](../architecture/async_io_and_engines.md#durability-modes)):
+Balances power-loss resilience against write throughput:
 - `Lazy` (default): Updates mmap/page cache without per-mutation `msync`; survives process crashes; requires explicit `flush()` for power-loss safety
 - `RangeAsync`: Asynchronously flushes only modified byte ranges via `msync(MS_ASYNC)`
 - `Strict`: Synchronously flushes modified byte ranges via `msync(MS_SYNC)` before returning

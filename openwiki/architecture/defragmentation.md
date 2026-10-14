@@ -7,9 +7,6 @@ sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
 generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-07T12:20:29.772Z
 ---
 
 ## Responsibility and ownership

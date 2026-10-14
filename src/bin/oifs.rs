@@ -5,7 +5,7 @@ use oifs::inode::FileType;
 use oifs::session::OifsSession;
 use serde::Serialize;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -471,9 +471,19 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("Host file {:?} does not exist.", host_path).into());
             }
 
-            let path_str = remote_name
-                .clone()
-                .unwrap_or_else(|| host_path.file_name().unwrap().to_string_lossy().to_string());
+            let path_str = match remote_name {
+                Some(name) => name.clone(),
+                None => host_path
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .ok_or_else(|| {
+                        format!(
+                            "Cannot determine destination filename from host path {:?}",
+                            host_path
+                        )
+                    })?
+                    .to_string(),
+            };
 
             let compression_mode = if *chunked {
                 CompressionMode::Seekable {
@@ -589,11 +599,37 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
             let inode_id = dm.resolve_path(remote_name)?;
             let data = dm.read_data(inode_id)?;
-            let dest = host_path
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(PathBuf::from(remote_name).file_name().unwrap()));
+            let remote_file_name = Path::new(remote_name)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .ok_or_else(|| {
+                    format!(
+                        "Cannot determine valid filename from remote path '{}'",
+                        remote_name
+                    )
+                })?;
 
-            if let Some(parent) = dest.parent() {
+            oifs::directory::validate_filename(remote_file_name)
+                .map_err(|e| format!("Invalid remote filename '{}': {}", remote_name, e))?;
+
+            let is_target_dir = match host_path {
+                Some(p) => {
+                    p.is_dir()
+                        || p.to_string_lossy().ends_with('/')
+                        || p.to_string_lossy().ends_with('\\')
+                }
+                None => false,
+            };
+
+            let dest = match host_path {
+                Some(p) if is_target_dir => p.join(remote_file_name),
+                Some(p) => p.clone(),
+                None => PathBuf::from(remote_file_name),
+            };
+
+            if let Some(parent) = dest.parent()
+                && !parent.as_os_str().is_empty()
+            {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&dest, &data)?;

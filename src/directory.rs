@@ -17,22 +17,52 @@ pub enum DirectoryError {
     Utf8Error(#[from] std::string::FromUtf8Error),
     #[error("Entry too large")]
     EntryTooLarge,
+    #[error("Invalid filename: {0}")]
+    InvalidFilename(String),
+}
+
+/// Validates that a directory entry filename conforms to OIFS filesystem security rules (SEC-14).
+///
+/// Rejects:
+/// - Empty filenames
+/// - Path traversal components (`.` and `..`)
+/// - Path separators (`/` and `\`)
+/// - Null bytes (`\0`)
+/// - Filenames exceeding `DirectoryEntry::MAX_FILENAME_LEN` (255 bytes)
+pub fn validate_filename(name: &str) -> Result<(), DirectoryError> {
+    if name.is_empty() {
+        return Err(DirectoryError::InvalidFilename(
+            "Filename cannot be empty".to_string(),
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err(DirectoryError::InvalidFilename(format!(
+            "Filename cannot be '{}' (path traversal prohibited)",
+            name
+        )));
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(DirectoryError::InvalidFilename(
+            "Filename cannot contain path separators ('/' or '\\')".to_string(),
+        ));
+    }
+    if name.contains('\0') {
+        return Err(DirectoryError::InvalidFilename(
+            "Filename cannot contain null bytes ('\\0')".to_string(),
+        ));
+    }
+    if name.len() > DirectoryEntry::MAX_FILENAME_LEN {
+        return Err(DirectoryError::EntryTooLarge);
+    }
+    Ok(())
 }
 
 impl DirectoryEntry {
     pub const MAX_FILENAME_LEN: usize = 255;
 
     pub fn serialize_into<W: Write>(&self, writer: &mut W) -> Result<(), DirectoryError> {
-        if self.name.contains('/') {
-            return Err(DirectoryError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Filename cannot contain '/'",
-            )));
-        }
+        validate_filename(&self.name)?;
         let name_bytes = self.name.as_bytes();
-        if name_bytes.len() > Self::MAX_FILENAME_LEN {
-            return Err(DirectoryError::EntryTooLarge);
-        }
 
         writer.write_all(&self.inode.to_le_bytes())?;
         writer.write_all(&self.hash.to_le_bytes())?;
@@ -66,16 +96,15 @@ impl DirectoryEntry {
             return Ok(None);
         }
 
+        if len > Self::MAX_FILENAME_LEN {
+            return Err(DirectoryError::EntryTooLarge);
+        }
+
         let mut name_buf = vec![0u8; len];
         reader.read_exact(&mut name_buf)?;
         let name = String::from_utf8(name_buf)?;
-        // If len == 0 -> End.
 
-        // Wait, I cannot read `name` before `len`.
-        // So correct flow:
-        // read inode, hash, len.
-        // if len == 0 -> return None (End).
-        // else read name.
+        validate_filename(&name)?;
 
         Ok(Some(Self { inode, hash, name }))
     }
@@ -364,7 +393,61 @@ mod tests {
 
         let mut buf = Vec::new();
         let err = entry.serialize_into(&mut buf).unwrap_err();
-        assert!(matches!(err, DirectoryError::Io(_)));
+        assert!(matches!(err, DirectoryError::InvalidFilename(_)));
+    }
+
+    #[test]
+    fn test_validate_filename_traversal_and_invalid_chars() {
+        // Traversal and reserved components
+        assert!(validate_filename("").is_err());
+        assert!(validate_filename(".").is_err());
+        assert!(validate_filename("..").is_err());
+        assert!(validate_filename("a/b").is_err());
+        assert!(validate_filename("a\\b").is_err());
+        assert!(validate_filename("file\0name").is_err());
+        assert!(validate_filename(&"a".repeat(256)).is_err());
+
+        // Valid names
+        assert!(validate_filename("hello.txt").is_ok());
+        assert!(validate_filename(".hidden").is_ok());
+        assert!(validate_filename("..extra").is_ok());
+        assert!(validate_filename("_e_validBase64Token").is_ok());
+        assert!(validate_filename(&"a".repeat(255)).is_ok());
+    }
+
+    #[test]
+    fn test_deserialize_rejects_traversal_and_corrupt_entry() {
+        // Construct entry with ".." name manually
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1u64.to_le_bytes()); // inode
+        buf.extend_from_slice(&0u64.to_le_bytes()); // hash
+        buf.extend_from_slice(&2u16.to_le_bytes()); // len = 2
+        buf.extend_from_slice(b"..");
+
+        let mut cursor = Cursor::new(&buf);
+        let err = DirectoryEntry::deserialize_from(&mut cursor).unwrap_err();
+        assert!(matches!(err, DirectoryError::InvalidFilename(_)));
+
+        // Construct entry with slash manually
+        let mut buf2 = Vec::new();
+        buf2.extend_from_slice(&1u64.to_le_bytes());
+        buf2.extend_from_slice(&0u64.to_le_bytes());
+        buf2.extend_from_slice(&3u16.to_le_bytes());
+        buf2.extend_from_slice(b"a/b");
+
+        let mut cursor2 = Cursor::new(&buf2);
+        let err2 = DirectoryEntry::deserialize_from(&mut cursor2).unwrap_err();
+        assert!(matches!(err2, DirectoryError::InvalidFilename(_)));
+
+        // Construct entry with length > 255
+        let mut buf3 = Vec::new();
+        buf3.extend_from_slice(&1u64.to_le_bytes());
+        buf3.extend_from_slice(&0u64.to_le_bytes());
+        buf3.extend_from_slice(&300u16.to_le_bytes()); // len = 300 > 255
+
+        let mut cursor3 = Cursor::new(&buf3);
+        let err3 = DirectoryEntry::deserialize_from(&mut cursor3).unwrap_err();
+        assert!(matches!(err3, DirectoryError::EntryTooLarge));
     }
 
     #[test]

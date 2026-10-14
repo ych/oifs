@@ -477,4 +477,63 @@ fn test_zero_allocation_path_resolution_p4_6() {
     assert!(dm.resolve_parent("///").is_err());
     assert!(dm.resolve_parent(".").is_err());
     assert!(dm.resolve_parent("./.").is_err());
+    assert!(dm.resolve_parent("..").is_err());
+    assert!(dm.resolve_parent("a/b/..").is_err());
+    assert!(dm.resolve_parent("../bad").is_err());
+}
+
+#[test]
+fn test_sec_14_path_traversal_and_directory_escape_mitigation() {
+    let ctx = TestContext::new("test_sec_14_mitigation");
+    let dm = DiskManager::open(&ctx.image_path, 10 * 1024 * 1024).expect("open dm");
+    let root = dm.superblock().root_inode;
+
+    // 1. File creation rejects path traversal and invalid characters
+    assert!(dm.create_file(root, "").is_err());
+    assert!(dm.create_file(root, ".").is_err());
+    assert!(dm.create_file(root, "..").is_err());
+    assert!(dm.create_file(root, "sub/file.txt").is_err());
+    assert!(dm.create_file(root, "sub\\file.txt").is_err());
+    assert!(dm.create_file(root, "null\0byte").is_err());
+    assert!(dm.create_file(root, &"x".repeat(256)).is_err());
+
+    // 2. Directory creation rejects path traversal and invalid characters
+    assert!(dm.create_directory(root, "").is_err());
+    assert!(dm.create_directory(root, ".").is_err());
+    assert!(dm.create_directory(root, "..").is_err());
+    assert!(dm.create_directory(root, "nested/dir").is_err());
+    assert!(dm.create_directory(root, "nested\\dir").is_err());
+    assert!(dm.create_directory(root, "dir\0null").is_err());
+
+    // 3. Lookup and deletion reject path traversal and invalid characters
+    assert!(dm.lookup(root, "..").is_err());
+    assert!(dm.lookup(root, ".").is_err());
+    assert!(dm.lookup(root, "invalid/name").is_err());
+    assert!(dm.delete_file(root, "..").is_err());
+    assert!(dm.delete_file(root, ".").is_err());
+    assert!(dm.delete_file(root, "invalid/name").is_err());
+
+    // 4. Path resolution rejects '..' traversal components
+    let sub = dm.create_directory(root, "sub").expect("mkdir sub");
+    let _f = dm.create_file(sub, "test.txt").expect("create file");
+
+    assert!(dm.resolve_path("sub/..").is_err());
+    assert!(dm.resolve_path("../sub").is_err());
+    assert!(dm.resolve_path("sub/../sub/test.txt").is_err());
+
+    // 5. Parent resolution rejects traversal
+    assert!(dm.resolve_parent("..").is_err());
+    assert!(dm.resolve_parent("sub/..").is_err());
+    assert!(dm.resolve_parent("sub/../test.txt").is_err());
+
+    // 6. Test journaled mode invariants
+    let jctx = TestContext::new("test_sec_14_journaled");
+    let jdm = DiskManager::open_journaled(&jctx.image_path, 10 * 1024 * 1024).expect("open jdm");
+    let jroot = jdm.superblock().root_inode;
+
+    assert!(jdm.create_file(jroot, "..").is_err());
+    assert!(jdm.create_file(jroot, ".").is_err());
+    assert!(jdm.create_file(jroot, "traversal/file.bin").is_err());
+    assert!(jdm.create_directory(jroot, "..").is_err());
+    assert!(jdm.create_directory(jroot, "traversal/dir").is_err());
 }

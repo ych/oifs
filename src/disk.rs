@@ -2220,6 +2220,19 @@ impl DiskManager {
         stored_hash: u64,
         file_type: crate::inode::FileType,
     ) -> Result<u64, DiskManagerError> {
+        crate::directory::validate_filename(name).map_err(|e| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                e.to_string(),
+            ))
+        })?;
+        crate::directory::validate_filename(&stored_name).map_err(|e| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                e.to_string(),
+            ))
+        })?;
+
         // ---- Phase 1: in-lock validation (re-verify parent & collision in case of race) ----
         let mut parent_inode = Self::read_inode_internal(guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
@@ -2392,6 +2405,13 @@ impl DiskManager {
         name: &str,
         file_type: crate::inode::FileType,
     ) -> Result<u64, DiskManagerError> {
+        crate::directory::validate_filename(name).map_err(|e| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                e.to_string(),
+            ))
+        })?;
+
         // --- STAGE 1: Out-of-Lock Fast Validation & Filename Encryption ---
         let (stored_name, stored_hash) = {
             let guard = self.inner.read().unwrap();
@@ -2574,6 +2594,12 @@ impl DiskManager {
 
     /// Looks up a file/directory by name within a parent directory
     pub fn lookup(&self, parent_inode_id: u64, name: &str) -> Result<u64, DiskManagerError> {
+        crate::directory::validate_filename(name).map_err(|e| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                e.to_string(),
+            ))
+        })?;
         let guard = self.inner.read().unwrap();
         Self::dir_lookup(&guard, parent_inode_id, name)?.ok_or_else(|| {
             DiskManagerError::Io(std::io::Error::new(
@@ -5112,6 +5138,18 @@ impl DiskManager {
     ) -> Result<u64, DiskManagerError> {
         let mut curr = guard.superblock.root_inode;
         for part in parts {
+            if part == ".." {
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Path traversal '..' is not supported in OIFS paths",
+                )));
+            }
+            crate::directory::validate_filename(part).map_err(|e| {
+                DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    e.to_string(),
+                ))
+            })?;
             curr = Self::dir_lookup(guard, curr, part)?.ok_or_else(|| {
                 DiskManagerError::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -5200,6 +5238,7 @@ impl DiskManager {
             for entry in &mut entries {
                 if let Ok(decrypted) =
                     crate::encryption::decrypt_filename(key, dir_inode_id, &entry.name)
+                    && crate::directory::validate_filename(&decrypted).is_ok()
                 {
                     entry.name = decrypted;
                 }
@@ -5234,6 +5273,12 @@ impl DiskManager {
         };
 
         if !name.is_empty() && name != "." {
+            crate::directory::validate_filename(name).map_err(|e| {
+                DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    e.to_string(),
+                ))
+            })?;
             let guard = self.inner.read().unwrap();
             let parent_id = Self::resolve_path_iter(
                 &guard,
@@ -5253,6 +5298,12 @@ impl DiskManager {
             )));
         }
         let name = parts.pop().unwrap().to_string();
+        crate::directory::validate_filename(&name).map_err(|e| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                e.to_string(),
+            ))
+        })?;
         let guard = self.inner.read().unwrap();
         let parent_id = Self::resolve_path_iter(&guard, parts.into_iter())?;
         Ok((parent_id, name))
@@ -5495,6 +5546,13 @@ impl DiskManager {
     }
 
     pub fn delete_file(&self, parent_inode_id: u64, name: &str) -> Result<(), DiskManagerError> {
+        crate::directory::validate_filename(name).map_err(|e| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                e.to_string(),
+            ))
+        })?;
+
         // --- STAGE 1: Out-of-Lock Validation & Target Resolution ---
         let (matched_name, target_inode_id, phys_blk) = {
             let guard = self.inner.read().unwrap();

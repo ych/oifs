@@ -90,3 +90,71 @@ fn test_cli_ls() {
     // Cleanup
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn test_cli_get_traversal_prevention_and_panic_free() {
+    let path_str = "test_cli_traversal.img";
+    let path = Path::new(path_str);
+    let total_size = 5 * 1024 * 1024;
+
+    if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+
+    {
+        let dm = DiskManager::open(path, total_size).expect("Setup");
+        let root = dm.superblock().root_inode;
+        let fid = dm.create_file(root, "export_me.txt").unwrap();
+        dm.write_data(
+            fid,
+            0,
+            b"secret contents 123",
+            oifs::disk::CompressionMode::Auto,
+        )
+        .unwrap();
+    }
+
+    // 1. Calling get with '..' must not panic (SEC-14 fix)
+    let out_dotdot = Command::new(env!("CARGO_BIN_EXE_oifs"))
+        .args(["--image", path_str, "get", ".."])
+        .output()
+        .expect("run oifs");
+    assert!(!out_dotdot.status.success());
+    let stderr_dotdot = String::from_utf8_lossy(&out_dotdot.stderr);
+    assert!(!stderr_dotdot.contains("panicked at"));
+
+    // 2. Calling get with '/' must not panic
+    let out_slash = Command::new(env!("CARGO_BIN_EXE_oifs"))
+        .args(["--image", path_str, "get", "/"])
+        .output()
+        .expect("run oifs");
+    assert!(!out_slash.status.success());
+    let stderr_slash = String::from_utf8_lossy(&out_slash.stderr);
+    assert!(!stderr_slash.contains("panicked at"));
+
+    // 3. Export to an existing host directory correctly joins filename
+    let temp_export_dir = "test_export_target_dir";
+    let _ = fs::remove_dir_all(temp_export_dir);
+    fs::create_dir_all(temp_export_dir).unwrap();
+
+    let out_dir_export = Command::new(env!("CARGO_BIN_EXE_oifs"))
+        .args(["--image", path_str, "get", "export_me.txt", temp_export_dir])
+        .output()
+        .expect("run oifs");
+    assert!(
+        out_dir_export.status.success(),
+        "Export to directory failed: {}",
+        String::from_utf8_lossy(&out_dir_export.stderr)
+    );
+
+    let exported_file = Path::new(temp_export_dir).join("export_me.txt");
+    assert!(exported_file.exists());
+    assert_eq!(
+        fs::read_to_string(&exported_file).unwrap(),
+        "secret contents 123"
+    );
+
+    // Cleanup
+    let _ = fs::remove_dir_all(temp_export_dir);
+    let _ = fs::remove_file(path);
+}

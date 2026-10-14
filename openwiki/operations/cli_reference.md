@@ -6,10 +6,10 @@ tags: [cli, commands, clap, json-mode, network-mode, password-precedence, fsck, 
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-05T16:55:45.523Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-13T15:40:56.857Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
+    at: 2026-10-13T15:40:56.857Z
 ---
 
 ## Overview
@@ -169,3 +169,11 @@ Upgrades a legacy image to the current inode format ([src/bin/oifs.rs#L126-L127]
 ```bash
 oifs -i <image.img> migrate
 ```
+
+### 13. `truncate`
+Truncates or extends a file to the specified size ([src/bin/oifs.rs#L131-L138]):
+```bash
+oifs -i <image.img> truncate <path> --size <bytes>
+```
+- `<path>`: Remote path in OIFS
+- `--size <bytes>`: New size in bytes

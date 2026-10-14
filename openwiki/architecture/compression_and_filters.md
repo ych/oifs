@@ -10,6 +10,9 @@ sources:
     resource: repo://src/filters.rs
   - id: openwiki-source-bc305a37042018e1ebd6d860
     resource: repo://src/inode.rs
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-13T15:40:56.857Z
 ---
 
 ## Responsibility and ownership

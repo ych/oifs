@@ -7,9 +7,6 @@ sources:
   - id: openwiki-source-1d8ff572dc201d9ae2619645
     resource: repo://src/bin/oifs_mcp.rs
 generated: { by: "antigravity", at: "2026-10-04T06:56:29.774Z" }
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T06:56:29.774Z
 ---
 
 ## Responsibility and ownership

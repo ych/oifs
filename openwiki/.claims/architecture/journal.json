@@ -1,0 +1,276 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:9515ef0cf39ce43b3c0569a4098af70217f43f471b7437dd6f713214a5e4aa98",
+  "claims": [
+    {
+      "id": "claim_f31fe6fec67747df8ae6f6d9389f60a3",
+      "statement": "The journal subsystem implements a write-ahead log (WAL) for metadata mutations in OIFS, recording transactions before applying them in place to ensure crash resilience.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L1-L8",
+          "version": "repo-lines-v1:sha256:23c36bef1274b73f07f2f115759f1c1358ec4fa319cd02168095a3422e48b714:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2MyNDBjMzg4NzAyYTc5MTdkOTFkZDliNTg2MzEyYjg5ZThlODRhZDQyMTkxOTdiOTViOTRjNWI0NmZmY2NkZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODdjNTU0NWZlY2E1N2ExNzllZjY3OWNiNzQ4ZWFkODk4ZTQyMzBkZmEzYzUxOTdmNWQxNTFhNWIwNWUxNWVhZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjhiN2Q5NDI3OTNiODU5Yzk0MTRkMzZlYWNhYjEzNWY3NTU5MzBkZjZiOGJmZTRmMmE3ZDgzZTA0MmI1NzUxYSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_5569a21b88d24b78be8901841efa3923",
+      "statement": "The journal region uses a fixed-size circular ring buffer (32 blocks) for storing transactions, located after the journal header block.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L85-L96",
+          "version": "repo-lines-v1:sha256:dde9b6ba4c980b8a46ffe51108a6250068b48b8cbfd6b0a2ddd14f3a4c693e06:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBkZjNjYmZlNDkwYTQ3YjEzZTMzMGYxYWRhODk2ZTU5ZTJjYTk4OWZkNDA4MDcwMjY4NDhhZTA3NzZkNGUyY2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU4YjAxMDU0MWFmZTdmZDZhMmQxOTA4MTMzZmI2YWM4OTJmZTY4ZmQ1NmU3MWMwNWJhNjgzY2VlYTY5YmNlNjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5YjAwN2Q2NzY3NmUyNTQxMzcyZGI1ZmQwZmEwODRhZDIzMTNlN2EyNWZkMTQzOTdiZjRhNGU4MjhmY2U2ODYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3cd7bc41720c407c8fb261c4f3c997b5",
+      "statement": "On crash recovery, the journal replays all durable-but-unapplied transactions from the ring buffer to restore a consistent state, eliminating the need for a full fsck.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L1-L8",
+          "version": "repo-lines-v1:sha256:23c36bef1274b73f07f2f115759f1c1358ec4fa319cd02168095a3422e48b714:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2MyNDBjMzg4NzAyYTc5MTdkOTFkZDliNTg2MzEyYjg5ZThlODRhZDQyMTkxOTdiOTViOTRjNWI0NmZmY2NkZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODdjNTU0NWZlY2E1N2ExNzllZjY3OWNiNzQ4ZWFkODk4ZTQyMzBkZmEzYzUxOTdmNWQxNTFhNWIwNWUxNWVhZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjhiN2Q5NDI3OTNiODU5Yzk0MTRkMzZlYWNhYjEzNWY3NTU5MzBkZjZiOGJmZTRmMmE3ZDgzZTA0MmI1NzUxYSJ9"
+        },
+        {
+          "resource": "repo://src/journal.rs#L827-L864",
+          "version": "repo-lines-v1:sha256:3d003debbdcb4a1152cdb5475c053cf39e11aa366f8644deb567ab7ae9459dbe:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjNzI0YWYwZTAxNmVhYTllMDEyMjg1NzUwMzdhMjRlNDk4OTZjOWRhMjVmZTlkNzZlNWM3YmMyODBjN2UxM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmY2NhYmM4NmZiYjg1NzAzYzJmMzE1YzU2ZmFjMTFhMDNkOGVhODNjY2JmOGYzNGQ3MDEyOGMzMzIyMGMzNGMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_dc23fe3bd74c4727afd46317c7d42ec8",
+      "statement": "The SuperBlock layout is unchanged for backward compatibility; a journaled image is identified by geometry (inode_table_block >= 3 + JOURNAL_RESERVED_BLOCKS) and the journal header magic.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L10-L15",
+          "version": "repo-lines-v1:sha256:0ce48c0a446c4782a74339741bd15f3d5d3032e0e0bc1031dda512c93a34ffd5:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGQ2ZDA3NGUwODk3NWZjMmY1MTQ2NDk2NjJiZmZjN2MxZGJjZmY4ZTJhYjI5NWYwNTU5ODM4OTZmYjAyZmEwNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmQ0NGE3MGMxZjZhZjdkMThjNTYxNmUwM2JkOTcyZjRlYmVmNGJmYzAwNjExMmNhMmViODVjZjc4OGVkZGNlYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzAzYWYyYWFhM2I3NDQ5NDNhN2FhZDNiZmQwODVjZjAyY2IwOWY1MTA2OTZhMGRiYWJiNmM5NjI2Y2QyNjllOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDA4Y2NlMTNlMjcxMjZmZjVkOWI4ZmUzZGQ0YWUwM2IzYzNmZmM3YmU5ZTkyZmJlMTFhMmNmNDAyNjUxYjEzNyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_3f52e0e1424f41c39a0144c6caffa304",
+      "statement": "Every MetadataOp is an absolute post-image write or absolute bit-set operation, ensuring idempotent redo.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L227-L231",
+          "version": "repo-lines-v1:sha256:30e1b075f59b97d60cab397c0950c065bbd86b28da444d58481dd79d77666d3b:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmNkZjUyZWJjNzM4MTMzYjljMmUyYjg0NDQ3ZmMzZjBjYjFmODg1Y2MxODNhYWUxMTY3NmE1MTIxZWJiMDU4YSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDM3MGZlMjM4MjJmMzhlZmQxYjBlMjE2YTM5MjhhNTQ2MDdmY2EwMzFmODlkODZiMTJlODljMjYxMWQ5OGZhNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjcxZTcyMjE4ZTE3ZjhiMzQwM2Q2MDQzNzMxNTY2ZjFmODUzNjM3ZGU1NzI0NzNiMzEwYzhkMTMyNWYzMzRkOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTdlYTQ2NDg2NzliNzFlMzA1ZmY3MWNiN2NkZDJlOTc0NmUwYWIwMDNlZGY2YWZkNGJiZjdhMWM0MWVkZmRhNiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_69ddd2c629154a808d8133f72630a54d",
+      "statement": "Each transaction frame includes a CRC32C checksum (Castagnoli) over tx_seq, payload_len, and payload, plus a trailing commit marker (0xDEAD_BEEF) to detect torn writes.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L106-L110",
+          "version": "repo-lines-v1:sha256:47408e28ae4713e6e970d2277120586f3deb7b58429b498042b737c480c8c00f:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMmI5MmQwNTIxZmE5N2FmNDcyNGQwNmI1YTc1Y2E1OGM2ZjY2ODRiMGRlMmQ3NDUyYWRmYTc5NDBkNWRmZGFjZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGIzMjMzOTY1ZTUxMzhiNjEwYWMwZTA0ZGE3NGJjZjhkMGMyMTFjZTMwZTEzODc3ZWQyNjllYTFkYTgxMzI0ZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDJiZjFjODFkZTIwN2Q1ODE5OTU1OTFhYzJlMDRjOWY5YmY2MjEwMDZkZWJmYTY1M2E1Zjc5OTU3MzEwMDA1MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzAwYmJiZDg1ZjI0ZGI3ZThiYjk5N2Q5MGZmZjE5YmJlZTVmNjYyMmIxMzhhN2JhMzk2MjFjYmIwOTE5MjdhMiJ9"
+        },
+        {
+          "resource": "repo://src/journal.rs#L430-L445",
+          "version": "repo-lines-v1:sha256:f4ed48af5d0cbf9ae5b83e14f4ee7626d6b31bb044b64b61d3f9d61d3937d25b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxM2MxZDRhNWYyNjdkNmMyMTA5M2RkYjRmZmI4NzViYWIwMTk3ZjdkZDRiMzM0M2FkZjRlMjhkNThkY2UyNDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZiZTY5ZTJhZjUyZTRiM2IwOWNjNmYxNzc5YmIxNjhmNGQxNDRlNzBmNThjMzI3NzdiMTFhYTQ0ZDU4M2JlODIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMTcwM2ZmOTE0NGUxMWJmNzEzZGU2YjgzOGQwODYwYzYyZjkxMWJiNmEzNGNjZDYwYjk4NjkyMWEwNzczMTMifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L456-L487",
+          "version": "repo-lines-v1:sha256:93aa922d99b2bc931cc4190f1f361dd230c8ea4ea90a9e8819bba7bfd314bde3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyZDNhNDUxYTEwZjg3ZDIyYjc3MTI3OWVjNTk4MjQ5OWQwNjAwMTQ2YWEwZTIwZmQxYWMyZmFhZDg0NzEwZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEyNTY5MWRiMDBlNDEyOTAzN2UzYTJjYmFhMGNmNzIyNzAzYzg2OGRmOWUzNWZlMTgyY2U1YzJlYmFiZDMzY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA1NmE3OWI1MjQzMWM2NzcyZWYzNzljMzdiMzI5N2FjYzQyMTg5NTE3MzVkM2FkYjE2MTBiNzMwMjc0NTE5NDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0654079f25ef4459a0c4283dc9f877c8",
+      "statement": "The CRC32C implementation is written in-crate with a compile-time generated table, ensuring verifiability under model checkers like Kani/CBMC.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L117-L158",
+          "version": "repo-lines-v1:sha256:a4f9e6bc47a1270925999b6af0e8558b23620b199af4df56f33348d2fdad7e20:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2YmEyYjU5OTY3MzJlNzEzOTBkM2UwY2M1YjliZmRmZTU4YWUzZDZkMzgzY2VhYTMyNzRiMzc1OTY1NWRlYmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0ZDQ4ZDM1ODk2MDNiMGMxYTkzODM5MjdlNTIxZmQwMjJkN2M5YWI1OGI4Nzk3YTQ3ZmQ1Y2Y1MjU4Njg2MzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5MWI2MjY2OGIyODhkZDA3ZTA3MTY3NDZjNjgyNGM3YTEyZGM5ZDNkMDFiMWJhZTdiZGI4NWUyMTNiNDgzMTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_222e34899f0848fe9b008558f3d9ee3a",
+      "statement": "All metadata mutations (e.g., create_file, delete_file, mkdir, inode updates) must be journaled; bypassing the journal leads to stale transactions and potential silent data loss during recovery.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L26-L34",
+          "version": "repo-lines-v1:sha256:3d617196e6edf3a666b08c6cb75c7dd0d727630707e9da281e18aabbf3404157:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDUxNjBhMTdmYzBjYTNlYTZlNDJkMmRhY2M1YzY5Zjk1NTQwZDRkN2M1OTEzMjlkMDFlMzYxNGI0MDUyZTlkNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDYyOWY4NDgwNTdjODgzYjhkYWU2YmM2NmIxYTMxZWQ1MGI4ODFkMzVkZTAyMjc4ZDU0ODI0ZGM4NDZiOTBkZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjNkYWI1NTUyNTI3M2ZhMmZhMzYzMGQyZTQyNzEzOGQxMzQxZGE3ZTI3NTQ5ZmY2OGUzYTNlMjZiY2QyNGY0MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzgyNmVmYzkxYWZmNjczMDk4NTRmZjc2ZDI4NzdlNmFlMmUyYTYxYzA4ZTg4OGE2NTc4ZGY3MWVhMTM5YjhiZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_bf8b048f03b741da9b6caa457cabe160",
+      "statement": "The journal header block (block 3) contains a 40-byte state structure with magic, version, ring_blocks, head, tail, tx_seq, and cleanly_unmounted flag.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L164-L221",
+          "version": "repo-lines-v1:sha256:60a5b68bd28e61b2ebaa70ebb4ba898bde0bf60a6d338e5bae3d5d49968e0678:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5MDdhNTQwNmMyODRiZGI4MzI2MjFmNDM2NDViMzZlZWQ2ZjVkOWJhM2M5YjkyZjk3NWZhMjY5NTczZDdmMDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVmYWM2YTgyMjQwZjdmZGZhMmU0ZTZmNTAwYjZkNzQ5Nzg2Y2E4YjY3MjQwODZhZWNhMDMxNmI3MWM1ODVlZDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJkNmRiYjEyODFhNmQ3YjMwZDM1N2VlMmViZDVjMGU2ZDZkMDRlOTNmYTBiMTJlZGVkNTVlMWZlNzE3YjlmZGMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1563c570d09f49a28840d8c42b9ac7ae",
+      "statement": "A transaction frame consists of: 4-byte magic (0x5741_4C54), 8-byte tx_seq, 4-byte payload_len, 4-byte CRC32C, the payload of serialized MetadataOps, and a 4-byte commit marker (0xDEAD_BEEF).",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L106-L110",
+          "version": "repo-lines-v1:sha256:47408e28ae4713e6e970d2277120586f3deb7b58429b498042b737c480c8c00f:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMmI5MmQwNTIxZmE5N2FmNDcyNGQwNmI1YTc1Y2E1OGM2ZjY2ODRiMGRlMmQ3NDUyYWRmYTc5NDBkNWRmZGFjZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGIzMjMzOTY1ZTUxMzhiNjEwYWMwZTA0ZGE3NGJjZjhkMGMyMTFjZTMwZTEzODc3ZWQyNjllYTFkYTgxMzI0ZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDJiZjFjODFkZTIwN2Q1ODE5OTU1OTFhYzJlMDRjOWY5YmY2MjEwMDZkZWJmYTY1M2E1Zjc5OTU3MzEwMDA1MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzAwYmJiZDg1ZjI0ZGI3ZThiYjk5N2Q5MGZmZjE5YmJlZTVmNjYyMmIxMzhhN2JhMzk2MjFjYmIwOTE5MjdhMiJ9"
+        },
+        {
+          "resource": "repo://src/journal.rs#L430-L445",
+          "version": "repo-lines-v1:sha256:f4ed48af5d0cbf9ae5b83e14f4ee7626d6b31bb044b64b61d3f9d61d3937d25b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxM2MxZDRhNWYyNjdkNmMyMTA5M2RkYjRmZmI4NzViYWIwMTk3ZjdkZDRiMzM0M2FkZjRlMjhkNThkY2UyNDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZiZTY5ZTJhZjUyZTRiM2IwOWNjNmYxNzc5YmIxNjhmNGQxNDRlNzBmNThjMzI3NzdiMTFhYTQ0ZDU4M2JlODIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMTcwM2ZmOTE0NGUxMWJmNzEzZGU2YjgzOGQwODYwYzYyZjkxMWJiNmEzNGNjZDYwYjk4NjkyMWEwNzczMTMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c38a7b6b20f646c6bf26bc7676334492",
+      "statement": "The CRC32C checksum is computed over the concatenation of tx_seq (little-endian, 8 bytes), payload_len (little-endian, 4 bytes), and the payload bytes.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L415-L426",
+          "version": "repo-lines-v1:sha256:cd96f92e64abc6aee05f752c1760181ea33446196f9f3c2d124244d15859e2e2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlOTg3ZTJmZmRjYjU2ZTRkOWJiNGFmNWUwYTI0NGE1NmNkNjAyYjNjY2MxYTkzNmI2OWJmYzE3MzgxMjBjNDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmOGIyYTAyMGQ5OTY3MTJhNDA5MDRiMDM3MTk1ODkxNWE1NTk5NzEyMjRiYzk0M2MwMzdkNTMzYzI4YWU4M2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZiZTY5ZTJhZjUyZTRiM2IwOWNjNmYxNzc5YmIxNjhmNGQxNDRlNzBmNThjMzI3NzdiMTFhYTQ0ZDU4M2JlODIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8fb888ab87754d149556690ef64636b8",
+      "statement": "The JournalState struct tracks the head (next write offset), tail (oldest un-checkpointed transaction), tx_seq (monotonic sequence), and a cleanly_unmounted flag.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L169-L178",
+          "version": "repo-lines-v1:sha256:0e2f984f46dbf419acbff620aa9ddba1f12d78ead0a7e6908c991685f7104b3b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5MTI3ZDMzMzk3MjdhYzQ2ZGY3YmQwMjM1YjQ2OWUxYjdiYzc2YzhiMzZlZGY4MDY2ZmVmNzA0ZmU1YjNmZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNlMGNkNjU1MWFiOGNhYTEwOGVkYmY3M2IxOTZlYjcwYjBjZTcyNjU2NGEyMTFlOTU3YjZlNGU1OGNmM2QxNDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgxZDdiMmFmMjAyNTM5Yzk3NjMyZmRiMDVkYTIxNjA0ZGQyNDFkY2UyNWMzNTAyMTZhYmZkY2E5ZmFmZjM2NjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2d1fe4c65a014da2beda9ba590cd8ce7",
+      "statement": "The MetadataOp enum includes variants for setting inode bitmap, data bitmap, writing a full inode record, and writing a slice within a data block.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L232-L266",
+          "version": "repo-lines-v1:sha256:9fd13b8df8d424a783f0f32c7882b558aacfaff4d33cb8c16b904dc6ae51b8f8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxOTViNDMzZjEzNmU2Nzg5NzgxMDE4NDhiYzFiZTVjYWRiMTcwMDIzYWY4MjQwYjMzNGQ0N2JlOTI2NGRlYjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3NjRkMjZmZTJjNjFhMjIwMTVmYzQ3YmRlZjFiYThjZWNhYmI5M2U2ZGI3OTM3Y2UzMDQ3NzMwYzg4NDFmZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImExZjA5MTJjOTMyNDc1MWE3NDBhOWQ4MmZjZDY0ZmM1NmJiMjU5OWFjNWJkMDVjNjNkNTU5ZmVhNjFhZjJiMDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b32482667de14fca8517dccd8d099cb4",
+      "statement": "The JournalRing struct provides methods to open/create a journal, append transactions, persist the header, recover transactions, and checkpoint applied transactions.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L633-L649",
+          "version": "repo-lines-v1:sha256:91ead2b6ad44907d7f5c886edc8242de1e16094655dd536245526d01cf1195e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkY2NmYjdhODExYzYwZGNjMDk3YTMwMDc5MjI3MTRmMDcxNGQyMGE1NmE1ZjBmOGI4M2EwYmJmODY5YmI3MWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0OGRmYTgyZmFkYTJmMTQwYzA2MmU1YTNkNTA3NmFhNjU3NDRlOWM2ZDBmMDgxYTFiYWYyNmNhYmE5YzNjMTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4MmVlMWMxNTFkYzMyZTU0MmY0OWVlNjVkNjcwYmY1NWJiZGFjYzUyM2Q1MGRhMDQ5MmY1OTUyYTNmNjNkY2UifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L655-L685",
+          "version": "repo-lines-v1:sha256:406c8fb0ba844b86a02fbf598072249e6bdcd1c6aba19330f5d3aa8210336d55:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1MWEwMDQ0NDg1ZWMyZmM3MWVjOTA0YTIyMzM5OTI0NmYzNDI1YmI3Njg3M2I2NDg0ZmFkM2VhMjI2YjcyZDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjODFmNzJlMzE4ODFiNWNiODI2MDM0YmQwY2JiZjI5MGI2MjMxMGM0OWU2MmE4NzMwOTBlODBiODQ3NzlmNDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFjNWQ1MzZmZWVkOWFhM2NhYmYzYWFkMWMyMTJhNTY2YmE3Yjg0MzBiN2VhOWIzNmRlZGJiYTJmMjQzMTZiZDkifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L687-L719",
+          "version": "repo-lines-v1:sha256:13b504d12852c556a4898dc2406487d8941cc2d99e31298ce89b701606f39c37:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmZjVhYzAwZmRmOTEyMzY2MzcwNjlkYjJjMzA2YzgyYzcxYWFhYWY4MmIyYTBmZWQ3ODI5YjQyN2NhYTFiMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViOWEwOGJjMjlmNmViZWJlOWE1ZjAxOTAzZDk4NDVkYmNiNTg0MmE0NTVmMDdkNWY0MDAyZGFjMzJhNWM2MDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNmZDE5Y2JkMTRjM2UzMTNhZjc4OTI4MDU5YzUwMTZkZjgyZjdmZGM2MWY2NDg4MzViZmFjZjZjZGM5MjU4YTUifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L721-L724",
+          "version": "repo-lines-v1:sha256:18019d3de7b01816337726627e210393f8529e05ddcdd532dcce59826ea9114a:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMmNmZTVlZTYwNWJjMzVlZTIxOTY3YTA3OTEwNDMyOTgxNjRhYzFhZDk3MmE4ZGExNzBlODcxZTEzOTBkMTBiNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZWI5YTA4YmMyOWY2ZWJlYmU5YTVmMDE5MDNkOTg0NWRiY2I1ODQyYTQ1NWYwN2Q1ZjQwMDJkYWMzMmE1YzYwNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTVhMjE0MjYzNjYxM2MxMTQzZDRmOTUyMDI1ZTVjYTA1MDZjMDk3OTk0NDM1YTUwYzc4Njk4YzNhNTZhZjMxOSJ9"
+        },
+        {
+          "resource": "repo://src/journal.rs#L726-L732",
+          "version": "repo-lines-v1:sha256:5e4cdae75a062d1477fe03d4d4ac62b3e5edecc3442f6c010f329af74c50db5c:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWVmOWE1MWVlZDE0NGMwYWI1MjQ4MzkyYjJmOTg3Y2JlMmFlOTdiYzNlMjU1NDVhNzU2ZTk2MWU1MjBiYjVmNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmE1ZDhkYTdhMWFiZmI5YWQyZTdjY2RlY2IxZmQ0NzBhYzE5ZDYyNTlkNmJlZGY0YzQ1ZDk3OTY0MTQ5YmJlNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDllNTI2ODk2NWI3NDkyNmY3OGVkMWM2ZjcxMzU3Y2ZjMzU1OTc5YmJiZDE0ZDZhNzQ2NjFlZWZiNDI5OTQ4OSJ9"
+        },
+        {
+          "resource": "repo://src/journal.rs#L734-L752",
+          "version": "repo-lines-v1:sha256:b385037d3984eaa40decbf7ed470cc89fe8c8eeca42c8a7e31468aeeea2d428c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwMjBhM2I5ZWMyNmIyNTBlNjlhMDNmMzUwZTM3MjRlMjUyZTNkNzI1ZTRmZjY4OTE4OGIxY2Q3MWRmZGI0NjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyOGVhZjlmMjA4NzdiOTI1NjdhNzA5N2YyYmY4MjdkODk4Yjc0MTAwNDhmYTM3NzcwNzMwZGQ2NjNmMTkxNTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkxZWI4YzJjZGFjMGZiZTNkMjBlYjM0MDhiNDRkMzI4Y2I0NWEzM2UwZTczNTcwMGIzNWUzMThiMmJjZDA2ZTQifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L754-L778",
+          "version": "repo-lines-v1:sha256:4bd229fa29309bf2a3cae558c6ce38ab6ca19bbcad66b114bcbf56b381820ac4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyYjZhNzBkOTFiZDY3YWE0M2M4MjI3N2RlYjY1MjMxMGFiZDk4YzY3ZjVmY2RlYWZlMDdhNWFmN2M4MDQyNmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFlNzQyZTgzN2VjZjU1OTA1NjA4NjcyNDRkN2JlODI0YzkxMTdlZmRkNjQ1ZjZlNDU3OWJkOWM2MTJiNzA5MGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE4YzVlMTJjZGIzZmJmYzNjOWM4YTVlMWFlNGY2NzNjMGRmOTljOTNhMzk4NmUyNGQ0YTZjYTMzMzM3NzdjNzQifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L780-L817",
+          "version": "repo-lines-v1:sha256:9a66dc04f94362a6cff36896664e1a7bb6c2212ee58e6c36bcee86b20bab111c:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiNDYwNTg1ODBjY2JmNGJjZmNiZDE5MGExNjExZmFkZWU5ZWVjMGU5YmJiYzk2MGM3ZmUxZDk3YTE4Y2U5NjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRhZmY1YWYwY2I0ZjVlNDIzMWE1Yjc2N2NmZDcxYmIzZGJiNzAyYmMwNjRmY2Q2N2RlMWIxNDkyOGY2ZGVkYTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNTk4ZTQxMDk2MTA5YTgyOGI5ODcyYTNjMmY1NGNiYWQ1ZDEzZThjM2QyNjZlZWFlMjExZTAxMWQzYTFkZjcifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L819-L825",
+          "version": "repo-lines-v1:sha256:f65d47838b1a2622a938fe397cdba519f412c1cdcf801ca72a171927990167f8:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWRkZjI1NWEwYjRiYWY5YmZmMDJkNzUyMTU1NWFjMzFhNjg2ZTg2YjUzYWFiOTJlYjg2NjRjYjJhMWRjYmEyZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiM2QwNTM2ODhjNDA3MDlhMjQ0MGMzM2Y3M2Q3N2FjYTkwZDE2ZTdhMmYxYTRjZjMwYTVlYTM5YTI1Y2E3NzU4MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTJjYTU2OWFjNzIwZDg1NWM0YThjZTRkMGUwZjJlNjlhNDcwMTljZTgxMDcwNTgyNDljMjFiNGQwN2U0Y2I0NCJ9"
+        },
+        {
+          "resource": "repo://src/journal.rs#L827-L864",
+          "version": "repo-lines-v1:sha256:3d003debbdcb4a1152cdb5475c053cf39e11aa366f8644deb567ab7ae9459dbe:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjNzI0YWYwZTAxNmVhYTllMDEyMjg1NzUwMzdhMjRlNDk4OTZjOWRhMjVmZTlkNzZlNWM3YmMyODBjN2UxM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmY2NhYmM4NmZiYjg1NzAzYzJmMzE1YzU2ZmFjMTFhMDNkOGVhODNjY2JmOGYzNGQ3MDEyOGMzMzIyMGMzNGMifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L866-L888",
+          "version": "repo-lines-v1:sha256:36793b69a54bf7e075a3dfe215fb686c0b991bc2d897d932f0b167b828691cbc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkYTcyMThmOWI0ZTBiMWIzN2FkOWFhYzczODVmYTk4OTQ5N2MzYjBiMjJhMGQ3NWE3MTM1ZDUwYjRlMTFlMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzZDZhZTUxOTdiOGFhM2UzMjExZjE2MDNhYzA4N2RiNjBmNTA5OTIwNzc1YzcxNjAzM2U1YzUzZmU1NDY0NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjllZDE0ZWQ5NzM4ODVkYzdmM2ZhOWQzNTAwNjAzMzFiZWI3MmE0MGQ5YmU3MTg5YTkyZDUzMmVhMzdjMWE2ZTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNmYmYyZGQyZTlhYWIwOWNlNmE3OTU0MTQzN2FmZTQ3OGIyZWQ5YjBhNDVhYWIwNjM3MGEzMjIzNGMzNDg4YjMifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L889-L914",
+          "version": "repo-lines-v1:sha256:5ccaca227c50042536eb77263a81c2b4cfb0b31f3195e70bed1b93a70e6566d9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiMmY4NGExOGQ0NjM0ZDM3ZDRkYmZlNzc0NjU1YjBkOTllMzA3ZjYyMjFkNTk1MTQ5YmQxYTlmMWYxNDIxMDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjMjc1YTZjNmExNDA4Yjc2Y2Q3YjgxZDgzMmNhMDhiYzU3YzczYWEzZjcyYWViNDE4NzU2Yzk2MzgyMzU0ZDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJiYWQ1Y2MyYTA0MThiZjg2ZWRhOTk0YzIzZWMwNTIwZjRiYzIxMWRiYWY2N2E1NjBlODIxOGU3NGM4ZTEwYzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ed7136af4e1c4bc4be952f7818c4a588",
+      "statement": "The write-ahead logging protocol requires: (1) staging metadata ops, (2) encoding a transaction frame, (3) appending to the ring and persisting header+frame, (4) applying the ops in place, (5) checkpointing to advance the tail after in-place writes are durable.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L780-L817",
+          "version": "repo-lines-v1:sha256:9a66dc04f94362a6cff36896664e1a7bb6c2212ee58e6c36bcee86b20bab111c:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiNDYwNTg1ODBjY2JmNGJjZmNiZDE5MGExNjExZmFkZWU5ZWVjMGU5YmJiYzk2MGM3ZmUxZDk3YTE4Y2U5NjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRhZmY1YWYwY2I0ZjVlNDIzMWE1Yjc2N2NmZDcxYmIzZGJiNzAyYmMwNjRmY2Q2N2RlMWIxNDkyOGY2ZGVkYTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNTk4ZTQxMDk2MTA5YTgyOGI5ODcyYTNjMmY1NGNiYWQ1ZDEzZThjM2QyNjZlZWFlMjExZTAxMWQzYTFkZjcifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L827-L864",
+          "version": "repo-lines-v1:sha256:3d003debbdcb4a1152cdb5475c053cf39e11aa366f8644deb567ab7ae9459dbe:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjNzI0YWYwZTAxNmVhYTllMDEyMjg1NzUwMzdhMjRlNDk4OTZjOWRhMjVmZTlkNzZlNWM3YmMyODBjN2UxM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmY2NhYmM4NmZiYjg1NzAzYzJmMzE1YzU2ZmFjMTFhMDNkOGVhODNjY2JmOGYzNGQ3MDEyOGMzMzIyMGMzNGMifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L866-L888",
+          "version": "repo-lines-v1:sha256:36793b69a54bf7e075a3dfe215fb686c0b991bc2d897d932f0b167b828691cbc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkYTcyMThmOWI0ZTBiMWIzN2FkOWFhYzczODVmYTk4OTQ5N2MzYjBiMjJhMGQ3NWE3MTM1ZDUwYjRlMTFlMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzZDZhZTUxOTdiOGFhM2UzMjExZjE2MDNhYzA4N2RiNjBmNTA5OTIwNzc1YzcxNjAzM2U1YzUzZmU1NDY0NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjllZDE0ZWQ5NzM4ODVkYzdmM2ZhOWQzNTAwNjAzMzFiZWI3MmE0MGQ5YmU3MTg5YTkyZDUzMmVhMzdjMWE2ZTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNmYmYyZGQyZTlhYWIwOWNlNmE3OTU0MTQzN2FmZTQ3OGIyZWQ5YjBhNDVhYWIwNjM3MGEzMjIzNGMzNDg4YjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c76e2d9fbc3d4187a50a9ffb6f7e7836",
+      "statement": "During crash recovery, the journal replays transactions from tail to head, stopping at the first frame that fails validation (magic, length, CRC, or commit marker), and then resets the ring and marks the image cleanly unmounted.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L827-L864",
+          "version": "repo-lines-v1:sha256:3d003debbdcb4a1152cdb5475c053cf39e11aa366f8644deb567ab7ae9459dbe:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjNzI0YWYwZTAxNmVhYTllMDEyMjg1NzUwMzdhMjRlNDk4OTZjOWRhMjVmZTlkNzZlNWM3YmMyODBjN2UxM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmY2NhYmM4NmZiYjg1NzAzYzJmMzE1YzU2ZmFjMTFhMDNkOGVhODNjY2JmOGYzNGQ3MDEyOGMzMzIyMGMzNGMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_074a544f5be04fd3a7611028cc5cd7a1",
+      "statement": "The apply_op_in_place function performs idempotent metadata updates for each MetadataOp type, including bounds checking to return BlockOutOfRange for invalid block references.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L504-L627",
+          "version": "repo-lines-v1:sha256:8d56ce54cc31fc4c4ede6c587d45f0198bbc54e86d371dfd9591206646255529:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0YmI5YjExMWJlYzMxZDQxZmVkOTI1NmM1MjM4NWFjN2ViYWQ0YzFiNWMyZWQ5ZmVhYTQ3NzZhOTM0NGIzNGQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NmQ5MDhkMDFkMDc1NjE1MzllNGQ3NTJmYmRjOGQ5ZjE5ZTFiMzU2NGJhN2M0YThiYzMxMmY0YjkyODM3NTQxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4ZTZlZjkxOTdjYWRiMzNiZThmNmY0MjQ4OGZmZjhiNmQwMjZmYmU5YjY3N2EyMjcyYTEyOGE2ZGNlYzgxZDAzIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_707e912a41374387a10e6a9268192d6e",
+      "statement": "Possible JournalError variants include: BadMagic (header magic mismatch), RegionTooSmall (journal region insufficient), TransactionTooLarge (single transaction exceeds ring capacity), CorruptFrame (CRC/validation failure), and BlockOutOfRange (metadata op targets out-of-range block).",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L39-L73",
+          "version": "repo-lines-v1:sha256:3371152bc2468c6f96e73692c1e2d547acf83408465e65341bd1257a171c3c11:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmOTExYWJjZmE2NDZmNjY0ODM5MDllNmMxYjYxNThkMzNkZGExMTY4Y2QwYmY1NzlmYWM3Mjk0YmQxNGM0MDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzODY0Y2NiN2ExZTlkYTMzYzcyNTlkNWNkOWY4NzliMjAyOTNiYjY3ZTFmZjNhYjIzOWFjZTk5ZjRkMTIzZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlZDNkZGM4OTkwMDE3ZDg3NTE5M2M3ZDdmMThiOWM2ZmMwOTBlZmQxOWMzNTAwMTE5MjUzODNmZjM2OGY4ZjgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4151e0d22a2648d797705f0aa41f922a",
+      "statement": "The journal subsystem interacts with the SuperBlock for geometry constants, the durability layer for msync operations, the concurrency layer for write locking, and renders a full fsck unnecessary for metadata recovery.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L12-L15",
+          "version": "repo-lines-v1:sha256:76c09d074946ef78905a546e61c5b747b605ec8b6164ca722606d9f8b3c8de5d:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTE3OWEwZjk5YTBlOTdkMjhmNTQ0Y2JjNjAwMmJhOWUxYmIxZTEyMzJkMjNmOTJmNDU4OWE3NTc2OGMwMGYxMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmQ0NGE3MGMxZjZhZjdkMThjNTYxNmUwM2JkOTcyZjRlYmVmNGJmYzAwNjExMmNhMmViODVjZjc4OGVkZGNlYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjhiN2Q5NDI3OTNiODU5Yzk0MTRkMzZlYWNhYjEzNWY3NTU5MzBkZjZiOGJmZTRmMmE3ZDgzZTA0MmI1NzUxYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDA4Y2NlMTNlMjcxMjZmZjVkOWI4ZmUzZGQ0YWUwM2IzYzNmZmM3YmU5ZTkyZmJlMTFhMmNmNDAyNjUxYjEzNyJ9"
+        },
+        {
+          "resource": "repo://src/journal.rs#L514-L514",
+          "version": "repo-lines-v1:sha256:ce2b180619cd8411f822f932cbed43a018bd04c7e81e19b5b4245ff3cfc29439:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2UyYjE4MDYxOWNkODQxMWY4MjJmOTMyY2JlZDQzYTAxOGJkMDRjN2U4MWUxOWI1YjQyNDVmZjNjZmMyOTQzOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2UyYjE4MDYxOWNkODQxMWY4MjJmOTMyY2JlZDQzYTAxOGJkMDRjN2U4MWUxOWI1YjQyNDVmZjNjZmMyOTQzOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiM2QwOWE2YTFkMTY4ZjM4NDIxNDE1ZGIwMTI2M2IzM2Q1NmE0MzczMGNkNzA1M2QyYWEwZDQ2YTlmYzgyM2RlNyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGVmN2YwOTM2Nzg4NTg5NzhjNGY2OWNlYzYzYjNmOWUxYzVlMjc2YzA4M2ExY2MxYzllYjRlZjAxMjIzMjQ1OSJ9"
+        },
+        {
+          "resource": "repo://src/journal.rs#L6-L8",
+          "version": "repo-lines-v1:sha256:b3ee06d72aa5fac8265207119866c03dcdf2110c6e53a9c9e6baf7ab89119e3b:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzg5ODg1ZDcyNjc0MjIwNjlkMGIyMmZmMzU4NDNhMmMzNDgyMzJjZDc1ZmQxNjJjMjYwMjFmNWY0ZGM0YzJkZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODdjNTU0NWZlY2E1N2ExNzllZjY3OWNiNzQ4ZWFkODk4ZTQyMzBkZmEzYzUxOTdmNWQxNTFhNWIwNWUxNWVhZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmYxYzk0MWFjYTBlODM0ODA5MjEyZWNkODA2NTc4OGRmNjUyZTMzMGE2ZmM1YzVkOTFlZmI2YjM1YmE4Nzk0MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjhiN2Q5NDI3OTNiODU5Yzk0MTRkMzZlYWNhYjEzNWY3NTU5MzBkZjZiOGJmZTRmMmE3ZDgzZTA0MmI1NzUxYSJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.6.1",
+    "at": "2026-10-13T15:40:56.857Z"
+  }
+}

@@ -10,6 +10,9 @@ sources:
     resource: repo://src/ipc.rs
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-13T15:40:56.857Z
 ---
 
 ## Responsibility and ownership

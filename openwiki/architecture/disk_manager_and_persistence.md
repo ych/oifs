@@ -6,10 +6,10 @@ tags: [disk-manager, mmap, persistence, durability, io_engine, io_uring, rwlock,
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-07T12:20:29.772Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-15T13:11:08.406Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-14T13:26:03.589Z
+    at: 2026-10-15T13:11:08.406Z
 ---
 
 # DiskManager and Persistence Model
@@ -85,12 +85,13 @@ Complete file reads via `read_data_internal` (`src/disk.rs#L1229-L1303`) execute
 
 ## The Write Pipeline (`write_data_with_filters`)
 
-File mutation via `write_data_with_filters` (`src/disk.rs#L3218-L3486`) uses a three-stage approach to minimize lock contention:
-1. **Out-of-Lock Preparation** (shared read lock): Inspects inode state, reads existing data if needed, and prepares a write plan via `plan_write_prepared` (`src/disk.rs#L850-L946`).
-2. **CPU-Bound Processing**: Performs filtering, compression, and encryption outside any filesystem lock.
-3. **Exclusive Lock Acquisition & Commit**: Acquires exclusive write lock only to verify preconditions, potentially replan via `plan_write` (`src/disk.rs#L948-L986`) if raced, then commit the transaction.
+File mutation via `write_data_with_filters` (`src/disk.rs#L3218-L3486`) uses a three-stage approach to minimize lock contention, with an initial fast path for Seekable 64K Chunked compression:
+1. **Seekable 64K Chunked Fast Path**: Checks for and handles Seekable 64K Chunked compression early, returning immediately if applicable (`src/disk.rs#L3419-L3433`).
+2. **Out-of-Lock Preparation** (shared read lock): Inspects inode state, reads existing data if needed, and prepares a write plan via `plan_write_prepared` (`src/disk.rs#L850-L946`).
+3. **CPU-Bound Processing**: Performs filtering, compression, and encryption outside any filesystem lock.
+4. **Exclusive Lock Acquisition & Commit**: Acquires exclusive write lock only to verify preconditions, potentially replan via `plan_write` (`src/disk.rs#L948-L986`) if raced, then commit the transaction.
 
-The write plan selects among four cases:
+The write plan (from `plan_write_prepared` or `plan_write`) selects among four cases:
 1. **FullOverwrite**: Offset-0 rewrite that runs the full filter-compression-encryption staging when rewriting the entire file.
 2. **CompressedAppend**: Fast Zstd multi-frame append at EOF for eligible compressed, unencrypted, unfiltered files.
 3. **Recompress**: Read-modify-recompress fallback for compressed files when the fast path is unavailable (random writes, encrypted files, or active filters).

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e78c26b0369c49ee903a751a0d97c3727bd88e045f4b229f54369349ded615d7",
+  "pageVersion": "sha256:20b7adce0ae2752698cf7fbd39a41b36e11495bc264f263aaabf33d0fd7ff833",
   "claims": [
     {
       "id": "claim_eee6149ed80a41e688eb92aa53776a94",
@@ -27,8 +27,8 @@
       "statement": "DirectoryEntry records are serialized as an 18-byte fixed header (8-byte inode, 8-byte hash, 2-byte length) followed by variable-length UTF-8 filenames.",
       "evidence": [
         {
-          "resource": "repo://src/directory.rs#L25-L43",
-          "version": "repo-lines-v1:sha256:46ec808936c3fcb50f9b52b74c622955b0230c3e8f32a7f2d71e0d8b48674bc3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwOTQwM2RkOGE0NGQ0MmRkYThhYzc1MTYxZGY4ZmQ1NWMzYzI5MjdhZjcwYjY1MWE3MmRmNzRkYzFmZWFmOTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliYjA1ZGViMmE4NDczY2UyOTUzOGQ1ZTRhNGRiNjZhN2IyOTg1MDg4MDA4ZjIyZjU3Mzc5MDE0OGJkZjc3Y2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFiN2FhZTI0ZjdlNzY4M2YzM2VlODU0YzQwZjE1ZWZjZjJhNzI0MDc1NTUyNjVlOTdjOWVlYWZkZmUxNjExYWQifQ"
+          "resource": "repo://src/directory.rs#L63-L73",
+          "version": "repo-lines-v1:sha256:25d3c113f4c4df71a612f77fbaa054a9925986238f308766c5f4636f2c6041ae:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwOTQwM2RkOGE0NGQ0MmRkYThhYzc1MTYxZGY4ZmQ1NWMzYzI5MjdhZjcwYjY1MWE3MmRmNzRkYzFmZWFmOTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliYjA1ZGViMmE4NDczY2UyOTUzOGQ1ZTRhNGRiNjZhN2IyOTg1MDg4MDA4ZjIyZjU3Mzc5MDE0OGJkZjc3Y2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFiN2FhZTI0ZjdlNzY4M2YzM2VlODU0YzQwZjE1ZWZjZjJhNzI0MDc1NTUyNjVlOTdjOWVlYWZkZmUxNjExYWQifQ"
         }
       ]
     },
@@ -37,7 +37,7 @@
       "statement": "find_entry_in_block and find_insert_offset_in_block parse raw directory block slices with zero heap allocations, matching names byte-for-byte and locating append offsets.",
       "evidence": [
         {
-          "resource": "repo://src/directory.rs#L208-L249",
+          "resource": "repo://src/directory.rs#L237-L278",
           "version": "repo-lines-v1:sha256:cf5ecd3d02896f561a42390688cb5a55e612cea52602891ca6e3919aeb2c7513:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ODFmNmZkY2Q1NDZkZGU1ZjEwMDM3MTk2MjBmZTAwZGVkMDQ1Y2VhMDk0YmNkNTRhNTU1MzhiZWViZjhlY2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
         }
       ]
@@ -47,7 +47,7 @@
       "statement": "DirectoryIterator implements the Rust Iterator trait over a borrowed byte slice, streaming deserialization of directory entries without intermediate allocation.",
       "evidence": [
         {
-          "resource": "repo://src/directory.rs#L84-L111",
+          "resource": "repo://src/directory.rs#L113-L140",
           "version": "repo-lines-v1:sha256:0ac94e3c1c57b3ab54cf78b5e1e92b6212d23cdf6cb890696196b5b0f28ee71e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlMmQ3NGQ5YmIxOGM4MDdjMTNkMTI1OTJiNTkzMjVkY2UwMjdkN2ZkNDAzYTBlNDZkYzE0N2JiYzI3ZDE3MGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRkMzBlNmFkN2I0NjJiZjVlMGNjZjdkYWE2ZDBiYTM2ZTI2NGVkYTBhNGM5MGM5OTQxYmI5NzBlMGMwOTRkMWIifQ"
         }
       ]
@@ -55,6 +55,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-13T15:40:56.857Z"
+    "at": "2026-10-15T13:11:08.406Z"
   }
 }

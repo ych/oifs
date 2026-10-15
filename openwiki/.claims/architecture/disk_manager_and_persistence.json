@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:5d6df2675141c56591d6b94f662286fdc47860eed80db2bdf542e16d8ab1bcc3",
+  "pageVersion": "sha256:b665c82317eda00f6a9eebc638c8cec986bcf5b9447b9e691ef381a29a8e9c38",
   "claims": [
     {
       "id": "claim_2ab581ececd1487b994cf6cdc99cea2a",
       "statement": "DiskManager initializes and opens filesystem images via init_or_open, acquiring an exclusive POSIX advisory lock (F_SETLK) on the file and either creating a fresh superblock or validating an existing one.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1062-L1245",
+          "resource": "repo://src/disk.rs#L1072-L1255",
           "version": "repo-lines-v1:sha256:d6d2019e58ecdd1e495a5a744be24d1ec5f2f5feb2cb095914b931c23da08389:eyJzZWxlY3RlZExpbmVDb3VudCI6MTg0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjZTc3ZGMwMmQxZWZjMTQyMWZkNWI5ZDQ5MGEyNzkzNDYwYjQ4OTg1MzljYjA0NmE1ZmFlMTk2OGYwZDQwMjBiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5MTljODMyNzM1NzQwYzI4MmIyZDcxZTJhYjQwMzgzODRhYzY3MjdjMGEzMjI0ZjQwZWYxZmJmOTNjNTc5ZDJiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1ZGI3MDA3ZmExNmZiMmMzMzFjYzllNmEzZjc0NTE4MjlkNTIyZmU2NzgwZGZjNjY0ZWYwODUzZGRlZjc0ODlhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2OWU0OTBlOThhZmQxNWU1MzZkNWM1OTI5ZWU1ZmI1ODg0MGQ4NWI2MjExMDM2MGViM2VhOGRmNTMzNDRlYmIxIn0"
         }
       ]
@@ -31,22 +31,26 @@
       "statement": "DiskManager::read_data_internal gathers physical blocks across direct, single-indirect, double-indirect, and triple-indirect tiers using 64-bit word pointer resolution, followed by a reverse pipeline of XChaCha20-Poly1305 decryption, Zstd decompression, and pre-compression filter unapplication.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2604-L2849",
+          "resource": "repo://src/disk.rs#L2640-L2885",
           "version": "repo-lines-v1:sha256:850a651f79469359d7cc9d5231d4fc89c8c34ef9bbfd72e7f0663e3bcce0713b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQ2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZDk3NDk3MjNmYjNjNDliZDJiMTZlMTNiNWE0YWUwYjJiYzQ1NWM4NmU1YWQ0ZDc5NTlkNmZlODYxYzg4OGI1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3Nzk3YmUxYTUzY2I1NGIxMzFkM2NmZTc3ZmI1Y2EwMTVjZTU0ZGY5MDI5Y2NhNmM0YTcxOTM4OWQ0ZDYwMWI0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5NDU1MWMxMjUxNzA3Zjc2Y2M2OGE2ZjVhMzhjZjE2YzMzOGM4ODQ4MWE0OGRhMTQwNGM5OTIzZmQwZGI4YjM0In0"
         }
       ]
     },
     {
       "id": "claim_a7c1b9b102d64c2dbe34ead4095b3f1f",
-      "statement": "DiskManager::write_data_with_filters delegates to plan_write which selects among four cases: FullOverwrite (offset 0 rewrite with full filter-compression-encryption pipeline), CompressedAppend (fast Zstd frame append at EOF for eligible compressed files), Recompress (read-modify-recompress for compressed files when fast path unavailable), and Raw (direct block writes for uncompressed files).",
+      "statement": "DiskManager::write_data_with_filters first checks for a Seekable 64K Chunked compression fast path and returns if taken. Otherwise, it proceeds with a three-stage approach: out-of-lock preparation (using plan_write_prepared, or plan_write under write lock if raced), CPU-bound filtering/compression/encryption, and exclusive lock commit. The write plan (from plan_write_prepared or plan_write) selects among four cases: FullOverwrite (offset 0 rewrite with full filter-compression-encryption pipeline), CompressedAppend (fast Zstd frame append at EOF for eligible compressed files), Recompress (read-modify-recompress for compressed files when fast path unavailable), and Raw (direct block writes for uncompressed files).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L3375-L3454",
-          "version": "repo-lines-v1:sha256:c9d1cf803c834ba35849e9bb9a60aff9b6e2818cd7e77ff542d715a29a52275a:eyJzZWxlY3RlZExpbmVDb3VudCI6ODAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxZDYzY2FmNjFhOGE1YWVkNmRhNDdkNWU4MGRjNjM1ZmFhOTliY2YxZjQ0NzhkYTNjYTNiNjhhYTAxY2E1OGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxOTA2NjBkZThhZmYyZDAzOWI1OGFhNzMzYzA4YzNmZTQ5ZDAwZTY1ZmUwYTg5OGE0MjlmZjgxZDY0MzVkM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYxYThmMmM0NDg0ZmVmMWMzMmUxYWRjY2ZjMTY3MTZmZDFjYTc5NmE5YzY4ODkzYjk2N2UyYjgxZjA2MTg4ZGIifQ"
+          "resource": "repo://src/disk.rs#L3419-L3433",
+          "version": "repo-lines-v1:sha256:738e4527bc06164cd5ed592ceccce0053daeaa48d548d75e1f97841944dee59c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjZWZmNDM4YjI5OGFhMGRiMWMxMWFjNDE5NGMwMTVlOTBhMGZhNzE0NTE1MTQ2ZjkxNjU2YzVlNzBkZGYxYWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYzM2Y3Nzc1NTVjM2M4MGMxYjBkYmVmMGE5OTM0MjI1NmE3NzljMmU5ZDY3YTRkNmE4ZTcyMjJlNmIyOWFjNTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBkOGM4ZjkyOTlhNzE5MDE2OTZhNDJhODZlMGVkYzNhNDQyMTM3ODk2Nzc0MTM5N2M2ZjMwMzNkN2Y3NmNhNjUifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L848-L974",
-          "version": "repo-lines-v1:sha256:9e2125e030d659f0189103b8fe58f00cbddbb724db2934f5f6e1a92a14987ad8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhODc1NTdlYzdhYmFkZGRkNzRmZjEwMWJkZTYyY2FjYTNiZTc2NjY4ZWNiYzQwZTU4ODYyMWQyZGJkZWRlNDQ1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1MWYzN2U0YWM2OGY3NzdiYzE5YmQzMDljMjM5ZTdjMTUxNGY0YzYxNWZmNjkxMDMyYzg1YjQyOTkyYmZkYWM5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxODFhNjVjOGEyZWEzNTA5OTk5ZjZkNjBmNTAxNmNhMDJmYzRkNThlYTAwNDk4NjE1ZTEwYzAwZDNhMWVmNmZmIn0"
+          "resource": "repo://src/disk.rs#L3435-L3514",
+          "version": "repo-lines-v1:sha256:cef7e41fbe16f69048001b2e5b89aaf272d1845d99d76bb5ef3f0bedf9d0b9ff:eyJzZWxlY3RlZExpbmVDb3VudCI6ODAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1N2JmN2FlNmJmYTY1YzcyNjFiODkzNDA5OTUyYzNlODVjOGYyYzE5OWNlNjM3ZDA4ZWIzN2MwMDVkNzNkNGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1Y2RlZjgwODVhZTc0YWI2MzZkNjQ1OWY1YzZkNWZiZmIwZGIyNjRmMWIwZDc1YmFjNTE5YzliM2Y2NzE3YWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiMDhiNDM2YTZlZTBlOWZjZDllYTQwYjdjMzQ4OTg1ZWRkOGJkYWQ4NzM0MzFmMDBjYzhlYTE0NGYzNmZjMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRlNGU3Zjg4MTJhODk1Y2UyNzczYWFhMGUzNzI1MGZkNDRjMGJjNDZmMjA4MTEwNTgxNzQ1ZWY4YjhiMzFiYmUifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L858-L978",
+          "version": "repo-lines-v1:sha256:dc23370d514f5398becf63beadf7b0a2c32a13ffc7aa0eeb7d7f8588fc9d1579:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhODc1NTdlYzdhYmFkZGRkNzRmZjEwMWJkZTYyY2FjYTNiZTc2NjY4ZWNiYzQwZTU4ODYyMWQyZGJkZWRlNDQ1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiY2VmNjdiMzIzYjcxYTVjMmNiNGVhYjBlNWRkMTIzYmI0ODI5NDA3YmVkZWQ5ZDM1ZTAwOTQyZmQzMThjMjlhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1MWYzN2U0YWM2OGY3NzdiYzE5YmQzMDljMjM5ZTdjMTUxNGY0YzYxNWZmNjkxMDMyYzg1YjQyOTkyYmZkYWM5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlNDgwODNlNDYxYjVkODkxNzBmNmI2ODhiZTVkMjA3YTA4MWE5YmNkMDY0Y2IyY2NmMzE4ZDFiZWYwNWE2ZDYzIn0"
         }
       ]
     },
@@ -55,7 +59,7 @@
       "statement": "DiskManager wraps DiskManagerInner in Arc<RwLock<DiskManagerInner>> for concurrent multi-threaded access, and exposes read_at for zero-copy reads directly from memory-mapped blocks into user buffers without heap allocation for raw files.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2875-L2904",
+          "resource": "repo://src/disk.rs#L2911-L2940",
           "version": "repo-lines-v1:sha256:a92618fe1a1e44062c47641c3af45d3b83e03ad54c097b915e51809faec4a5e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxNDE3MWZhNWE5MmY1NGQ2YzRlMGVlMDM1YjE3NWViYTQzMTU1Zjk5YjBkMjI1NTg4NDE1NDdiZGM4MThjMDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhYTBlZDQzMzdhNmIxOTYyNTAzOGYxMzg4YWQzZDMyNGExYTNjY2VhZmQzN2I3ZTJlYWFkNjE0YTA5OTJkOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2ZThiMjliODkyNDc0NTE0ODQyZmY5NTU2MmY0OGZiZDBmZGE5OWJjMzlmYjY1ZTJiMjZhMjcwM2ZkMjc4YTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0NWMyYzU1MTZiMjQyZTUxZGZkOTZhNGZhZTAxNTJhY2M2YzFjNDA3MGI0MzViMjkyOTRmM2IwZTg4NTk4NDIifQ"
         },
         {
@@ -77,7 +81,7 @@
           "version": "repo-lines-v1:sha256:5a756759eb8ed73c9c2575ba5fb6d66c85331e391547f9db768c700b3ee98fed:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NDkzM2JlYmY3OGIxOGFkNjc4Mjk0MzM1NjdjYzk4MWNlYjdiM2FlOGIyZTRlNjA5NjRlOWYwNDQ4MjJmNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2NGY3YTA2MTU3Y2NjYzUxYzM1ZDk2NjUxNjVkMWM1YmE2ZjNjY2I3N2IzODdlYzFkYjI4NTU5ODk1NTM5MjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0ODk4OGRhNGI5NWQzN2M3YzhjN2Y4OWNmMDJhMGQzMGFmOTIwZjlmMTExYzU0ODExMzdjMmY5YWEzYmRjZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2Y2I0MDQ1MjQ1YTllZDM0N2U4ZjgwZTk1Zjc2MmQwZGFmNjFhOWFmNTVmMWNiYmZkY2RmODVmMzg5NGJjMjkifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L6476-L6488",
+          "resource": "repo://src/disk.rs#L6986-L6998",
           "version": "repo-lines-v1:sha256:463a25b90cda5441618db6a88f0e91a10129529dece9d329f753a1017a30f652:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NDRiYzcxMDM5ZjA3ZWIzY2E5ZDU5MmI0MGE4MDE1YWE2MjRlMDEwZWEyMjM4MTUxMDllNWY4MGEzNzJjNmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNzBhYzhhMmY4ZjA5YTYyMTYxNGM3ODBjZWJmYTc1YWRlNTc4Mzg1MDU1NDU2OTAxYTQzNjA5OWQ3NzU5ZWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0Y2QzMjM0Y2I4NjZkNGE1NzgyZGMwNGJhZWRjYjY4YjdmMzBmMjI5MGMyN2M0MGVmM2NhOTgxYmZlM2RkNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmOTE1ZDdiMzEwNzk3YjNhMjVjMDI3YmNlZjI4OTAxZGYxMTNmZGRhOWJjMDZjYWI0MTViNjlmZmI2Y2RiYWQifQ"
         }
       ]
@@ -101,11 +105,11 @@
       "statement": "DiskManager integrates a pluggable IoEngine allowing runtime switching between Mmap, Pread, and IoUring backends via set_io_backend, and supports batched concurrent reads across files via read_at_batch under a single lock.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2911-L2957",
+          "resource": "repo://src/disk.rs#L2947-L2993",
           "version": "repo-lines-v1:sha256:3da7e2f181ccd0b6aaba164cf71601f7a961f1bddcb5cc397610e6a23bffbc9f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZTIxMDFiZTk2NTY2YTM3NGI0NTBkNzkwZmRjNjAyYWNlYTA1MTNhYjVlZDg5YzkyODdlNTEyZjRiMDcwMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhMzU4ZjYwYTMyOGQ3ZWRmZDE2M2VkNDEwNjRlY2FjMDY2MmQzNjJlM2MyMTEzMWMwZjllMjAzOWZmNWFkNGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNhYjM3Y2EyMjU0ZDBkOTgyZmM2ZjE4MjdiMDYwYzIyYTA0OWQwZWY5ZTQxYTA1YzA3N2RlMDdjOTc0Zjc5ZDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1NDY3NWVhYjBiZDIyNmI4MTcxZjYyMGM5YjMzMmViZjAyMjFjZmVjNjI3YmFkN2EzZDMyZTM5YWIxM2NjM2YifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L1446-L1473",
+          "resource": "repo://src/disk.rs#L1456-L1483",
           "version": "repo-lines-v1:sha256:bdac45a911b6c16afa29013cb9db98185df606d5018e8b9c13587a3424973142:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhMzViMmIxMDg4MjJjMWQ3NTVhMTMxNzEyZDAzNDU2ZmRjN2JjNTg5YThiZDZiZWE2MmQ0NThlMTg0MTYyODciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhNjc1NTRmMDhmNGU3NjQwMGJjNGRmZmMwNzM1ZTUzNjA5NDZiYzMwZTI3MjQzZThkZmVmYjIyNWMzMWY2MTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2YmMwODcwM2U2ZTY5MWYzODFjNjYxOTkyZjI2YjIzNTdhYThiYWY1YzkwODAxZjQ0OWYzMjYwMjI5NjM0YTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2YmMwODcwM2U2ZTY5MWYzODFjNjYxOTkyZjI2YjIzNTdhYThiYWY1YzkwODAxZjQ0OWYzMjYwMjI5NjM0YTcifQ"
         }
       ]
@@ -113,6 +117,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-14T13:26:03.589Z"
+    "at": "2026-10-15T13:11:08.406Z"
   }
 }

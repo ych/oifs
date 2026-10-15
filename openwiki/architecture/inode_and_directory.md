@@ -8,10 +8,10 @@ sources:
     resource: repo://src/directory.rs
   - id: openwiki-source-bc305a37042018e1ebd6d860
     resource: repo://src/inode.rs
+generated: { by: "openwiki/0.6.1", at: "2026-10-13T15:40:56.857Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-13T15:40:56.857Z
-generated: { by: "openwiki/0.6.1", at: "2026-10-13T15:40:56.857Z" }
+    at: 2026-10-15T13:11:08.406Z
 ---
 ## Responsibility and ownership
 

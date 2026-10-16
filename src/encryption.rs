@@ -4,7 +4,7 @@ use base64ct::{Base64UrlUnpadded, Encoding};
 use blake2::{Blake2b512, Digest};
 use chacha20poly1305::{
     ChaCha20Poly1305, Nonce, XChaCha20Poly1305, XNonce,
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, AeadInPlace, KeyInit, OsRng},
 };
 use std::fmt;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -65,8 +65,10 @@ pub fn derive_key(password: &str, salt: &[u8; 16]) -> Result<EncryptionKey, Encr
 
     let mut key = [0u8; 32];
     key.copy_from_slice(&hash_bytes[..32]);
+    let enc_key = EncryptionKey::from_bytes(key);
+    key.zeroize();
 
-    Ok(EncryptionKey::from_bytes(key))
+    Ok(enc_key)
 }
 
 /// Encrypt data using XChaCha20-Poly1305 AEAD cipher
@@ -114,6 +116,23 @@ pub fn decrypt_data(
 
     cipher
         .decrypt(xnonce, ciphertext)
+        .map_err(|_| EncryptionError::DecryptionFailed)
+}
+
+/// Decrypt data in-place using XChaCha20-Poly1305 AEAD cipher, avoiding
+/// a second full-payload heap allocation.
+pub fn decrypt_data_in_place(
+    buffer: &mut Vec<u8>,
+    key: &EncryptionKey,
+    nonce: &[u8; 24],
+) -> Result<(), EncryptionError> {
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
+        .map_err(|_| EncryptionError::InvalidKey)?;
+
+    let xnonce = XNonce::from_slice(nonce);
+
+    cipher
+        .decrypt_in_place(xnonce, b"", buffer)
         .map_err(|_| EncryptionError::DecryptionFailed)
 }
 
@@ -302,6 +321,12 @@ mod tests {
         // Decryption with wrong key should fail
         let result = decrypt_data(&ciphertext, &key2, &nonce);
         assert!(result.is_err());
+
+        let mut in_place_buf = ciphertext.clone();
+        assert!(decrypt_data_in_place(&mut in_place_buf, &key2, &nonce).is_err());
+        let mut in_place_ok = ciphertext;
+        decrypt_data_in_place(&mut in_place_ok, &key1, &nonce).unwrap();
+        assert_eq!(in_place_ok.as_slice(), plaintext);
     }
 
     #[test]

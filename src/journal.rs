@@ -144,17 +144,72 @@ const fn crc32c_table() -> [u32; 256] {
 
 static CRC32C_TABLE: [u32; 256] = crc32c_table();
 
+#[inline]
+fn crc32c_update_sw(mut crc: u32, data: &[u8]) -> u32 {
+    for &b in data {
+        let idx = ((crc ^ b as u32) & 0xFF) as usize;
+        crc = (crc >> 8) ^ CRC32C_TABLE[idx];
+    }
+    crc
+}
+
+#[cfg(all(target_arch = "aarch64", not(kani)))]
+#[target_feature(enable = "crc")]
+unsafe fn crc32c_update_aarch64(mut crc: u32, data: &[u8]) -> u32 {
+    use core::arch::aarch64::{__crc32cb, __crc32cd};
+    let (chunks, rem) = data.as_chunks::<8>();
+    for chunk in chunks {
+        let val = u64::from_le_bytes(*chunk);
+        crc = __crc32cd(crc, val);
+    }
+    for &b in rem {
+        crc = __crc32cb(crc, b);
+    }
+    crc
+}
+
+#[cfg(all(target_arch = "x86_64", not(kani)))]
+#[target_feature(enable = "sse4.2")]
+unsafe fn crc32c_update_sse42(mut crc: u32, data: &[u8]) -> u32 {
+    use core::arch::x86_64::{_mm_crc32_u8, _mm_crc32_u64};
+    let (chunks, rem) = data.as_chunks::<8>();
+    let mut crc64 = crc as u64;
+    for chunk in chunks {
+        let val = u64::from_le_bytes(*chunk);
+        crc64 = unsafe { _mm_crc32_u64(crc64, val) };
+    }
+    crc = crc64 as u32;
+    for &b in rem {
+        crc = unsafe { _mm_crc32_u8(crc, b) };
+    }
+    crc
+}
+
+#[inline]
+fn crc32c_update(crc: u32, data: &[u8]) -> u32 {
+    #[cfg(all(target_arch = "aarch64", not(kani)))]
+    {
+        if cfg!(target_feature = "crc") || std::arch::is_aarch64_feature_detected!("crc") {
+            // SAFETY: `crc` feature is verified at compile-time or runtime.
+            return unsafe { crc32c_update_aarch64(crc, data) };
+        }
+    }
+    #[cfg(all(target_arch = "x86_64", not(kani)))]
+    {
+        if cfg!(target_feature = "sse4.2") || std::arch::is_x86_feature_detected!("sse4.2") {
+            // SAFETY: `sse4.2` feature is verified at compile-time or runtime.
+            return unsafe { crc32c_update_sse42(crc, data) };
+        }
+    }
+    crc32c_update_sw(crc, data)
+}
+
 /// Compute the CRC32C (Castagnoli) checksum of `data`.
 ///
 /// Uses the standard reflected algorithm with pre/post inversion, matching the
 /// hardware `crc32c` instruction and the published Castagnoli test vectors.
 pub fn crc32c(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for &b in data {
-        let idx = ((crc ^ b as u32) & 0xFF) as usize;
-        crc = (crc >> 8) ^ CRC32C_TABLE[idx];
-    }
-    !crc
+    !crc32c_update(0xFFFF_FFFFu32, data)
 }
 
 // ---------------------------------------------------------------------------
@@ -451,8 +506,7 @@ pub fn coalesce_ops(ops: Vec<MetadataOp>) -> Vec<MetadataOp> {
     let mut data_bitmap_ops = Vec::new();
     let mut block_slice_ops: std::collections::BTreeMap<(u64, u32), Vec<u8>> =
         std::collections::BTreeMap::new();
-    let mut inode_ops: rustc_hash::FxHashMap<u64, Box<[u8; INODE_BYTES]>> =
-        rustc_hash::FxHashMap::default();
+    let mut inode_ops: Vec<(u64, Box<[u8; INODE_BYTES]>)> = Vec::new();
 
     for op in ops {
         match op {
@@ -486,7 +540,11 @@ pub fn coalesce_ops(ops: Vec<MetadataOp>) -> Vec<MetadataOp> {
                 inode_id,
                 inode_bytes,
             } => {
-                inode_ops.insert(inode_id, inode_bytes);
+                if let Some(existing) = inode_ops.iter_mut().find(|(id, _)| *id == inode_id) {
+                    existing.1 = inode_bytes;
+                } else {
+                    inode_ops.push((inode_id, inode_bytes));
+                }
             }
         }
     }
@@ -595,17 +653,99 @@ pub fn encode_ops(ops: &[MetadataOp]) -> Vec<u8> {
     out
 }
 
-/// Compute the CRC32C input region shared by the encoder and decoder.
+/// Fast check for whether `ops` is already in canonical coalesced form,
+/// avoiding `ops.to_vec()` and temporary `BTreeMap` allocations on the
+/// common write/create/delete paths.
+#[inline]
+fn is_already_coalesced(ops: &[MetadataOp]) -> bool {
+    if ops.len() <= 1 {
+        return true;
+    }
+    let mut phase = 0u8;
+    let mut data_bitmap_count = 0usize;
+    let mut first_data_alloc = false;
+    let mut slice_count = 0usize;
+    let mut inode_count = 0usize;
+    let mut first_inode_id = 0u64;
+
+    for op in ops {
+        let op_phase = match op {
+            MetadataOp::SetInodeBitmap { .. } => 1,
+            MetadataOp::SetDataBitmap { allocated, .. } => {
+                data_bitmap_count += 1;
+                if data_bitmap_count == 1 {
+                    first_data_alloc = *allocated;
+                } else if data_bitmap_count == 2 {
+                    // Two data bitmap ops are only already-sorted and non-mergeable
+                    // when the first is `allocated: false` and the second is `allocated: true`.
+                    if !(!first_data_alloc && *allocated) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+                2
+            }
+            MetadataOp::SetDataBitmapRange {
+                count, allocated, ..
+            } => {
+                if *count == 1 {
+                    return false;
+                }
+                data_bitmap_count += 1;
+                if data_bitmap_count == 1 {
+                    first_data_alloc = *allocated;
+                } else if data_bitmap_count == 2 {
+                    if !(!first_data_alloc && *allocated) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+                2
+            }
+            MetadataOp::WriteBlockSlice { .. } => {
+                slice_count += 1;
+                if slice_count > 1 {
+                    return false;
+                }
+                3
+            }
+            MetadataOp::WriteInode { inode_id, .. } => {
+                inode_count += 1;
+                if inode_count == 1 {
+                    first_inode_id = *inode_id;
+                } else if inode_count == 2 {
+                    if *inode_id == first_inode_id {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+                4
+            }
+        };
+        if op_phase < phase {
+            return false;
+        }
+        phase = op_phase;
+    }
+    true
+}
+
+/// Compute the CRC32C checksum over `tx_seq || payload_len || payload` without
+/// allocating or copying a temporary buffer.
 ///
-/// The covered region is exactly `tx_seq || payload_len || payload` — the bytes a
-/// torn write can corrupt. The magic and the checksum field itself are excluded so
-/// that the checksum can be stored inline.
-fn crc_input(tx_seq: u64, payload_len: u32, payload: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(12 + payload.len());
-    buf.extend_from_slice(&tx_seq.to_le_bytes());
-    buf.extend_from_slice(&payload_len.to_le_bytes());
-    buf.extend_from_slice(payload);
-    buf
+/// The covered region is the exact byte sequence a torn write can corrupt.
+/// The magic and the checksum field itself are excluded so that the checksum
+/// can be stored inline.
+#[inline]
+fn crc_frame_checksum(tx_seq: u64, payload_len: u32, payload: &[u8]) -> u32 {
+    let mut header = [0u8; 12];
+    header[0..8].copy_from_slice(&tx_seq.to_le_bytes());
+    header[8..12].copy_from_slice(&payload_len.to_le_bytes());
+    let crc = crc32c_update(0xFFFF_FFFFu32, &header);
+    !crc32c_update(crc, payload)
 }
 
 /// Build a complete transaction frame for `ops` with sequence number `tx_seq`.
@@ -613,17 +753,28 @@ fn crc_input(tx_seq: u64, payload_len: u32, payload: &[u8]) -> Vec<u8> {
 /// Frame layout: `magic(4) tx_seq(8) payload_len(4) crc32c(4) payload commit(4)`.
 /// The CRC32C covers `tx_seq || payload_len || payload`.
 pub fn encode_frame(tx_seq: u64, ops: &[MetadataOp]) -> Vec<u8> {
-    let coalesced = coalesce_ops(ops.to_vec());
-    let payload = encode_ops(&coalesced);
-    let payload_len = payload.len() as u32;
-    let crc = crc32c(&crc_input(tx_seq, payload_len, &payload));
+    let coalesced_buf;
+    let target_ops: &[MetadataOp] = if is_already_coalesced(ops) {
+        ops
+    } else {
+        coalesced_buf = coalesce_ops(ops.to_vec());
+        &coalesced_buf
+    };
 
-    let mut frame = Vec::with_capacity(TX_HEADER_LEN + payload.len() + 4);
-    frame.extend_from_slice(&TX_MAGIC.to_le_bytes());
-    frame.extend_from_slice(&tx_seq.to_le_bytes());
-    frame.extend_from_slice(&payload_len.to_le_bytes());
-    frame.extend_from_slice(&crc.to_le_bytes());
-    frame.extend_from_slice(&payload);
+    let payload_cap: usize = target_ops.iter().map(MetadataOp::encoded_size).sum();
+    let mut frame = Vec::with_capacity(TX_HEADER_LEN + payload_cap + 4);
+    frame.resize(TX_HEADER_LEN, 0);
+    for op in target_ops {
+        op.encode(&mut frame);
+    }
+
+    let payload_len = (frame.len() - TX_HEADER_LEN) as u32;
+    let crc = crc_frame_checksum(tx_seq, payload_len, &frame[TX_HEADER_LEN..]);
+
+    frame[0..4].copy_from_slice(&TX_MAGIC.to_le_bytes());
+    frame[4..12].copy_from_slice(&tx_seq.to_le_bytes());
+    frame[12..16].copy_from_slice(&payload_len.to_le_bytes());
+    frame[16..20].copy_from_slice(&crc.to_le_bytes());
     frame.extend_from_slice(&TX_COMMIT_MARKER.to_le_bytes());
     frame
 }
@@ -658,7 +809,7 @@ pub fn decode_frame(bytes: &[u8]) -> Option<(Transaction, usize)> {
         return None;
     }
     let payload = &bytes[TX_HEADER_LEN..TX_HEADER_LEN + payload_len];
-    if crc32c(&crc_input(tx_seq, payload_len as u32, payload)) != stored_crc {
+    if crc_frame_checksum(tx_seq, payload_len as u32, payload) != stored_crc {
         return None;
     }
     if u32::from_le_bytes(bytes[TX_HEADER_LEN + payload_len..total].try_into().ok()?)
@@ -2328,6 +2479,7 @@ use memmap2::MmapMut;
 /// (same hint handling, same "first free bit at or after hint" rule), so the ids it
 /// predicts are the ids the real allocator would hand out.
 pub(crate) struct AllocSim {
+    #[cfg(test)]
     inode_bitmap: Vec<u8>,
     data_bitmap: Vec<u8>,
     data_start: u64,
@@ -2341,6 +2493,7 @@ pub(crate) struct AllocSim {
 }
 
 impl AllocSim {
+    #[cfg(test)]
     pub(crate) fn new(
         guard: &DiskManagerInner,
         free_inode_hint: u64,
@@ -2363,6 +2516,31 @@ impl AllocSim {
         })
     }
 
+    /// Construct an allocation simulator for data-only transactions (`write_data`,
+    /// `commit_prepared_chunked_write`, `truncate_chunked_64k`, `create_entry_journaled`)
+    /// that never allocate inodes through `AllocSim`, avoiding the 4 KB `inode_bitmap` copy.
+    pub(crate) fn new_data_only(
+        guard: &DiskManagerInner,
+        free_inode_hint: u64,
+        free_block_hint: u64,
+    ) -> Result<Self, DiskManagerError> {
+        let sb = guard.superblock;
+        let db = DiskManager::get_block_from_map(&guard.mmap, sb.data_bitmap_block)
+            .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("data bitmap not found")))?;
+        Ok(Self {
+            #[cfg(test)]
+            inode_bitmap: Vec::new(),
+            data_bitmap: db.to_vec(),
+            data_start: sb.data_block_start,
+            free_inode_hint,
+            free_block_hint,
+            fresh_blocks: Vec::new(),
+            fresh_set: rustc_hash::FxHashSet::default(),
+            pointers: rustc_hash::FxHashMap::default(),
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn alloc_inode(&mut self) -> Result<u64, DiskManagerError> {
         let mut a = SimpleBlockAllocator::new(&mut self.inode_bitmap, 0);
         let id = a
@@ -3614,5 +3792,42 @@ mod alloc_sim_and_staging_tests {
         ring2.state.head = 1000;
         ring2.state.tail = 0;
         assert_eq!(ring2.recover(|_| Ok(())).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_crc32c_hw_sw_equivalence_and_is_already_coalesced() {
+        for len in [0usize, 1, 3, 7, 8, 9, 15, 16, 17, 63, 64, 265, 4096] {
+            let data: Vec<u8> = (0..len).map(|i| (i * 37 + 13) as u8).collect();
+            let hw = crc32c(&data);
+            let sw = !crc32c_update_sw(0xFFFF_FFFFu32, &data);
+            assert_eq!(hw, sw, "CRC32C mismatch for len={len}");
+        }
+
+        let canonical_ops = vec![
+            MetadataOp::SetDataBitmapRange {
+                start_block: 100,
+                count: 4,
+                allocated: false,
+            },
+            MetadataOp::SetDataBitmapRange {
+                start_block: 200,
+                count: 4,
+                allocated: true,
+            },
+            MetadataOp::WriteBlockSlice {
+                block_id: 50,
+                offset: 0,
+                data: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            },
+            MetadataOp::WriteInode {
+                inode_id: 7,
+                inode_bytes: Box::new([0xAB; INODE_BYTES]),
+            },
+        ];
+        assert!(is_already_coalesced(&canonical_ops));
+        assert_eq!(
+            encode_ops(&canonical_ops),
+            encode_ops(&coalesce_ops(canonical_ops.clone()))
+        );
     }
 }

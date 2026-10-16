@@ -58,15 +58,21 @@ impl FilterPipeline {
     /// Reverse pipeline: apply inverse filters in reverse order
     pub fn unapply(&self, data: &[u8]) -> Vec<u8> {
         let mut cur = data.to_vec();
+        self.unapply_in_place(&mut cur);
+        cur
+    }
+
+    /// Reverse pipeline in-place: avoids an extra heap allocation when only
+    /// in-place filters (such as `Delta` or `TruncPrecision`) are active.
+    pub fn unapply_in_place(&self, data: &mut Vec<u8>) {
         for f in self.filters.iter().rev() {
             match f {
-                FilterType::Delta => delta_decode_inplace(&mut cur, self.typesize as usize),
-                FilterType::ByteShuffle => cur = shuffle_decode(&cur, self.typesize as usize),
-                FilterType::BitShuffle => cur = bitshuffle_decode(&cur, self.typesize as usize),
+                FilterType::Delta => delta_decode_inplace(data, self.typesize as usize),
+                FilterType::ByteShuffle => *data = shuffle_decode(data, self.typesize as usize),
+                FilterType::BitShuffle => *data = bitshuffle_decode(data, self.typesize as usize),
                 FilterType::TruncPrecision { .. } => {} // Truncation is lossy; unapply is identity
             }
         }
-        cur
     }
 }
 
@@ -653,6 +659,15 @@ pub fn unapply_filters_cow<'a>(data: &'a [u8], config: &FilterConfig) -> Cow<'a,
 /// Apply the reverse filter pipeline according to FilterConfig
 pub fn unapply_filters(data: &[u8], config: &FilterConfig) -> Vec<u8> {
     unapply_filters_cow(data, config).into_owned()
+}
+
+/// Apply the reverse filter pipeline in-place on an owned buffer, avoiding
+/// an extra allocation for in-place filters (e.g. `Delta`).
+pub fn unapply_filters_in_place(data: &mut Vec<u8>, config: &FilterConfig) {
+    if data.is_empty() || !config.is_active() || !matches!(config.typesize, 1 | 2 | 4 | 8) {
+        return;
+    }
+    config.to_pipeline().unapply_in_place(data);
 }
 
 /// Compute Shannon entropy in bits per byte (0.0 to 8.0)

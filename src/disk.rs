@@ -298,6 +298,13 @@ impl DiskManagerInner {
         )
     }
 
+    /// Maximum clean-page gap bridged when coalescing ranges for `DurabilityMode::RangeAsync`.
+    ///
+    /// Bridging nearby ranges within 1 MB collapses metadata (`inode_bitmap`, `data_bitmap`,
+    /// `inode_table`) and nearby data blocks into a single `msync(MS_ASYNC)` syscall per
+    /// transaction; the OS pager skips clean pages in the bridged gap.
+    pub const RANGE_ASYNC_GAP_BRIDGE_BYTES: usize = 1024 * 1024;
+
     /// Coalesces a slice of byte ranges by:
     /// 1. Clamping to `mmap_len` and expanding to page/block boundaries (`BLOCK_SIZE = 4096`).
     /// 2. Sorting by start offset.
@@ -306,6 +313,16 @@ impl DiskManagerInner {
     /// This eliminates duplicate syscalls when multiple mutations touch the same 4KB page
     /// or contiguous blocks on disk.
     pub fn coalesce_ranges(ranges: &[(usize, usize)], mmap_len: usize) -> Vec<(usize, usize)> {
+        Self::coalesce_ranges_with_gap(ranges, mmap_len, 0)
+    }
+
+    /// Coalesces byte ranges like [`Self::coalesce_ranges`], additionally bridging
+    /// gaps of at most `max_gap` bytes between adjacent page-aligned intervals.
+    pub fn coalesce_ranges_with_gap(
+        ranges: &[(usize, usize)],
+        mmap_len: usize,
+        max_gap: usize,
+    ) -> Vec<(usize, usize)> {
         if ranges.is_empty() || mmap_len == 0 {
             return Vec::new();
         }
@@ -339,7 +356,7 @@ impl DiskManagerInner {
         let (mut cur_start, mut cur_end) = intervals[0];
 
         for &(start, end) in &intervals[1..] {
-            if start <= cur_end {
+            if start <= cur_end.saturating_add(max_gap) {
                 cur_end = cur_end.max(end);
             } else {
                 coalesced.push((cur_start, cur_end - cur_start));
@@ -360,7 +377,11 @@ impl DiskManagerInner {
         match self.durability_mode() {
             DurabilityMode::Lazy => Ok(()),
             DurabilityMode::RangeAsync => {
-                let coalesced = Self::coalesce_ranges(ranges, self.mmap.len());
+                let coalesced = Self::coalesce_ranges_with_gap(
+                    ranges,
+                    self.mmap.len(),
+                    Self::RANGE_ASYNC_GAP_BRIDGE_BYTES,
+                );
                 for (offset, actual_len) in coalesced {
                     let _ = self.mmap.flush_async_range(offset, actual_len);
                 }
@@ -2251,12 +2272,19 @@ impl DiskManager {
             )));
         }
 
-        let mut sim =
-            crate::journal::AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
-        let mut ops = Vec::new();
-
         // ---- Phase 2: simulate allocation ----
-        let new_inode_id = sim.alloc_inode()?;
+        let ib_slice = Self::get_block_from_map(&guard.mmap, guard.superblock.inode_bitmap_block)
+            .ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
+        })?;
+        let new_inode_id = crate::bitmap::BitmapRef::new(ib_slice)
+            .find_next_free_wrapped(guard.free_inode_hint as usize)
+            .ok_or(DiskManagerError::Allocator(
+                crate::allocator::AllocatorError::NoSpace,
+            ))? as u64;
+        let next_free_inode_hint = new_inode_id + 1;
+
+        let mut ops = Vec::with_capacity(4);
         ops.push(crate::journal::MetadataOp::SetInodeBitmap {
             inode_id: new_inode_id,
             allocated: true,
@@ -2270,7 +2298,13 @@ impl DiskManager {
         new_inode.created_at = now;
         new_inode.modified_at = now;
 
+        let mut sim_opt: Option<crate::journal::AllocSim> = None;
         if file_type == crate::inode::FileType::Directory {
+            let sim = sim_opt.insert(crate::journal::AllocSim::new_data_only(
+                guard,
+                next_free_inode_hint,
+                guard.free_block_hint,
+            )?);
             let dir_data_block = sim.alloc_block()?;
             ops.push(crate::journal::MetadataOp::SetDataBitmap {
                 block_id: dir_data_block,
@@ -2285,7 +2319,7 @@ impl DiskManager {
             hash: stored_hash,
             name: stored_name.clone(),
         };
-        let mut entry_bytes = Vec::new();
+        let mut entry_bytes = Vec::with_capacity(20 + entry.name.len());
         {
             let mut cursor = std::io::Cursor::new(&mut entry_bytes);
             entry
@@ -2310,7 +2344,7 @@ impl DiskManager {
                         ops.push(crate::journal::MetadataOp::WriteBlockSlice {
                             block_id: phys_blk,
                             offset: insert_offset as u32,
-                            data: entry_bytes.clone(),
+                            data: std::mem::take(&mut entry_bytes),
                         });
                         written_blk = phys_blk;
                         break;
@@ -2323,12 +2357,20 @@ impl DiskManager {
             // Grow the directory by one block. `sim_get_or_alloc_block` may also need to
             // allocate indirect pointer blocks once the directory exceeds 10 blocks;
             // those allocations are recorded as ops too.
+            let sim = match &mut sim_opt {
+                Some(s) => s,
+                None => sim_opt.insert(crate::journal::AllocSim::new_data_only(
+                    guard,
+                    next_free_inode_hint,
+                    guard.free_block_hint,
+                )?),
+            };
             let new_blk_idx = num_blocks;
             let phys_blk = crate::journal::sim_get_or_alloc_block(
                 &guard.mmap,
                 &mut parent_inode,
                 new_blk_idx,
-                &mut sim,
+                sim,
                 &mut ops,
             )?;
             // A freshly grown directory block is zero-filled by the legacy path, so the
@@ -2364,8 +2406,10 @@ impl DiskManager {
         // ---- Phase 4: apply in place ----
         Self::apply_journal_ops(guard, &ops)?;
 
-        guard.free_inode_hint = sim.free_inode_hint;
-        guard.free_block_hint = sim.free_block_hint;
+        guard.free_inode_hint = next_free_inode_hint;
+        if let Some(sim) = &sim_opt {
+            guard.free_block_hint = sim.free_block_hint;
+        }
 
         guard.inode_cache.insert(new_inode_id, new_inode);
         guard.inode_cache.insert(parent_inode_id, parent_inode);
@@ -2377,20 +2421,22 @@ impl DiskManager {
             ix.stored.insert(stored_name, new_inode_id);
         }
 
-        let mut ranges = vec![
-            guard.inode_bitmap_byte_range(),
-            guard.data_bitmap_byte_range(),
-            guard.inode_byte_range(new_inode_id),
-            guard.inode_byte_range(parent_inode_id),
-            guard.block_byte_range(written_blk),
-        ];
-        if file_type == crate::inode::FileType::Directory {
-            ranges.push(guard.block_byte_range(new_inode.blocks[0]));
-        }
-        for blk in &sim.fresh_blocks {
-            ranges.push(guard.block_byte_range(*blk));
-        }
         if guard.durability_mode().is_range_based() {
+            let mut ranges = vec![
+                guard.inode_bitmap_byte_range(),
+                guard.data_bitmap_byte_range(),
+                guard.inode_byte_range(new_inode_id),
+                guard.inode_byte_range(parent_inode_id),
+                guard.block_byte_range(written_blk),
+            ];
+            if file_type == crate::inode::FileType::Directory {
+                ranges.push(guard.block_byte_range(new_inode.blocks[0]));
+            }
+            if let Some(sim) = &sim_opt {
+                for blk in &sim.fresh_blocks {
+                    ranges.push(guard.block_byte_range(*blk));
+                }
+            }
             guard.sync_mutation_ranges(&ranges)?;
         } else {
             guard.sync_mutation_ranges(&[])?;
@@ -2847,8 +2893,8 @@ impl DiskManager {
                 .as_ref()
                 .ok_or(DiskManagerError::PasswordRequired)?;
 
-            decrypted_data = crate::encryption::decrypt_data(
-                &decrypted_data,
+            crate::encryption::decrypt_data_in_place(
+                &mut decrypted_data,
                 encryption_key,
                 &inode.encryption_nonce,
             )
@@ -2880,8 +2926,8 @@ impl DiskManager {
         if !filter_config.is_active() {
             return Ok(decrypted_data);
         }
-        let result = crate::filters::unapply_filters(&decrypted_data, &filter_config);
-        Ok(result)
+        crate::filters::unapply_filters_in_place(&mut decrypted_data, &filter_config);
+        Ok(decrypted_data)
     }
 
     /// Reads data from a file (high-concurrency read-lock)
@@ -3167,8 +3213,11 @@ impl DiskManager {
             Vec::new()
         };
 
-        let mut sim =
-            crate::journal::AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
+        let mut sim = crate::journal::AllocSim::new_data_only(
+            guard,
+            guard.free_inode_hint,
+            guard.free_block_hint,
+        )?;
         let mut ops: Vec<crate::journal::MetadataOp> = Vec::new();
         let mut used: Vec<u64> = Vec::new();
 
@@ -3237,27 +3286,20 @@ impl DiskManager {
         //
         // Same durability-policy reasoning as the WAL barrier in
         // `commit_journal_tx`: only `Strict` promises the data reached disk before
-        // the metadata referencing it, so only `Strict` pays for a barrier. The
-        // process-crash-safe modes leave the payload in the page cache, exactly as
-        // they already do for metadata — and `flush_async_range` is still a syscall
-        // per block, so issuing it there bought latency without adding a guarantee.
-        let payload_ranges: Vec<(usize, usize)> =
-            used.iter().map(|b| guard.block_byte_range(*b)).collect();
-        let coalesced_payload =
-            DiskManagerInner::coalesce_ranges(&payload_ranges, guard.mmap.len());
-        match guard.durability_mode() {
-            DurabilityMode::Strict => {
-                for (off, actual) in coalesced_payload {
-                    guard.mmap.flush_range(off, actual)?;
-                }
+        // the metadata referencing it, so only `Strict` pays for a pre-WAL barrier.
+        // `RangeAsync` syncs metadata + payload together in a single coalesced pass
+        // after applying the transaction in step 5.
+        let payload_ranges: Vec<(usize, usize)> = if guard.durability_mode().is_range_based() {
+            used.iter().map(|b| guard.block_byte_range(*b)).collect()
+        } else {
+            Vec::new()
+        };
+        if guard.durability_mode() == DurabilityMode::Strict {
+            let coalesced_payload =
+                DiskManagerInner::coalesce_ranges(&payload_ranges, guard.mmap.len());
+            for (off, actual) in coalesced_payload {
+                guard.mmap.flush_range(off, actual)?;
             }
-            DurabilityMode::RangeAsync => {
-                for (off, actual) in coalesced_payload {
-                    let _ = guard.mmap.flush_async_range(off, actual);
-                }
-            }
-            // Lazy and LegacyWholeMmapAsync promise nothing about writeback timing.
-            DurabilityMode::Lazy | DurabilityMode::LegacyWholeMmapAsync => {}
         }
 
         // 4. Commit point.
@@ -3270,15 +3312,19 @@ impl DiskManager {
         guard.free_block_hint = sim.free_block_hint;
         guard.inode_cache.insert(inode_id, inode);
 
-        let mut ranges = vec![
-            guard.data_bitmap_byte_range(),
-            guard.inode_byte_range(inode_id),
-        ];
-        ranges.extend(payload_ranges);
-        for blk in &sim.fresh_blocks {
-            ranges.push(guard.block_byte_range(*blk));
-        }
         if guard.durability_mode().is_range_based() {
+            let mut ranges = vec![
+                guard.data_bitmap_byte_range(),
+                guard.inode_byte_range(inode_id),
+            ];
+            if guard.durability_mode() != DurabilityMode::Strict {
+                ranges.extend(payload_ranges);
+            }
+            for op in &ops {
+                if let crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } = op {
+                    ranges.push(guard.block_byte_range(*block_id));
+                }
+            }
             guard.sync_mutation_ranges(&ranges)?;
         } else {
             guard.sync_mutation_ranges(&[])?;
@@ -3855,6 +3901,7 @@ impl DiskManager {
         let start_blk = entry.start_block() as u64;
         let blk_cnt = entry.block_count() as usize;
         let is_encrypted = inode.encrypted;
+        let total_blk_bytes = blk_cnt.saturating_mul(BLOCK_SIZE);
 
         if entry.is_raw() {
             let needed_bytes = if is_encrypted {
@@ -3862,27 +3909,21 @@ impl DiskManager {
             } else {
                 chunk_valid_len
             };
-            let mut buf = Vec::with_capacity(needed_bytes);
-            let mut remaining = needed_bytes;
-            for i in 0..blk_cnt {
-                if remaining == 0 {
-                    break;
-                }
-                let cur_blk = start_blk + i as u64;
-                if let Some(slice) = Self::get_block_from_map(&guard.mmap, cur_blk) {
-                    let to_copy = remaining.min(BLOCK_SIZE);
-                    buf.extend_from_slice(&slice[..to_copy]);
-                    remaining -= to_copy;
-                } else {
-                    return Err(DiskManagerError::Io(std::io::Error::other(format!(
-                        "Chunk raw block {} out of bounds",
-                        cur_blk
-                    ))));
-                }
-            }
+            let copy_len = needed_bytes.min(total_blk_bytes);
+            let accessed_blks = copy_len.div_ceil(BLOCK_SIZE);
+            let start_off = (start_blk as usize).checked_mul(BLOCK_SIZE);
+            let end_off = start_off.and_then(|s| s.checked_add(accessed_blks * BLOCK_SIZE));
+            let Some(s_off) = start_off.filter(|_| end_off.is_some_and(|e| e <= guard.mmap.len()))
+            else {
+                return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                    "Chunk raw block {} out of bounds",
+                    start_blk
+                ))));
+            };
+            let raw_slice = &guard.mmap[s_off..s_off + copy_len];
 
             if is_encrypted {
-                if buf.len() < 40 {
+                if raw_slice.len() < 40 {
                     return Err(DiskManagerError::DecryptionFailed);
                 }
                 let key = guard
@@ -3890,10 +3931,9 @@ impl DiskManager {
                     .as_ref()
                     .ok_or(DiskManagerError::PasswordRequired)?;
                 let mut nonce = [0u8; 24];
-                nonce.copy_from_slice(&buf[0..24]);
-                let decrypted = crate::encryption::decrypt_data(&buf[24..], key, &nonce)
+                nonce.copy_from_slice(&raw_slice[0..24]);
+                let mut result = crate::encryption::decrypt_data(&raw_slice[24..], key, &nonce)
                     .map_err(|_| DiskManagerError::DecryptionFailed)?;
-                let mut result = decrypted;
                 if result.len() > chunk_valid_len {
                     result.truncate(chunk_valid_len);
                 } else if result.len() < chunk_valid_len {
@@ -3901,6 +3941,8 @@ impl DiskManager {
                 }
                 return Ok(result);
             } else {
+                let mut buf = Vec::with_capacity(chunk_valid_len);
+                buf.extend_from_slice(raw_slice);
                 if buf.len() < chunk_valid_len {
                     buf.resize(chunk_valid_len, 0);
                 }
@@ -3910,27 +3952,22 @@ impl DiskManager {
 
         if entry.is_compressed() {
             let comp_len = entry.compressed_len() as usize;
-            let mut comp_data = Vec::with_capacity(comp_len);
-            let mut remaining = comp_len;
-            for i in 0..blk_cnt {
-                if remaining == 0 {
-                    break;
-                }
-                let cur_blk = start_blk + i as u64;
-                if let Some(slice) = Self::get_block_from_map(&guard.mmap, cur_blk) {
-                    let to_copy = remaining.min(BLOCK_SIZE);
-                    comp_data.extend_from_slice(&slice[..to_copy]);
-                    remaining -= to_copy;
-                } else {
-                    return Err(DiskManagerError::Io(std::io::Error::other(format!(
-                        "Chunk compressed block {} out of bounds",
-                        cur_blk
-                    ))));
-                }
-            }
+            let copy_len = comp_len.min(total_blk_bytes);
+            let accessed_blks = copy_len.div_ceil(BLOCK_SIZE);
+            let start_off = (start_blk as usize).checked_mul(BLOCK_SIZE);
+            let end_off = start_off.and_then(|s| s.checked_add(accessed_blks * BLOCK_SIZE));
+            let Some(s_off) = start_off.filter(|_| end_off.is_some_and(|e| e <= guard.mmap.len()))
+            else {
+                return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                    "Chunk compressed block {} out of bounds",
+                    start_blk
+                ))));
+            };
+            let comp_slice = &guard.mmap[s_off..s_off + copy_len];
 
-            let zstd_data = if is_encrypted {
-                if comp_data.len() < 40 {
+            let decrypted_buf;
+            let zstd_slice: &[u8] = if is_encrypted {
+                if comp_slice.len() < 40 {
                     return Err(DiskManagerError::DecryptionFailed);
                 }
                 let key = guard
@@ -3938,24 +3975,24 @@ impl DiskManager {
                     .as_ref()
                     .ok_or(DiskManagerError::PasswordRequired)?;
                 let mut nonce = [0u8; 24];
-                nonce.copy_from_slice(&comp_data[0..24]);
-                crate::encryption::decrypt_data(&comp_data[24..], key, &nonce)
-                    .map_err(|_| DiskManagerError::DecryptionFailed)?
+                nonce.copy_from_slice(&comp_slice[0..24]);
+                decrypted_buf = crate::encryption::decrypt_data(&comp_slice[24..], key, &nonce)
+                    .map_err(|_| DiskManagerError::DecryptionFailed)?;
+                &decrypted_buf
             } else {
-                comp_data
+                comp_slice
             };
 
             use std::io::Read;
-            let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(&zstd_data))
+            let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(zstd_slice))
                 .map_err(DiskManagerError::Io)?;
-            let mut decompressed = Vec::with_capacity(chunk_valid_len);
+            let mut result = Vec::with_capacity(chunk_valid_len);
             decoder
                 .by_ref()
                 .take((crate::inode::CHUNK_SIZE_64K * 2) as u64)
-                .read_to_end(&mut decompressed)
+                .read_to_end(&mut result)
                 .map_err(DiskManagerError::Io)?;
 
-            let mut result = decompressed;
             if result.len() > chunk_valid_len {
                 result.truncate(chunk_valid_len);
             } else if result.len() < chunk_valid_len {
@@ -4278,8 +4315,11 @@ impl DiskManager {
         }
 
         if guard.superblock.has_journal_layout() {
-            let mut sim =
-                crate::journal::AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
+            let mut sim = crate::journal::AllocSim::new_data_only(
+                guard,
+                guard.free_inode_hint,
+                guard.free_block_hint,
+            )?;
             let mut journal_ops: Vec<crate::journal::MetadataOp> = Vec::new();
             let mut payload_ranges: Vec<(usize, usize)> = Vec::new();
             let mut compressed_size_delta: i64 = 0;
@@ -4294,10 +4334,15 @@ impl DiskManager {
                 });
 
                 // 2. Stage payload data into physical blocks
+                if prepared.blocks_needed > 0 && guard.durability_mode().is_range_based() {
+                    payload_ranges.push((
+                        (new_start_blk as usize).saturating_mul(BLOCK_SIZE),
+                        prepared.blocks_needed.saturating_mul(BLOCK_SIZE),
+                    ));
+                }
                 let mut written = 0;
                 for b in 0..prepared.blocks_needed {
                     let cur_blk = new_start_blk + b as u64;
-                    payload_ranges.push(guard.block_byte_range(cur_blk));
                     if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, cur_blk) {
                         let to_write = (prepared.payload.len() - written).min(BLOCK_SIZE);
                         slice[..to_write]
@@ -4385,21 +4430,13 @@ impl DiskManager {
                 inode_bytes: Box::new(post_image),
             });
 
-            // 7. Flush payload blocks before metadata commit (Ordered Mode)
-            let coalesced_payload =
-                DiskManagerInner::coalesce_ranges(&payload_ranges, guard.mmap.len());
-            match guard.durability_mode() {
-                DurabilityMode::Strict => {
-                    for (off, actual) in &coalesced_payload {
-                        guard.mmap.flush_range(*off, *actual)?;
-                    }
+            // 7. Flush payload blocks before metadata commit (Ordered Mode — Strict only)
+            if guard.durability_mode() == DurabilityMode::Strict {
+                let coalesced_payload =
+                    DiskManagerInner::coalesce_ranges(&payload_ranges, guard.mmap.len());
+                for (off, actual) in &coalesced_payload {
+                    guard.mmap.flush_range(*off, *actual)?;
                 }
-                DurabilityMode::RangeAsync => {
-                    for (off, actual) in &coalesced_payload {
-                        let _ = guard.mmap.flush_async_range(*off, *actual);
-                    }
-                }
-                DurabilityMode::Lazy | DurabilityMode::LegacyWholeMmapAsync => {}
             }
 
             // 8. Commit WAL transaction to journal ring
@@ -4417,9 +4454,13 @@ impl DiskManager {
                     guard.data_bitmap_byte_range(),
                     guard.inode_byte_range(inode_id),
                 ];
-                ranges.extend(payload_ranges);
-                for blk in &sim.fresh_blocks {
-                    ranges.push(guard.block_byte_range(*blk));
+                if guard.durability_mode() != DurabilityMode::Strict {
+                    ranges.extend(payload_ranges);
+                }
+                for op in &journal_ops {
+                    if let crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } = op {
+                        ranges.push(guard.block_byte_range(*block_id));
+                    }
                 }
                 guard.sync_mutation_ranges(&ranges)?;
             }
@@ -4565,8 +4606,11 @@ impl DiskManager {
         let new_chunks = (new_size as usize).div_ceil(crate::inode::CHUNK_SIZE_64K);
 
         if guard.superblock.has_journal_layout() {
-            let mut sim =
-                crate::journal::AllocSim::new(guard, guard.free_inode_hint, guard.free_block_hint)?;
+            let mut sim = crate::journal::AllocSim::new_data_only(
+                guard,
+                guard.free_inode_hint,
+                guard.free_block_hint,
+            )?;
             let mut journal_ops: Vec<crate::journal::MetadataOp> = Vec::new();
             let mut payload_ranges: Vec<(usize, usize)> = Vec::new();
 
@@ -4638,10 +4682,15 @@ impl DiskManager {
                             allocated: true,
                         });
 
+                        if blocks_needed > 0 && guard.durability_mode().is_range_based() {
+                            payload_ranges.push((
+                                (new_start_blk as usize).saturating_mul(BLOCK_SIZE),
+                                blocks_needed.saturating_mul(BLOCK_SIZE),
+                            ));
+                        }
                         let mut written = 0;
                         for b in 0..blocks_needed {
                             let cur_blk = new_start_blk + b as u64;
-                            payload_ranges.push(guard.block_byte_range(cur_blk));
                             if let Some(slice) =
                                 Self::get_block_mut_from_map(&mut guard.mmap, cur_blk)
                             {
@@ -4705,21 +4754,13 @@ impl DiskManager {
                 inode_bytes: Box::new(post_image),
             });
 
-            // Ordered payload flush
-            let coalesced_payload =
-                DiskManagerInner::coalesce_ranges(&payload_ranges, guard.mmap.len());
-            match guard.durability_mode() {
-                DurabilityMode::Strict => {
-                    for (off, actual) in &coalesced_payload {
-                        guard.mmap.flush_range(*off, *actual)?;
-                    }
+            // Ordered payload flush (Strict only)
+            if guard.durability_mode() == DurabilityMode::Strict {
+                let coalesced_payload =
+                    DiskManagerInner::coalesce_ranges(&payload_ranges, guard.mmap.len());
+                for (off, actual) in &coalesced_payload {
+                    guard.mmap.flush_range(*off, *actual)?;
                 }
-                DurabilityMode::RangeAsync => {
-                    for (off, actual) in &coalesced_payload {
-                        let _ = guard.mmap.flush_async_range(*off, *actual);
-                    }
-                }
-                DurabilityMode::Lazy | DurabilityMode::LegacyWholeMmapAsync => {}
             }
 
             Self::commit_journal_tx(guard, &journal_ops)?;
@@ -4734,9 +4775,13 @@ impl DiskManager {
                     guard.data_bitmap_byte_range(),
                     guard.inode_byte_range(inode_id),
                 ];
-                ranges.extend(payload_ranges);
-                for blk in &sim.fresh_blocks {
-                    ranges.push(guard.block_byte_range(*blk));
+                if guard.durability_mode() != DurabilityMode::Strict {
+                    ranges.extend(payload_ranges);
+                }
+                for op in &journal_ops {
+                    if let crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } = op {
+                        ranges.push(guard.block_byte_range(*block_id));
+                    }
                 }
                 guard.sync_mutation_ranges(&ranges)?;
             }

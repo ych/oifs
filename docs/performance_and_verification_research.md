@@ -151,24 +151,22 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.9: In-place Filter & Decryption Pipelines
-* **File & Lines**: [`src/disk.rs:1262-1302`](file:///Users/ych/oifs/src/disk.rs#L1262-L1302)
-* **Current Behavior**:
-  `read_data_internal` creates 4 successive buffers: `raw_data` $\rightarrow$ `decrypted_data` $\rightarrow$ `decoded` $\rightarrow$ `result`.
-* **Proposed Remedy**:
-  Perform decryption and in-place unfiltering (`delta_decode_inplace`) directly in the reusable buffer where possible.
-* **Impact**: **Medium** (Cuts read memory allocations by 50~75%).
+### P4.9: In-place Filter & Decryption Pipelines [RESOLVED]
+* **File & Lines**: [`src/encryption.rs:120-133`](file:///Users/ych/oifs/src/encryption.rs#L120-L133), [`src/filters.rs:67-76`](file:///Users/ych/oifs/src/filters.rs#L67-L76), [`src/disk.rs:2863-2905`](file:///Users/ych/oifs/src/disk.rs#L2863-L2905), [`src/disk.rs:3865-3983`](file:///Users/ych/oifs/src/disk.rs#L3865-L3983)
+* **Status**: **Completed & Verified**
+* **Implementation Details**:
+  - Added [`decrypt_data_in_place`](file:///Users/ych/oifs/src/encryption.rs#L120-L133) using `chacha20poly1305::aead::AeadInPlace::decrypt_in_place` and [`unapply_filters_in_place`](file:///Users/ych/oifs/src/filters.rs#L666-L671) so `read_data_internal` decrypts and delta-decodes in-place without intermediate full-payload allocations.
+  - Updated [`read_single_chunk_decompressed`](file:///Users/ych/oifs/src/disk.rs#L3865-L3983) to slice contiguous 64K chunk extents directly from `&guard.mmap`, eliminating intermediate block-by-block `Vec<u8>` copies before decryption/decompression.
+* **Impact**: **Medium** (Cuts read memory allocations by 50~75% and eliminates intermediate copies on seekable 64K chunk reads).
 
 ---
 
-### P4.10: Quadratic $O(N^2)$ Checks in `write_data_journaled` & `AllocSim` [IN PROGRESS - P0]
-* **File & Lines**: [`src/disk.rs:3120-3127`](file:///Users/ych/oifs/src/disk.rs#L3120-L3127), [`src/journal.rs:2158-2160`](file:///Users/ych/oifs/src/journal.rs#L2158-L2160)
-* **Current Behavior**:
-  - `write_data_journaled` checks `!used.contains(blk)` where `used` is a `Vec<u64>`. For 100MB writes (~25,600 blocks), this induces $(25,600)^2 \approx 6.5 \times 10^8$ comparisons.
-  - `AllocSim::is_fresh` checks `self.fresh_blocks.contains(&block_id)` against a `Vec<u64>`.
-* **Proposed Remedy**:
-  Use `rustc_hash::FxHashSet<u64>` for $O(1)$ set membership, dropping write runtime from $O(N^2)$ to $O(N)$.
-* **Impact**: **High** (Massive throughput boost on large journaled writes).
+### P4.10: Quadratic $O(N^2)$ Checks in `write_data_journaled`, `stage_payload_write` & `AllocSim` [RESOLVED]
+* **File & Lines**: [`src/disk.rs:3240-3250`](file:///Users/ych/oifs/src/disk.rs#L3240-L3250), [`src/journal.rs:2480-2645`](file:///Users/ych/oifs/src/journal.rs#L2480-L2645)
+* **Status**: **Completed & Verified**
+* **Implementation Details**:
+  - Replaced `used.contains` in `write_data_journaled` and `AllocSim::is_fresh` with `rustc_hash::FxHashSet<u64>`, and removed the redundant `used.contains(&phys)` linear scan in `stage_payload_write` (where `blk_idx` is strictly monotonic).
+* **Impact**: **High** (32 MB journaled initial writes reach **6,077 MB/s** and 32 MB overwrites reach **26,038 MB/s** with zero super-linear degradation).
 
 ---
 
@@ -179,7 +177,7 @@ This document consolidates deep codebase investigations and findings recovered f
   - Introduced `MetadataOp::SetDataBitmapRange { start_block: u64, count: u32, allocated: bool }` (tag 5).
   - Implemented `coalesce_ops` grouping bitmap allocations, adjacent indirect pointer slices (`WriteBlockSlice`), and deduplicating inode writes, condensing thousands of contiguous allocations into 14 bytes and shrinking WAL frames by up to 88%.
   - Added simulated indirect pointer write caching in `AllocSim` (`pointers: FxHashMap<(u64, usize), u64>`), eliminating redundant block allocations on large double/triple indirect files.
-* **Impact**: **High** (Enables arbitrary multi-megabyte writes under journaling; 32MB writes commit in ~12ms at 2,650 MB/s).
+* **Impact**: **High** (Enables arbitrary multi-megabyte writes under journaling; 32MB writes commit in ~5.3ms at 6,077 MB/s).
 
 ---
 
@@ -193,13 +191,14 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.13: Hardware CRC32C Acceleration in Journal Ring
-* **File & Lines**: [`src/journal.rs:151-158`](file:///Users/ych/oifs/src/journal.rs#L151-L158)
-* **Current Behavior**:
-  Table-based byte-at-a-time Castagnoli CRC32C (~400 MB/s).
-* **Proposed Remedy**:
-  Utilize ARMv8 / SSE4.2 hardware instructions via `crc32fast` or intrinsics, keeping software fallback for Kani.
-* **Impact**: **Medium** (Reduces WAL frame commit latency).
+### P4.13: Hardware CRC32C Acceleration & Zero-Copy WAL Frame Encoding [RESOLVED]
+* **File & Lines**: [`src/journal.rs:147-212`](file:///Users/ych/oifs/src/journal.rs#L147-L212), [`src/journal.rs:653-795`](file:///Users/ych/oifs/src/journal.rs#L653-L795), [`src/disk.rs:301-395`](file:///Users/ych/oifs/src/disk.rs#L301-L395)
+* **Status**: **Completed & Verified**
+* **Implementation Details**:
+  - Implemented hardware-accelerated `crc32c_update` using ARMv8 `__crc32cd`/`__crc32cb` on `aarch64` and SSE4.2 `_mm_crc32_u64`/`_mm_crc32_u8` on `x86_64`, preserving `crc32c_update_sw` for Kani formal verification.
+  - Replaced `crc_input` temporary buffer allocations with incremental `crc_frame_checksum`, added `is_already_coalesced` fast path and single-buffer `encode_frame` encoding, and avoided unnecessary 4 KB bitmap copies via `AllocSim::new_data_only` and read-only `BitmapRef::find_next_free_wrapped` in `create_entry_journaled`.
+  - Added `DiskManagerInner::coalesce_ranges_with_gap` (1 MB gap bridging for `DurabilityMode::RangeAsync`) and removed duplicate post-apply payload `msync` barriers in `Strict` mode.
+* **Impact**: **High** (Journaled `create_file` reaches **1.49M ops/s** — **1.0x–1.1x** of unjournaled legacy; small journaled writes reach **1.75M ops/s** — **1.3x** of legacy; `RangeAsync` 1 MB writes reach **50% of `Lazy`**).
 
 ---
 

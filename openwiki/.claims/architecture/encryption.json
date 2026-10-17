@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:75226ca930c78e52704ca698d7fc310014f3781e24fe72e35d0f3673f3ff8434",
+  "pageVersion": "sha256:fadaaebf5f44d92558a81b56b374f5f06d07c3b44a58b8960c8bbfc68bd0b841",
   "claims": [
     {
       "id": "claim_9973979c3dfb48d4a130186fe2d11d8f",
       "statement": "EncryptionKey derives ZeroizeOnDrop to erase 256-bit key material on drop and redacts key bytes in Debug formatting, while derive_key derives keys from passphrases and a 16-byte random salt using Argon2id.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L21-L69",
-          "version": "repo-lines-v1:sha256:2812602ad5a357d46d7c9be48ffdd414360ef4ee7b0d81b2441ae50d1b25b7f0:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmOGQ4OGYzMmVhNmI0ZmYzN2JmMzg0Y2FlZDZmNGFiZGNjZDczYzVkMTQ4YTUzYjA0Y2FmMTQ3MTg5MDNhMzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3N2RiNTRlZDk3YzUxM2UwY2EwMzlhMmNlNWU4YWQ1OGNkNjQyZWNiNjFkYWVjN2EyYzYxNjc0NjZhNGMzYzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM0YjFlMjU4MDhkZDVhNjEyZjNkODEyZmU2Yzk5NGZjNWY2MDQxYjI1NWZhMTc1OGEzNTRmOTZhZDBhN2NhMDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU5MWY1NjVhNWQ4OTJlM2UwYjBjNjczNTg0YjRmNjdkZjc5YzczODM4ZjU2NzU5NTY2N2ExNWUzNGVkOTYwN2MifQ"
+          "resource": "repo://src/encryption.rs#L21-L71",
+          "version": "repo-lines-v1:sha256:db41a74c02b52e51ec05fddd03b3fafaaf12ba0b4e80ce732aa076779b10324a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmOGQ4OGYzMmVhNmI0ZmYzN2JmMzg0Y2FlZDZmNGFiZGNjZDczYzVkMTQ4YTUzYjA0Y2FmMTQ3MTg5MDNhMzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxYzdiZjVmNjIyOWFjOGUxNzc0ODU0MWI3OWM1NDI4ZDA3NGViZTk3Y2JlMWE0NDE4ZGQxNjkzYzU1ZmZjYTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM0YjFlMjU4MDhkZDVhNjEyZjNkODEyZmU2Yzk5NGZjNWY2MDQxYjI1NWZhMTc1OGEzNTRmOTZhZDBhN2NhMDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU5MWY1NjVhNWQ4OTJlM2UwYjBjNjczNTg0YjRmNjdkZjc5YzczODM4ZjU2NzU5NTY2N2ExNWUzNGVkOTYwN2MifQ"
         }
       ]
     },
@@ -17,8 +17,8 @@
       "statement": "File data encryption uses XChaCha20-Poly1305 AEAD with a unique 192-bit (24-byte) random nonce per file generated via OsRng and an appended 16-byte Poly1305 authentication tag.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L66-L130",
-          "version": "repo-lines-v1:sha256:37740730b8081af4d608b07a2a54714e786930dcf294f73807482f36883484db:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NzJiMWM4ODE5ZDFlNWNiY2YxYmFkYWU4MjhmYWEwOTZiNTk4NDBjOGI3MmJiYWQ4YWZjNGY5N2ZiNDRmZTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlZTJiNDk1MTMzODY4MDRkNzdhM2ZmMTA1MDgzM2NmNGU4NWE5NDM4ZTAyYjYxMzhhZjU1OWZlNzlmYWFjNjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzMDU1ZjVkMjc4M2Q4MThlMzlkZDY0NDE4ODI5ZjRjNDMxYTVmNzg3MTA5ZWY5YTMyMWYzM2UwM2IyMzk5YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdhNTVmZDkzNTZkNGU4MDAxYzM5NDM5MWM5OGQxNjI5NTZjOTMzNmIwMDJhMWI3Nzk4ZjlhNjEyOGU4N2FiNGUifQ"
+          "resource": "repo://src/encryption.rs#L66-L149",
+          "version": "repo-lines-v1:sha256:53f8065d778885fac939f0858d0b07c6047b3403e113b0666ec885b79fdeaee4:eyJzZWxlY3RlZExpbmVDb3VudCI6ODQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NzJiMWM4ODE5ZDFlNWNiY2YxYmFkYWU4MjhmYWEwOTZiNTk4NDBjOGI3MmJiYWQ4YWZjNGY5N2ZiNDRmZTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlZTJiNDk1MTMzODY4MDRkNzdhM2ZmMTA1MDgzM2NmNGU4NWE5NDM4ZTAyYjYxMzhhZjU1OWZlNzlmYWFjNjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzMDU1ZjVkMjc4M2Q4MThlMzlkZDY0NDE4ODI5ZjRjNDMxYTVmNzg3MTA5ZWY5YTMyMWYzM2UwM2IyMzk5YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdhNTVmZDkzNTZkNGU4MDAxYzM5NDM5MWM5OGQxNjI5NTZjOTMzNmIwMDJhMWI3Nzk4ZjlhNjEyOGU4N2FiNGUifQ"
         }
       ]
     },
@@ -27,7 +27,7 @@
       "statement": "Deterministic filename encryption uses a Synthetic IV (SIV) construction combining a Blake2b-512 PRF tweaked with the parent inode ID, ChaCha20-Poly1305 authenticated encryption, and unpadded Base64URL formatting with an '_e_' prefix.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L137-L233",
+          "resource": "repo://src/encryption.rs#L156-L252",
           "version": "repo-lines-v1:sha256:417ee725036239b08d755d1645ce38b3d5e2ba844c2768977a8c445520de50e4:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2Njg1MjI2Nzc5YjQ2ZDZmNWZkZjYzY2FiMGE0ZjU1NjM3MzUwN2E5N2I4MTc1N2YzNTQwOGUxMmQ5ZDk2ZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc1N2IxYmM5YzhjY2Y0NjRiMzMzYjUzMTRjY2E3M2FjNGUzYTViNWM2MWVhODc3NzAzNjAxNzNkYzc2ZDQ2NWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhNjdhNjcyMmUyOTc5Y2MwN2UwYjcyODIyZjVlNGJkZmZjMjNmODQ3YTYwNmM2MjA1NDc4NzI4MTYxMjUxOTAifQ"
         }
       ]
@@ -37,7 +37,7 @@
       "statement": "EncryptionError distinguishes key derivation failure, invalid keys, encryption failure, and authentication/decryption failure resulting from incorrect passwords or corrupted ciphertext.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L236-L249",
+          "resource": "repo://src/encryption.rs#L255-L268",
           "version": "repo-lines-v1:sha256:5285a9acae00f8e7ce4b6f1b04105294d9f92b07a3f87a14398bdd3dd0fe70da:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1Nzg4ODZlOTFiMmI5NGNmZDhlOGU5YzVmYTQxMzUzNDcyMTRlNWM0ZWRmZDRmMjM1ZWMyMzc3NzJjNGM0MjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzODIxMjNmYmY2OTcyMjQxN2RhMjgwMGE0NWVjM2VlOWI5ZGFmOTFjYmU2M2M4ODEyOWNhYTk1MGIwMWI2ZTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
         }
       ]
@@ -45,6 +45,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-03T08:18:49.684Z"
+    "at": "2026-10-17T12:02:11.031Z"
   }
 }

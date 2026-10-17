@@ -1,17 +1,19 @@
 ---
 type: workflow
 title: Encrypted Filesystem Workflows
-description: Step-by-step guide for creating, opening, and using encrypted OIFS images including password management, key derivation, and transparent encryption/decryption.
+description: Step-by-step guide for creating, opening, and using encrypted OIFS images including password management, key derivation via Argon2id, salt generation, and transparent encryption/decryption using XChaCha20-Poly1305.
 tags: [encryption, workflow, cli, security]
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
+  - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
+    resource: repo://src/disk.rs
   - id: openwiki-source-88657ea41344918d5e874716
     resource: repo://src/encryption.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
+    at: 2026-10-17T12:02:11.031Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-17T12:02:11.031Z" }
 ---
 # Encrypted Filesystem Workflows
 
@@ -92,7 +94,7 @@ Passwords can be supplied through three mechanisms (in order of precedence):
 - Cipher: XChaCha20-Poly1305 AEAD
 - Key: 256-bit derived key
 - Nonce: 192-bit unique value generated per encryption operation
-- Authentication: 16-bit tag included with ciphertext
+- Authentication: 16-byte tag included with ciphertext
 
 ### Filename Encryption
 - Cipher: ChaCha20-Poly1305 AEAD

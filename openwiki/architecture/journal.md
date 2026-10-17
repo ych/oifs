@@ -6,10 +6,10 @@ tags: ["journal", "WAL", "write-ahead logging", "transaction", "recovery", "dura
 sources:
   - id: openwiki-source-813113339610c0170804687f
     resource: repo://src/journal.rs
+generated: { by: "openwiki/0.6.1", at: "2026-10-14T13:26:03.589Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-14T13:26:03.589Z
-generated: { by: "openwiki/0.6.1", at: "2026-10-14T13:26:03.589Z" }
+    at: 2026-10-17T12:02:11.031Z
 ---
 
 # Journal and Write-Ahead Logging

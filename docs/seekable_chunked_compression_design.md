@@ -307,3 +307,22 @@ int ret = oifs_write_file_with_policy(
 5. **項目 6 (Kani 形式化驗證) 【驗證伴隨】**：
    * 形式化證明應伴隨項目 1（證明連續分配區間不越界、不重疊）與項目 2（證明 Extent 交換一致性）共同推進，避免先寫舊證明而後續需重構。
 
+
+---
+
+## 7. 項目 7 實作狀態：背景自動 Defrag 協調器 (Completed)
+
+**實作位置**：`src/auto_defrag.rs`（協調器）、`src/disk.rs`（`DiskManager::set_auto_defrag` / `auto_defrag_stats` / `stop_auto_defrag`）、`src/session.rs`（`OifsSession::set_auto_defrag`）、`src/bin/oifs.rs`（`--auto-defrag[=THRESHOLD]` / `--defrag-interval`）。
+
+| 設計項目 | 實作結果 |
+| :--- | :--- |
+| 背景碎片率量測 | `AutoDefragController::run_once` 以 `analyze_fragmentation_on` 週期性量測資料區碎片率 |
+| 門檻觸發 | `AutoDefragConfig::fragmentation_threshold`（預設 0.25，CLI 可覆寫），超過才執行 |
+| 連續區塊回收 | 通過 `defragment_inplace_on` 執行就地重排，讓 `find_contiguous_free_from` 能取得長連續區段 |
+| 背景執行緒生命週期 | 工作緒僅持有 `Weak<RwLock<DiskManagerInner>>`；當最後一個 `DiskManager` 被釋放時，`upgrade()` 失敗使工作緒自動結束，不會洩漏映射 |
+| 與寫入的互斥 | 每次 pass 取得 inner **寫入鎖**，與 metadata 變更序列化成同一排他區段 |
+| WAL 影像安全 | 就地 defrag 不會產生 WAL 交易，故預設在 journaled 影像上跳過（`allow_journaled` 需明確開啟） |
+| 空間保護 | `min_free_blocks` 避免在接近寫滿的影像上執行收益低、阻塞寫入的整體重排 |
+| 可觀測性 | `AutoDefragStats` 記錄 `checks` / `passes` / `skipped` / `errors` / `last_pass` / `last_error` |
+
+**驗證**：`tests/auto_defrag_test.rs`（6 個測試）涵蓋：預設關閉、門檻觸發與資料完整性（fsck 乾淨、檔案內容不變）、停用後不再執行、journaled 影像跳過、`min_free_blocks` 跳過。

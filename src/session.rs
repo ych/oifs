@@ -637,6 +637,38 @@ impl OifsSession {
         }
     }
 
+    /// Installs a background automatic defragmentation configuration.
+    ///
+    /// Only a Direct (Standalone / Master) session owns the `DiskManager`, so a
+    /// Remote (client) session cannot start the coordinator and returns
+    /// [`SessionError::Remote`] instead.
+    pub fn set_auto_defrag(
+        &self,
+        config: crate::auto_defrag::AutoDefragConfig,
+    ) -> Result<(), SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => {
+                dm.set_auto_defrag(config);
+                Ok(())
+            }
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "background auto-defragmentation is only available on the master session"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Returns the counters of the background auto-defragmentation coordinator.
+    ///
+    /// Returns `None` on a Remote (client) session, which does not own the
+    /// `DiskManager`.
+    pub fn auto_defrag_stats(&self) -> Option<crate::auto_defrag::AutoDefragStats> {
+        match self {
+            OifsSession::Direct { dm, .. } => Some(dm.auto_defrag_stats()),
+            OifsSession::Remote { .. } => None,
+        }
+    }
+
     /// Returns the number of currently active peer processes connected to this Master
     pub fn peer_count(&self) -> usize {
         match self {

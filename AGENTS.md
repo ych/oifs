@@ -32,10 +32,11 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **Pre-compression Filters**: Integrated Blosc2 filters (Delta, Byte Shuffle, BitShuffle with Hacker's Delight 8x8 transposition, TruncPrecision) followed by Zstandard.
 - **Encryption**: XChaCha20-Poly1305 with Argon2id KDF and parent-inode tweaked deterministic SIV filename encryption (`_e_...`).
 - **FFI Dynamic Library Handshake**: 3-state runtime version & path verification (`oifs_check_version`, `oifs_loaded_path`): 0=OK, 1=WARN (newer), -1=ERR (older).
-- **Formal Verification**: 59 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, and bounds safety.
+- **Formal Verification**: 74 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, and bounds safety.
 - **On-Disk Format v2**: Fixed 256-byte inode records with explicit little-endian fields, a 1-byte file-type tag, and zeroed reserved space. Deterministic, reproducible, leak-free. Legacy v1 images stay fully readable and writable; `oifs migrate` upgrades them in place.
 - **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file`/`write_data` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Payload data is *not* journaled — it is flushed before the metadata commit (ordered mode), so WAL traffic stays proportional to metadata, not file size. Recovery runs automatically at mount, so a power loss no longer requires a full-image `fsck`.
 - **Durability governs the journal too**: only `DurabilityMode::Strict` pays the per-transaction `msync` barriers (WAL + payload); the process-crash-safe modes rely on the page cache and sync at `flush()`/`Drop`, with the WAL always written before the image.
+- **Background Auto-Defragmentation (Blueprint item 7)**: Opt-in coordinator (`--auto-defrag[=THRESHOLD]`, `DiskManager::set_auto_defrag`) that measures data-area fragmentation on an interval and runs an in-place defragmentation pass when the threshold is exceeded, keeping large contiguous free runs available for the contiguous allocator and the seekable chunked compressor. The worker holds only a `Weak` reference to the inner state, so it exits as soon as the last manager is dropped, and it refuses to run on WAL-enabled images (in-place defrag is not journalled) unless `allow_journaled` is set.
 - **Known perf issue**: `DurabilityMode::RangeAsync` issues one `msync(MS_ASYNC)` per mutated range with no coalescing, leaving it ~6-8% as fast as `Lazy`. Root cause, measurements, and candidate fixes are recorded in `docs/metadata_wal_design.md` §9.
 
 ---
@@ -78,6 +79,7 @@ An inode stores:
 | `src/directory.rs` | `DirectoryEntry`, multi-block directory iteration, 64-bit SipHash filename hashing. |
 | `src/io_engine.rs` | `IoEngine`, `IoBackend` (`Mmap`, `Pread`, `IoUring`), `ExtentList`, extent merging. |
 | `src/journal.rs` | Optional Metadata WAL: CRC32C, transaction frames, `MetadataOp`, `JournalRing`, idempotent redo. |
+| `src/auto_defrag.rs` | Background automatic defragmentation coordinator: `AutoDefragConfig`, `AutoDefragStats`, worker thread. |
 | `src/bitmap.rs` | `BitmapRef`, fast 64-bit chunk `tzcnt` free-bit scanner, set-bit iterator. |
 | `src/allocator.rs` | `SimpleBlockAllocator`, sequential block/inode allocation with hint. |
 | `src/filters.rs` | Blosc2 filters: Delta, Shuffle, BitShuffle (delta-swap ILP), TruncPrecision. |
@@ -87,7 +89,7 @@ An inode stores:
 | `src/ffi.rs` | C-compatible dynamic library bindings (`include/oifs.h`). |
 | `src/bin/oifs.rs` | CLI application entry point (`clap`-based). |
 | `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling. |
-| `tests/` | 46 integration, stress, crash-safety, concurrency, journal, and CLI test suites. |
+| `tests/` | 52 integration, stress, crash-safety, concurrency, journal, auto-defrag, and CLI test suites. |
 | `docs/optimization_roadmap.md` | Detailed changelog and benchmarks for P0, P1, P2, and P3 optimizations. |
 | `docs/metadata_wal_design.md` | Metadata WAL specification and implementation status (M1–M5 complete). |
 | `docs/performance_and_verification_research.md` | In-depth audit of performance bottlenecks, safety vulnerabilities, and Kani blueprints. |
@@ -129,7 +131,7 @@ An inode stores:
 cargo build
 cargo build --release
 
-# 2. Run all standard unit and integration tests (46 test suites)
+# 2. Run all standard unit and integration tests (52 test suites)
 cargo test --release
 
 # 3. Run multi-block directory performance benchmark
@@ -138,11 +140,19 @@ cargo test --release --test dir_bench -- --ignored --nocapture
 # 3b. Run the metadata WAL benchmarks (journaled vs legacy, durability-mode cost, flush cost)
 cargo test --release --test journal_bench -- --ignored --nocapture -- --test-threads=1
 
+# 3c. Run the background auto-defragmentation coordinator tests
+cargo test --release --test auto_defrag_test
+
 # 4. Run Shuttle randomized concurrency permutation tests
 cargo test --test shuttle_concurrency_test
 
-# 5. Run Kani formal verification proofs (all 59 proofs)
+# 5. Run Kani formal verification proofs (all 74 proofs)
 cargo kani
+
+# 5b. Run the Kani proofs in parallel (one CBMC process per harness).
+#     NOTE: -j REQUIRES --output-format=terse, otherwise cargo-kani errors out.
+#     Tune -j to available cores *and* RAM: each harness runs its own CBMC process.
+cargo kani -j 8 --output-format=terse
 
 # 6. Run a specific Kani proof harness
 cargo kani --harness proof_get_block_checked_arithmetic_prevents_wrap_around

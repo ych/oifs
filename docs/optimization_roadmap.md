@@ -68,6 +68,16 @@ This document records the implemented optimizations (P0 & P1) and the planned fu
 
 ## 2. Planned Optimizations Status (P3 Future)
 
+### P4.8: IPC Frame Buffer Pooling & Bounded Frame Parsing (Completed)
+- **File**: `src/ipc.rs`, `tests/ipc_frame_test.rs`
+- **Mechanism**: Thread-local pooled buffers replace the per-message `Vec` allocation in `write_framed`/`read_framed`; the frame length prefix is validated against the public `MAX_FRAME_BYTES` limit *before* allocation; payloads are streamed in bounded 64 KiB chunks instead of being allocated blind from the announced length.
+- **Impact**: Removes the allocator pressure of the Master-Proxy hot path and closes the blind-allocation DoS vector on the frame length prefix.
+
+### Blueprint Item 7: Background Auto-Defragmentation Coordinator (Completed)
+- **File**: `src/auto_defrag.rs`, `src/disk.rs`, `src/session.rs`, `src/bin/oifs.rs`, `tests/auto_defrag_test.rs`
+- **Mechanism**: An opt-in daemon thread measures the fragmentation of the data area on an interval and runs an in-place defragmentation pass when the configured threshold is exceeded, so that large contiguous free runs stay available for the contiguous allocator (`P4.4`) and the seekable chunked compressor (`P4.2`).
+- **Safety**: The worker holds only a `Weak` reference to the inner state (it exits with the last manager), takes the inner write lock during a pass (serializing against writers), and refuses to run on WAL-enabled images unless `allow_journaled` is set, because in-place defragmentation is not journalled.
+
 ---
 
 ## 3. P3 Architectural Blueprints (Long-Term)

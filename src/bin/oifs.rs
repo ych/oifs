@@ -1,11 +1,13 @@
 use chrono::{DateTime, Local, TimeZone};
 use clap::{Parser, Subcommand};
+use oifs::auto_defrag::AutoDefragConfig;
 use oifs::disk::{CompressionMode, DefragMode};
 use oifs::inode::FileType;
 use oifs::session::OifsSession;
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -32,6 +34,19 @@ struct Cli {
     /// Output results as minified JSON
     #[arg(long, global = true)]
     json: bool,
+
+    /// Enable the background automatic defragmentation coordinator.
+    ///
+    /// Optionally takes the fragmentation threshold above which a
+    /// defragmentation pass is triggered. The ratio is
+    /// (free_runs - 1) / (free_blocks - 1): 0.0 means all free space is
+    /// contiguous, 1.0 means every free block is isolated. Defaults to 0.25.
+    #[arg(long, global = true, value_name = "THRESHOLD", num_args = 0..=1, default_missing_value = "0.25")]
+    auto_defrag: Option<f64>,
+
+    /// Interval in seconds between background fragmentation checks.
+    #[arg(long, global = true, default_value_t = 300)]
+    defrag_interval: u64,
 
     #[command(subcommand)]
     command: Commands,
@@ -145,7 +160,7 @@ enum Commands {
 /// Helper function to read password securely from stdin (with terminal echo masked).
 ///
 /// Prompt goes to stderr so stdout remains usable for JSON pipelines.
-fn read_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn read_password(prompt: &str) -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
     use std::io::{self, Write};
     eprint!("{}", prompt);
     io::stderr().flush()?;
@@ -175,7 +190,11 @@ fn read_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
     }
 
     read_result?;
-    Ok(password.trim().to_string())
+    // SEC-12: keep the plaintext password in a zeroizing buffer; the raw
+    // `read_line` scratch string is wiped before the trimmed copy is returned.
+    let trimmed = password.trim().to_string();
+    password.zeroize();
+    Ok(Zeroizing::new(trimmed))
 }
 
 /// Helper function to open OifsSession with auto-detection of encrypted filesystems and SessionMode.
@@ -187,6 +206,7 @@ fn open_session(
     password_arg: &Option<String>,
     mode: &oifs::ipc::SessionMode,
     json_mode: bool,
+    auto_defrag: Option<&AutoDefragConfig>,
 ) -> Result<OifsSession, Box<dyn std::error::Error>> {
     let session = match OifsSession::open_with_mode(image_path, 0, mode.clone(), None, false) {
         Ok(s) => s,
@@ -194,9 +214,9 @@ fn open_session(
             oifs::disk::DiskManagerError::PasswordRequired,
         )) => {
             let password = if let Some(pwd) = password_arg {
-                pwd.clone()
+                Zeroizing::new(pwd.clone())
             } else if let Ok(env_pwd) = std::env::var("OIFS_PASSWORD") {
-                env_pwd
+                Zeroizing::new(env_pwd)
             } else if json_mode {
                 return Err(
                     "Encrypted filesystem requires --password or OIFS_PASSWORD env in --json mode"
@@ -227,6 +247,15 @@ fn open_session(
         );
     }
 
+    // A proxy (client) session does not own the DiskManager, so the coordinator
+    // can only run on the master. Warn instead of failing the whole command.
+    if let Some(config) = auto_defrag
+        && let Err(e) = session.set_auto_defrag(config.clone())
+        && !json_mode
+    {
+        eprintln!("⚠️  Background auto-defragmentation not enabled: {e}");
+    }
+
     Ok(session)
 }
 
@@ -253,6 +282,11 @@ struct LsEntry {
 }
 
 fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    // Background auto-defragmentation configuration (`--auto-defrag[=THRESHOLD]`).
+    let auto_defrag: Option<AutoDefragConfig> = cli.auto_defrag.map(|threshold| {
+        AutoDefragConfig::new(threshold)
+            .with_check_interval(std::time::Duration::from_secs(cli.defrag_interval.max(1)))
+    });
     let session_mode = if cli.network || cli.bind.is_some() {
         oifs::ipc::SessionMode::Network {
             bind_addr: cli.bind.clone(),
@@ -371,12 +405,12 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     if pwd.is_empty() {
                         return Err("Password cannot be empty".into());
                     }
-                    pwd
+                    Zeroizing::new(pwd)
                 } else if let Ok(env_pwd) = std::env::var("OIFS_PASSWORD") {
                     if env_pwd.is_empty() {
                         return Err("Password cannot be empty".into());
                     }
-                    env_pwd
+                    Zeroizing::new(env_pwd)
                 } else if cli.json {
                     return Err(
                         "Encrypted create requires --password or OIFS_PASSWORD env in --json mode"
@@ -498,7 +532,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 CompressionMode::Auto
             };
 
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
 
             let dm_clone = dm.clone();
             ctrlc::set_handler(move || {
@@ -552,7 +592,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
 
             let dm_clone = dm.clone();
             ctrlc::set_handler(move || {
@@ -596,7 +642,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
             let inode_id = dm.resolve_path(remote_name)?;
             let data = dm.read_data(inode_id)?;
             let remote_file_name = Path::new(remote_name)
@@ -648,7 +700,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
             let (parent_id, filename) = dm.resolve_parent(dir_name)?;
 
             if dm.lookup(parent_id, &filename).is_ok() {
@@ -667,7 +725,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
             let (parent_id, filename) = dm.resolve_parent(path)?;
 
             let target = match dm.lookup(parent_id, &filename) {
@@ -729,7 +793,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
 
             let target_inode_id = if let Some(p) = path.as_ref() {
                 dm.resolve_path(p)?
@@ -842,7 +912,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
             let stats = dm.analyze_fragmentation()?;
 
             if cli.json {
@@ -916,7 +992,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
             match dm.defragment(image_path, defrag_mode, None) {
                 Ok(stats) => {
                     if cli.json {
@@ -957,7 +1039,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
 
             if dm.migration_in_progress()? {
                 let msg = "A previous migration was interrupted; resuming it.";
@@ -997,7 +1085,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
             match dm.verify_integrity() {
                 Ok(report) => {
                     if cli.json {
@@ -1044,7 +1138,13 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
-            let dm = open_session(image, &cli.password, &session_mode, cli.json)?;
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+            )?;
             dm.truncate_path(path, *size)?;
             if cli.json {
                 println!("{}", json!({"ok": true, "path": path, "size": size}));

@@ -451,6 +451,8 @@ pub struct DiskManager {
     inner: Arc<RwLock<DiskManagerInner>>,
     /// Dedicated mutex to serialize physical msync calls without blocking readers
     sync_mutex: Arc<Mutex<()>>,
+    /// Background automatic defragmentation coordinator (Blueprint item 7)
+    auto_defrag: Arc<crate::auto_defrag::AutoDefragController>,
 }
 
 /// Maximum number of inodes kept in the in-memory inode cache.
@@ -1229,9 +1231,11 @@ impl DiskManager {
             io_engine: IoEngine::new(IoBackend::from_env().unwrap_or_default()),
         };
 
+        let inner = Arc::new(RwLock::new(inner));
         let dm = Self {
-            inner: Arc::new(RwLock::new(inner)),
+            inner: inner.clone(),
             sync_mutex: Arc::new(Mutex::new(())),
+            auto_defrag: Arc::new(crate::auto_defrag::AutoDefragController::new(&inner)),
         };
 
         if is_new {
@@ -1503,6 +1507,33 @@ impl DiskManager {
     pub fn with_io_backend(self, backend: IoBackend) -> Self {
         self.set_io_backend(backend);
         self
+    }
+
+    // ----- Background automatic defragmentation (Blueprint item 7) -----
+
+    /// Returns the current background auto-defragmentation configuration.
+    pub fn auto_defrag_config(&self) -> crate::auto_defrag::AutoDefragConfig {
+        self.auto_defrag.config()
+    }
+
+    /// Installs a new background auto-defragmentation configuration.
+    ///
+    /// Enabling the configuration starts a daemon thread that periodically
+    /// measures the fragmentation of the data area and runs an in-place
+    /// defragmentation pass whenever the configured threshold is exceeded.
+    /// Disabling it stops the thread and waits for the current pass to finish.
+    pub fn set_auto_defrag(&self, config: crate::auto_defrag::AutoDefragConfig) {
+        self.auto_defrag.set_config(config);
+    }
+
+    /// Returns the counters of the background auto-defragmentation coordinator.
+    pub fn auto_defrag_stats(&self) -> crate::auto_defrag::AutoDefragStats {
+        self.auto_defrag.stats()
+    }
+
+    /// Stops the background auto-defragmentation coordinator.
+    pub fn stop_auto_defrag(&self) {
+        self.auto_defrag.shutdown();
     }
 
     #[allow(dead_code)]
@@ -6173,6 +6204,14 @@ impl DiskManager {
         Self::analyze_fragmentation_internal(&guard)
     }
 
+    /// Fragmentation analysis driven by an `Arc<RwLock<DiskManagerInner>>`.
+    pub(crate) fn analyze_fragmentation_on(
+        inner: &Arc<RwLock<DiskManagerInner>>,
+    ) -> Result<FragmentationStats, DiskManagerError> {
+        let guard = inner.read().unwrap();
+        Self::analyze_fragmentation_internal(&guard)
+    }
+
     pub(crate) fn analyze_fragmentation_internal(
         guard: &DiskManagerInner,
     ) -> Result<FragmentationStats, DiskManagerError> {
@@ -6649,9 +6688,22 @@ impl DiskManager {
     /// In-place defragmentation: directly compacts and reorganizes physical data blocks
     /// within the existing image without allocating duplicate temporary files.
     fn defragment_inplace(&self) -> Result<DefragStats, DiskManagerError> {
-        let stats_before = self.analyze_fragmentation()?;
+        Self::defragment_inplace_on(&self.inner)
+    }
 
-        let mut guard = self.inner.write().unwrap();
+    /// In-place defragmentation driven by an `Arc<RwLock<DiskManagerInner>>`.
+    ///
+    /// Exposed separately from [`Self::defragment_inplace`] so the background
+    /// auto-defrag coordinator can run a pass without owning a `DiskManager`.
+    pub(crate) fn defragment_inplace_on(
+        inner: &Arc<RwLock<DiskManagerInner>>,
+    ) -> Result<DefragStats, DiskManagerError> {
+        let stats_before = {
+            let guard = inner.read().unwrap();
+            Self::analyze_fragmentation_internal(&guard)?
+        };
+
+        let mut guard = inner.write().unwrap();
         let sb = guard.superblock;
 
         // 1. Collect all active allocated inodes
@@ -6877,7 +6929,7 @@ impl DiskManager {
         drop(guard);
 
         // 12. Verify filesystem consistency
-        let fsck = self.verify_integrity()?;
+        let fsck = Self::verify_integrity_on(inner)?;
         if !fsck.is_clean {
             return Err(DiskManagerError::Io(std::io::Error::other(format!(
                 "In-place defragmentation integrity check failed: {:?}",
@@ -6896,7 +6948,14 @@ impl DiskManager {
 
     /// Structural consistency check (fsck) for OIFS filesystem
     pub fn verify_integrity(&self) -> Result<FsckReport, DiskManagerError> {
-        let guard = self.inner.read().unwrap();
+        Self::verify_integrity_on(&self.inner)
+    }
+
+    /// Structural consistency check driven by an `Arc<RwLock<DiskManagerInner>>`.
+    pub(crate) fn verify_integrity_on(
+        inner: &Arc<RwLock<DiskManagerInner>>,
+    ) -> Result<FsckReport, DiskManagerError> {
+        let guard = inner.read().unwrap();
         let sb = guard.superblock;
 
         // 1. Collect all allocated Inode IDs from Inode Bitmap

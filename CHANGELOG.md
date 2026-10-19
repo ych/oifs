@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Background Auto-Defragmentation Coordinator (Blueprint item 7)**:
+  - Added `src/auto_defrag.rs` with `AutoDefragConfig` / `AutoDefragStats` and a daemon worker thread that periodically measures data-area fragmentation and runs an in-place defragmentation pass once the configured threshold is exceeded.
+  - Added `DiskManager::set_auto_defrag` / `auto_defrag_config` / `auto_defrag_stats` / `stop_auto_defrag` and `OifsSession::set_auto_defrag` / `auto_defrag_stats`.
+  - Added CLI flags `--auto-defrag[=THRESHOLD]` and `--defrag-interval` (opt-in, default disabled).
+  - The worker holds only a `Weak` reference to the inner state, so it exits as soon as the last manager is dropped; it skips WAL-enabled images unless `allow_journaled` is set, because in-place defragmentation is not journalled.
+  - Added `tests/auto_defrag_test.rs` (6 tests) covering the default-off behaviour, threshold-triggered passes with fsck-verified data integrity, shutdown, the journaled-image skip, and the `min_free_blocks` guard.
+- **IPC Frame Buffer Pooling & Bounded Frame Parsing (P4.8)**:
+  - Added thread-local pooled buffers for the IPC framing layer (`FRAME_WRITE_BUF`, `FRAME_READ_BUF`, `FRAME_CHUNK_BUF`), eliminating per-message heap allocations in Master-Proxy mode.
+  - Added the public `MAX_FRAME_BYTES` limit, validated on both the write and read paths *before* any allocation.
+  - `read_framed` now streams payloads in bounded 64 KiB chunks, removing the blind `vec![0u8; len]` allocation a malicious peer could weaponize.
+  - Added `tests/ipc_frame_test.rs` covering round-trips, chunked streaming, buffer reuse, oversized-frame rejection and truncated frames.
+- **Kani Proofs**:
+  - Added `proof_find_next_free_wrapped_soundness` (wrap-around allocator scan) and the first `ipc` module harnesses `proof_frame_len_validation_soundness` / `proof_zero_length_frame_is_valid`. The suite now holds 74 harnesses.
+
+### Fixed
+- **Broken Kani Build**: `proof_crc_input_is_deterministic` still referenced the `crc_input` helper removed by the P4.13 CRC refactor, so `cargo kani` failed to compile. The harness now uses `crc_frame_checksum` and additionally proves that the sequence number and payload length are covered by the checksum.
+
+### Fixed
+- **FFI Panic Boundary (SEC-11)**: Wrapped `oifs_set_io_backend`, `oifs_get_io_backend` and `oifs_loaded_path` with `std::panic::catch_unwind` so a panic can never unwind across the `extern "C"` boundary; they now record the error and return `-1`.
+- **Password Hygiene (SEC-12)**: CLI password handling (flag, `OIFS_PASSWORD` env var, interactive prompt) now uses `zeroize::Zeroizing<String>`, and the raw `read_line` scratch buffer is wiped before the password is handed to the session layer.
+
 ## [1.1.0] - 2026-10-14
 
 ### Added

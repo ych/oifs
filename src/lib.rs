@@ -1,4 +1,5 @@
 pub mod allocator;
+pub mod auto_defrag;
 pub mod bitmap;
 pub mod directory;
 pub mod disk;
@@ -13,6 +14,7 @@ pub mod journal;
 pub mod session;
 pub mod superblock;
 
+pub use auto_defrag::{AutoDefragConfig, AutoDefragStats};
 pub use disk::{DiskManager, DiskManagerError, DurabilityMode, ReadRequest};
 pub use filters::{FilterConfig, FilterPipeline, FilterType};
 pub use inode_format::INODE_FORMAT_V2;

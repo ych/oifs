@@ -9,9 +9,6 @@ sources:
   - id: openwiki-source-88657ea41344918d5e874716
     resource: repo://src/encryption.rs
 generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
 ---
 # Encrypted Filesystem Workflows
 

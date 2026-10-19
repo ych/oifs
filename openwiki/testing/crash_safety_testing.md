@@ -8,10 +8,10 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-9aac3242153060207ee25af4
     resource: repo://tests/crash_safety_test.rs
+generated: { by: "openwiki/0.6.1", at: "2026-10-06T14:52:27.072Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-06T14:52:27.072Z
-generated: { by: "openwiki/0.6.1", at: "2026-10-06T14:52:27.072Z" }
+    at: 2026-10-18T12:30:37.113Z
 ---
 
 OIFS ensures crash safety through a combination of memory-mapped I/O, explicit flushing mechanisms, and automatic flushing on object drop. This page documents the test scenarios and mechanisms that verify data persistence across system crashes and power loss events.

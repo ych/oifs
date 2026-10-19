@@ -1,15 +1,15 @@
 ---
 type: concept
 title: Kani Formal Verification
-description: AWS Kani Rust Verifier is used to mathematically prove safety and correctness properties across the entire input space for core OIFS components, covering 49 formal proofs of bijectivity, arithmetic safety, layout validity, and filter roundtrip fidelity.
+description: AWS Kani Rust Verifier is used to mathematically prove safety and correctness properties across the entire input space for core OIFS components, covering 71 formal proofs of bijectivity, arithmetic safety, layout validity, and filter roundtrip fidelity.
 tags: [formal-verification, kani, safety-properties, bijectivity, smt-solving, model-checking]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-388414179b3b4a07da1a42a4
     resource: repo://src/filters.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-18T12:30:37.113Z" }
+verified:
+  - by: openwiki/0.6.1
+    at: 2026-10-18T12:30:37.113Z
 ---
 
 # Kani Formal Verification
@@ -84,7 +84,7 @@ Kani harnesses the CBMC model checker and CaDiCaL SAT solver to discharge proof 
 
 ## Proof Coverage
 
-As documented in the testing strategy, OIFS maintains **50 formal proofs** spanning core data structures and algorithms. These proofs provide mathematical guarantees that complement empirical testing by verifying properties hold across the entire input space, not just exercised test cases.
+As documented in the testing strategy, OIFS maintains **71 formal proofs** spanning core data structures and algorithms. These proofs provide mathematical guarantees that complement empirical testing by verifying properties hold across the entire input space, not just exercised test cases.
 
 The verification focuses on safety-critical components where bugs would compromise data durability or correctness, particularly:
 - Data transformation pipelines (filters)

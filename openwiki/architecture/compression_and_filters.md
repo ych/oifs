@@ -12,7 +12,7 @@ sources:
     resource: repo://src/inode.rs
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-13T15:40:56.857Z
+    at: 2026-10-18T12:30:37.113Z
 ---
 
 ## Responsibility and ownership

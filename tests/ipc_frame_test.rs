@@ -92,3 +92,43 @@ fn test_truncated_frame_is_an_error() {
     buf.truncate(buf.len() - 2);
     assert!(read_framed::<_, IpcRequest>(&mut Cursor::new(buf)).is_err());
 }
+
+#[test]
+fn test_crafted_length_prefix_cannot_trigger_huge_allocation() {
+    // SEC-17: a tiny frame whose `Vec<u8>` length prefix claims `u64::MAX`
+    // must be rejected by the deserializer's allocation limit instead of
+    // making the process allocate gigabytes.
+    //
+    // The variant index is taken from a real encoding, so the test does not
+    // depend on the order of the `IpcRequest` variants.
+    let mut probe = Vec::new();
+    write_framed(
+        &mut probe,
+        &IpcRequest::WriteData {
+            inode_id: 1,
+            file_offset: 0,
+            data: vec![0u8; 4],
+            compression_mode: CompressionMode::Never,
+            filter_config: FilterConfig::default(),
+        },
+    )
+    .unwrap();
+    // probe = [len: u32][payload]; the payload starts with the variant index.
+    let variant = u32::from_le_bytes(probe[4..8].try_into().unwrap());
+
+    // `IpcRequest::WriteData` is `inode_id: u64, file_offset: u64, data: Vec<u8>`,
+    // so the length prefix sits at byte offset 20 of the payload.
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&variant.to_le_bytes());
+    payload.extend_from_slice(&1u64.to_le_bytes()); // inode_id
+    payload.extend_from_slice(&0u64.to_le_bytes()); // file_offset
+    payload.extend_from_slice(&u64::MAX.to_le_bytes()); // data length: absurd
+
+    // Frame layout: [len: u32][payload]
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    raw.extend_from_slice(&payload);
+
+    let err = read_framed::<_, IpcRequest>(&mut Cursor::new(raw)).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+}

@@ -1,7 +1,7 @@
 //! Tests for the background automatic defragmentation coordinator
 //! (Blueprint item 7).
 
-use oifs::auto_defrag::AutoDefragConfig;
+use oifs::auto_defrag::{AutoDefragConfig, DEFAULT_FRAGMENTATION_THRESHOLD, MIN_CHECK_INTERVAL};
 use oifs::disk::{CompressionMode, DiskManager};
 use std::fs;
 use std::path::Path;
@@ -76,6 +76,72 @@ fn test_auto_defrag_config_defaults() {
     // The threshold is clamped into the valid range.
     assert_eq!(AutoDefragConfig::new(5.0).fragmentation_threshold, 1.0);
     assert_eq!(AutoDefragConfig::new(-1.0).fragmentation_threshold, 0.0);
+}
+
+#[test]
+fn test_auto_defrag_nan_threshold_falls_back_to_default() {
+    // `f64::clamp` keeps NaN, and every comparison against NaN is false, so a
+    // NaN threshold would silently disable the "not fragmented enough" check
+    // and defragment on every tick.
+    let config = AutoDefragConfig::new(f64::NAN);
+    assert!(
+        !config.fragmentation_threshold.is_nan(),
+        "a NaN threshold must be replaced"
+    );
+    assert_eq!(
+        config.fragmentation_threshold,
+        DEFAULT_FRAGMENTATION_THRESHOLD
+    );
+
+    // The same holds for a configuration built through the public fields.
+    let raw = AutoDefragConfig {
+        enabled: true,
+        fragmentation_threshold: f64::NAN,
+        ..AutoDefragConfig::default()
+    };
+    assert_eq!(
+        raw.sanitized().fragmentation_threshold,
+        DEFAULT_FRAGMENTATION_THRESHOLD
+    );
+}
+
+#[test]
+fn test_auto_defrag_zero_interval_is_raised_to_the_minimum() {
+    // A zero interval would turn the worker into a hot loop that never sleeps
+    // and continuously contends for the inner lock.
+    let config = AutoDefragConfig::new(0.5).with_check_interval(Duration::ZERO);
+    assert_eq!(config.check_interval, MIN_CHECK_INTERVAL);
+
+    let sanitized = config.sanitized();
+    assert_eq!(sanitized.check_interval, MIN_CHECK_INTERVAL);
+    assert!(sanitized.check_interval >= Duration::from_millis(1));
+}
+
+#[test]
+fn test_auto_defrag_installs_sanitized_config() {
+    let img = TestImage::new("test_auto_defrag_sanitize");
+    let dm = DiskManager::open(&img.path, 10 * 1024 * 1024).expect("open dm");
+
+    // Install a hostile configuration: NaN threshold and a zero interval.
+    dm.set_auto_defrag(AutoDefragConfig {
+        enabled: true,
+        fragmentation_threshold: f64::NAN,
+        check_interval: Duration::ZERO,
+        ..AutoDefragConfig::default()
+    });
+
+    let stored = dm.auto_defrag_config();
+    assert!(
+        !stored.fragmentation_threshold.is_nan(),
+        "the stored threshold must not be NaN"
+    );
+    assert_eq!(
+        stored.fragmentation_threshold,
+        DEFAULT_FRAGMENTATION_THRESHOLD
+    );
+    assert_eq!(stored.check_interval, MIN_CHECK_INTERVAL);
+
+    dm.stop_auto_defrag();
 }
 
 #[test]

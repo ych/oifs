@@ -24,8 +24,8 @@ use crate::disk::{
 };
 use crate::inode::Inode;
 use crate::ipc::{
-    IpcClient, IpcRequest, IpcResponseData, IpcServer, MasterOrClient, SessionEvent, SessionMode,
-    bind_or_connect,
+    AuthCredential, IpcClient, IpcRequest, IpcResponseData, IpcServer, MasterOrClient,
+    SessionEvent, SessionMode, bind_or_connect,
 };
 use crate::superblock::SuperBlock;
 
@@ -580,15 +580,34 @@ impl OifsSession {
             MasterOrClient::Client {
                 stream,
                 target_path,
+                auth_secret,
             } => {
                 let client = IpcClient::new(stream, target_path);
-                if let Err(e) = client.authenticate(password) {
+                // The credential is the filesystem password when the client
+                // knows it, and the session secret published by the master
+                // otherwise. The master decides which one it expects during
+                // the handshake.
+                let credential = match password {
+                    Some(pwd) => AuthCredential::Password(pwd.to_string()),
+                    None => match auth_secret {
+                        Some(secret) => AuthCredential::Secret(secret),
+                        None => AuthCredential::Secret([0u8; 32]),
+                    },
+                };
+                if let Err(e) = client.authenticate(&credential) {
                     let msg = e.to_string();
                     if msg.contains("Password required") {
                         return Err(DiskManagerError::PasswordRequired.into());
                     } else if msg.contains("check password") || msg.contains("Decryption failed") {
                         return Err(DiskManagerError::DecryptionFailed.into());
-                    } else if Self::is_connection_error(&e) && retry_count < 5 {
+                    } else if (Self::is_connection_error(&e)
+                        || msg.contains("Authentication failed"))
+                        && retry_count < 5
+                    {
+                        // The session secret of a master that is still binding
+                        // its socket may not be readable yet, or a stale secret
+                        // from a previous run may be in the way. Both clear up
+                        // after a short retry.
                         std::thread::sleep(std::time::Duration::from_millis(
                             25 * (retry_count + 1) as u64,
                         ));

@@ -20,12 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `read_framed` now streams payloads in bounded 64 KiB chunks, removing the blind `vec![0u8; len]` allocation a malicious peer could weaponize.
   - Added `tests/ipc_frame_test.rs` covering round-trips, chunked streaming, buffer reuse, oversized-frame rejection and truncated frames.
 - **Kani Proofs**:
-  - Added `proof_find_next_free_wrapped_soundness` (wrap-around allocator scan) and the first `ipc` module harnesses `proof_frame_len_validation_soundness` / `proof_zero_length_frame_is_valid`. The suite now holds 74 harnesses.
+  - Added `proof_find_next_free_wrapped_soundness` (wrap-around allocator scan), the first `ipc` module harnesses `proof_frame_len_validation_soundness` / `proof_zero_length_frame_is_valid` and `proof_sanitized_config_is_always_valid` for the auto-defrag configuration. The suite now holds 75 harnesses.
+
+### Security
+- **Encryption Bypass on Non-Zero-Offset Writes (SEC-16, Critical)**: Fixed the write planner so that a compressed, filtered or encrypted payload is always rebuilt as a whole instead of being patched in place. Previously a write at `file_offset > 0` on an encrypted image could store **plaintext** on disk, overwrite the XChaCha20-Poly1305 ciphertext of an existing file (destroying its Poly1305 tag), and a shrinking overwrite kept a stale file size that broke AEAD authentication. The inode's filter metadata now also describes the filter pipeline that was actually applied.
+- **IPC Deserialization Allocation Bomb (SEC-17, High)**: The framing layer now deserializes with a hard byte limit (the size of the frame), so a tiny frame announcing a huge `Vec`/`String` length can no longer make the receiver allocate gigabytes. The wire format is unchanged.
+- **IPC Transport Hardening (SEC-18, High)**:
+  - The cleartext password no longer travels over the wire: authentication is a challenge-response over a direction-separated transcript, authenticated with keyed BLAKE2b, and the client verifies that the master holds the same key (so a client redirected to a fake master aborts).
+  - Unencrypted images are no longer unauthenticated: a master publishes a random session secret that clients must present.
+  - Unix sockets now live in a per-user private directory (`0700`) with `0600` socket and secret files, and the TCP rendezvous file is created with `0600`.
+  - The number of concurrent peers is bounded (256) and every connection gets a 10 s handshake budget, which removes the Slowloris / thread-exhaustion vector.
 
 ### Fixed
 - **Broken Kani Build**: `proof_crc_input_is_deterministic` still referenced the `crc_input` helper removed by the P4.13 CRC refactor, so `cargo kani` failed to compile. The harness now uses `crc_frame_checksum` and additionally proves that the sequence number and payload length are covered by the checksum.
-
-### Fixed
+- **Auto-Defrag Configuration Boundaries (SEC-23)**: `AutoDefragConfig::sanitized` now replaces a `NaN` fragmentation threshold with the default (a `NaN` threshold silently disabled the "not fragmented enough" check and defragmented on every tick) and raises a zero check interval to `MIN_CHECK_INTERVAL`, which removes the 100% CPU busy-spin loop. The coordinator's locks now use `crate::lock_unpoisoned` / `crate::read_unpoisoned`.
 - **FFI Panic Boundary (SEC-11)**: Wrapped `oifs_set_io_backend`, `oifs_get_io_backend` and `oifs_loaded_path` with `std::panic::catch_unwind` so a panic can never unwind across the `extern "C"` boundary; they now record the error and return `-1`.
 - **Password Hygiene (SEC-12)**: CLI password handling (flag, `OIFS_PASSWORD` env var, interactive prompt) now uses `zeroize::Zeroizing<String>`, and the raw `read_line` scratch buffer is wiped before the password is handed to the session layer.
 

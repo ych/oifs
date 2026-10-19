@@ -406,6 +406,7 @@ fn test_network_mode_stale_rendezvous_recovery_and_active_probe() {
     let dead_info = oifs::ipc::MasterInfo {
         addr: "127.0.0.1:59999".to_string(), // Dead port
         pid: 99999,
+        auth_token: String::new(),
     };
     fs::write(
         &master_info_file,

@@ -875,6 +875,26 @@ struct WritePlan {
 
 impl WritePlan {}
 
+/// Whether the stored payload of a file is a whole-file transformed blob.
+///
+/// Compressed, filtered and encrypted payloads are single blobs that cover the
+/// entire file, so they cannot be patched in place: any write to such a file
+/// has to rebuild the payload from the file's decoded content. Treating a
+/// transformed payload as a plain byte range writes *untransformed* bytes over
+/// transformed ones (SEC-16): plaintext lands on an encrypted image and the
+/// AEAD tag of the file is destroyed.
+fn payload_is_transformed(
+    inode: &Inode,
+    filter_config: &crate::filters::FilterConfig,
+    encryption_key: Option<&crate::encryption::EncryptionKey>,
+) -> bool {
+    inode.compressed_size > 0
+        || inode.encrypted
+        || encryption_key.is_some()
+        || filter_config.is_active()
+        || inode.filter_typesize > 0
+}
+
 /// Decide which of the four write cases applies and compute the exact bytes and
 /// sizes that result, performing CPU-intensive filtering, compression, and encryption
 /// without holding any filesystem lock (P4.1).
@@ -889,27 +909,38 @@ fn plan_write_prepared(
 ) -> Result<WritePlan, DiskManagerError> {
     let old_size = inode.size;
     let old_compressed_size = inode.compressed_size;
+    // A transformed payload (compressed, filtered or encrypted) always has to be
+    // rebuilt as a whole; it can never be patched in place.
+    let transformed = payload_is_transformed(inode, filter_config, encryption_key);
 
     // A write at offset 0 only replaces the whole file when it is at least as long
-    // as the current one, or when compression/encryption/filters force a rewrite.
-    let is_full_overwrite = file_offset == 0
-        && (old_size == 0
-            || data.len() as u64 >= old_size
-            || old_compressed_size > 0
-            || inode.encrypted
-            || filter_config.is_active());
+    // as the current one, or when the payload is transformed and therefore has to
+    // be rewritten as a unit.
+    let is_full_overwrite =
+        file_offset == 0 && (old_size == 0 || data.len() as u64 >= old_size || transformed);
 
     if is_full_overwrite {
+        // The effective filter keeps a file's stored filter pipeline when the
+        // caller does not request a new one; the payload and the inode metadata
+        // must always agree on whether the payload is filtered.
+        let effective = DiskManager::effective_filter(inode, filter_config);
         let payload = DiskManager::build_full_overwrite_buffer_pure(
             data,
             compression_mode,
-            filter_config,
+            &effective,
             encryption_key,
         )?;
         // A compressed payload keeps its logical length in `size`; an uncompressed
         // one never shrinks, matching the in-place path's `max` behaviour.
         let new_size = if payload.is_compressed {
             data.len() as u64
+        } else if payload.encryption_nonce.is_some() || effective.is_active() {
+            // The stored payload is transformed, so its own length is
+            // authoritative. Keeping the old (larger) size would make the reader
+            // walk past the stored payload: an encrypted file would fail to
+            // authenticate (SEC-16 C) and a filtered file would return raw
+            // filtered bytes.
+            payload.buffer.len() as u64
         } else {
             std::cmp::max(old_size, payload.buffer.len() as u64)
         };
@@ -928,12 +959,13 @@ fn plan_write_prepared(
         });
     }
 
-    if old_compressed_size > 0 {
+    if transformed {
         // Fast path: append a fresh Zstd frame at the physical end of the stream.
         // `encryption_key.is_none()` is belt-and-braces -- on an encrypted image
         // every file is already marked `encrypted`, so `!inode.encrypted` should
         // already imply it. Guarding it here keeps both paths provably identical.
-        let fast_append = file_offset == inode.size
+        let fast_append = old_compressed_size > 0
+            && file_offset == inode.size
             && !inode.encrypted
             && !filter_config.is_active()
             && inode.filter_typesize == 0
@@ -953,9 +985,13 @@ fn plan_write_prepared(
             });
         }
 
-        // Read-modify-recompress: splice into the decoded image and rewrite from 0.
+        // Read-modify-rebuild: splice into the decoded image and rewrite from 0.
+        // `existing_decompressed` is the file's decoded content (decrypted,
+        // decompressed and unfiltered). It is absent only for an empty file,
+        // which then grows from zero.
         let mut full = match existing_decompressed {
             Some(existing) => existing.to_vec(),
+            None if old_size == 0 => Vec::new(),
             None => {
                 return Err(DiskManagerError::Io(std::io::Error::other(
                     "Missing existing decompressed payload for recompression plan",
@@ -1016,12 +1052,9 @@ fn plan_write(
     filter_config: &crate::filters::FilterConfig,
 ) -> Result<WritePlan, DiskManagerError> {
     let old_compressed_size = inode.compressed_size;
-    let is_full_overwrite = file_offset == 0
-        && (inode.size == 0
-            || data.len() as u64 >= inode.size
-            || old_compressed_size > 0
-            || inode.encrypted
-            || filter_config.is_active());
+    let transformed = payload_is_transformed(inode, filter_config, guard.encryption_key.as_ref());
+    let is_full_overwrite =
+        file_offset == 0 && (inode.size == 0 || data.len() as u64 >= inode.size || transformed);
     let fast_append = old_compressed_size > 0
         && file_offset == inode.size
         && !inode.encrypted
@@ -1029,11 +1062,14 @@ fn plan_write(
         && inode.filter_typesize == 0
         && guard.encryption_key.is_none();
 
-    let existing_decompressed = if !is_full_overwrite && old_compressed_size > 0 && !fast_append {
-        Some(DiskManager::read_data_internal(guard, inode)?)
-    } else {
-        None
-    };
+    // A transformed payload is rebuilt from the file's decoded content, so that
+    // content has to be read before the plan is computed (SEC-16).
+    let existing_decompressed =
+        if !is_full_overwrite && transformed && inode.size > 0 && !fast_append {
+            Some(DiskManager::read_data_internal(guard, inode)?)
+        } else {
+            None
+        };
 
     plan_write_prepared(
         inode,
@@ -1316,6 +1352,28 @@ impl DiskManager {
     /// Returns `Ok(())` if the filesystem is unencrypted or if the password correctly
     /// derives the master encryption key. Returns `Err(PasswordRequired)` if encrypted
     /// and no password was provided, or `Err(DecryptionFailed)` if the password was incorrect.
+    /// The salt used to derive the filesystem key from the password.
+    ///
+    /// The salt is not secret (it is stored in the superblock); the IPC
+    /// handshake sends it to the client so that both sides can derive the
+    /// same key without the password ever travelling over the wire.
+    pub fn encryption_salt(&self) -> [u8; 16] {
+        self.inner.read().unwrap().superblock.encryption_salt
+    }
+
+    /// The raw filesystem key, used to authenticate IPC clients.
+    ///
+    /// `None` for an unencrypted image, which authenticates its peers with a
+    /// published session secret instead.
+    pub fn auth_key(&self) -> Option<Vec<u8>> {
+        self.inner
+            .read()
+            .unwrap()
+            .encryption_key
+            .as_ref()
+            .map(|k| k.as_bytes().to_vec())
+    }
+
     pub fn authenticate(&self, password: Option<&str>) -> Result<(), DiskManagerError> {
         let guard = self.inner.read().unwrap();
         if !guard.superblock.encrypted {
@@ -3521,12 +3579,10 @@ impl DiskManager {
                 )));
             }
 
+            let transformed =
+                payload_is_transformed(&inode, &filter_config, guard.encryption_key.as_ref());
             let is_full_overwrite = file_offset == 0
-                && (inode.size == 0
-                    || data.len() as u64 >= inode.size
-                    || inode.compressed_size > 0
-                    || inode.encrypted
-                    || filter_config.is_active());
+                && (inode.size == 0 || data.len() as u64 >= inode.size || transformed);
 
             let fast_append = inode.compressed_size > 0
                 && file_offset == inode.size
@@ -3535,7 +3591,9 @@ impl DiskManager {
                 && inode.filter_typesize == 0
                 && guard.encryption_key.is_none();
 
-            let existing = if !is_full_overwrite && inode.compressed_size > 0 && !fast_append {
+            // A transformed payload is rebuilt from the file's decoded content,
+            // so that content has to be read before the plan is computed (SEC-16).
+            let existing = if !is_full_overwrite && transformed && inode.size > 0 && !fast_append {
                 Some(Self::read_data_internal(&guard, &inode)?)
             } else {
                 None
@@ -3592,13 +3650,20 @@ impl DiskManager {
 
         // M3: journaled images stage the write through AllocSim and commit one
         // metadata transaction; legacy images keep the in-place implementation.
+        //
+        // The filter metadata written back must describe the pipeline that was
+        // actually applied to the payload. The plan uses the *effective* filter
+        // (the caller's config, or the file's stored one when the caller does
+        // not request a new pipeline), so the metadata has to follow it.
+        let effective_filter = Self::effective_filter(&inode, &filter_config);
+
         if guard.superblock.has_journal_layout() {
             return Self::write_data_journaled(
                 &mut guard,
                 inode_id,
                 file_offset,
                 plan,
-                filter_config,
+                effective_filter,
             );
         }
 
@@ -3646,10 +3711,10 @@ impl DiskManager {
             inode.encryption_nonce = nonce;
         }
         if plan.case.rewrites_filter_metadata() {
-            inode.filter_typesize = filter_config.typesize;
-            inode.filter_delta = filter_config.delta;
-            inode.filter_shuffle = filter_config.shuffle;
-            inode.filter_bitshuffle = filter_config.bitshuffle;
+            inode.filter_typesize = effective_filter.typesize;
+            inode.filter_delta = effective_filter.delta;
+            inode.filter_shuffle = effective_filter.shuffle;
+            inode.filter_bitshuffle = effective_filter.bitshuffle;
         }
         inode.modified_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

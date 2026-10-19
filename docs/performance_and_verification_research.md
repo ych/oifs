@@ -241,6 +241,15 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-13** | `src/bin/oifs.rs` | Passing `--password <SECRET>` on CLI arguments exposes encryption passwords in plain text in `/proc/<pid>/cmdline` and `ps` process tables to other local users. | **Low** | - | **User Advisory** (`OIFS_PASSWORD` environment variable supported, interactive prompt recommended) |
 | **SEC-14** | `src/directory.rs`, `src/disk.rs`, `src/bin/oifs.rs` | Untrusted disk images or callers with directory entry names containing path traversal components (`/`, `\`, `..`, `.`, `\0`, or empty) can escape target export folders or corrupt directory trees. | **Medium** | - | **Resolved** (`validate_filename` in `serialize_into`/`deserialize_from`, `create_entry_internal`/`journaled`, `resolve_parent`, `resolve_path_iter`; sanitized export in `Commands::Get`) |
 | **SEC-15** | `src/disk.rs:4410-4450` | Seekable 64K Chunked writes previously allocated contiguous blocks and updated on-disk indirect pointer tables in-place before committing the WAL transaction frame, corrupting replay on crash. | **High** | `test_seekable_chunked_journaled_crash_recovery_and_atomicity` | **Resolved in 1.1.0** (Staged through `AllocSim` + ordered payload flush before `commit_journal_tx`) |
+| **SEC-16** | `src/disk.rs:881-1047, 3524-3545` (`plan_write_prepared`, `plan_write`, `write_data_with_filters`) | On encrypted images (`encryption_key.is_some()`), non-zero-offset writes (`file_offset > 0`) to uncompressed or newly created empty files (`old_compressed_size == 0`) fall through to `WriteCase::Raw`, writing **unencrypted plaintext** directly to disk (`inode.encrypted == false`) or overwriting XChaCha20-Poly1305 ciphertext in place and corrupting its Poly1305 tag. Also, shrinking overwrites at `file_offset == 0` on uncompressed encrypted files keep `old_size` via `max(old_size, payload.buffer.len())`, breaking subsequent AEAD decryption. | **Critical** | - | **Resolved** (see §3.3) |
+| **SEC-17** | `src/ipc.rs:406` (`read_framed`) | `bincode::deserialize(buf.as_slice())` is called with default unlimited options. A tiny 16-byte frame containing a crafted `u64` `Vec`/`String` length prefix forces `bincode` to pre-allocate gigabytes before reading from `buf`, crashing the Master via OOM. | **High** | - | **Resolved** (`frame_codec` limits the deserializer to the frame size) |
+| **SEC-18** | `src/ipc.rs:124-158, 691-760`, `src/session.rs:265-355, 580-607` | (1) `IpcRequest::Authenticate` sends the raw password in cleartext; an attacker who writes a crafted `.{image}.master` rendezvous file can redirect connecting clients and harvest their encryption password. (2) Unencrypted images have zero IPC authentication (`authenticated = !is_encrypted`). (3) `/tmp` Unix sockets lack `0600` permission enforcement. (4) `spawn_client_worker` spawns unbounded OS threads per connection without socket read/write timeouts (Slowloris / thread exhaustion DoS). | **High** | - | **Resolved** (see §3.4) |
+| **SEC-19** | `src/encryption.rs:83-137`, `src/disk.rs:3872-3900` | XChaCha20-Poly1305 AEAD passes empty associated data (`b""`). Because all files and 64K seekable chunks share the same master key without binding `(inode_id, chunk_idx, flags)` in AAD, an attacker with write access to `.img` can swap/reorder/rollback encrypted chunks across files or toggle unauthenticated inode filter flags undetected. | **Medium** | - | **Open / Format v3** |
+| **SEC-20** | `src/disk.rs:2743-2798`, `src/journal.rs:924-980` (`resolve_logical_block_id`, `get_or_alloc_block`, `apply_op_in_place`) | Resolving data block pointers from inodes/indirect tables and replaying `MetadataOp::WriteBlockSlice` only check `block_id * BLOCK_SIZE <= mmap.len()` without verifying `block_id >= sb.data_block_start` (and `WriteInode` does not check `inode_id < sb.inode_count`), allowing crafted/corrupted pointers to overwrite SuperBlock, bitmaps, or inode tables. | **Medium** | - | **Open** |
+| **SEC-21** | `src/ffi.rs:251, 315, 344, 417, 488, 590` | Several FFI entry points execute `unsafe { CStr::from_ptr(...) }` and `std::slice::from_raw_parts(...)` outside `std::panic::catch_unwind`, and `oifs_write_file_with_policy` silently substitutes `&[]` when `buf.is_null() && buf_size > 0` instead of returning `-1`. | **Medium** | - | **Open** |
+| **SEC-22** | `src/bin/oifs_mcp.rs:154, 188-191, 285, 367` | MCP server constructs JSON responses via `format!` without escaping quotes, backslashes, or control characters in filenames/paths/error messages (JSON injection), and computes `size_mb * 1024 * 1024` without overflow checks. | **Medium** | - | **Open** |
+| **SEC-23** | `src/auto_defrag.rs:66-82, 165-171, 240-318` | `AutoDefragConfig` does not sanitize `NaN` thresholds (`f64::NAN.clamp(0.0, 1.0)` remains `NaN`) or `check_interval == Duration::ZERO` (100% CPU busy-spin loop), and uses `.lock().unwrap()` / `.read().unwrap()` instead of `crate::lock_unpoisoned`. | **Low** | - | **Resolved** (`AutoDefragConfig::sanitized`, `MIN_CHECK_INTERVAL`, `crate::lock_unpoisoned` / `read_unpoisoned`) |
+| **SEC-24** | `src/session.rs:106, 612` | `OifsSession::Remote` retains `password: Option<String>` in plain unzeroized heap memory across the session lifetime for failover reconnection, instead of wrapping it in `zeroize::Zeroizing<String>`. | **Low** | - | **Open** |
 
 ### 3.1 Detailed Threat Model & Residual Security Evaluation
 
@@ -267,6 +276,57 @@ The following safety and correctness issues were uncovered during the subagent c
 5. **Untrusted Image Defense & Journal Replay Invariants (SEC-15)**:
    - *Threat*: A hostile or corrupted `.img` image file opened by OIFS.
    - *Analysis*: In 1.1.0, Seekable 64K Chunked compression is fully integrated into the WAL journaling subsystem. All block allocations are simulated via `AllocSim`, and pointer table writes are recorded in memory before being committed to the journal ring. Crucially, raw payload blocks are flushed to physical backing pages *before* the WAL frame commits (Ordered Mode), ensuring that torn transactions never point to uninitialized or garbage data.
+
+### 3.2 Second-Round Security Audit Findings (SEC-16 – SEC-24)
+
+1. **Encryption Bypass & AEAD Corruption on Non-Zero-Offset Writes (SEC-16 — Critical)**:
+   - *Target*: [`src/disk.rs:881-1047`](file:///Users/ych/oifs/src/disk.rs#L881-L1047) (`plan_write_prepared`, `plan_write`), [`src/disk.rs:3524-3545`](file:///Users/ych/oifs/src/disk.rs#L3524-L3545) (`write_data_with_filters`).
+   - *Mechanism*: `is_full_overwrite` only holds when `file_offset == 0`, and the read-modify-rewrite branch (`WriteCase::Recompress`) is gated solely on `if old_compressed_size > 0`. Consequently, on an encrypted filesystem (`encryption_key.is_some()`), any write with `file_offset > 0` to a newly created file (`old_size == 0`) or to an uncompressed encrypted file (`old_compressed_size == 0`, e.g. `CompressionMode::Never` or small `Auto` files) falls through to `WriteCase::Raw`. This writes raw plaintext directly to the image (with `inode.encrypted == false` on new files) or overwrites existing XChaCha20-Poly1305 ciphertext bytes in place, leaking the new plaintext and invalidating the 16-byte Poly1305 authentication tag. Furthermore, in `FullOverwrite` (`file_offset == 0`), `new_size` for uncompressed files uses `std::cmp::max(old_size, payload.buffer.len() as u64)`, so shrinking an encrypted uncompressed file retains trailing stale bytes past the new AEAD tag and causes subsequent reads to fail with `DecryptionFailed`.
+   - *Remediation*: Route any non-zero-offset write where `old_compressed_size > 0 || inode.encrypted || encryption_key.is_some() || filter_config.is_active() || inode.filter_typesize > 0` through the read-decrypt-splice-reencrypt (`WriteCase::Recompress`) path, and use exact `payload.buffer.len() as u64` as `new_size` in `FullOverwrite` whenever encryption or filtering is active.
+
+2. **Bincode Deserialization Allocation Bomb Inside Framed IPC (SEC-17 — High)**:
+   - *Target*: [`src/ipc.rs:406`](file:///Users/ych/oifs/src/ipc.rs#L406) (`read_framed`).
+   - *Mechanism*: While `read_framed` caps the outer frame at `MAX_FRAME_BYTES` (128 MiB) and reads in 64 KiB chunks, calling `bincode::deserialize(buf.as_slice())` without `.with_limit(...)` allows a small frame containing a forged `u64` sequence length prefix to trigger a multi-gigabyte `Vec`/`String` allocation before `bincode` checks remaining buffer bytes.
+   - *Remediation*: Deserialize via `bincode::DefaultOptions::new().with_fixint_encoding().allow_trailing_bytes().with_limit(buf.len() as u64).deserialize(buf.as_slice())`.
+
+3. **IPC / Network Cleartext Password Phishing, Unauthenticated Local/Network Access & Worker Thread DoS (SEC-18 — High)**:
+   - *Target*: [`src/ipc.rs:124-158, 691-760`](file:///Users/ych/oifs/src/ipc.rs#L691-L760), [`src/session.rs:265-355, 580-607`](file:///Users/ych/oifs/src/session.rs#L580-L607).
+   - *Mechanism*:
+     - Clients connecting via `.{image}.master` send `IpcRequest::Authenticate { password }` in cleartext before verifying the server's identity, allowing a forged `.master` file to harvest passwords.
+     - Unencrypted images set `authenticated = !is_encrypted` (`true`), granting full read/write/defragment access without a session token.
+     - Unix sockets in `/tmp` are created with default `umask` rather than `0600`.
+     - `spawn_client_worker` spawns an unbounded OS thread per connection with no socket read/write timeouts.
+   - *Remediation*: Replace plaintext password transmission with a keyed challenge-response (BLAKE2b/HMAC over a server nonce using `EncryptionKey`), enforce `0600` socket permissions, and add connection concurrency limits plus read/write timeouts.
+
+4. **Missing AEAD Associated Data (AAD) Binding for Inodes and Chunks (SEC-19 — Medium)**:
+   - *Target*: [`src/encryption.rs:83-137`](file:///Users/ych/oifs/src/encryption.rs#L83-L137), [`src/disk.rs:3872-3900`](file:///Users/ych/oifs/src/disk.rs#L3872-L3900).
+   - *Mechanism*: XChaCha20-Poly1305 encrypts file payloads and 64K seekable chunks with empty AAD (`b""`), allowing cross-file or cross-chunk ciphertext swapping/rollback and unauthenticated modification of inode filter flags on disk.
+   - *Remediation*: Bind `(inode_id, chunk_idx, flags, filter_config)` into AEAD AAD in the next on-disk format revision.
+
+5. **Missing Data-Area Lower-Bound Check (`block_id >= sb.data_block_start`) on Block Pointers & WAL Replay (SEC-20 — Medium)**:
+   - *Target*: [`src/disk.rs:2743-2798`](file:///Users/ych/oifs/src/disk.rs#L2743-L2798), [`src/journal.rs:924-980`](file:///Users/ych/oifs/src/journal.rs#L924-L980).
+   - *Mechanism*: `resolve_logical_block_id`, `get_or_alloc_block`, and `apply_op_in_place` (`MetadataOp::WriteBlockSlice`) do not verify `block_id >= sb.data_block_start` (nor does `MetadataOp::WriteInode` verify `inode_id < sb.inode_count`), allowing corrupted or malicious block pointers/WAL frames to overwrite SuperBlock, bitmaps, or inode table blocks.
+   - *Remediation*: Enforce `block_id >= sb.data_block_start && block_id < sb.block_count` on data/indirect block accesses and `inode_id < sb.inode_count` on `WriteInode`.
+
+6. **FFI Raw Pointer Dereferences Outside `catch_unwind` & Null Buffer Inconsistency (SEC-21 — Medium)**:
+   - *Target*: [`src/ffi.rs:251, 315, 344, 417, 488, 590`](file:///Users/ych/oifs/src/ffi.rs#L251-L598).
+   - *Mechanism*: `CStr::from_ptr` and `slice::from_raw_parts` are called before `std::panic::catch_unwind` in several FFI functions, and `oifs_write_file_with_policy` treats `buf == NULL && buf_size > 0` as a 0-byte write instead of returning `-1`.
+   - *Remediation*: Move all pointer conversions inside `catch_unwind`, validate `buf_size <= isize::MAX as u64`, and reject `buf.is_null() && buf_size > 0` in `oifs_write_file_with_policy`.
+
+7. **MCP Server Manual JSON String Interpolation & Unchecked Size Multiplication (SEC-22 — Medium)**:
+   - *Target*: [`src/bin/oifs_mcp.rs:154, 188-191, 285, 367`](file:///Users/ych/oifs/src/bin/oifs_mcp.rs#L154-L367).
+   - *Mechanism*: Filenames, image paths, and error messages are interpolated into JSON via `format!` without escaping `"` or `\` or control characters; `size_mb * 1024 * 1024` can overflow `u64`.
+   - *Remediation*: Escape all dynamic strings before JSON formatting and use `saturating_mul` / `checked_mul`.
+
+8. **Auto-Defragmentation `NaN` Threshold, Zero-Interval Busy Spin & Lock Unpoisoning (SEC-23 — Low)**:
+   - *Target*: [`src/auto_defrag.rs:66-82, 165-171, 240-318`](file:///Users/ych/oifs/src/auto_defrag.rs#L66-L82).
+   - *Mechanism*: `f64::NAN.clamp(0.0, 1.0)` remains `NaN`, `check_interval == Duration::ZERO` causes a 100% CPU spin loop, and internal locks use `.unwrap()` rather than `crate::lock_unpoisoned`.
+   - *Remediation*: Guard `threshold.is_nan()`, enforce a minimum `check_interval`, and use `lock_unpoisoned`/`read_unpoisoned`/`write_unpoisoned`.
+
+9. **Unzeroized Session Password Copy in `OifsSession::Remote` (SEC-24 — Low)**:
+   - *Target*: [`src/session.rs:106, 612`](file:///Users/ych/oifs/src/session.rs#L612).
+   - *Mechanism*: `OifsSession::Remote` stores `password: Option<String>` in heap memory for failover retries without `ZeroizeOnDrop`.
+   - *Remediation*: Store `Option<zeroize::Zeroizing<String>>` in `OifsSession::Remote`.
 
 ---
 
@@ -427,3 +487,74 @@ fn test_block_path_bolero() {
     });
 }
 ```
+
+---
+
+## 6. Remediations of the Second-Round Audit
+
+### 6.1 SEC-16 — Encryption Bypass & AEAD Corruption on Non-Zero-Offset Writes
+
+**Root cause.** `plan_write_prepared` decided how to write by looking at the
+*compression* state only. A payload that is compressed, filtered or encrypted
+is a single blob covering the whole file and can therefore never be patched in
+place; only the compressed case was recognised, so every other transformed
+payload fell through to `WriteCase::Raw` and was written **untransformed**:
+
+* a new file written at `file_offset > 0` on an encrypted image stored
+  **plaintext** on disk (`inode.encrypted` stayed `false`),
+* a partial write into an encrypted file overwrote the ciphertext with
+  plaintext, destroying the Poly1305 tag (`DecryptionFailed` afterwards),
+* a shrinking overwrite at offset 0 kept `max(old_size, payload.len())` as the
+  file size, so the reader walked past the stored ciphertext and the AEAD
+  authentication failed.
+
+**Fix** (`src/disk.rs`):
+
+* New helper `payload_is_transformed(inode, filter_config, encryption_key)`:
+  a payload is transformed when it is compressed, filtered, encrypted, or when
+  the *image* carries an encryption key.
+* `plan_write_prepared` now routes every transformed payload through the
+  read-modify-rebuild path: the file's decoded content is read, the new bytes
+  are spliced in, and the whole payload is re-filtered / re-compressed /
+  re-encrypted with a fresh nonce. An empty file grows from zero instead of
+  failing.
+* `plan_write` and `write_data_with_filters` read the existing decoded content
+  whenever the payload is transformed, so the plan can rebuild it.
+* The size bookkeeping of a transformed payload now uses the length of the
+  stored payload instead of `max(old_size, ...)`, so a shrinking overwrite no
+  longer leaves the reader past the end of the ciphertext.
+* The filter metadata written back to the inode now describes the *effective*
+  filter pipeline (the caller's config, or the file's stored one), so the
+  payload and the inode always agree on whether the payload is filtered.
+
+**Verification**: `tests/sec16_repro_test.rs` reproduces the three scenarios
+(plaintext on disk, partial write corruption, shrinking overwrite) and fails
+without the fix.
+
+### 6.2 SEC-17 — Bincode Deserialization Allocation Bomb
+
+`bincode::deserialize` was called without an allocation limit, so a 28-byte
+frame announcing a `Vec<u8>` of `u64::MAX` elements made the receiver request
+gigabytes before reading a single payload byte.
+
+**Fix** (`src/ipc.rs`): both framing directions now use
+`frame_codec(limit)`, which reproduces the legacy wire format exactly (fixint
+encoding, trailing bytes allowed) and adds `with_limit`. The read path uses
+the frame size as the limit, so a payload can never claim more bytes than the
+frame carries.
+
+**Verification**: `tests/ipc_frame_test.rs::test_crafted_length_prefix_cannot_trigger_huge_allocation`.
+
+### 6.3 SEC-18 — IPC Transport & Session Authentication
+
+| Sub-issue | Fix |
+| :--- | :--- |
+| Cleartext password on the wire | The handshake is now a challenge-response: the client sends a random nonce, the master answers with its own nonce, the image salt and whether the image is encrypted, and both sides prove their key with a keyed BLAKE2b MAC over a direction-separated transcript. The password never leaves the client, and the client verifies the master's MAC, so a redirected client detects a fake master. |
+| Unencrypted images had no authentication | A master publishes a random 32-byte session secret; clients must present it (encrypted images still require the filesystem password). |
+| `/tmp` socket without permissions | The socket now lives in a per-user private directory (`$XDG_RUNTIME_DIR/oifs` or `<tmp>/oifs-<uid>/oifs`, mode `0700`) and the socket itself is `0600`. The secret is stored in a `0600` token file next to it; the TCP rendezvous file is created with `0600` as well. |
+| Unbounded threads / no timeouts | `MAX_CONCURRENT_PEERS` (256) bounds the number of concurrent peers, and every connection gets a 10 s handshake budget; an idle but authenticated session may stay open. |
+
+**Verification**: `tests/ipc_security_test.rs` (6 tests) covers the socket,
+token and rendezvous permissions, the rejection of a master that cannot prove
+its key, the rejection of unauthenticated peers, and the successful
+authentication with the published secret.

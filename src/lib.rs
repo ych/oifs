@@ -41,3 +41,25 @@ pub const BLOCK_SIZE: usize = 4096;
 pub(crate) fn lock_unpoisoned<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+
+/// Acquire a read lock, recovering from poisoning.
+///
+/// Same rationale as [`lock_unpoisoned`], for read-only snapshots of state
+/// that a panic cannot leave inconsistent.
+pub(crate) fn read_unpoisoned<T>(r: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    r.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Acquire a write lock, recovering from poisoning.
+///
+/// Only use this where a panic mid-critical-section cannot leave the guarded
+/// data inconsistent. The `DiskManager` inner state, for instance, guards
+/// on-disk consistency and therefore keeps propagating the poison.
+///
+/// No call site exists yet (the auto-defrag coordinator only needs a read-only
+/// snapshot of the superblock), so the helper is kept for symmetry with
+/// [`lock_unpoisoned`] and [`read_unpoisoned`].
+#[allow(dead_code)]
+pub(crate) fn write_unpoisoned<T>(r: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    r.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+}

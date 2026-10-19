@@ -3,9 +3,6 @@ type: concept
 title: Kani Formal Verification
 description: AWS Kani Rust Verifier is used to mathematically prove safety and correctness properties across the entire input space for core OIFS components, covering 49 formal proofs of bijectivity, arithmetic safety, layout validity, and filter roundtrip fidelity.
 tags: [formal-verification, kani, safety-properties, bijectivity, smt-solving, model-checking]
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-04T10:12:53.730Z
 sources:
   - id: openwiki-source-388414179b3b4a07da1a42a4
     resource: repo://src/filters.rs

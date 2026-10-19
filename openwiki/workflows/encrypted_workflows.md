@@ -8,10 +8,10 @@ sources:
     resource: repo://src/bin/oifs.rs
   - id: openwiki-source-88657ea41344918d5e874716
     resource: repo://src/encryption.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
+generated: { by: "openwiki/0.6.1", at: "2026-10-19T15:22:28.053Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-05T16:55:45.523Z
+    at: 2026-10-19T15:22:28.053Z
 ---
 # Encrypted Filesystem Workflows
 
@@ -100,51 +100,3 @@ Passwords can be supplied through three mechanisms (in order of precedence):
 - Tweak: Parent inode number ensures same name in different directories encrypts differently
 - Format: `_e_` + Base64URL-encoded (nonce || ciphertext || tag)
 - Already encrypted names (starting with `_e_`) are left unchanged for compatibility
-
-## Workflow Examples
-
-### Creating and Populating
-```bash
-# Create 1GB encrypted image
-oifs -i secure.img create --size 1024 --encrypt
-# Enter password when prompted
-
-# Add files (password prompted again)
-oifs -i secure.img put document.pdf
-oifs -i secure.img put --compress photo.png
-
-# Create directory structure
-oifs -i secure.img mkdir projects
-oifs -i secure.img put --remote-name projects/source.zip source.zip
-```
-
-### Daily Usage
-```bash
-# List contents (password prompt)
-oifs -i secure.img ls
-
-# Retrieve file
-oifs -i secure.img get projects/source.zip ./source.zip
-
-# Append to log
-oifs -i secure.img append log.txt "$(date): Backup completed"
-
-# Verify integrity
-oifs -i secure.img fsck
-```
-
-### Automated Backup Script
-```bash
-#!/bin/bash
-export OIFS_PASSWORD=$(cat /secure/backup_password)
-oifs -i backup.img --password "$OIFS_PASSWORD" put --compress database.sql
-oifs -i backup.img --password "$OIFS_PASSWORD" put --compress logs.tar.gz
-```
-
-## Related Information
-
-- For architectural details of the encryption implementation, see [Encryption Architecture](../architecture/encryption.md)
-- For basic filesystem operations, refer to [Basic Operations Workflow](../workflows/basic_operations.md)
-- For FFI integration details, see [FFI Interface](../architecture/ffi_interface.md)
-
-> **Note**: Encrypted filesystems cannot be converted to/from unencrypted format. Backup your password securely—there is no recovery mechanism.

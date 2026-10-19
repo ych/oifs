@@ -6,10 +6,10 @@ tags: [disk-manager, mmap, persistence, durability, io_engine, io_uring, rwlock,
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-15T13:11:08.406Z" }
 verified:
   - by: openwiki/0.6.1
-    at: 2026-10-15T13:11:08.406Z
+    at: 2026-10-19T15:22:28.053Z
+generated: { by: "openwiki/0.6.1", at: "2026-10-19T15:22:28.053Z" }
 ---
 
 # DiskManager and Persistence Model
@@ -45,13 +45,13 @@ Internally, state is maintained by `DiskManagerInner` (`src/disk.rs#L191-L213`),
 
 ## Durability Policies and Flush Behavior (P3.3)
 
-OIFS provides configurable durability policies through the `DurabilityMode` enum (`src/disk.rs#L118-L141`), balancing machine power-loss resilience against bulk write throughput:
+OIFS provides configurable durability policies through the `DurabilityMode` enum (`src/disk.rs#L153-L176`), balancing machine power-loss resilience against bulk write throughput:
 
 - **`DurabilityMode::Lazy` (Default, value `0`)**:
   Mutations update the shared mmap and OS page cache without issuing per-mutation `msync` syscalls. Changes are immediately visible to all processes and survive application crashes. Persistence across machine power loss is ensured via explicit `flush()`, upon `Drop`, or by periodic OS kernel writeback. Delivers up to ~45x–51x faster write throughput in bulk operations.
 
 - **`DurabilityMode::RangeAsync` (Value `1`)**:
-  Asynchronously flushes only the modified byte ranges via `msync(MS_ASYNC)` on each mutation (`sync_mutation_ranges`, `src/disk.rs#L241-L272`), scheduling dirty pages for early writeback without scanning the entire virtual memory address space.
+  Asynchronously flushes only the modified byte ranges via `msync(MS_ASYNC)` on each mutation (`sync_mutation_ranges`, `src/disk.rs#L372-L402`), scheduling dirty pages for early writeback without scanning the entire virtual memory address space.
 
 - **`DurabilityMode::Strict` (Value `2`)**:
   Synchronously flushes modified byte ranges via `msync(MS_SYNC)` on every mutation. Guarantees physical media persistence before mutating functions return.
@@ -59,7 +59,7 @@ OIFS provides configurable durability policies through the `DurabilityMode` enum
 - **`DurabilityMode::LegacyWholeMmapAsync` (Value `3`)**:
   Asynchronously flushes the entire virtual memory map after every mutation (`mmap.flush_async()`).
 
-Mutating operations (`create_entry_internal`, `write_data_with_filters`, `delete_file`) compute modified ranges and invoke `sync_mutation_ranges` (`src/disk.rs#L241-L272`). The `Drop` implementation for `DiskManagerInner` (`src/disk.rs#L308-L313`) executes `self.mmap.flush()`, while explicit synchronous flushing is exposed via `DiskManager::flush` (`src/disk.rs#L2090-L2093`).
+Mutating operations (`create_entry_internal`, `write_data_with_filters`, `delete_file`) compute modified ranges and invoke `sync_mutation_ranges` (`src/disk.rs#L372-L402`). The `Drop` implementation for `DiskManagerInner` (`src/disk.rs#L308-L313`) executes `self.mmap.flush()`, while explicit synchronous flushing is exposed via `DiskManager::flush` (`src/disk.rs#L2090-L2093`).
 
 ## Concurrency Model: Reader-Writer Lock
 
@@ -76,11 +76,11 @@ In P3.2, `DiskManager` decouples file payload block reads from the memory map vi
 
 ## The Read Pipeline and Decryption/Decompression
 
-Complete file reads via `read_data_internal` (`src/disk.rs#L1229-L1303`) execute in two phases:
-1. **Physical Block Assembly**: `walk_payload_blocks` (`src/disk.rs#L1070-L1226`) traverses direct (0..10), single indirect (10..522), double indirect (522..262666), and triple indirect tiers, skipping sparse zero sub-trees lazily. Payload blocks are fetched via `memcpy` or `io_engine.read`.
-2. **Reverse Pipeline Execution** (`src/disk.rs#L1268-L1303`):
+Complete file reads via `read_data_internal` (`src/disk.rs#L2845-L2931`) execute in two phases:
+1. **Physical Block Assembly**: `walk_payload_blocks` (`src/disk.rs#L2686-L2842`) traverses direct (0..10), single indirect (10..522), double indirect (522..262666), and triple indirect tiers, skipping sparse zero sub-trees lazily. Payload blocks are fetched via `memcpy` or `io_engine.read`.
+2. **Reverse Pipeline Execution** (`src/disk.rs#L2887-L2930`):
    - **Decryption**: If `inode.encrypted`, decrypts with XChaCha20-Poly1305 using `guard.encryption_key` and `inode.encryption_nonce`.
-   - **Decompression**: If `inode.compressed_size > 0`, decompresses with `zstd::stream::decode_all` (supporting multi-frame streams).
+   - **Decompression**: If `inode.compressed_size > 0`, decompresses with Zstd (supporting multi-frame streams).
    - **Filter Unapplication**: If pre-compression filters are active, reverses transformations via `unapply_filters`.
 
 ## The Write Pipeline (`write_data_with_filters`)
@@ -101,6 +101,3 @@ The write plan (from `plan_write_prepared` or `plan_write`) selects among four c
 
 `DiskManagerInner` maintains an in-memory inode cache (`RwLock<BoundedInodeCache>`) that:
 - Serves as a fast path for `read_inode_internal` hits, avoiding bincode deserialization.
-- Is populated on cache misses during inode reads (`src/disk.rs#L3463-L3479`).
-- Is updated whenever inodes are modified via `write_inode_internal` (`src/disk.rs#L3494-L3495`).
-- Does not require explicit invalidation on file deletion; cache entries for deleted inodes are naturally overwritten when those inode IDs are reused for new files.

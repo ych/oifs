@@ -8,9 +8,6 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-9aac3242153060207ee25af4
     resource: repo://tests/crash_safety_test.rs
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-06T14:52:27.072Z
 generated: { by: "openwiki/0.6.1", at: "2026-10-06T14:52:27.072Z" }
 ---
 

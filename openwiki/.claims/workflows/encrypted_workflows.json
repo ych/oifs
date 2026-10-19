@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:17e9e9b54ecebdc61d7cf73f4e8dc87666f36a64befecbac57f3e5dfc27bf09b",
+  "pageVersion": "sha256:5a1fa8fbf0c333e6ed4d16378ec320d1f0ec0232ff070f01ea6b87de1c0130c9",
   "claims": [
     {
       "id": "claim_14fd3e9407164f668f9461dd49a671a3",
@@ -8,15 +8,15 @@
       "evidence": [
         {
           "resource": "repo://src/bin/oifs.rs#L342-L408",
-          "version": "repo-lines-v1:sha256:7e2a83a0c0453930ebfb05bff0673b6797744d5d784bb61ce84e6e9fb5c027ed:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjMzMzYjhhYjNlOTE0YzgyZWYwYTAxNTU5OGU0N2RiYWNjNDhkMDhkZTM1NTZiMWNhZmU4OTZiN2IwNDUxY2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNjQ3OWNjMjMwNDQwZmQ0MWU4MjI0MjE4Njc5Njk4NTU5ZDI4OTNiZDY3YjQzODBhZmFiODExYjM4YTU1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxOTdkOWYyOWM1OWE0ODNiYTc5YmY1M2I5Zjc0NjJjYzQzYjc1OTQ0MDdmZmJjYzVlNGZlNTRhM2I3NjFmYmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhYjhlYjUyM2FmOTllNTA1YzcxMTUyODI3MmVhY2MzZjE3YjA1ZDRkNTZiYzUyNzg0YTZkZDdjMzhmZTU5ZGIifQ"
+          "version": "repo-lines-v1:sha256:6f2a15282d1f773629472050d8c95d441ebd62b94dbd441e6dafc8b3c025c935:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiMmM2ZGE0MzdlOTU5OTU1MTM0ZmY2NGE3NmQwZTkyNGUyMmVlNDI3YzliZDE1MGZkN2Q1YWI4ZmIyYTI4OTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0NDc2Y2EwZDRiOTFmMDM5MjMwNzUwNjllZmM5NzRlYTA3N2VjYmYxZjBhOGQxYWVhYmM2YmRjZTQ4NWIxNGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzZWI5OGMwZWM2Yjc3MjU1ZjgyY2Y4NjdlY2NiNzI5YzMyMTcwY2JiMmY0MWExYTQ0OGQ4YjE5ZTdiM2Q1ZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUyNmMxYTc4MzZkZTJmMThhNDg2MWVlZTY0NDM5MWJjYTM2Y2ZhNzVmMmIzYjlhYmVmNDNmZDlhMDM2YjgzYmUifQ"
         },
         {
           "resource": "repo://src/encryption.rs#L128-L134",
-          "version": "repo-lines-v1:sha256:eae001fe0961da6b4207c47a2cd0f628c610d6d71d4ed51cfcf6db3765043c43:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTRjMTAxZjA5NDcwMTNhZjNmZDBlNzI2YWUzZTE4YzkzMjAyZWU2MTllMGExOGJiNGM5ZGQ3OGUyZGRkODM4ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2IwMzNlYjJkOTkyYWRmOTM5MDY0MjdmMGM2NjUwNzZmYzRjZjA4ZmRjYjE2MDU5Yjk0ZTFkMWZjMDQ5NWU2OSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWIwNDBjNjdlNjFmYzI1NDllYWFhOGQxOWZlODk2OThkMmY4MmNlMDk0ZmQ2MGYxNTc3MDFmOWZhZDNhNmYwZCJ9"
+          "version": "repo-lines-v1:sha256:a31a66e0f6f1de42508f466834e192d3085f17546b8986bdb7a36bd0a46079e5:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2NlNDIzZjAwNjgwZTAwM2M1MmZiNjg4ZjA5YTQyM2NkYzljNmViMmQxMTFiOWRjOTZjNGUxOGQzNGM2YzhhZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2Q5MGJmOGZlODE4NTJjYTFhNjE3YzFiMWIxMDI2ZDE5YzNkZDdjNDU5YjJlNjA5ZTBjYjRlN2E2ZDVmMjgzOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNWM1YWUzMzBlOGNmNjIzMmIyYzU1OTYwNzlhZWZmZGEwYmVjZTQ4MWIxZTA3M2U5ODg3MGEzODdiOWNiNjA2ZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGI1MDBlODkwOWI3ZGI5NTY3MWIwZDI1ODZkMmYzMzc2ZGQ5ODE1ODdkODg5Mjg1MzdkNzk4ZmRhYjIyZjE0MyJ9"
         },
         {
-          "resource": "repo://src/encryption.rs#L36-L70",
-          "version": "repo-lines-v1:sha256:df9b817b990be5e43b7d1935ca1d35a0a9949d702a7134e727fa5c0a7c0fe8c7:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjZWI0NjQ3OWNmZGM0YTNiMTExMzU1OWY0NjkzNGMzYWVlMmMyM2YxZWU2MWUyMjAyYzE0NTQ2MDFiZmU3OTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIyYTVlMmEwZDczOGFkMmU1NjhhODA5YjRlZGM4MzIwM2U5MGQ0OTE2NTAyMmFlY2QzOTI2OGRhNzQ1ODFjZWIifQ"
+          "resource": "repo://src/encryption.rs#L36-L36",
+          "version": "repo-lines-v1:sha256:cceb46479cfdc4a3b1113559f46934c3aee2c23f1ee61e2202c1454601bfe793:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2NlYjQ2NDc5Y2ZkYzRhM2IxMTEzNTU5ZjQ2OTM0YzNhZWUyYzIzZjFlZTYxZTIyMDJjMTQ1NDYwMWJmZTc5MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2NlYjQ2NDc5Y2ZkYzRhM2IxMTEzNTU5ZjQ2OTM0YzNhZWUyYzIzZjFlZTYxZTIyMDJjMTQ1NDYwMWJmZTc5MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTllNzYzNTVjZjExOTk0ODBjM2Y5OTgzNmIxNDg2Yzg0MWQ4OTFmYWFkOTA0YzYwOGUwOTMwMjJkMzc1N2FlZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjMxY2Y0MmViNjY3NGJkZTE3NzA0YzIwMDRlMDNjMGFmNmMzODE3YWUwZjA0NDQ3Y2IyYzc3YzVkYjk0YmUwNSJ9"
         }
       ]
     },
@@ -25,7 +25,7 @@
       "statement": "When opening an encrypted image, the system requires a password and obtains it in this order: `--password` flag, `OIFS_PASSWORD` environment variable, interactive prompt (except in `--json` mode where interactive is disabled).",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L166-L216",
+          "resource": "repo://src/bin/oifs.rs#L181-L231",
           "version": "repo-lines-v1:sha256:c6b25b2f07d8bf287d6fa6b7fea9070e302701a1444576bb894e56addd2939db:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYTNiYzMzNmM3NmUxZmJhZjFjZGMwNTdlZmZjN2YxOGNkYzA0YmIyNzVmMTI0ZTc1YzVhMTEwN2IwZjAwYWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyZTdmZDk0ODEyMDJjOTE2MjQxYjUzMjk3NDU3ZTJjMDU5YTk5YzY5YWU5M2FjN2JiY2YzYjRlMzNhMTQwNDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMjI2MWQ1Mzg4MjliZTAxYmI2ZGRhNGFlMmZlNzRhMWU2N2Q5MTdiNWMxNDVjYzM5NDZiZjFiNmQ2ZGU1OTEifQ"
         }
       ]
@@ -35,11 +35,11 @@
       "statement": "File data in an encrypted OIFS is encrypted and decrypted on-the-fly using XChaCha20-Poly1305 with a unique 192-bit nonce per operation.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L81-L94",
+          "resource": "repo://src/encryption.rs#L83-L96",
           "version": "repo-lines-v1:sha256:0891a17d56c297558e5d166883368e9c7ca87be9d3df288d2b3bb8814c3e9b31:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzZDYyNTM1MzNlODEwNWU1MWYzMzhmNDdiYmYyMTc1NTdhZDIyNTZlYzI1NmFjN2ViZWFkNTNlZGYzYjkyOWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY5NTg4ZDNjYzMwY2M1YTMyMDg1ZDdjNWI5YTVmMjIxNTcwNGZhYzZjNWQyYzQ0MGU2MDg3ZjBmMDFhOTgwMGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhlNTE1ZTQ2ZGVjMWFlOTEzNTg1ODZiNmNiNDJkYWQzZDRhODExZGMwYTAzN2VkNTMyNWY1ODA3MTUyNWEzMDcifQ"
         },
         {
-          "resource": "repo://src/encryption.rs#L96-L118",
+          "resource": "repo://src/encryption.rs#L98-L120",
           "version": "repo-lines-v1:sha256:db04ec20e973ba4a867869e2134a6e4771ee3beea4fe1f59f22cee9b300f2db0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5MzMxZmNlMjVlYjY0OWUxNDU2NDI4M2JiYWRlYTM2NzY2YzVlODFiMDBiODNhNjk4NmUxNTgxMDI2OTNhYTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQxY2IzMWQxMDA2ZGRhOThjODAxNTVkNjExMGRhZDRkNzM5NDBlOWU1ZDhhYzViOWU5MGQ5OGE2NTY3ZmFiYjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRiZjg3MzM2NjA4NWE1M2QyODI3ZWY2Y2IzZmFjOTc3M2MwNGMyZWY4MjgwYzQ5ZDYxZGRjMTdiMTE3N2IwMzUifQ"
         }
       ]
@@ -49,11 +49,11 @@
       "statement": "Filenames in an encrypted OIFS are encrypted deterministically using ChaCha20-Poly1305 with a synthetic IV derived from the key, parent inode, and filename, resulting in names prefixed with `_e_`.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L143-L179",
+          "resource": "repo://src/encryption.rs#L162-L198",
           "version": "repo-lines-v1:sha256:e54e5d82b779add4017051180dc7f87f8675f61566410afcf4fcdca23ff941ac:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NzZlZDg1YTBlZGFlZjI4NGIzN2UwOTcwY2Q1OWU3OWVkNDljYjU3NDI4Yzc5MTExZjdhNjBjMzM5NDcyOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM3MjAxNDk1M2RhNGQxNjBmNjUyNGM2NGU2M2I4N2U1MjNhODFmN2Q5ZGZlYjMwMjZjNTNkNGUyZGQ2ZDUyMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMxNzk1MTFjYjA4MzkwYzAxMWI1ZDVhNmIyOTBhODQxNTQwZWY5Y2FkZDgwYWEzMTAxODEyMjY0YTZiNzMxMjMifQ"
         },
         {
-          "resource": "repo://src/encryption.rs#L181-L200",
+          "resource": "repo://src/encryption.rs#L200-L219",
           "version": "repo-lines-v1:sha256:7d5cdb0fd6295cbae9eaf7b363b9e2e97cdc1b768582c1df7973ffe27ec0989c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5ZWRlMTEyODhmYjUwMGRhYmFkY2ZjYzkyNjg5YmU2NmIwZmVhZjcwYTNjMDE2NjQ0ZTczNmVkZjJjMjQ2YzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjllODhhZjI4MjAwM2UxYjg0NWQ0ZWJkYjMxODA2ZjY0NmJiOWMxYTM3MzViMDc3NjE2NjQ0NzNiNzM0Mjk3NjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUxODljNzZkYzc3ZTU0NzY3MDE4ZTM4MmQ3ZmE3MDNmYTg4ZDk2OGVhZjA4MjJkYjA0MjM5MjliZGQyNDFlNjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIyYTQ1NjQwYzA4ZTIwZWI1NWFkOWQ3NGQ1ZjEyOWRkZTUwNDdlZmFkMjQ3MmY1MzkzNzA3Nzk4NTc0Mjg0NDkifQ"
         }
       ]
@@ -63,7 +63,7 @@
       "statement": "The `open_session` function in src/bin/oifs.rs correctly handles the password precedence and interactive prompt suppression in JSON mode.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L166-L216",
+          "resource": "repo://src/bin/oifs.rs#L181-L231",
           "version": "repo-lines-v1:sha256:c6b25b2f07d8bf287d6fa6b7fea9070e302701a1444576bb894e56addd2939db:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYTNiYzMzNmM3NmUxZmJhZjFjZGMwNTdlZmZjN2YxOGNkYzA0YmIyNzVmMTI0ZTc1YzVhMTEwN2IwZjAwYWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyZTdmZDk0ODEyMDJjOTE2MjQxYjUzMjk3NDU3ZTJjMDU5YTk5YzY5YWU5M2FjN2JiY2YzYjRlMzNhMTQwNDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMjI2MWQ1Mzg4MjliZTAxYmI2ZGRhNGFlMmZlNzRhMWU2N2Q5MTdiNWMxNDVjYzM5NDZiZjFiNmQ2ZGU1OTEifQ"
         }
       ]
@@ -71,6 +71,6 @@
   ],
   "verification": {
     "by": "openwiki/0.6.1",
-    "at": "2026-10-05T16:55:45.523Z"
+    "at": "2026-10-19T15:22:28.053Z"
   }
 }

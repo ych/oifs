@@ -716,8 +716,18 @@ pub extern "C" fn oifs_set_io_backend(handle: *mut OIFSHandle, backend: u8) -> i
         &(*handle)
     };
     let b = IoBackend::from_u8(backend);
-    let effective = handle_ref.dm.set_io_backend(b);
-    effective as i32
+    // SEC-11: never let a panic unwind across the `extern "C"` boundary.
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let effective = handle_ref.dm.set_io_backend(b);
+        effective as i32
+    }));
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during set_io_backend".to_string()));
+            -1
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -728,7 +738,17 @@ pub extern "C" fn oifs_get_io_backend(handle: *mut OIFSHandle) -> i32 {
         }
         &(*handle)
     };
-    handle_ref.dm.io_backend() as i32
+    // SEC-11: never let a panic unwind across the `extern "C"` boundary.
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle_ref.dm.io_backend() as i32
+    }));
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during get_io_backend".to_string()));
+            -1
+        }
+    }
 }
 
 const fn parse_u32(s: &str) -> u32 {
@@ -797,6 +817,8 @@ pub const OIFS_VERSION_COMPAT_ERR: i32 = -1;
 /// - Returns -1 (`OIFS_VERSION_COMPAT_ERR`): Older library version (error out, blocked).
 #[unsafe(no_mangle)]
 pub extern "C" fn oifs_check_version(req_major: u32, req_minor: u32, req_patch: u32) -> i32 {
+    // Panic-free by construction (pure integer arithmetic), so no `catch_unwind`
+    // is required here; this keeps the Kani proof harness below modelable.
     let req_code = make_version_code(req_major, req_minor, req_patch);
     if OIFS_VERSION_CODE == req_code {
         OIFS_VERSION_COMPAT_OK
@@ -815,7 +837,8 @@ pub extern "C" fn oifs_loaded_path(buf: *mut c_char, buf_size: usize) -> i32 {
     if buf.is_null() || buf_size == 0 {
         return -1;
     }
-    unsafe {
+    // SEC-11: never let a panic unwind across the `extern "C"` boundary.
+    let res = std::panic::catch_unwind(|| unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
         let ret = libc::dladdr(oifs_version_code as *const c_void, &mut info);
         if ret == 0 || info.dli_fname.is_null() {
@@ -828,7 +851,8 @@ pub extern "C" fn oifs_loaded_path(buf: *mut c_char, buf_size: usize) -> i32 {
         }
         std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buf, bytes.len());
         0
-    }
+    });
+    res.unwrap_or(-1)
 }
 
 #[unsafe(no_mangle)]

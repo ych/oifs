@@ -5,6 +5,7 @@
 //! 2. Optional Network Mode: Rendezvous File (`.image.master`) in the image directory
 //!    + TCP Transport + Clock-Free Active Ping Probe for NFS/Lustre/multi-node clusters.
 
+use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
@@ -303,35 +304,108 @@ pub enum IpcResponse {
     Error(String),
 }
 
-/// Serializes and writes a length-prefixed frame to a stream
-pub fn write_framed<W: Write, T: Serialize>(writer: &mut W, val: &T) -> io::Result<()> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&[0u8; 4]);
-    bincode::serialize_into(&mut buf, val)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let len = (buf.len() - 4) as u32;
-    buf[..4].copy_from_slice(&len.to_le_bytes());
-    writer.write_all(&buf)?;
-    writer.flush()?;
-    Ok(())
+/// Maximum size of a single IPC frame payload (bytes).
+///
+/// Frames larger than this are rejected before any allocation happens, so a
+/// malicious or buggy peer cannot force the receiver to reserve arbitrary
+/// amounts of memory by simply announcing a huge length.
+pub const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
+
+/// Chunk size used to stream frame payloads off the wire.
+const FRAME_READ_CHUNK: usize = 64 * 1024;
+
+/// Returns `true` if an announced frame payload length is within the allowed limit.
+///
+/// This is the single source of truth for frame-length validation and is used
+/// by both the read and the write path *before* any allocation happens.
+#[inline]
+pub const fn frame_len_is_valid(len: u32) -> bool {
+    (len as usize) <= MAX_FRAME_BYTES
 }
 
-/// Reads a length-prefixed frame and deserializes it
+thread_local! {
+    /// Reusable scratch buffer for the *write* path. Kept separate from the
+    /// read buffer so a thread that writes a response right after reading a
+    /// request never needs two buffers at once.
+    static FRAME_WRITE_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// Reusable scratch buffer for the *read* path.
+    static FRAME_READ_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// Reusable staging buffer used to stream payload bytes off the wire.
+    static FRAME_CHUNK_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Serializes and writes a length-prefixed frame to a stream.
+///
+/// The serialization buffer is pooled per thread, so steady-state traffic
+/// performs zero heap allocations for the frame itself.
+pub fn write_framed<W: Write, T: Serialize>(writer: &mut W, val: &T) -> io::Result<()> {
+    FRAME_WRITE_BUF.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        buf.extend_from_slice(&[0u8; 4]);
+        bincode::serialize_into(&mut *buf, val)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let payload_len = buf.len() - 4;
+        let len = u32::try_from(payload_len).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Message frame exceeds size limit",
+            )
+        })?;
+        if !frame_len_is_valid(len) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Message frame exceeds size limit",
+            ));
+        }
+        buf[..4].copy_from_slice(&len.to_le_bytes());
+        writer.write_all(&buf)?;
+        writer.flush()?;
+        Ok(())
+    })
+}
+
+/// Reads a length-prefixed frame and deserializes it.
+///
+/// The payload is streamed in bounded chunks into a pooled buffer: the length
+/// prefix is validated *before* allocating, and the buffer capacity is reused
+/// across frames instead of being reallocated per message.
 pub fn read_framed<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T> {
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf)?;
     let len = u32::from_le_bytes(len_buf) as usize;
 
-    if len > 128 * 1024 * 1024 {
+    if !frame_len_is_valid(len as u32) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Message frame exceeds size limit",
         ));
     }
 
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf)?;
-    bincode::deserialize(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    FRAME_READ_BUF.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        if len > 0 {
+            // Reserve progressively; never allocate the announced size blindly.
+            buf.reserve(FRAME_READ_CHUNK.min(len));
+            let mut remaining = len;
+            while remaining > 0 {
+                let taken = FRAME_CHUNK_BUF.with(|cell| {
+                    let mut stage = cell.borrow_mut();
+                    if stage.len() < FRAME_READ_CHUNK {
+                        stage.resize(FRAME_READ_CHUNK, 0);
+                    }
+                    let taken = remaining.min(stage.len());
+                    reader.read_exact(&mut stage[..taken])?;
+                    buf.extend_from_slice(&stage[..taken]);
+                    Ok::<usize, io::Error>(taken)
+                })?;
+                remaining -= taken;
+            }
+        }
+        bincode::deserialize(buf.as_slice())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    })
 }
 
 /// The result of attempting to acquire master status or connect to an existing master
@@ -890,5 +964,43 @@ impl IpcClient {
     /// Returns the target socket/master file path
     pub fn target_path(&self) -> &Path {
         &self.target_path
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove the frame-length validation invariant (P4.8).
+    ///
+    /// A frame is acceptable if and only if its announced payload length does
+    /// not exceed `MAX_FRAME_BYTES`; the zero-length frame stays valid so that
+    /// empty payloads can never wedge the protocol.
+    #[kani::proof]
+    fn proof_frame_len_validation_soundness() {
+        let len: u32 = kani::any();
+
+        let accepted = frame_len_is_valid(len);
+
+        if accepted {
+            assert!(
+                (len as usize) <= MAX_FRAME_BYTES,
+                "Accepted frames must respect the size limit"
+            );
+        } else {
+            assert!(
+                (len as usize) > MAX_FRAME_BYTES,
+                "Rejected frames must exceed the size limit"
+            );
+        }
+
+        kani::cover!(accepted, "Valid frame length reached");
+        kani::cover!(!accepted, "Oversized frame length rejected");
+    }
+
+    /// Prove that a zero-length frame is always accepted (protocol liveness).
+    #[kani::proof]
+    fn proof_zero_length_frame_is_valid() {
+        assert!(frame_len_is_valid(0));
     }
 }

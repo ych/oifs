@@ -140,14 +140,18 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.8: IPC Buffer Pooling & Bounded Frame Parsing
-* **File & Lines**: [`src/ipc.rs:278-306`](file:///Users/ych/oifs/src/ipc.rs#L278-L306)
-* **Current Behavior**:
-  - `write_framed` allocates a new `Vec` per message.
-  - `read_framed` accepts frames up to 128MB, immediately allocating `vec![0u8; len]` before receiving payload bytes (memory exhaustion risk).
-* **Proposed Remedy**:
-  Use thread-local scratch buffers or `BytesMut` pool; enforce streaming chunks for large payloads.
-* **Impact**: **Medium** (Eliminates GC/allocator pressure in Master-Proxy mode).
+### P4.8: IPC Buffer Pooling & Bounded Frame Parsing [RESOLVED]
+* **File & Lines**: [`src/ipc.rs`](file:///Users/ych/oifs/src/ipc.rs) (`write_framed` / `read_framed`), [`tests/ipc_frame_test.rs`](file:///Users/ych/oifs/tests/ipc_frame_test.rs)
+* **Status**: **Completed & Verified**
+* **Previous Behavior**:
+  - `write_framed` allocated a new `Vec` per message.
+  - `read_framed` accepted frames up to 128MB, immediately allocating `vec![0u8; len]` before receiving payload bytes (memory exhaustion risk).
+* **Implementation Details**:
+  - Added three thread-local pooled buffers (`FRAME_WRITE_BUF`, `FRAME_READ_BUF`, `FRAME_CHUNK_BUF`): steady-state framing performs no per-message heap allocation, and buffer capacity is reused across frames.
+  - Introduced the public `MAX_FRAME_BYTES` limit, validated on **both** the write and the read path *before* any allocation occurs.
+  - `read_framed` now streams the payload in bounded 64 KiB chunks into the pooled buffer, so a peer that announces a huge frame but never sends it cannot force a huge blind allocation.
+  - The write path no longer builds a fresh prefix buffer: the 4-byte length prefix is serialized in place in the pooled buffer.
+* **Impact**: **Medium** (Eliminates allocator pressure in Master-Proxy mode; removes the blind-allocation DoS vector on the frame length prefix).
 
 ---
 
@@ -232,8 +236,8 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-08** | `src/directory.rs` | Directory `dir_block_count` calculates `size.div_ceil(4096)`. Extremely large directory `inode.size` triggers billions of block lookups (CPU starvation DoS). | **Medium** | - | **Resolved** (`MAX_DIR_BLOCKS = 65536` upper bound, `block_size == 0` safety guard) |
 | **SEC-09** | `src/session.rs`, `src/ipc.rs` | Deterministic Unix Domain Socket path in shared `/tmp` (`/tmp/oifs_<hash>.sock`) derived with fixed-key SipHash allows local attackers on multi-user systems to pre-create or squat the socket before the master starts, intercepting client proxy connections. | **Medium** | - | **Mitigated** (SessionMode defaults to Standalone; IPC is explicit opt-in via `--ipc`) |
 | **SEC-10** | `src/ipc.rs`, `src/session.rs` | Network IPC transport transmits file data and session payloads over unencrypted raw TCP without TLS/mTLS, exposing all operations to network eavesdropping and tampering. | **High** | - | **Open / Architecture** (Requires external VPN/WireGuard or local-only `127.0.0.1` binding) |
-| **SEC-11** | `src/ffi.rs` | Several exported C FFI functions (e.g. `oifs_set_io_backend`, `oifs_get_io_backend`) lack `std::panic::catch_unwind`. Unwinding panics across the `extern "C"` boundary invokes Undefined Behavior. | **Medium** | - | **Open / In Progress** (Core operations protected; secondary getters require `catch_unwind` wraps) |
-| **SEC-12** | `src/encryption.rs`, `src/session.rs` | Encryption keys (`EncryptionKey`) and passwords are kept in standard unzeroized `String`/`Vec<u8>` heap memory, leaving key material exposed in core dumps or memory forensics. | **Low** | - | **Open** (Recommend integrating `zeroize::ZeroizeOnDrop`) |
+| **SEC-11** | `src/ffi.rs` | Several exported C FFI functions (e.g. `oifs_set_io_backend`, `oifs_get_io_backend`) lack `std::panic::catch_unwind`. Unwinding panics across the `extern "C"` boundary invokes Undefined Behavior. | **Medium** | - | **Resolved** (`catch_unwind` wraps on `oifs_set_io_backend`, `oifs_get_io_backend` and `oifs_loaded_path`; `oifs_check_version` is panic-free by construction and kept modelable for Kani) |
+| **SEC-12** | `src/encryption.rs`, `src/session.rs` | Encryption keys (`EncryptionKey`) and passwords are kept in standard unzeroized `String`/`Vec<u8>` heap memory, leaving key material exposed in core dumps or memory forensics. | **Low** | - | **Resolved** (`EncryptionKey` derives `Zeroize`/`ZeroizeOnDrop`; CLI password handling now uses `zeroize::Zeroizing<String>` and wipes the raw `read_line` scratch buffer) |
 | **SEC-13** | `src/bin/oifs.rs` | Passing `--password <SECRET>` on CLI arguments exposes encryption passwords in plain text in `/proc/<pid>/cmdline` and `ps` process tables to other local users. | **Low** | - | **User Advisory** (`OIFS_PASSWORD` environment variable supported, interactive prompt recommended) |
 | **SEC-14** | `src/directory.rs`, `src/disk.rs`, `src/bin/oifs.rs` | Untrusted disk images or callers with directory entry names containing path traversal components (`/`, `\`, `..`, `.`, `\0`, or empty) can escape target export folders or corrupt directory trees. | **Medium** | - | **Resolved** (`validate_filename` in `serialize_into`/`deserialize_from`, `create_entry_internal`/`journaled`, `resolve_parent`, `resolve_path_iter`; sanitized export in `Commands::Get`) |
 | **SEC-15** | `src/disk.rs:4410-4450` | Seekable 64K Chunked writes previously allocated contiguous blocks and updated on-disk indirect pointer tables in-place before committing the WAL transaction frame, corrupting replay on crash. | **High** | `test_seekable_chunked_journaled_crash_recovery_and_atomicity` | **Resolved in 1.1.0** (Staged through `AllocSim` + ordered payload flush before `commit_journal_tx`) |
@@ -253,12 +257,12 @@ The following safety and correctness issues were uncovered during the subagent c
 3. **FFI Boundary Panic Safety (SEC-11)**:
    - *Threat*: Panic unwinding across C ABI (`extern "C"`).
    - *Analysis*: In Rust 1.85+, a panic escaping an `extern "C"` function without `catch_unwind` is defined to abort the process, but prior toolchains consider it undefined behavior (UB). Critical file I/O operations (`oifs_read_file`, `oifs_write_file`, `oifs_create_file`) wrap logic in `catch_unwind`, but auxiliary utility functions (`oifs_set_io_backend`, `oifs_get_io_backend`) directly call Rust methods.
-   - *Remediation*: Wrap all remaining FFI entry points with `catch_unwind` to return `-1` on error.
+   - *Remediation*: Wrap all remaining FFI entry points with `catch_unwind` to return `-1` on error. **Status**: Applied to `oifs_set_io_backend`, `oifs_get_io_backend` and `oifs_loaded_path`; `oifs_check_version` and the version accessors are panic-free by construction (pure integer arithmetic / constants) and therefore need no wrapper.
 
 4. **Cryptographic Material Lifetime (SEC-12)**:
    - *Threat*: Cold-boot attacks, core dump extraction, or process memory scrapers.
    - *Analysis*: `XChaCha20Poly1305` keys are generated via Argon2id and stored in `EncryptionKey`. Rust's standard allocator does not wipe memory upon `drop()`.
-   - *Remediation*: Adopt the `zeroize` crate to implement `Zeroize` and `ZeroizeOnDrop` on `EncryptionKey` buffers.
+   - *Remediation*: Adopt the `zeroize` crate to implement `Zeroize` and `ZeroizeOnDrop` on `EncryptionKey` buffers. **Status**: `EncryptionKey` derives `Zeroize`/`ZeroizeOnDrop`; the CLI now wraps every resolved password (flag, `OIFS_PASSWORD` env, interactive prompt) in `zeroize::Zeroizing<String>` and wipes the raw `read_line` scratch string before returning.
 
 5. **Untrusted Image Defense & Journal Replay Invariants (SEC-15)**:
    - *Threat*: A hostile or corrupted `.img` image file opened by OIFS.

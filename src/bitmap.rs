@@ -600,4 +600,44 @@ mod kani_proofs {
             }
         }
     }
+
+    /// Prove the wrap-around allocator scan is sound (Blueprint 1).
+    ///
+    /// For any symbolic bitmap and hint, `find_next_free_wrapped` must either
+    /// return a genuinely free bit, skipping no free bit on its scan path, or
+    /// return `None` only when the bitmap is completely allocated.
+    #[kani::proof]
+    #[kani::unwind(70)]
+    fn proof_find_next_free_wrapped_soundness() {
+        let word: u64 = kani::any();
+        let data = word.to_le_bytes();
+        let b = BitmapRef::new(&data);
+        let hint: usize = kani::any();
+        kani::assume(hint <= 64);
+
+        if let Some(bit) = b.find_next_free_wrapped(hint) {
+            assert!(bit < 64, "Returned bit must be within the bitmap");
+            assert!(!b.get(bit), "Returned bit must be unallocated (0)");
+            if bit >= hint {
+                // Forward case: no free bit may be skipped in [hint, bit).
+                for i in hint..bit {
+                    assert!(b.get(i), "Skipped bit must be allocated");
+                }
+            } else {
+                // Wrap-around case: the first free bit from 0 was returned, so
+                // nothing below it is free, and nothing at/after the hint is free.
+                for i in 0..bit {
+                    assert!(b.get(i), "Skipped bit must be allocated");
+                }
+                for i in hint..64 {
+                    assert!(b.get(i), "Skipped bit must be allocated");
+                }
+            }
+            kani::cover!(bit < hint, "Wrap-around case reached");
+            kani::cover!(bit >= hint, "Linear forward case reached");
+        } else {
+            // Exhausted: every single bit must be allocated.
+            assert_eq!(word, u64::MAX, "All bits must be set if None returned");
+        }
+    }
 }

@@ -1409,20 +1409,17 @@ mod kani_proofs {
         let seq: u64 = kani::any();
         let payload_len: u32 = kani::any();
         let payload = [0xA5u8; 8];
-        let a = crc_input(seq, payload_len, &payload);
-        let b = crc_input(seq, payload_len, &payload);
-        assert_eq!(a, b, "crc_input must be a pure function");
-        assert_eq!(
-            a.len(),
-            12 + payload.len(),
-            "covered region is seq||len||payload"
-        );
-        assert_eq!(&a[0..8], &seq.to_le_bytes(), "tx_seq is covered");
-        assert_eq!(
-            &a[8..12],
-            &payload_len.to_le_bytes(),
-            "payload_len is covered"
-        );
+        let a = crc_frame_checksum(seq, payload_len, &payload);
+        let b = crc_frame_checksum(seq, payload_len, &payload);
+        assert_eq!(a, b, "the frame checksum must be a pure function");
+
+        // The covered region is `tx_seq || payload_len || payload`: flipping a
+        // single bit of the sequence number or of the length must change the
+        // checksum (a single-bit flip is always detected by CRC32C).
+        let c = crc_frame_checksum(seq ^ 1, payload_len, &payload);
+        assert_ne!(a, c, "tx_seq is covered by the checksum");
+        let d = crc_frame_checksum(seq, payload_len ^ 1, &payload);
+        assert_ne!(a, d, "payload_len is covered by the checksum");
     }
 
     /// Prove a frame is never accepted when its length fields are inconsistent.

@@ -7380,6 +7380,7 @@ mod verification {
         let actual = end.saturating_sub(start);
         assert!(actual <= to_read_total);
         assert!(actual <= full_data_len);
+        kani::cover!(start < full_data_len, "in-range read reached");
     }
 
     /// Prove that 64KB chunk index and offset slicing calculations for Seekable 64K Chunked Compression
@@ -7437,5 +7438,7 @@ mod verification {
         let chunk_valid_len =
             ((new_file_size - chunk_file_start) as usize).min(crate::inode::CHUNK_SIZE_64K);
         assert!(chunk_offset_end <= chunk_valid_len);
+        kani::cover!(first_chunk == last_chunk, "single-chunk write reached");
+        kani::cover!(first_chunk < last_chunk, "multi-chunk write reached");
     }
 }

@@ -298,6 +298,8 @@ mod kani_proofs {
 
         // Root inode is always 0
         assert_eq!(sb.root_inode, 0);
+        kani::cover!(total_blocks == 5, "smallest supported image reached");
+        kani::cover!(total_blocks > 1028, "large image reached");
     }
 
     /// Prove that large file systems (>= 1028 blocks) get the full 32,768 inodes.
@@ -313,6 +315,7 @@ mod kani_proofs {
             4096 * 8,
             "Large FS must have full 32,768 inodes"
         );
+        kani::cover!(total_blocks >= 1028, "large filesystem reached");
     }
 
     /// Prove that new SuperBlock defaults to unencrypted.
@@ -336,6 +339,7 @@ mod kani_proofs {
         assert_eq!(legacy, explicit);
         assert_eq!(legacy.inode_table_block, 3);
         assert!(!crate::journal::is_journaled_layout(&legacy));
+        kani::cover!(total_blocks == 5, "minimum legacy layout reached");
     }
 
     /// Prove that a journaled layout never overlaps the journal region and that
@@ -367,6 +371,7 @@ mod kani_proofs {
         assert!(sb.block_count - sb.data_block_start >= 1);
 
         assert!(crate::journal::is_journaled_layout(&sb));
+        kani::cover!(total_blocks == 1_200, "minimum journaled image reached");
     }
 
     /// Prove that a journaled image is strictly larger in metadata than the legacy
@@ -382,6 +387,7 @@ mod kani_proofs {
         assert!(journaled.data_block_start > legacy.data_block_start);
         // Inode capacity is unchanged; only the placement moves.
         assert_eq!(journaled.inode_count, legacy.inode_count);
+        kani::cover!(total_blocks >= 1_200, "journaled layout reached");
     }
 
     /// Prove that SuperBlock::validate always accepts validly initialized superblocks.
@@ -395,6 +401,11 @@ mod kani_proofs {
 
         let sb_j = SuperBlock::new_journaled(total_blocks);
         assert!(sb_j.validate(mmap_len).is_ok());
+        kani::cover!(sb.validate(mmap_len).is_ok(), "valid superblock accepted");
+        kani::cover!(
+            sb_j.validate(mmap_len).is_ok(),
+            "valid journaled superblock accepted"
+        );
     }
 }
 

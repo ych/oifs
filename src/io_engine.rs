@@ -870,6 +870,8 @@ mod verification {
         let first = list.as_slice()[0];
         assert_eq!(first.disk_offset, d1);
         assert_eq!(first.buf_offset, b1);
+        kani::cover!(contiguous, "adjacent extents merged");
+        kani::cover!(!contiguous, "separate extents kept");
     }
 
     /// `from_u8` is total and inverts the `repr(u8)` discriminant.

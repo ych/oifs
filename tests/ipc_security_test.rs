@@ -196,3 +196,39 @@ fn test_master_and_client_agree_on_the_session_secret() {
         MasterOrClient::Master(_) => panic!("expected to connect as a client"),
     }
 }
+
+#[test]
+fn test_non_loopback_bind_requires_an_explicit_opt_in() {
+    // SEC-10: the plain-TCP IPC master must not be exposed to other machines
+    // by accident.
+    assert!(oifs::ipc::is_loopback_bind("127.0.0.1:9050"));
+    assert!(oifs::ipc::is_loopback_bind("127.0.0.1:0"));
+    assert!(oifs::ipc::is_loopback_bind("[::1]:9050"));
+    assert!(!oifs::ipc::is_loopback_bind("0.0.0.0:9050"));
+    assert!(!oifs::ipc::is_loopback_bind("192.168.1.10:9050"));
+    assert!(!oifs::ipc::is_loopback_bind(":9050"));
+
+    // The CLI refuses such a bind without the explicit opt-in.
+    let bin_path = env!("CARGO_BIN_EXE_oifs");
+    let img = TestImage::new("test_sec10_bind");
+    let output = std::process::Command::new(bin_path)
+        .args([
+            "--network",
+            "--bind",
+            "0.0.0.0:19050",
+            "--image",
+            &img.path,
+            "ls",
+        ])
+        .output()
+        .expect("run oifs");
+    assert!(
+        !output.status.success(),
+        "a non-loopback bind must be refused without --allow-remote-ipsc"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("allow-remote-ipsc"),
+        "the error should mention the opt-in flag: {stderr}"
+    );
+}

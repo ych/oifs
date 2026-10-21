@@ -1388,6 +1388,11 @@ mod kani_proofs {
                 // Only reachable on absurd ring sizes; nothing to prove.
             }
         }
+        kani::cover!(cursor.checked_add(len).is_some(), "no arithmetic overflow");
+        kani::cover!(
+            cursor.checked_add(len).is_none(),
+            "overflow safely rejected"
+        );
     }
 
     /// Prove that checkpointing empties the ring.
@@ -1411,6 +1416,8 @@ mod kani_proofs {
         // after checkpoint: tail := head
         let used_after = (head + ring - head) % ring;
         assert_eq!(used_after, 0, "checkpoint must leave nothing pending");
+        kani::cover!(head != tail, "non-empty ring checkpointed");
+        kani::cover!(head == tail, "empty ring checkpointed");
     }
 
     /// Prove CRC32C detects *every* single-bit flip.
@@ -1435,6 +1442,8 @@ mod kani_proofs {
             base,
             "a single-bit flip must change the CRC32C, so torn frames are rejected"
         );
+        kani::cover!(byte_idx == 0, "first byte flipped");
+        kani::cover!(bit_idx == 7, "highest bit flipped");
     }
 
     /// Prove the CRC region used by the encoder and decoder is exactly the same
@@ -1486,6 +1495,8 @@ mod kani_proofs {
                 // usize overflow is caught by checked_add.
             }
         }
+        kani::cover!(total.is_some(), "frame length computed");
+        kani::cover!(total.is_none(), "length overflow rejected");
     }
 
     /// Prove `WriteBlockSlice` bounds are enforced before any write happens.
@@ -1589,6 +1600,14 @@ mod kani_proofs {
         // Next head cursor stays within [0, ring_bytes)
         let next_head = end_val % ring_bytes;
         assert!(next_head < ring_bytes, "next head must stay inside ring");
+        kani::cover!(
+            head.saturating_add(len) > ring_bytes,
+            "wrap-around case reached"
+        );
+        kani::cover!(
+            head.saturating_add(len) <= ring_bytes,
+            "contiguous case reached"
+        );
     }
 
     /// Prove that `checkpoint_to` moves `tail` forward towards `head` without passing it.
@@ -1657,6 +1676,8 @@ mod kani_proofs {
                 "second application must be completely identical (idempotent)"
             );
         }
+        kani::cover!(allocated, "allocation branch reached");
+        kani::cover!(!allocated, "deallocation branch reached");
     }
 
     /// Prove that applying `MetadataOp::SetDataBitmap` is strictly idempotent.
@@ -1686,6 +1707,8 @@ mod kani_proofs {
                 "second application must be completely identical (idempotent)"
             );
         }
+        kani::cover!(allocated, "allocation branch reached");
+        kani::cover!(!allocated, "deallocation branch reached");
     }
 
     /// Prove that applying `MetadataOp::WriteBlockSlice` is strictly idempotent.
@@ -1718,6 +1741,8 @@ mod kani_proofs {
                 "second application must be completely identical (idempotent)"
             );
         }
+        kani::cover!(offset == 0, "write at the block start reached");
+        kani::cover!(offset > 0, "write inside the block reached");
     }
 
     /// Prove that applying `MetadataOp::WriteInode` is strictly idempotent.

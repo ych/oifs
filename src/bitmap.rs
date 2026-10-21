@@ -519,6 +519,8 @@ mod kani_proofs {
 
         bitmap.clear(index);
         assert!(!bitmap.get(index), "Bit must be clear after clear()");
+        kani::cover!(index == 0, "first bit reached");
+        kani::cover!(index == 31, "last bit reached");
     }
 
     /// Prove that set() only modifies the target bit, leaving others unchanged.
@@ -542,6 +544,8 @@ mod kani_proofs {
                 assert_eq!(bitmap.get(i), original, "set() must not alter other bits");
             }
         }
+        kani::cover!(target == 0, "first bit reached");
+        kani::cover!(target == 15, "last bit reached");
     }
 
     /// Prove that find_first_free returns a genuinely free bit.
@@ -581,6 +585,8 @@ mod kani_proofs {
             !bitmap.get(index),
             "Out-of-bounds get() should return false"
         );
+        kani::cover!(index == 16, "first out-of-bounds index reached");
+        kani::cover!(index == 63, "last probed index reached");
     }
 
     /// Prove that find_contiguous_free returns a range where all bits are genuinely free.
@@ -599,6 +605,8 @@ mod kani_proofs {
                 assert!(!bitmap.get(i), "All bits in returned range must be free");
             }
         }
+        kani::cover!(count == 1, "single-block request reached");
+        kani::cover!(count == 8, "full-bitmap request reached");
     }
 
     /// Prove the wrap-around allocator scan is sound (Blueprint 1).

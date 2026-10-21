@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `read_framed` now streams payloads in bounded 64 KiB chunks, removing the blind `vec![0u8; len]` allocation a malicious peer could weaponize.
   - Added `tests/ipc_frame_test.rs` covering round-trips, chunked streaming, buffer reuse, oversized-frame rejection and truncated frames.
 - **Kani Proofs**:
-  - Added `proof_find_next_free_wrapped_soundness` (wrap-around allocator scan), the first `ipc` module harnesses `proof_frame_len_validation_soundness` / `proof_zero_length_frame_is_valid` and `proof_sanitized_config_is_always_valid` for the auto-defrag configuration. The suite now holds 75 harnesses.
+  - Added `proof_find_next_free_wrapped_soundness` (wrap-around allocator scan), the first `ipc` module harnesses `proof_frame_len_validation_soundness` / `proof_zero_length_frame_is_valid` and `proof_sanitized_config_is_always_valid` for the auto-defrag configuration. The suite now holds 76 harnesses.
+  - Added `proof_block_path_tier_boundaries_symbolic`, which proves the pointer-tree tier classification for *every* logical block index instead of a handful of constants.
+  - Every proof that constrains its input with `kani::assume` now carries `kani::cover!` assertions, so no harness can pass vacuously.
 
 ### Security
 - **Encryption Bypass on Non-Zero-Offset Writes (SEC-16, Critical)**: Fixed the write planner so that a compressed, filtered or encrypted payload is always rebuilt as a whole instead of being patched in place. Previously a write at `file_offset > 0` on an encrypted image could store **plaintext** on disk, overwrite the XChaCha20-Poly1305 ciphertext of an existing file (destroying its Poly1305 tag), and a shrinking overwrite kept a stale file size that broke AEAD authentication. The inode's filter metadata now also describes the filter pipeline that was actually applied.
@@ -35,7 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Data-Area Lower-Bound Checks (SEC-20, Medium)**: Block pointers that leave the data area are now rejected everywhere: the read path ignores them, the write path fails with an error instead of landing in the superblock, the bitmaps or the inode table, and the WAL replay refuses every operation that addresses metadata.
 - **FFI Boundary Hardening (SEC-21, Medium)**: Every `CStr::from_ptr` conversion of a caller-provided pointer now happens inside the `catch_unwind` closure, and `oifs_write_file_with_policy` reports a null buffer with a non-zero size instead of silently writing nothing.
 - **MCP Response Encoding (SEC-22, Medium)**: The MCP tool responses are built with `serde_json` instead of `format!`, so file names and error messages can no longer inject JSON, and the image size is computed with checked arithmetic.
+- **Release Verification Tooling**: `scripts/release_check.sh` now runs the *complete* Kani suite in parallel (`cargo kani -j 8 --output-format=terse`) instead of a handful of harnesses, and gained a native LLVM coverage step (step 7/8) that reports ~77% region coverage. The step prefers the `llvm-tools-preview` component of the active toolchain and asks cargo for the test executable paths.
 - **Session Password Hygiene (SEC-24, Low)**: The password kept by a remote session for the automatic reconnection now lives in a `zeroize::Zeroizing<String>` and is wiped when the session is dropped.
+
+### Security
+- **Plain-TCP Network Transport (SEC-10, Mitigated)**: The IPC master binds loopback by default, a non-loopback bind address is refused unless `--allow-remote-ipsc` is given, and the library warns when such a bind is requested. The transport itself remains plain TCP and is expected to be tunnelled.
 
 ### Fixed
 - **Broken Kani Build**: `proof_crc_input_is_deterministic` still referenced the `crc_input` helper removed by the P4.13 CRC refactor, so `cargo kani` failed to compile. The harness now uses `crc_frame_checksum` and additionally proves that the sequence number and payload length are covered by the checksum.

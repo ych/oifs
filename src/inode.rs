@@ -318,6 +318,58 @@ mod kani_proofs {
         assert_eq!(BlockPath::from_logical(MAX_LOGICAL_BLOCKS), None);
     }
 
+    /// Prove the tier boundaries for *every* logical block index.
+    ///
+    /// The concrete-constant proof above pins the boundaries; this one shows
+    /// that the classification holds for any index in range, so a boundary
+    /// cannot drift unnoticed.
+    #[kani::proof]
+    fn proof_block_path_tier_boundaries_symbolic() {
+        let idx: usize = kani::any();
+        kani::assume(idx < MAX_LOGICAL_BLOCKS);
+
+        let path = BlockPath::from_logical(idx).expect("in-range index must resolve");
+
+        match path {
+            BlockPath::Direct(i) => {
+                assert!(i < 10, "the direct tier holds at most 10 blocks");
+                assert_eq!(idx, i, "the direct tier maps the index one to one");
+            }
+            BlockPath::Single(i) => {
+                assert!(i < 512, "the single indirect tier holds at most 512 blocks");
+                assert_eq!(
+                    idx,
+                    10 + i,
+                    "the single tier starts after the direct blocks"
+                );
+            }
+            BlockPath::Double(a, b) => {
+                assert!(a < 512 && b < 512, "the double tier holds 512x512 blocks");
+                assert_eq!(
+                    idx,
+                    10 + 512 + a * 512 + b,
+                    "the double tier starts after the single tier"
+                );
+            }
+            BlockPath::Triple(a, b, c) => {
+                assert!(
+                    a < 512 && b < 512 && c < 512,
+                    "the triple tier holds 512x512x512 blocks"
+                );
+                assert_eq!(
+                    idx,
+                    10 + 512 + 512 * 512 + (a * 512 + b) * 512 + c,
+                    "the triple tier starts after the double tier"
+                );
+            }
+        }
+
+        kani::cover!(matches!(path, BlockPath::Direct(..)), "direct tier reached");
+        kani::cover!(matches!(path, BlockPath::Single(..)), "single tier reached");
+        kani::cover!(matches!(path, BlockPath::Double(..)), "double tier reached");
+        kani::cover!(matches!(path, BlockPath::Triple(..)), "triple tier reached");
+    }
+
     /// Prove that Inode::new produces a zero-initialized inode with correct mode.
     #[kani::proof]
     fn proof_inode_new_file() {

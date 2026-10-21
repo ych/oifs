@@ -229,6 +229,29 @@ pub fn get_master_info_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
     parent.join(format!(".{}.master", file_name))
 }
 
+/// Returns `true` when every address of `bind_addr` is a loopback address.
+///
+/// SEC-10: the network transport is plain TCP without TLS, so it must not be
+/// exposed to other machines by accident. A non-loopback bind therefore has to
+/// be requested explicitly.
+pub fn is_loopback_bind(bind_addr: &str) -> bool {
+    let host = bind_addr
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(bind_addr)
+        .trim_matches(|c| c == '[' || c == ']');
+    // An empty host means "all interfaces".
+    if host.is_empty() {
+        return false;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        // A host name cannot be resolved synchronously here; treat it as
+        // non-loopback so the safe default applies.
+        Err(_) => false,
+    }
+}
+
 /// Probes a TCP master address to verify if it is alive (Clock-Free Active Ping Probe)
 pub fn is_tcp_master_alive(addr_str: &str) -> bool {
     let addrs: Vec<_> = match addr_str.to_socket_addrs() {
@@ -833,6 +856,15 @@ pub fn bind_or_connect<P: AsRef<Path>>(
             {
                 Ok(mut file) => {
                     let bind_target = bind_addr.as_deref().unwrap_or("127.0.0.1:0");
+                    if !is_loopback_bind(bind_target) {
+                        // SEC-10: the transport is plain TCP. Warn loudly
+                        // instead of exposing the filesystem silently.
+                        eprintln!(
+                            "⚠️  OIFS is binding the IPC master to {bind_target}, which is reachable \
+                             from other machines. The transport is plain TCP without TLS: tunnel it \
+                             over WireGuard/IPsec/SSH or keep the default loopback bind."
+                        );
+                    }
                     let listener = TcpListener::bind(bind_target)?;
                     let local_addr = listener.local_addr()?;
                     let auth_secret = generate_auth_secret();

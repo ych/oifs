@@ -165,6 +165,7 @@ mod kani_proofs {
                 "Block ID must be within bitmap range"
             );
         }
+        kani::cover!(offset == 0, "allocation from the bitmap start reached");
     }
 
     /// Prove that allocate followed by free makes the block allocatable again.
@@ -223,6 +224,7 @@ mod kani_proofs {
         // Freeing a block below the offset should succeed without side effects
         let result = alloc.free(0);
         assert!(result.is_ok());
+        kani::cover!(result.is_ok(), "free below the offset succeeds");
     }
 }
 

@@ -235,7 +235,7 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-07** | `src/disk.rs` | Unbounded `zstd::stream::decode_all` allows malicious compressed streams to expand into gigabytes, triggering host OOM DoS (decompression bomb). | **Medium** | - | **Resolved** (Bounded streaming decompression via `Decoder::take(max_bytes)`) |
 | **SEC-08** | `src/directory.rs` | Directory `dir_block_count` calculates `size.div_ceil(4096)`. Extremely large directory `inode.size` triggers billions of block lookups (CPU starvation DoS). | **Medium** | - | **Resolved** (`MAX_DIR_BLOCKS = 65536` upper bound, `block_size == 0` safety guard) |
 | **SEC-09** | `src/session.rs`, `src/ipc.rs` | Deterministic Unix Domain Socket path in shared `/tmp` (`/tmp/oifs_<hash>.sock`) derived with fixed-key SipHash allows local attackers on multi-user systems to pre-create or squat the socket before the master starts, intercepting client proxy connections. | **Medium** | - | **Mitigated** (SessionMode defaults to Standalone; IPC is explicit opt-in via `--ipc`) |
-| **SEC-10** | `src/ipc.rs`, `src/session.rs` | Network IPC transport transmits file data and session payloads over unencrypted raw TCP without TLS/mTLS, exposing all operations to network eavesdropping and tampering. | **High** | - | **Open / Architecture** (Requires external VPN/WireGuard or local-only `127.0.0.1` binding) |
+| **SEC-10** | `src/ipc.rs`, `src/session.rs` | Network IPC transport transmits file data and session payloads over unencrypted raw TCP without TLS/mTLS, exposing all operations to network eavesdropping and tampering. | **High** | - | **Mitigated** (see §6.8: the bind address defaults to loopback, a non-loopback bind has to be requested explicitly with `--allow-remote-ipsc` and prints a warning, the password never crosses the wire and the client verifies the master. Transport encryption itself remains an architecture decision: tunnel it over WireGuard/IPsec/SSH) |
 | **SEC-11** | `src/ffi.rs` | Several exported C FFI functions (e.g. `oifs_set_io_backend`, `oifs_get_io_backend`) lack `std::panic::catch_unwind`. Unwinding panics across the `extern "C"` boundary invokes Undefined Behavior. | **Medium** | - | **Resolved** (`catch_unwind` wraps on `oifs_set_io_backend`, `oifs_get_io_backend` and `oifs_loaded_path`; `oifs_check_version` is panic-free by construction and kept modelable for Kani) |
 | **SEC-12** | `src/encryption.rs`, `src/session.rs` | Encryption keys (`EncryptionKey`) and passwords are kept in standard unzeroized `String`/`Vec<u8>` heap memory, leaving key material exposed in core dumps or memory forensics. | **Low** | - | **Resolved** (`EncryptionKey` derives `Zeroize`/`ZeroizeOnDrop`; CLI password handling now uses `zeroize::Zeroizing<String>` and wipes the raw `read_line` scratch buffer) |
 | **SEC-13** | `src/bin/oifs.rs` | Passing `--password <SECRET>` on CLI arguments exposes encryption passwords in plain text in `/proc/<pid>/cmdline` and `ps` process tables to other local users. | **Low** | - | **User Advisory** (`OIFS_PASSWORD` environment variable supported, interactive prompt recommended) |
@@ -337,10 +337,22 @@ The following safety and correctness issues were uncovered during the subagent c
    - `src/inode.rs::proof_block_path_tier_boundaries` tests only concrete constants (`9`, `10`, `521`, etc.).
    - `src/directory.rs::proof_find_insert_offset_in_block` tests only `name_len = 4`.
    - *Fix*: Replace concrete values with `kani::any()` constrained by realistic domain invariants.
+   - **Status**: `proof_block_path_tier_boundaries_symbolic` proves the tier
+     classification for *every* logical block index (the tier, the slot bounds
+     and the index formula), so a boundary can no longer drift unnoticed.
 2. **Missing `kani::cover!` Checks**:
    - Proofs using `kani::assume` lack `cover!` assertions, risking vacuous validity.
+   - **Status**: every proof that constrains its input with `kani::assume` now
+     carries `kani::cover!` assertions for the interesting branches, so the
+     harness cannot pass vacuously.
 3. **Missing Module Verification**:
    - `src/encryption.rs`, `src/ipc.rs`, `src/ffi.rs`, and `src/session.rs` currently have **zero Kani proofs**.
+   - **Status**: `src/ipc.rs` now has harnesses for the frame-length invariant.
+     `src/encryption.rs` and `src/session.rs` still have none: their core
+     logic is Argon2id / XChaCha20-Poly1305 / BLAKE2b, which CBMC cannot
+     model, so a proof there would be vacuous rather than informative. The
+     modelable parts (the SIV transcript layout, the zeroizing key buffer)
+     are covered by unit tests instead.
 
 ---
 
@@ -459,6 +471,15 @@ cargo kani --concrete-playback=inplace
 ```
 
 ### 5.2 Native LLVM Code Coverage on macOS
+
+**Status: integrated into `scripts/release_check.sh` (step 7/8).** The step
+builds the instrumented test binaries, runs the suite, merges the raw profiles
+and prints the report. It prefers the `llvm-tools-preview` component of the
+active toolchain (the system copy is often too old for the raw profile format
+of a current nightly) and asks cargo for the test executable paths instead of
+hard-coding `target/release/deps`. The current suite reaches **~77 % region
+coverage**.
+
 Without external third-party crates, use Apple's built-in developer tools:
 ```bash
 # 1. Run tests with LLVM profile instrumentation
@@ -606,3 +627,21 @@ the WAL replay refuses every operation that leaves the data area.
 drives the server over stdio with a file name that would break a hand-built
 JSON string and asserts that every emitted line (and every embedded tool
 payload) parses as JSON.
+
+### 6.8 SEC-10 — Plain-TCP Network Transport (Mitigated)
+
+The IPC transport itself is still plain TCP, so a full fix (TLS/mTLS inside
+the protocol) is an architecture decision that the project defers to the
+deployment (WireGuard, IPsec or SSH port forwarding). The parts that can be
+hardened inside the project are now in place:
+
+* the master binds `127.0.0.1` by default, so the transport is not reachable
+  from other machines out of the box;
+* a non-loopback bind address is **refused** by the CLI unless the operator
+  passes `--allow-remote-ipsc`, and the library prints a warning when such a
+  bind is requested;
+* the password never crosses the wire (challenge-response, see §6.3) and the
+  client verifies that the master holds the same key, so a redirected client
+  neither leaks its credentials nor talks to an impostor.
+
+**Verification**: `tests/ipc_security_test.rs::test_non_loopback_bind_requires_an_explicit_opt_in`.

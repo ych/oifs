@@ -313,6 +313,9 @@ fn test_dir_cache_not_stale_after_inode_reuse() {
     assert_eq!(dm.lookup(old_dir, "x").expect("lookup x"), child); // warms old_dir's index
 
     // Remove the directory itself while "x" is still cached under it.
+    // SEC-29: a non-empty directory is no longer removed silently (that would
+    // orphan its children), so the child is deleted first.
+    dm.delete_file(old_dir, "x").expect("rm x");
     dm.delete_file(root, "old").expect("rmdir old");
 
     let new_dir = dm.create_directory(root, "new").expect("mkdir new");

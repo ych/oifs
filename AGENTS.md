@@ -38,6 +38,7 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **Durability governs the journal too**: only `DurabilityMode::Strict` pays the per-transaction `msync` barriers (WAL + payload); the process-crash-safe modes rely on the page cache and sync at `flush()`/`Drop`, with the WAL always written before the image.
 - **Encrypted Writes Never Bypass the Cipher (SEC-16)**: A compressed, filtered or encrypted payload is a single blob over the whole file, so any write to such a file rebuilds it (decrypt → splice → re-filter/re-compress/re-encrypt with a fresh nonce). A write at a non-zero offset can therefore never store plaintext on an encrypted image.
 - **Zeroed Data Blocks (SEC-27)**: A freshly allocated data block is zeroed before it is handed to a new owner, so a recycled block can never expose the plaintext of a deleted or truncated file.
+- **Pooled Zstd Contexts (P4.26)**: The compression contexts are pooled per thread (one compressor per level, one decompressor), so a frame or a 64 KiB chunk no longer allocates a fresh `CCtx`/`DCtx`.
 - **Chunk-Aware Defragmentation (SEC-26)**: The defragmentation decodes the packed `ChunkEntry` values of seekable 64K files, so their chunk runs are relocated as a unit and the safe pass keeps the chunked format.
 - **Bounded Inode & Data Regions (SEC-25)**: The usable inode range is derived from the real inode-table capacity (the superblock's `inode_count` is twice the table capacity because it was sized for the old 128-byte records), so an inode id can never address the data area, and both allocators stop at the boundary of their own region.
 - **Plain-TCP Network Transport (SEC-10)**: The IPC master binds loopback by default; a non-loopback bind has to be requested explicitly (`--allow-remote-ipsc`) and prints a warning, because the transport itself is not encrypted.
@@ -86,6 +87,7 @@ An inode stores:
 | `src/io_engine.rs` | `IoEngine`, `IoBackend` (`Mmap`, `Pread`, `IoUring`), `ExtentList`, extent merging. |
 | `src/journal.rs` | Optional Metadata WAL: CRC32C, transaction frames, `MetadataOp`, `JournalRing`, idempotent redo. |
 | `src/auto_defrag.rs` | Background automatic defragmentation coordinator: `AutoDefragConfig`, `AutoDefragStats`, worker thread. |
+| `src/zstd_pool.rs` | Thread-local pool of the Zstd compression contexts (P4.26). |
 | `src/bitmap.rs` | `BitmapRef`, fast 64-bit chunk `tzcnt` free-bit scanner, set-bit iterator. |
 | `src/allocator.rs` | `SimpleBlockAllocator`, sequential block/inode allocation with hint. |
 | `src/filters.rs` | Blosc2 filters: Delta, Shuffle, BitShuffle (delta-swap ILP), TruncPrecision. |
@@ -95,7 +97,7 @@ An inode stores:
 | `src/ffi.rs` | C-compatible dynamic library bindings (`include/oifs.h`). |
 | `src/bin/oifs.rs` | CLI application entry point (`clap`-based). |
 | `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling. |
-| `tests/` | 63 integration, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, inode-bounds, defrag-seekable, zeroed-block, and CLI test suites. |
+| `tests/` | 59 integration test files (454 tests): stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, inode-bounds, defrag-seekable, zeroed-block, zstd-pool, and CLI suites. |
 | `docs/optimization_roadmap.md` | Detailed changelog and benchmarks for P0, P1, P2, and P3 optimizations. |
 | `docs/metadata_wal_design.md` | Metadata WAL specification and implementation status (M1–M5 complete). |
 | `docs/performance_and_verification_research.md` | In-depth audit of performance bottlenecks, safety vulnerabilities, and Kani blueprints. |
@@ -138,7 +140,7 @@ An inode stores:
 cargo build
 cargo build --release
 
-# 2. Run all standard unit and integration tests (63 test suites)
+# 2. Run all standard unit and integration tests (59 test files, 454 tests)
 cargo test --release
 
 # 3. Run multi-block directory performance benchmark

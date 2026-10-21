@@ -885,6 +885,31 @@ struct WritePlan {
 
 impl WritePlan {}
 
+/// Whether a compressed file may grow by appending a fresh Zstd frame.
+///
+/// Besides the format checks, the physical size is compared against the
+/// logical one: a stream of many small frames costs a frame header each and
+/// compresses poorly, so once the overhead exceeds a quarter the file is
+/// rewritten as a single frame instead (P4.26).
+fn may_append_zstd_frame(
+    inode: &Inode,
+    file_offset: u64,
+    filter_config: &crate::filters::FilterConfig,
+    encryption_key: Option<&crate::encryption::EncryptionKey>,
+) -> bool {
+    if inode.compressed_size == 0
+        || file_offset != inode.size
+        || inode.encrypted
+        || filter_config.is_active()
+        || inode.filter_typesize != 0
+        || encryption_key.is_some()
+    {
+        return false;
+    }
+    let overhead_limit = inode.size + inode.size / 4 + 4096;
+    inode.compressed_size <= overhead_limit
+}
+
 /// Whether the stored payload of a file is a whole-file transformed blob.
 ///
 /// Compressed, filtered and encrypted payloads are single blobs that cover the
@@ -974,15 +999,11 @@ fn plan_write_prepared(
         // `encryption_key.is_none()` is belt-and-braces -- on an encrypted image
         // every file is already marked `encrypted`, so `!inode.encrypted` should
         // already imply it. Guarding it here keeps both paths provably identical.
-        let fast_append = old_compressed_size > 0
-            && file_offset == inode.size
-            && !inode.encrypted
-            && !filter_config.is_active()
-            && inode.filter_typesize == 0
-            && encryption_key.is_none();
+        let fast_append = may_append_zstd_frame(inode, file_offset, filter_config, encryption_key);
         if fast_append {
-            let frame = zstd::stream::encode_all(std::io::Cursor::new(data), 0)
-                .map_err(DiskManagerError::Io)?;
+            // P4.26: the pooled compressor avoids a per-frame `CCtx`
+            // allocation.
+            let frame = crate::zstd_pool::compress_frame(data, 0).map_err(DiskManagerError::Io)?;
             // The logical size grows by the *uncompressed* bytes; only the physical
             // stream grows by the frame length.
             return Ok(WritePlan {
@@ -1061,16 +1082,15 @@ fn plan_write(
     compression_mode: CompressionMode,
     filter_config: &crate::filters::FilterConfig,
 ) -> Result<WritePlan, DiskManagerError> {
-    let old_compressed_size = inode.compressed_size;
     let transformed = payload_is_transformed(inode, filter_config, guard.encryption_key.as_ref());
     let is_full_overwrite =
         file_offset == 0 && (inode.size == 0 || data.len() as u64 >= inode.size || transformed);
-    let fast_append = old_compressed_size > 0
-        && file_offset == inode.size
-        && !inode.encrypted
-        && !filter_config.is_active()
-        && inode.filter_typesize == 0
-        && guard.encryption_key.is_none();
+    let fast_append = may_append_zstd_frame(
+        inode,
+        file_offset,
+        filter_config,
+        guard.encryption_key.as_ref(),
+    );
 
     // A transformed payload is rebuilt from the file's decoded content, so that
     // content has to be read before the plan is computed (SEC-16).
@@ -3128,7 +3148,9 @@ impl DiskManager {
             let max_decompressed_bytes = inode.size.saturating_add(65536).max(1024 * 1024);
             let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(&decrypted_data))
                 .map_err(DiskManagerError::Io)?;
-            let mut decoded = Vec::with_capacity((inode.size as usize).min(1024 * 1024));
+            // P4.26: the expected size is known, so the buffer is allocated
+            // once instead of being grown (and copied) repeatedly.
+            let mut decoded = Vec::with_capacity(inode.size as usize);
             decoder
                 .by_ref()
                 .take(max_decompressed_bytes)
@@ -3582,8 +3604,9 @@ impl DiskManager {
         };
 
         let (final_data, is_compressed): (std::borrow::Cow<[u8]>, bool) = if should_compress {
-            let compressed = zstd::stream::encode_all(std::io::Cursor::new(working), level)
-                .map_err(DiskManagerError::Io)?;
+            // P4.26: the pooled compressor avoids a per-call `CCtx` allocation.
+            let compressed =
+                crate::zstd_pool::compress_frame(working, level).map_err(DiskManagerError::Io)?;
             match compression_mode {
                 CompressionMode::Always
                 | CompressionMode::Stream { .. }
@@ -3716,12 +3739,12 @@ impl DiskManager {
             let is_full_overwrite = file_offset == 0
                 && (inode.size == 0 || data.len() as u64 >= inode.size || transformed);
 
-            let fast_append = inode.compressed_size > 0
-                && file_offset == inode.size
-                && !inode.encrypted
-                && !filter_config.is_active()
-                && inode.filter_typesize == 0
-                && guard.encryption_key.is_none();
+            let fast_append = may_append_zstd_frame(
+                &inode,
+                file_offset,
+                &filter_config,
+                guard.encryption_key.as_ref(),
+            );
 
             // A transformed payload is rebuilt from the file's decoded content,
             // so that content has to be read before the plan is computed (SEC-16).
@@ -4060,9 +4083,9 @@ impl DiskManager {
         encryption_key: Option<&crate::encryption::EncryptionKey>,
     ) -> Result<(Vec<u8>, u8, u16, usize), DiskManagerError> {
         let level = if zstd_level <= 0 { 1 } else { zstd_level };
-        let compressed =
-            zstd::stream::encode_all(std::io::Cursor::new(&chunk_buf[..chunk_valid_len]), level)
-                .map_err(DiskManagerError::Io)?;
+        // P4.26: the pooled compressor avoids a per-chunk `CCtx` allocation.
+        let compressed = crate::zstd_pool::compress_frame(&chunk_buf[..chunk_valid_len], level)
+            .map_err(DiskManagerError::Io)?;
 
         let is_compressed = compressed.len() < chunk_valid_len && compressed.len() < 65536;
 
@@ -4211,15 +4234,15 @@ impl DiskManager {
                 comp_slice
             };
 
-            use std::io::Read;
-            let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(zstd_slice))
+            // P4.26: a chunk is a single Zstd frame, so it is decompressed in
+            // one pass into a caller-provided buffer with a pooled context.
+            // The buffer holds a whole chunk: after a truncation the stored
+            // frame can still carry the previous (longer) content, which is
+            // cut down to `chunk_valid_len` below.
+            let mut result = vec![0u8; crate::inode::CHUNK_SIZE_64K];
+            let written = crate::zstd_pool::decompress_frame_into(zstd_slice, &mut result)
                 .map_err(DiskManagerError::Io)?;
-            let mut result = Vec::with_capacity(chunk_valid_len);
-            decoder
-                .by_ref()
-                .take((crate::inode::CHUNK_SIZE_64K * 2) as u64)
-                .read_to_end(&mut result)
-                .map_err(DiskManagerError::Io)?;
+            result.truncate(written);
 
             if result.len() > chunk_valid_len {
                 result.truncate(chunk_valid_len);
@@ -5804,6 +5827,15 @@ impl DiskManager {
         let dir_image = Self::build_dir_block_image(&remaining_entries)?;
 
         let file_inode = Self::read_inode_internal(guard, target_inode_id)?;
+        // SEC-29: deleting a non-empty directory would orphan every child
+        // (their inodes and blocks would stay allocated but unreachable).
+        if file_inode.mode == crate::inode::FileType::Directory
+            && !Self::read_dir_entries_from_block(&guard.mmap, file_inode.blocks[0])?.is_empty()
+        {
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Directory is not empty",
+            )));
+        }
         let blocks_to_free = Self::collect_inode_blocks(&guard.mmap, &file_inode);
 
         parent_inode.modified_at = std::time::SystemTime::now()
@@ -5985,6 +6017,22 @@ impl DiskManager {
                     .collect();
                 (c, id, blk, remaining)
             };
+
+        // SEC-29: deleting a non-empty directory would orphan every child
+        // (their inodes and blocks would stay allocated but unreachable). The
+        // check runs before the parent entry is removed.
+        {
+            let target_inode = Self::read_inode_internal(&guard, target_inode_id)?;
+            if target_inode.mode == crate::inode::FileType::Directory
+                && target_inode.blocks[0] != 0
+                && !Self::read_dir_entries_from_block(&guard.mmap, target_inode.blocks[0])?
+                    .is_empty()
+            {
+                return Err(DiskManagerError::Io(std::io::Error::other(
+                    "Directory is not empty",
+                )));
+            }
+        }
 
         // Rewrite only the block that holds the entry.
         Self::rewrite_dir_entries_in_block(&mut guard.mmap, phys_blk, &remaining_entries)?;
@@ -6286,17 +6334,32 @@ impl DiskManager {
         }
 
         // Free blocks beyond new_blocks_needed
+        //
+        // SEC-29: on a journaled image the pointer zeroing is staged in the
+        // transaction instead of being written to the mapping before the
+        // commit.
+        let journaled = guard.superblock.has_journal_layout();
         let mut freed_blocks = Vec::new();
         for blk_idx in new_blocks_needed..old_blocks_needed {
             let phys_blk = Self::resolve_logical_block_id(&guard.mmap, &inode, blk_idx);
             if phys_blk != 0 {
                 freed_blocks.push(phys_blk);
-                Self::clear_logical_block_ptr(guard, &mut inode, blk_idx);
+                let mut journal_ops = if journaled { Some(&mut ops) } else { None };
+                Self::clear_logical_block_ptr(guard, &mut inode, blk_idx, &mut journal_ops);
             }
         }
 
         // Prune empty indirect blocks
-        Self::prune_unused_indirect_blocks(guard, &mut inode, new_blocks_needed, &mut freed_blocks);
+        {
+            let mut journal_ops = if journaled { Some(&mut ops) } else { None };
+            Self::prune_unused_indirect_blocks(
+                guard,
+                &mut inode,
+                new_blocks_needed,
+                &mut freed_blocks,
+                &mut journal_ops,
+            );
+        }
 
         inode.size = new_size;
         inode.modified_at = now;
@@ -6371,6 +6434,7 @@ impl DiskManager {
         guard: &mut DiskManagerInner,
         inode: &mut Inode,
         logical_block_idx: usize,
+        ops: &mut Option<&mut Vec<crate::journal::MetadataOp>>,
     ) {
         use crate::inode::BlockPath;
         match BlockPath::from_logical(logical_block_idx) {
@@ -6380,7 +6444,7 @@ impl DiskManager {
             Some(BlockPath::Single(i)) => {
                 let sib = inode.blocks[10];
                 if sib != 0 {
-                    Self::write_block_ptr(&mut guard.mmap, sib, i, 0);
+                    Self::zero_block_ptr(guard, sib, i, ops);
                 }
             }
             Some(BlockPath::Double(a, b)) => {
@@ -6388,7 +6452,7 @@ impl DiskManager {
                 if dib != 0 {
                     let sib = Self::read_block_ptr(&guard.mmap, dib, a);
                     if sib != 0 {
-                        Self::write_block_ptr(&mut guard.mmap, sib, b, 0);
+                        Self::zero_block_ptr(guard, sib, b, ops);
                     }
                 }
             }
@@ -6399,7 +6463,7 @@ impl DiskManager {
                     if dib != 0 {
                         let sib = Self::read_block_ptr(&guard.mmap, dib, b);
                         if sib != 0 {
-                            Self::write_block_ptr(&mut guard.mmap, sib, c, 0);
+                            Self::zero_block_ptr(guard, sib, c, ops);
                         }
                     }
                 }
@@ -6408,11 +6472,39 @@ impl DiskManager {
         }
     }
 
+    /// Clears one pointer slot of an indirect block.
+    ///
+    /// SEC-29: on a journaled image the metadata must not change before the
+    /// transaction commits, so the zeroing is staged as a WAL operation
+    /// instead of being written to the mapping directly. A crash between the
+    /// mutation and the commit would otherwise leave the pointer tables
+    /// cleared while the journal knows nothing about it.
+    fn zero_block_ptr(
+        guard: &mut DiskManagerInner,
+        block_id: u64,
+        entry_idx: usize,
+        ops: &mut Option<&mut Vec<crate::journal::MetadataOp>>,
+    ) {
+        match ops {
+            Some(ops) => {
+                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                    block_id,
+                    offset: (entry_idx * 8) as u32,
+                    data: vec![0u8; 8],
+                });
+            }
+            None => {
+                Self::write_block_ptr(&mut guard.mmap, block_id, entry_idx, 0);
+            }
+        }
+    }
+
     fn prune_unused_indirect_blocks(
         guard: &mut DiskManagerInner,
         inode: &mut Inode,
         new_blocks_needed: usize,
         freed_blocks: &mut Vec<u64>,
+        ops: &mut Option<&mut Vec<crate::journal::MetadataOp>>,
     ) {
         if new_blocks_needed <= 10 && inode.blocks[10] != 0 {
             freed_blocks.push(inode.blocks[10]);
@@ -6434,14 +6526,41 @@ impl DiskManager {
             }
         } else if inode.blocks[11] != 0 {
             let keep_sibs = (new_blocks_needed - 522).div_ceil(512);
-            if let Some(dib_slice) = Self::get_block_mut_from_map(&mut guard.mmap, inode.blocks[11])
-            {
-                for (a_idx, chunk) in dib_slice.as_chunks_mut::<8>().0.iter_mut().enumerate() {
-                    if a_idx >= keep_sibs {
-                        let sib = u64::from_le_bytes(*chunk);
-                        if sib != 0 {
-                            freed_blocks.push(sib);
-                            *chunk = [0u8; 8];
+            // SEC-29: the pruning is staged in the WAL on a journaled image
+            // (see `zero_block_ptr`).
+            match ops {
+                Some(ops) => {
+                    if let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, inode.blocks[11])
+                    {
+                        for (a_idx, chunk) in dib_slice.as_chunks::<8>().0.iter().enumerate() {
+                            if a_idx >= keep_sibs {
+                                let sib = u64::from_le_bytes(*chunk);
+                                if sib != 0 {
+                                    freed_blocks.push(sib);
+                                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                                        block_id: inode.blocks[11],
+                                        offset: (a_idx * 8) as u32,
+                                        data: vec![0u8; 8],
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                None => {
+                    if let Some(dib_slice) =
+                        Self::get_block_mut_from_map(&mut guard.mmap, inode.blocks[11])
+                    {
+                        for (a_idx, chunk) in
+                            dib_slice.as_chunks_mut::<8>().0.iter_mut().enumerate()
+                        {
+                            if a_idx >= keep_sibs {
+                                let sib = u64::from_le_bytes(*chunk);
+                                if sib != 0 {
+                                    freed_blocks.push(sib);
+                                    *chunk = [0u8; 8];
+                                }
+                            }
                         }
                     }
                 }

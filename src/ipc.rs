@@ -538,6 +538,14 @@ fn frame_codec(limit: u64) -> impl bincode::Options {
         .with_limit(limit)
 }
 
+/// Capacity above which a pooled frame buffer is released again.
+///
+/// A frame may be up to `MAX_FRAME_BYTES` (128 MiB) large. Without a cap, one
+/// such frame pins its buffer for the lifetime of the worker thread, and with
+/// `MAX_CONCURRENT_PEERS` workers the resident memory can stay in the
+/// multi-gigabyte range (P4.28).
+const FRAME_BUF_SHRINK_THRESHOLD: usize = 1024 * 1024;
+
 thread_local! {
     /// Reusable scratch buffer for the *write* path. Kept separate from the
     /// read buffer so a thread that writes a response right after reading a
@@ -547,6 +555,13 @@ thread_local! {
     static FRAME_READ_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// Reusable staging buffer used to stream payload bytes off the wire.
     static FRAME_CHUNK_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Releases the capacity of a pooled buffer that grew beyond the threshold.
+fn shrink_frame_buf(buf: &mut Vec<u8>) {
+    if buf.capacity() > FRAME_BUF_SHRINK_THRESHOLD {
+        buf.shrink_to(FRAME_BUF_SHRINK_THRESHOLD);
+    }
 }
 
 /// Serializes and writes a length-prefixed frame to a stream.
@@ -577,6 +592,9 @@ pub fn write_framed<W: Write, T: Serialize>(writer: &mut W, val: &T) -> io::Resu
         buf[..4].copy_from_slice(&len.to_le_bytes());
         writer.write_all(&buf)?;
         writer.flush()?;
+        // P4.28: a large frame must not pin its buffer for the lifetime of
+        // the worker thread.
+        shrink_frame_buf(&mut buf);
         Ok(())
     })
 }
@@ -622,9 +640,12 @@ pub fn read_framed<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T
         // The limit is the size of the frame itself: a payload can never claim
         // more bytes than the frame carries, so a crafted length prefix cannot
         // trigger a huge allocation (SEC-17).
-        frame_codec(buf.len() as u64)
+        let result = frame_codec(buf.len() as u64)
             .deserialize(buf.as_slice())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+        // P4.28: release the capacity of a large frame again.
+        shrink_frame_buf(&mut buf);
+        result
     })
 }
 
@@ -1095,7 +1116,9 @@ impl IpcServer {
             let mut challenge: Option<([u8; AUTH_NONCE_LEN], [u8; AUTH_NONCE_LEN])> = None;
 
             while let Ok(req) = read_framed::<_, IpcRequest>(&mut stream) {
-                let short_name = req.name().to_string();
+                // P4.28: the name is only materialized when there is an
+                // event listener; `req.name()` is a `&'static str`.
+                let short_name = req.name();
 
                 let resp = match req {
                     IpcRequest::Ping => IpcResponse::Success(IpcResponseData::Pong),
@@ -1176,7 +1199,7 @@ impl IpcServer {
                 if let Some(tx) = &tx_worker {
                     let _ = tx.send(SessionEvent::RequestHandled {
                         peer_id,
-                        req_type: short_name,
+                        req_type: short_name.to_string(),
                     });
                 }
             }
@@ -1244,6 +1267,9 @@ impl IpcServer {
                 file_offset,
                 len,
             } => {
+                // P4.28: the size is needed to clamp the allocation, but the
+                // inode lookup itself is left to `read_at` (which validates
+                // the inode) instead of doing it twice.
                 let inode = dm.read_inode(inode_id)?;
                 let available = inode.size.saturating_sub(file_offset) as usize;
                 let alloc_len = len.min(available).min(128 * 1024 * 1024);
@@ -1382,7 +1408,7 @@ impl IpcClient {
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut client_nonce);
         let has_password = matches!(credential, AuthCredential::Password(_));
 
-        let challenge = self.send(IpcRequest::AuthChallenge {
+        let challenge = self.send(&IpcRequest::AuthChallenge {
             client_nonce,
             has_password,
         })?;
@@ -1425,7 +1451,7 @@ impl IpcClient {
             &key,
             &auth_transcript(0, &client_nonce, &server_nonce, &salt),
         );
-        let verified = self.send(IpcRequest::AuthResponse { client_mac })?;
+        let verified = self.send(&IpcRequest::AuthResponse { client_mac })?;
         match verified {
             IpcResponseData::AuthVerify { server_mac } => {
                 let expected = auth_mac(
@@ -1444,8 +1470,11 @@ impl IpcClient {
         }
     }
 
-    /// Sends an IPC request to the Master and waits for response
-    pub fn send(&self, req: IpcRequest) -> Result<IpcResponseData, io::Error> {
+    /// Sends an IPC request to the Master and waits for response.
+    ///
+    /// The request is taken by reference (P4.28): a `WriteData` payload would
+    /// otherwise be copied in full on every attempt of the retry loop.
+    pub fn send(&self, req: &IpcRequest) -> Result<IpcResponseData, io::Error> {
         // Deliberately NOT `lock_unpoisoned`: a panic between `write_framed` and
         // `read_framed` leaves a partially written frame in the stream, so the peer
         // is now out of step. Recovering the lock would let the next caller write

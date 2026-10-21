@@ -13,6 +13,7 @@ pub mod ipc;
 pub mod journal;
 pub mod session;
 pub mod superblock;
+pub mod zstd_pool;
 
 pub use auto_defrag::{AutoDefragConfig, AutoDefragStats};
 pub use disk::{DiskManager, DiskManagerError, DurabilityMode, ReadRequest};

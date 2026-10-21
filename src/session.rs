@@ -748,7 +748,9 @@ impl OifsSession {
                 // 2. Retry loop for high-concurrency master handovers
                 let mut current_client = client.clone();
                 for attempt in 0..5 {
-                    match current_client.send(req.clone()) {
+                    // P4.28: the request is borrowed, so a `WriteData`
+                    // payload is not cloned for every attempt.
+                    match current_client.send(&req) {
                         Ok(data) => return Ok(data),
                         Err(io_err) if Self::is_connection_error(&io_err) => {
                             if attempt == 4 {

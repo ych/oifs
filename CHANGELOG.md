@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `read_framed` now streams payloads in bounded 64 KiB chunks, removing the blind `vec![0u8; len]` allocation a malicious peer could weaponize.
   - Added `tests/ipc_frame_test.rs` covering round-trips, chunked streaming, buffer reuse, oversized-frame rejection and truncated frames.
 - **Kani Proofs**:
-  - Added `proof_find_next_free_wrapped_soundness` (wrap-around allocator scan), the first `ipc` module harnesses `proof_frame_len_validation_soundness` / `proof_zero_length_frame_is_valid` and `proof_sanitized_config_is_always_valid` for the auto-defrag configuration. The suite now holds 76 harnesses.
+  - Added `proof_find_next_free_wrapped_soundness` (wrap-around allocator scan), the first `ipc` module harnesses `proof_frame_len_validation_soundness` / `proof_zero_length_frame_is_valid` and `proof_sanitized_config_is_always_valid` for the auto-defrag configuration. The suite now holds 77 harnesses.
   - Added `proof_block_path_tier_boundaries_symbolic`, which proves the pointer-tree tier classification for *every* logical block index instead of a handful of constants.
   - Added `proof_usable_inode_count_fits_the_table`, which proves that the usable inode ids always fit in the inode table (SEC-25).
   - Every proof that constrains its input with `kani::assume` now carries `kani::cover!` assertions, so no harness can pass vacuously.

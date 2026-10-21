@@ -70,7 +70,11 @@ pub enum OifsSession {
         client: Arc<IpcClient>,
         image_path: PathBuf,
         mode: SessionMode,
-        password: Option<String>,
+        /// The password kept for the automatic reconnection.
+        ///
+        /// SEC-24: it lives in a zeroizing buffer, so it is wiped when the
+        /// session is dropped instead of lingering in plain heap memory.
+        password: Option<zeroize::Zeroizing<String>>,
         dm_fallback: Arc<Mutex<Option<Arc<DiskManager>>>>,
     },
 }
@@ -628,7 +632,7 @@ impl OifsSession {
                     client: Arc::new(client),
                     image_path: path_ref.to_path_buf(),
                     mode,
-                    password: password.map(|s| s.to_string()),
+                    password: password.map(|s| zeroize::Zeroizing::new(s.to_string())),
                     dm_fallback: Arc::new(Mutex::new(None)),
                 })
             }
@@ -758,7 +762,7 @@ impl OifsSession {
                                 image_path,
                                 0,
                                 mode.clone(),
-                                password.as_deref(),
+                                password.as_ref().map(|p| p.as_str()),
                                 false,
                             ) {
                                 Ok(s) => s,

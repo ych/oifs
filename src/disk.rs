@@ -249,6 +249,16 @@ pub(crate) struct DiskManagerInner {
 }
 
 impl DiskManagerInner {
+    /// Whether a block id addresses a block inside the data area.
+    ///
+    /// SEC-20: pointers that leave the data area (superblock, bitmaps, inode
+    /// table, journal region) must never be followed or written through.
+    pub fn is_data_block(&self, block_id: u64) -> bool {
+        block_id != 0
+            && block_id >= self.superblock.data_block_start
+            && block_id < self.superblock.block_count
+    }
+
     pub fn durability_mode(&self) -> DurabilityMode {
         DurabilityMode::from_u8(
             self.durability_mode
@@ -2776,6 +2786,8 @@ impl DiskManager {
         mmap: &MmapMut,
         inode: &Inode,
         physical_size: u64,
+        data_start: u64,
+        data_end: u64,
         mut emit: impl FnMut(u64, usize, usize),
     ) {
         let mut read = 0;
@@ -2788,7 +2800,9 @@ impl DiskManager {
             // 1. Direct blocks (0..10)
             if blk_idx < 10 {
                 let blk = inode.blocks[blk_idx];
-                if blk != 0 {
+                // SEC-20: a pointer that does not address the data area is
+                // ignored instead of exposing metadata as file content.
+                if blk != 0 && blk >= data_start && blk < data_end {
                     emit(blk, read as usize, to_read);
                 }
                 read += to_read as u64;
@@ -2818,7 +2832,7 @@ impl DiskManager {
                         let to_read_curr =
                             std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
                         let blk = u64::from_le_bytes(*chunk);
-                        if blk != 0 {
+                        if blk != 0 && blk >= data_start && blk < data_end {
                             emit(blk, read as usize, to_read_curr);
                         }
                         read += to_read_curr as u64;
@@ -2866,7 +2880,7 @@ impl DiskManager {
                         let to_read_curr =
                             std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
                         let blk = u64::from_le_bytes(*chunk);
-                        if blk != 0 {
+                        if blk != 0 && blk >= data_start && blk < data_end {
                             emit(blk, read as usize, to_read_curr);
                         }
                         read += to_read_curr as u64;
@@ -2918,7 +2932,9 @@ impl DiskManager {
                 }
 
                 let blk = Self::read_block_ptr(mmap, sib_id, s_idx);
-                if blk != 0 {
+                // SEC-20: a pointer that does not address the data area is
+                // ignored instead of exposing metadata as file content.
+                if blk != 0 && blk >= data_start && blk < data_end {
                     emit(blk, read as usize, to_read);
                 }
                 read += to_read as u64;
@@ -2951,19 +2967,37 @@ impl DiskManager {
         let mut raw_data = vec![0u8; physical_size as usize];
         if guard.io_engine.effective() == IoBackend::Mmap {
             // Zero-copy path: memcpy each allocated block straight out of the mapping.
-            Self::walk_payload_blocks(&guard.mmap, inode, physical_size, |blk, off, len| {
-                if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                    raw_data[off..off + len].copy_from_slice(&slice[..len]);
-                }
-            });
+            let data_start = guard.superblock.data_block_start;
+            let data_end = guard.superblock.block_count;
+            Self::walk_payload_blocks(
+                &guard.mmap,
+                inode,
+                physical_size,
+                data_start,
+                data_end,
+                |blk, off, len| {
+                    if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
+                        raw_data[off..off + len].copy_from_slice(&slice[..len]);
+                    }
+                },
+            );
         } else {
             // P3.2: gather coalesced extents, then hand them to the engine in one submission.
             let mut extents = ExtentList::new();
-            Self::walk_payload_blocks(&guard.mmap, inode, physical_size, |blk, off, len| {
-                if Self::get_block_from_map(&guard.mmap, blk).is_some() {
-                    extents.push(blk * BLOCK_SIZE as u64, off, len);
-                }
-            });
+            let data_start = guard.superblock.data_block_start;
+            let data_end = guard.superblock.block_count;
+            Self::walk_payload_blocks(
+                &guard.mmap,
+                inode,
+                physical_size,
+                data_start,
+                data_end,
+                |blk, off, len| {
+                    if Self::get_block_from_map(&guard.mmap, blk).is_some() {
+                        extents.push(blk * BLOCK_SIZE as u64, off, len);
+                    }
+                },
+            );
             guard.io_engine.read(
                 &guard.file,
                 &guard.mmap,
@@ -5184,7 +5218,21 @@ impl DiskManager {
         allocate: bool,
         is_intermediate: bool,
     ) -> Result<u64, DiskManagerError> {
+        // SEC-20: an indirect block must live in the data area, and so must
+        // the child pointer it holds.
+        if !guard.is_data_block(parent_block_id) {
+            return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                "Indirect block {} is outside the data area",
+                parent_block_id
+            ))));
+        }
         let mut child_id = Self::read_block_ptr(&guard.mmap, parent_block_id, entry_idx);
+        if child_id != 0 && !guard.is_data_block(child_id) {
+            return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                "Block pointer {} is outside the data area",
+                child_id
+            ))));
+        }
         if child_id == 0 && allocate {
             child_id = if is_intermediate {
                 Self::alloc_and_zero_block(guard)?
@@ -5213,6 +5261,14 @@ impl DiskManager {
             if *slot == 0 && allocate {
                 *slot = DiskManager::alloc_and_zero_block(guard)?;
             }
+            // SEC-20: an indirect root must address the data area; otherwise a
+            // corrupted inode could make a write land in the metadata area.
+            if *slot != 0 && !guard.is_data_block(*slot) {
+                return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                    "Indirect root {} is outside the data area",
+                    *slot
+                ))));
+            }
             Ok(*slot)
         }
 
@@ -5220,6 +5276,13 @@ impl DiskManager {
             Some(BlockPath::Direct(i)) => {
                 if inode.blocks[i] == 0 && allocate {
                     inode.blocks[i] = Self::allocate_block(guard)?;
+                }
+                // SEC-20: a direct pointer must address the data area.
+                if inode.blocks[i] != 0 && !guard.is_data_block(inode.blocks[i]) {
+                    return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                        "Block pointer {} is outside the data area",
+                        inode.blocks[i]
+                    ))));
                 }
                 Ok(inode.blocks[i])
             }

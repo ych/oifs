@@ -244,12 +244,12 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-16** | `src/disk.rs:881-1047, 3524-3545` (`plan_write_prepared`, `plan_write`, `write_data_with_filters`) | On encrypted images (`encryption_key.is_some()`), non-zero-offset writes (`file_offset > 0`) to uncompressed or newly created empty files (`old_compressed_size == 0`) fall through to `WriteCase::Raw`, writing **unencrypted plaintext** directly to disk (`inode.encrypted == false`) or overwriting XChaCha20-Poly1305 ciphertext in place and corrupting its Poly1305 tag. Also, shrinking overwrites at `file_offset == 0` on uncompressed encrypted files keep `old_size` via `max(old_size, payload.buffer.len())`, breaking subsequent AEAD decryption. | **Critical** | - | **Resolved** (see §3.3) |
 | **SEC-17** | `src/ipc.rs:406` (`read_framed`) | `bincode::deserialize(buf.as_slice())` is called with default unlimited options. A tiny 16-byte frame containing a crafted `u64` `Vec`/`String` length prefix forces `bincode` to pre-allocate gigabytes before reading from `buf`, crashing the Master via OOM. | **High** | - | **Resolved** (`frame_codec` limits the deserializer to the frame size) |
 | **SEC-18** | `src/ipc.rs:124-158, 691-760`, `src/session.rs:265-355, 580-607` | (1) `IpcRequest::Authenticate` sends the raw password in cleartext; an attacker who writes a crafted `.{image}.master` rendezvous file can redirect connecting clients and harvest their encryption password. (2) Unencrypted images have zero IPC authentication (`authenticated = !is_encrypted`). (3) `/tmp` Unix sockets lack `0600` permission enforcement. (4) `spawn_client_worker` spawns unbounded OS threads per connection without socket read/write timeouts (Slowloris / thread exhaustion DoS). | **High** | - | **Resolved** (see §3.4) |
-| **SEC-19** | `src/encryption.rs:83-137`, `src/disk.rs:3872-3900` | XChaCha20-Poly1305 AEAD passes empty associated data (`b""`). Because all files and 64K seekable chunks share the same master key without binding `(inode_id, chunk_idx, flags)` in AAD, an attacker with write access to `.img` can swap/reorder/rollback encrypted chunks across files or toggle unauthenticated inode filter flags undetected. | **Medium** | - | **Open / Format v3** |
-| **SEC-20** | `src/disk.rs:2743-2798`, `src/journal.rs:924-980` (`resolve_logical_block_id`, `get_or_alloc_block`, `apply_op_in_place`) | Resolving data block pointers from inodes/indirect tables and replaying `MetadataOp::WriteBlockSlice` only check `block_id * BLOCK_SIZE <= mmap.len()` without verifying `block_id >= sb.data_block_start` (and `WriteInode` does not check `inode_id < sb.inode_count`), allowing crafted/corrupted pointers to overwrite SuperBlock, bitmaps, or inode tables. | **Medium** | - | **Open** |
-| **SEC-21** | `src/ffi.rs:251, 315, 344, 417, 488, 590` | Several FFI entry points execute `unsafe { CStr::from_ptr(...) }` and `std::slice::from_raw_parts(...)` outside `std::panic::catch_unwind`, and `oifs_write_file_with_policy` silently substitutes `&[]` when `buf.is_null() && buf_size > 0` instead of returning `-1`. | **Medium** | - | **Open** |
-| **SEC-22** | `src/bin/oifs_mcp.rs:154, 188-191, 285, 367` | MCP server constructs JSON responses via `format!` without escaping quotes, backslashes, or control characters in filenames/paths/error messages (JSON injection), and computes `size_mb * 1024 * 1024` without overflow checks. | **Medium** | - | **Open** |
+| **SEC-19** | `src/encryption.rs:83-137`, `src/disk.rs:3872-3900` | XChaCha20-Poly1305 AEAD passes empty associated data (`b""`). Because all files and 64K seekable chunks share the same master key without binding `(inode_id, chunk_idx, flags)` in AAD, an attacker with write access to `.img` can swap/reorder/rollback encrypted chunks across files or toggle unauthenticated inode filter flags undetected. | **Medium** | - | **Open / Format v3** (requires an on-disk format change: the AAD binds the inode id, the chunk index and the payload flags, so old ciphertexts become unreadable and a migration is needed) |
+| **SEC-20** | `src/disk.rs:2743-2798`, `src/journal.rs:924-980` (`resolve_logical_block_id`, `get_or_alloc_block`, `apply_op_in_place`) | Resolving data block pointers from inodes/indirect tables and replaying `MetadataOp::WriteBlockSlice` only check `block_id * BLOCK_SIZE <= mmap.len()` without verifying `block_id >= sb.data_block_start` (and `WriteInode` does not check `inode_id < sb.inode_count`), allowing crafted/corrupted pointers to overwrite SuperBlock, bitmaps, or inode tables. | **Medium** | - | **Resolved** (see §6.5) |
+| **SEC-21** | `src/ffi.rs:251, 315, 344, 417, 488, 590` | Several FFI entry points execute `unsafe { CStr::from_ptr(...) }` and `std::slice::from_raw_parts(...)` outside `std::panic::catch_unwind`, and `oifs_write_file_with_policy` silently substitutes `&[]` when `buf.is_null() && buf_size > 0` instead of returning `-1`. | **Medium** | - | **Resolved** (see §6.6) |
+| **SEC-22** | `src/bin/oifs_mcp.rs:154, 188-191, 285, 367` | MCP server constructs JSON responses via `format!` without escaping quotes, backslashes, or control characters in filenames/paths/error messages (JSON injection), and computes `size_mb * 1024 * 1024` without overflow checks. | **Medium** | - | **Resolved** (see §6.7) |
 | **SEC-23** | `src/auto_defrag.rs:66-82, 165-171, 240-318` | `AutoDefragConfig` does not sanitize `NaN` thresholds (`f64::NAN.clamp(0.0, 1.0)` remains `NaN`) or `check_interval == Duration::ZERO` (100% CPU busy-spin loop), and uses `.lock().unwrap()` / `.read().unwrap()` instead of `crate::lock_unpoisoned`. | **Low** | - | **Resolved** (`AutoDefragConfig::sanitized`, `MIN_CHECK_INTERVAL`, `crate::lock_unpoisoned` / `read_unpoisoned`) |
-| **SEC-24** | `src/session.rs:106, 612` | `OifsSession::Remote` retains `password: Option<String>` in plain unzeroized heap memory across the session lifetime for failover reconnection, instead of wrapping it in `zeroize::Zeroizing<String>`. | **Low** | - | **Open** |
+| **SEC-24** | `src/session.rs:106, 612` | `OifsSession::Remote` retains `password: Option<String>` in plain unzeroized heap memory across the session lifetime for failover reconnection, instead of wrapping it in `zeroize::Zeroizing<String>`. | **Low** | - | **Resolved** (`Option<zeroize::Zeroizing<String>>`) |
 
 ### 3.1 Detailed Threat Model & Residual Security Evaluation
 
@@ -558,3 +558,51 @@ frame carries.
 token and rendezvous permissions, the rejection of a master that cannot prove
 its key, the rejection of unauthenticated peers, and the successful
 authentication with the published secret.
+
+### 6.5 SEC-20 — Data-Area Lower-Bound Checks
+
+**Fix** (`src/disk.rs`, `src/journal.rs`):
+
+* `DiskManagerInner::is_data_block(block_id)` is the single predicate for "this
+  block id addresses the data area" (`data_block_start <= id < block_count`).
+* `walk_payload_blocks` (the read path) ignores a pointer that leaves the data
+  area instead of exposing metadata as file content.
+* `get_or_alloc_block`, `get_or_alloc_indirect_child` and the indirect-root
+  helper reject a forged pointer with an error, so a write can never land in
+  the superblock, the bitmaps or the inode table.
+* `apply_op_in_place` validates every replayed operation: `WriteBlockSlice` and
+  `SetDataBitmap`/`SetDataBitmapRange` must stay inside the data area, and
+  `WriteInode`/`SetInodeBitmap` must address a real inode.
+
+**Verification**: `tests/sec20_block_pointer_test.rs` (3 tests) — a file whose
+pointer addresses the superblock does not expose it as content, a write
+through a forged pointer is rejected while the filesystem stays usable, and
+the WAL replay refuses every operation that leaves the data area.
+
+### 6.6 SEC-21 — FFI Boundary Hardening
+
+**Fix** (`src/ffi.rs`):
+
+* New `cstr_to_str()` helper; every `CStr::from_ptr` conversion of a
+  caller-provided pointer now happens *inside* the `catch_unwind` closure, so
+  a fault while converting the string can never unwind across the
+  `extern "C"` boundary.
+* `oifs_write_file_with_policy` no longer substitutes an empty slice for a
+  null buffer with a non-zero size: it reports the caller error instead of
+  silently writing nothing.
+
+### 6.7 SEC-22 — MCP Response Encoding
+
+**Fix** (`src/bin/oifs_mcp.rs`):
+
+* All tool responses are built with `serde_json` (`json_object` / `json_error`
+  helpers) instead of `format!`, so quotes, backslashes and control characters
+  in file names or error messages are escaped correctly and cannot inject
+  JSON.
+* The image size is computed with `checked_mul`, so a huge `--size` is
+  rejected instead of wrapping around into a tiny image.
+
+**Verification**: `tests/mcp_server_test.rs::test_mcp_tool_response_escapes_hostile_names`
+drives the server over stdio with a file name that would break a hand-built
+JSON string and asserts that every emitted line (and every embedded tool
+payload) parses as JSON.

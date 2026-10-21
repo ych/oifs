@@ -853,6 +853,13 @@ pub fn apply_op_in_place(
             inode_id,
             allocated,
         } => {
+            // SEC-20: an inode id outside the inode table would flip a bit in
+            // the wrong place; the bitmap is only meaningful for real inodes.
+            if *inode_id >= sb.inode_count {
+                return Err(JournalError::BlockOutOfRange {
+                    block_id: *inode_id,
+                });
+            }
             let blk = sb.inode_bitmap_block;
             let byte = block_range_mut(image, bs, blk)
                 .ok_or(JournalError::BlockOutOfRange { block_id: blk })?;
@@ -877,6 +884,13 @@ pub fn apply_op_in_place(
             block_id,
             allocated,
         } => {
+            // SEC-20: the data bitmap only describes the data area; a block
+            // id below `data_block_start` would address metadata.
+            if *block_id < sb.data_block_start || *block_id >= sb.block_count {
+                return Err(JournalError::BlockOutOfRange {
+                    block_id: *block_id,
+                });
+            }
             let blk = sb.data_bitmap_block;
             let byte = block_range_mut(image, bs, blk)
                 .ok_or(JournalError::BlockOutOfRange { block_id: blk })?;
@@ -906,6 +920,13 @@ pub fn apply_op_in_place(
             count,
             allocated,
         } => {
+            // SEC-20: the range must stay inside the data area.
+            let end_block = start_block.saturating_add(*count as u64);
+            if *start_block < sb.data_block_start || end_block > sb.block_count {
+                return Err(JournalError::BlockOutOfRange {
+                    block_id: *start_block,
+                });
+            }
             let blk = sb.data_bitmap_block;
             let byte = block_range_mut(image, bs, blk)
                 .ok_or(JournalError::BlockOutOfRange { block_id: blk })?;
@@ -925,6 +946,13 @@ pub fn apply_op_in_place(
             inode_id,
             inode_bytes,
         } => {
+            // SEC-20: an inode id outside the inode table would write over
+            // another structure (or over the data area).
+            if *inode_id >= sb.inode_count {
+                return Err(JournalError::BlockOutOfRange {
+                    block_id: *inode_id,
+                });
+            }
             let bs_usize = usize::try_from(bs).map_err(|_| JournalError::BlockOutOfRange {
                 block_id: *inode_id,
             })?;
@@ -958,6 +986,14 @@ pub fn apply_op_in_place(
             offset,
             data,
         } => {
+            // SEC-20: a payload slice may only touch the data area. Without
+            // this check a crafted WAL could overwrite the superblock, the
+            // bitmaps or the inode table.
+            if *block_id < sb.data_block_start || *block_id >= sb.block_count {
+                return Err(JournalError::BlockOutOfRange {
+                    block_id: *block_id,
+                });
+            }
             let start = usize::try_from(*offset).map_err(|_| JournalError::BlockOutOfRange {
                 block_id: *block_id,
             })?;

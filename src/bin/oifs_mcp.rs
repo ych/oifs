@@ -127,6 +127,30 @@ struct EntryInfo {
     size: u64,
 }
 
+// ── JSON helpers ───────────────────────────────────────────────────────
+//
+// SEC-22: the responses used to be assembled with `format!`, which does not
+// escape quotes, backslashes or control characters. A file name or an error
+// message could therefore inject arbitrary JSON into the response. Every
+// response is now built with `serde_json`, which escapes correctly.
+
+/// Builds a JSON object from key/value pairs.
+fn json_object(fields: Vec<(&str, serde_json::Value)>) -> String {
+    let mut map = serde_json::Map::new();
+    for (key, value) in fields {
+        map.insert(key.to_string(), value);
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
+/// Builds the `{"ok":false,"error":...}` response of a failed tool call.
+fn json_error(error: &dyn std::fmt::Display) -> String {
+    json_object(vec![
+        ("ok", serde_json::Value::Bool(false)),
+        ("error", serde_json::Value::String(error.to_string())),
+    ])
+}
+
 // ── Tool implementations ──────────────────────────────────────────────
 
 #[tool_router]
@@ -143,15 +167,15 @@ impl OifsMcpServer {
                 Err(_) => dm.create_file(parent_id, &name)?,
             };
             dm.write_data_truncated(inode_id, params.content.as_bytes(), CompressionMode::Auto)?;
-            Ok(format!(
-                "{{\"ok\":true,\"inode\":{},\"bytes\":{}}}",
-                inode_id,
-                params.content.len()
-            ))
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("inode", serde_json::Value::from(inode_id)),
+                ("bytes", serde_json::Value::from(params.content.len())),
+            ]))
         })();
         match result {
             Ok(msg) => msg,
-            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", e),
+            Err(e) => json_error(&e),
         }
     }
 
@@ -167,7 +191,7 @@ impl OifsMcpServer {
         })();
         match result {
             Ok(content) => content,
-            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", e),
+            Err(e) => json_error(&e),
         }
     }
 
@@ -185,17 +209,18 @@ impl OifsMcpServer {
             let lines: Vec<String> = entries
                 .iter()
                 .map(|e| {
-                    format!(
-                        "{{\"name\":\"{}\",\"kind\":\"{}\",\"size\":{}}}",
-                        e.name, e.kind, e.size
-                    )
+                    json_object(vec![
+                        ("name", serde_json::Value::String(e.name.clone())),
+                        ("kind", serde_json::Value::String(e.kind.clone())),
+                        ("size", serde_json::Value::from(e.size)),
+                    ])
                 })
                 .collect();
             Ok(lines.join("\n"))
         })();
         match result {
             Ok(output) => output,
-            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", e),
+            Err(e) => json_error(&e),
         }
     }
 
@@ -207,11 +232,14 @@ impl OifsMcpServer {
         let result = (|| -> Result<String> {
             let (parent_id, name) = dm.resolve_parent(&params.path)?;
             let dir_id = dm.create_directory(parent_id, &name)?;
-            Ok(format!("{{\"ok\":true,\"inode\":{}}}", dir_id))
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("inode", serde_json::Value::from(dir_id)),
+            ]))
         })();
         match result {
             Ok(msg) => msg,
-            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", e),
+            Err(e) => json_error(&e),
         }
     }
 
@@ -221,11 +249,11 @@ impl OifsMcpServer {
         let result = (|| -> Result<String> {
             let (parent_id, name) = dm.resolve_parent(&params.path)?;
             dm.delete_file(parent_id, &name)?;
-            Ok("{\"ok\":true}".to_string())
+            Ok(json_object(vec![("ok", serde_json::Value::Bool(true))]))
         })();
         match result {
             Ok(msg) => msg,
-            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", e),
+            Err(e) => json_error(&e),
         }
     }
 
@@ -236,11 +264,14 @@ impl OifsMcpServer {
         let dm = self.dm.lock().await;
         let result = (|| -> Result<String> {
             dm.truncate_path(&params.path, params.size)?;
-            Ok(format!("{{\"ok\":true,\"size\":{}}}", params.size))
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("size", serde_json::Value::from(params.size)),
+            ]))
         })();
         match result {
             Ok(msg) => msg,
-            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", e),
+            Err(e) => json_error(&e),
         }
     }
 
@@ -262,15 +293,15 @@ impl OifsMcpServer {
                 new_content.push(b'\n');
             }
             dm.write_data(inode_id, 0, &new_content, CompressionMode::Never)?;
-            Ok(format!(
-                "{{\"ok\":true,\"inode\":{},\"total_bytes\":{}}}",
-                inode_id,
-                new_content.len()
-            ))
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("inode", serde_json::Value::from(inode_id)),
+                ("total_bytes", serde_json::Value::from(new_content.len())),
+            ]))
         })();
         match result {
             Ok(msg) => msg,
-            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", e),
+            Err(e) => json_error(&e),
         }
     }
 
@@ -281,18 +312,23 @@ impl OifsMcpServer {
         let dm = self.dm.lock().await;
         let result = (|| -> Result<String> {
             let frag = dm.analyze_fragmentation()?;
-            Ok(format!(
-                "{{\"image\":\"{}\",\"total_blocks\":{},\"used_blocks\":{},\"free_blocks\":{},\"fragmentation\":{:.3}}}",
-                self.image_path.display(),
-                frag.total_blocks,
-                frag.used_blocks,
-                frag.free_blocks,
-                frag.fragmentation_ratio
-            ))
+            Ok(json_object(vec![
+                (
+                    "image",
+                    serde_json::Value::String(self.image_path.display().to_string()),
+                ),
+                ("total_blocks", serde_json::Value::from(frag.total_blocks)),
+                ("used_blocks", serde_json::Value::from(frag.used_blocks)),
+                ("free_blocks", serde_json::Value::from(frag.free_blocks)),
+                (
+                    "fragmentation",
+                    serde_json::Value::from(frag.fragmentation_ratio),
+                ),
+            ]))
         })();
         match result {
             Ok(msg) => msg,
-            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", e),
+            Err(e) => json_error(&e),
         }
     }
 }
@@ -364,7 +400,12 @@ async fn main() -> Result<()> {
     }
 
     let image_path = image_path.unwrap_or_else(|| PathBuf::from(DEFAULT_IMAGE));
-    let size_bytes = size_mb * 1024 * 1024;
+    // SEC-22: the multiplication used to overflow silently (a huge `--size`
+    // wrapped around and produced a tiny image).
+    let size_bytes = size_mb
+        .checked_mul(1024)
+        .and_then(|mb| mb.checked_mul(1024))
+        .ok_or_else(|| anyhow::anyhow!("--size value is too large: {} MB", size_mb))?;
     let password = std::env::var("OIFS_PASSWORD").ok();
 
     eprintln!(

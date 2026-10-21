@@ -91,7 +91,7 @@ An inode stores:
 | `src/ffi.rs` | C-compatible dynamic library bindings (`include/oifs.h`). |
 | `src/bin/oifs.rs` | CLI application entry point (`clap`-based). |
 | `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling. |
-| `tests/` | 58 integration, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, and CLI test suites. |
+| `tests/` | 60 integration, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, and CLI test suites. |
 | `docs/optimization_roadmap.md` | Detailed changelog and benchmarks for P0, P1, P2, and P3 optimizations. |
 | `docs/metadata_wal_design.md` | Metadata WAL specification and implementation status (M1–M5 complete). |
 | `docs/performance_and_verification_research.md` | In-depth audit of performance bottlenecks, safety vulnerabilities, and Kani blueprints. |
@@ -133,7 +133,7 @@ An inode stores:
 cargo build
 cargo build --release
 
-# 2. Run all standard unit and integration tests (58 test suites)
+# 2. Run all standard unit and integration tests (60 test suites)
 cargo test --release
 
 # 3. Run multi-block directory performance benchmark

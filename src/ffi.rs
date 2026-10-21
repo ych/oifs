@@ -32,6 +32,20 @@ impl OIFSHandle {
     }
 }
 
+/// Converts a C string pointer into a `&str`.
+///
+/// The dereference happens at the call site, which is always inside a
+/// `catch_unwind` closure, so a fault while converting the string cannot
+/// unwind across the `extern "C"` boundary (SEC-21).
+unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, &'static str> {
+    if ptr.is_null() {
+        return Err("Null argument provided");
+    }
+    unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|_| "Invalid UTF-8 filename")
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn oifs_open(path: *const c_char, size: u64) -> *mut OIFSHandle {
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -248,16 +262,15 @@ pub extern "C" fn oifs_create_file(handle: *mut OIFSHandle, path: *const c_char)
         return -1;
     }
 
-    let c_str = unsafe { CStr::from_ptr(path) };
-    let filename = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
-            return -1;
-        }
-    };
-
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let filename = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
             let (parent_id, name) = dm.resolve_parent(filename)?;
@@ -298,16 +311,15 @@ pub extern "C" fn oifs_create_or_open_file(handle: *mut OIFSHandle, path: *const
         return -1;
     }
 
-    let c_str = unsafe { CStr::from_ptr(path) };
-    let filename = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
-            return -1;
-        }
-    };
-
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let filename = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
             let (parent_id, name) = dm.resolve_parent(filename)?;
@@ -350,16 +362,15 @@ pub extern "C" fn oifs_delete_file(handle: *mut OIFSHandle, path: *const c_char)
         return -1;
     }
 
-    let c_str = unsafe { CStr::from_ptr(path) };
-    let filename = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
-            return -1;
-        }
-    };
-
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let filename = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
             let (parent_id, name) = dm.resolve_parent(filename)?;
@@ -414,16 +425,15 @@ pub extern "C" fn oifs_read_at(
         return -1;
     }
 
-    let c_str = unsafe { CStr::from_ptr(filename) };
-    let filename_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
-            return -1;
-        }
-    };
-
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let filename_str = match unsafe { cstr_to_str(filename) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+
         let dm = &handle_ref.dm;
         match (|| -> Result<i64, Box<dyn std::error::Error>> {
             let inode_id = dm.resolve_path(filename_str)?;
@@ -485,16 +495,15 @@ pub extern "C" fn oifs_write_file(
         return -1;
     }
 
-    let c_str = unsafe { CStr::from_ptr(filename) };
-    let filename_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
-            return -1;
-        }
-    };
-
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let filename_str = match unsafe { cstr_to_str(filename) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
             let (parent_id, name) = dm.resolve_parent(filename_str)?;
@@ -502,7 +511,14 @@ pub extern "C" fn oifs_write_file(
                 Ok(existing_id) => existing_id,
                 Err(_) => dm.create_file(parent_id, &name)?,
             };
+            // SEC-21: a null buffer with a non-zero size is a caller error and
+            // must not be silently treated as an empty write.
             let data = if buf.is_null() {
+                if buf_size > 0 {
+                    return Err(
+                        std::io::Error::other("Null buffer provided with a non-zero size").into(),
+                    );
+                }
                 &[][..]
             } else {
                 unsafe { std::slice::from_raw_parts(buf, buf_size as usize) }
@@ -557,15 +573,6 @@ pub extern "C" fn oifs_write_file_with_policy(
         return -1;
     }
 
-    let c_str = unsafe { CStr::from_ptr(filename) };
-    let filename_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
-            return -1;
-        }
-    };
-
     let compression_mode = if policy_flags & OIFS_WRITE_POLICY_SEEKABLE_64K != 0 {
         crate::disk::CompressionMode::Seekable {
             chunk_size: crate::inode::CHUNK_SIZE_64K as u32,
@@ -580,6 +587,14 @@ pub extern "C" fn oifs_write_file_with_policy(
     };
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let filename_str = match unsafe { cstr_to_str(filename) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
             let (parent_id, name) = dm.resolve_parent(filename_str)?;
@@ -631,16 +646,16 @@ pub extern "C" fn oifs_mkdir(handle: *mut OIFSHandle, path: *const c_char) -> i3
         return -1;
     }
 
-    let c_str = unsafe { CStr::from_ptr(path) };
-    let path_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            handle_ref.set_last_error(Some("Invalid UTF-8 path".to_string()));
-            return -1;
-        }
-    };
-
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SEC-21: the C string is only dereferenced inside the panic-protected
+        // closure.
+        let path_str = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
             let (parent_id, name) = dm.resolve_parent(path_str)?;
@@ -873,16 +888,15 @@ pub extern "C" fn oifs_truncate_file(
         return -1;
     }
 
-    let c_str = unsafe { CStr::from_ptr(filename) };
-    let filename_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            handle_ref.set_last_error(Some("Invalid UTF-8 filename".to_string()));
-            return -1;
-        }
-    };
-
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let filename_str = match unsafe { cstr_to_str(filename) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
             let (parent_id, name) = dm.resolve_parent(filename_str)?;

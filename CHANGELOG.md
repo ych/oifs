@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Unix sockets now live in a per-user private directory (`0700`) with `0600` socket and secret files, and the TCP rendezvous file is created with `0600`.
   - The number of concurrent peers is bounded (256) and every connection gets a 10 s handshake budget, which removes the Slowloris / thread-exhaustion vector.
 
+### Security
+- **Data-Area Lower-Bound Checks (SEC-20, Medium)**: Block pointers that leave the data area are now rejected everywhere: the read path ignores them, the write path fails with an error instead of landing in the superblock, the bitmaps or the inode table, and the WAL replay refuses every operation that addresses metadata.
+- **FFI Boundary Hardening (SEC-21, Medium)**: Every `CStr::from_ptr` conversion of a caller-provided pointer now happens inside the `catch_unwind` closure, and `oifs_write_file_with_policy` reports a null buffer with a non-zero size instead of silently writing nothing.
+- **MCP Response Encoding (SEC-22, Medium)**: The MCP tool responses are built with `serde_json` instead of `format!`, so file names and error messages can no longer inject JSON, and the image size is computed with checked arithmetic.
+- **Session Password Hygiene (SEC-24, Low)**: The password kept by a remote session for the automatic reconnection now lives in a `zeroize::Zeroizing<String>` and is wiped when the session is dropped.
+
 ### Fixed
 - **Broken Kani Build**: `proof_crc_input_is_deterministic` still referenced the `crc_input` helper removed by the P4.13 CRC refactor, so `cargo kani` failed to compile. The harness now uses `crc_frame_checksum` and additionally proves that the sequence number and payload length are covered by the checksum.
 - **Auto-Defrag Configuration Boundaries (SEC-23)**: `AutoDefragConfig::sanitized` now replaces a `NaN` fragmentation threshold with the default (a `NaN` threshold silently disabled the "not fragmented enough" check and defragmented on every tick) and raises a zero check interval to `MIN_CHECK_INTERVAL`, which removes the 100% CPU busy-spin loop. The coordinator's locks now use `crate::lock_unpoisoned` / `crate::read_unpoisoned`.

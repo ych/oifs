@@ -3032,6 +3032,15 @@ pub(crate) fn stage_payload_write(
             if is_new {
                 used.push(phys);
             }
+            // SEC-27: a block that was just allocated may still hold the
+            // plaintext of a deleted or truncated file. Zero it before the
+            // payload is staged, otherwise a partial write would expose the
+            // old content to the new owner of the block.
+            if sim.is_fresh(phys)
+                && let Some(slice) = DiskManager::get_block_mut_from_map(&mut guard.mmap, phys)
+            {
+                slice.fill(0);
+            }
         }
         if let Some(slice) = DiskManager::get_block_mut_from_map(&mut guard.mmap, phys) {
             slice[in_blk_off..in_blk_off + n].copy_from_slice(&buf[written..written + n]);

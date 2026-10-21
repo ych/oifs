@@ -2792,6 +2792,88 @@ impl DiskManager {
         }
     }
 
+    /// Collects the packed chunk entries of a seekable 64K file.
+    ///
+    /// SEC-26: the leaf pointer slots of such a file hold `ChunkEntry` values
+    /// instead of raw block ids; the defragmentation has to rewrite them as a
+    /// unit, because the payload of a chunk is a run of contiguous blocks.
+    fn collect_chunk_entries(
+        mmap: &MmapMut,
+        inode: &Inode,
+    ) -> Vec<(u64, crate::inode::ChunkEntry)> {
+        let mut entries = Vec::new();
+        if inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K == 0 {
+            return entries;
+        }
+
+        let push = |raw: u64, entries: &mut Vec<(u64, crate::inode::ChunkEntry)>| {
+            if raw == 0 {
+                return;
+            }
+            let entry = crate::inode::ChunkEntry(raw);
+            if !entry.is_empty() {
+                entries.push((raw, entry));
+            }
+        };
+
+        for i in 0..10 {
+            push(inode.blocks[i], &mut entries);
+        }
+
+        let sib_id = inode.blocks[10];
+        if sib_id != 0
+            && let Some(slice) = Self::get_block_from_map(mmap, sib_id)
+        {
+            for chunk in slice.as_chunks::<8>().0 {
+                push(u64::from_le_bytes(*chunk), &mut entries);
+            }
+        }
+
+        let dib_id = inode.blocks[11];
+        if dib_id != 0
+            && let Some(slice) = Self::get_block_from_map(mmap, dib_id)
+        {
+            for chunk in slice.as_chunks::<8>().0 {
+                let sib = u64::from_le_bytes(*chunk);
+                if sib == 0 {
+                    continue;
+                }
+                if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
+                    for d_chunk in s_slice.as_chunks::<8>().0 {
+                        push(u64::from_le_bytes(*d_chunk), &mut entries);
+                    }
+                }
+            }
+        }
+
+        let tib_id = inode.triple_indirect;
+        if tib_id != 0
+            && let Some(slice) = Self::get_block_from_map(mmap, tib_id)
+        {
+            for chunk in slice.as_chunks::<8>().0 {
+                let dib = u64::from_le_bytes(*chunk);
+                if dib == 0 {
+                    continue;
+                }
+                if let Some(d_slice) = Self::get_block_from_map(mmap, dib) {
+                    for s_chunk in d_slice.as_chunks::<8>().0 {
+                        let sib = u64::from_le_bytes(*s_chunk);
+                        if sib == 0 {
+                            continue;
+                        }
+                        if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
+                            for p_chunk in s_slice.as_chunks::<8>().0 {
+                                push(u64::from_le_bytes(*p_chunk), &mut entries);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        entries
+    }
+
     /// Walks the first `physical_size` bytes of `inode`'s on-disk payload in logical order,
     /// calling `emit(physical_block, payload_offset, len)` for every allocated block.
     /// Sparse holes (zero pointers at any indirection level) are skipped without a call.
@@ -5178,6 +5260,14 @@ impl DiskManager {
             blk
         };
         guard.free_block_hint = blk + 1;
+
+        // SEC-27: a freshly allocated block may still hold the plaintext of a
+        // file that was deleted or truncated. Zero it before it becomes
+        // reachable, otherwise a partial write would expose the old content
+        // to the new owner of the block.
+        if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk) {
+            slice.fill(0);
+        }
         Ok(blk)
     }
 
@@ -6116,15 +6206,42 @@ impl DiskManager {
 
         // Case 2: Uncompressed Raw file - Expansion
         if new_size > inode.size {
+            // SEC-27: the region between the old and the new size must be
+            // zeroed. The last allocated block still holds the old content
+            // after the old size, and that slack would otherwise become
+            // readable through the extended file.
+            let old_size = inode.size;
+            let mut ops = Vec::new();
+            if old_size > 0 {
+                let last_logical_idx = ((old_size - 1) / BLOCK_SIZE as u64) as usize;
+                let last_phys_blk =
+                    Self::resolve_logical_block_id(&guard.mmap, &inode, last_logical_idx);
+                if last_phys_blk != 0 {
+                    let slack_start = (old_size % BLOCK_SIZE as u64) as usize;
+                    let slack_len = BLOCK_SIZE - slack_start;
+                    if guard.superblock.has_journal_layout() {
+                        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                            block_id: last_phys_blk,
+                            offset: slack_start as u32,
+                            data: vec![0u8; slack_len],
+                        });
+                    } else if let Some(slice) =
+                        Self::get_block_mut_from_map(&mut guard.mmap, last_phys_blk)
+                    {
+                        slice[slack_start..].fill(0);
+                    }
+                }
+            }
+
             inode.size = new_size;
             inode.modified_at = now;
 
             if guard.superblock.has_journal_layout() {
                 let post_image = Self::build_inode_post_image(guard, inode_id, &inode)?;
-                let ops = vec![crate::journal::MetadataOp::WriteInode {
+                ops.push(crate::journal::MetadataOp::WriteInode {
                     inode_id,
                     inode_bytes: Box::new(post_image),
-                }];
+                });
                 Self::commit_journal_tx(guard, &ops)?;
                 Self::apply_journal_ops(guard, &ops)?;
                 guard.inode_cache.insert(inode_id, inode);
@@ -6539,12 +6656,36 @@ impl DiskManager {
         let mut payload_blocks = Vec::new();
         let mut indirect_blocks = Vec::new();
 
+        // SEC-26: a seekable 64K file does not store raw block ids in its
+        // pointer slots but packed `ChunkEntry` values, whose payload is a
+        // *run* of contiguous blocks. Treating the packed value as a block id
+        // would relocate the wrong blocks (or none at all) and destroy the
+        // file.
+        let is_seekable = inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0;
+
+        // Expands a pointer slot into the blocks it addresses.
+        let push_leaf = |raw: u64, payload_blocks: &mut Vec<u64>| {
+            if raw == 0 {
+                return;
+            }
+            if is_seekable {
+                let entry = crate::inode::ChunkEntry(raw);
+                if entry.is_empty() {
+                    return;
+                }
+                let start = entry.start_block() as u64;
+                let count = entry.block_count() as u64;
+                for i in 0..count {
+                    payload_blocks.push(start + i);
+                }
+            } else {
+                payload_blocks.push(raw);
+            }
+        };
+
         // 1. Direct blocks (0..10)
         for i in 0..10 {
-            let blk = inode.blocks[i];
-            if blk != 0 {
-                payload_blocks.push(blk);
-            }
+            push_leaf(inode.blocks[i], &mut payload_blocks);
         }
 
         // 2. Single Indirect block (10)
@@ -6554,9 +6695,7 @@ impl DiskManager {
             if let Some(slice) = Self::get_block_from_map(mmap, sib_id) {
                 for chunk in slice.as_chunks::<8>().0 {
                     let blk = u64::from_le_bytes(*chunk);
-                    if blk != 0 {
-                        payload_blocks.push(blk);
-                    }
+                    push_leaf(blk, &mut payload_blocks);
                 }
             }
         }
@@ -6573,9 +6712,7 @@ impl DiskManager {
                         if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
                             for d_chunk in s_slice.as_chunks::<8>().0 {
                                 let blk = u64::from_le_bytes(*d_chunk);
-                                if blk != 0 {
-                                    payload_blocks.push(blk);
-                                }
+                                push_leaf(blk, &mut payload_blocks);
                             }
                         }
                     }
@@ -6600,9 +6737,7 @@ impl DiskManager {
                                     if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
                                         for p_chunk in s_slice.as_chunks::<8>().0 {
                                             let blk = u64::from_le_bytes(*p_chunk);
-                                            if blk != 0 {
-                                                payload_blocks.push(blk);
-                                            }
+                                            push_leaf(blk, &mut payload_blocks);
                                         }
                                     }
                                 }
@@ -6738,14 +6873,27 @@ impl DiskManager {
                     let dir_blks = Self::collect_inode_blocks(&guard.mmap, &inode);
                     directory_blocks.extend(dir_blks);
                 } else if inode.mode == crate::inode::FileType::File && inode.size > 0 {
-                    let is_compressed = inode.compressed_size > 0;
+                    // SEC-26: a seekable 64K file has `compressed_size == 0`
+                    // but its payload *is* chunk-compressed. Copying it as a
+                    // plain file would leave the seekable flag in place and
+                    // make the reader interpret raw bytes as chunk entries.
+                    let comp_mode = if inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0 {
+                        CompressionMode::Seekable {
+                            chunk_size: crate::inode::CHUNK_SIZE_64K as u32,
+                            level: 0,
+                        }
+                    } else if inode.compressed_size > 0 {
+                        CompressionMode::Always
+                    } else {
+                        CompressionMode::Never
+                    };
                     let filter_cfg = crate::filters::FilterConfig {
                         typesize: inode.filter_typesize,
                         delta: inode.filter_delta,
                         shuffle: inode.filter_shuffle,
                         bitshuffle: inode.filter_bitshuffle,
                     };
-                    file_meta_list.push((inode_id, is_compressed, filter_cfg));
+                    file_meta_list.push((inode_id, comp_mode, filter_cfg));
 
                     // Reset inode on disk so write_data allocates contiguous blocks
                     let mut cleared_inode = inode;
@@ -6781,13 +6929,7 @@ impl DiskManager {
         let mut files_processed = 0;
         let mut bytes_moved = 0u64;
 
-        for (inode_id, is_compressed, filter_cfg) in file_meta_list {
-            let comp_mode = if is_compressed {
-                CompressionMode::Always
-            } else {
-                CompressionMode::Never
-            };
-
+        for (inode_id, comp_mode, filter_cfg) in file_meta_list {
             let data = self.read_data(inode_id)?;
             bytes_moved += data.len() as u64;
             temp_dm.write_data_with_filters(inode_id, 0, &data, comp_mode, filter_cfg)?;
@@ -6917,6 +7059,12 @@ impl DiskManager {
         }
 
         // Place regular file blocks next
+        //
+        // SEC-26: a seekable 64K file stores packed `ChunkEntry` values in its
+        // leaf pointer slots. The payload of a chunk is a run of contiguous
+        // blocks, so the run is relocated as a unit and the entry is rewritten
+        // with the new start block.
+        let mut chunk_entries: Vec<(u64, crate::inode::ChunkEntry)> = Vec::new();
         for &file_inode_id in &file_inodes {
             if let Ok(inode) = Self::read_inode_internal(&guard, file_inode_id) {
                 let (payloads, indirects) = Self::collect_inode_block_layout(&guard.mmap, &inode);
@@ -6929,7 +7077,27 @@ impl DiskManager {
                     old_to_new.insert(ind, next_target);
                     next_target += 1;
                 }
+                chunk_entries.extend(Self::collect_chunk_entries(&guard.mmap, &inode));
             }
+        }
+
+        // The map from a packed chunk entry to its relocated counterpart.
+        let mut old_entry_to_new: std::collections::HashMap<u64, u64> =
+            std::collections::HashMap::new();
+        for (packed, entry) in &chunk_entries {
+            let Some(&new_start) = old_to_new.get(&(entry.start_block() as u64)) else {
+                continue;
+            };
+            old_entry_to_new.insert(
+                *packed,
+                crate::inode::ChunkEntry::new(
+                    new_start as u32,
+                    entry.block_count(),
+                    entry.flags(),
+                    entry.compressed_len(),
+                )
+                .0,
+            );
         }
 
         // 3. Filter blocks that need to move
@@ -7007,12 +7175,23 @@ impl DiskManager {
             }
 
             // 5. Update inode block pointers
+            //
+            // A pointer slot holds either a raw block id or, for a seekable
+            // 64K file, a packed `ChunkEntry` (SEC-26). The two ranges cannot
+            // overlap: a non-empty entry has `block_count >= 1` and is
+            // therefore at least `1 << 32`, far above any block id.
+            let lookup_new = |value: u64| -> Option<u64> {
+                old_to_new
+                    .get(&value)
+                    .copied()
+                    .or_else(|| old_entry_to_new.get(&value).copied())
+            };
             for &inode_id in &allocated_inodes {
                 if let Ok(mut inode) = Self::read_inode_internal(&guard, inode_id) {
                     let mut modified = false;
                     for i in 0..10 {
                         if inode.blocks[i] != 0
-                            && let Some(&new_blk) = old_to_new.get(&inode.blocks[i])
+                            && let Some(new_blk) = lookup_new(inode.blocks[i])
                         {
                             inode.blocks[i] = new_blk;
                             modified = true;
@@ -7049,7 +7228,7 @@ impl DiskManager {
                     for chunk in slice.as_chunks_mut::<8>().0 {
                         let ptr = u64::from_le_bytes(*chunk);
                         if ptr != 0
-                            && let Some(&new_ptr) = old_to_new.get(&ptr)
+                            && let Some(new_ptr) = lookup_new(ptr)
                         {
                             *chunk = new_ptr.to_le_bytes();
                         }

@@ -37,6 +37,8 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file`/`write_data` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Payload data is *not* journaled — it is flushed before the metadata commit (ordered mode), so WAL traffic stays proportional to metadata, not file size. Recovery runs automatically at mount, so a power loss no longer requires a full-image `fsck`.
 - **Durability governs the journal too**: only `DurabilityMode::Strict` pays the per-transaction `msync` barriers (WAL + payload); the process-crash-safe modes rely on the page cache and sync at `flush()`/`Drop`, with the WAL always written before the image.
 - **Encrypted Writes Never Bypass the Cipher (SEC-16)**: A compressed, filtered or encrypted payload is a single blob over the whole file, so any write to such a file rebuilds it (decrypt → splice → re-filter/re-compress/re-encrypt with a fresh nonce). A write at a non-zero offset can therefore never store plaintext on an encrypted image.
+- **Zeroed Data Blocks (SEC-27)**: A freshly allocated data block is zeroed before it is handed to a new owner, so a recycled block can never expose the plaintext of a deleted or truncated file.
+- **Chunk-Aware Defragmentation (SEC-26)**: The defragmentation decodes the packed `ChunkEntry` values of seekable 64K files, so their chunk runs are relocated as a unit and the safe pass keeps the chunked format.
 - **Bounded Inode & Data Regions (SEC-25)**: The usable inode range is derived from the real inode-table capacity (the superblock's `inode_count` is twice the table capacity because it was sized for the old 128-byte records), so an inode id can never address the data area, and both allocators stop at the boundary of their own region.
 - **Plain-TCP Network Transport (SEC-10)**: The IPC master binds loopback by default; a non-loopback bind has to be requested explicitly (`--allow-remote-ipsc`) and prints a warning, because the transport itself is not encrypted.
 - **Hardened IPC Transport (SEC-17/SEC-18)**: Frames are deserialized with a hard allocation limit, authentication is a challenge-response (keyed BLAKE2b, the password never crosses the wire), sockets and rendezvous files are owner-only, and the number of concurrent peers is bounded.
@@ -93,7 +95,7 @@ An inode stores:
 | `src/ffi.rs` | C-compatible dynamic library bindings (`include/oifs.h`). |
 | `src/bin/oifs.rs` | CLI application entry point (`clap`-based). |
 | `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling. |
-| `tests/` | 61 integration, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, inode-bounds, and CLI test suites. |
+| `tests/` | 63 integration, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, inode-bounds, defrag-seekable, zeroed-block, and CLI test suites. |
 | `docs/optimization_roadmap.md` | Detailed changelog and benchmarks for P0, P1, P2, and P3 optimizations. |
 | `docs/metadata_wal_design.md` | Metadata WAL specification and implementation status (M1–M5 complete). |
 | `docs/performance_and_verification_research.md` | In-depth audit of performance bottlenecks, safety vulnerabilities, and Kani blueprints. |
@@ -136,7 +138,7 @@ An inode stores:
 cargo build
 cargo build --release
 
-# 2. Run all standard unit and integration tests (61 test suites)
+# 2. Run all standard unit and integration tests (63 test suites)
 cargo test --release
 
 # 3. Run multi-block directory performance benchmark

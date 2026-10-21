@@ -251,8 +251,8 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-23** | `src/auto_defrag.rs:66-82, 165-171, 240-318` | `AutoDefragConfig` does not sanitize `NaN` thresholds (`f64::NAN.clamp(0.0, 1.0)` remains `NaN`) or `check_interval == Duration::ZERO` (100% CPU busy-spin loop), and uses `.lock().unwrap()` / `.read().unwrap()` instead of `crate::lock_unpoisoned`. | **Low** | - | **Resolved** (`AutoDefragConfig::sanitized`, `MIN_CHECK_INTERVAL`, `crate::lock_unpoisoned` / `read_unpoisoned`) |
 | **SEC-24** | `src/session.rs:106, 612` | `OifsSession::Remote` retains `password: Option<String>` in plain unzeroized heap memory across the session lifetime for failover reconnection, instead of wrapping it in `zeroize::Zeroizing<String>`. | **Low** | - | **Resolved** (`Option<zeroize::Zeroizing<String>>`) |
 | **SEC-25** | `src/disk.rs:5025-5051, 2379-2384, 2627-2634, 5131-5143`, `src/journal.rs:2601-2620`, `src/superblock.rs:224-266` | (1) `inode_slot_range` only checks `end <= guard.mmap.len()` without verifying `inode_id < sb.inode_count`; an out-of-range `inode_id` resolves into the **Data Area**, enabling fake-inode type confusion where user file payload bytes are parsed/mutated as `Inode` structs to read, overwrite, or free arbitrary blocks. (2) Inode/data bitmap allocations scan all 32,768 bits without capping at `sb.inode_count` or `sb.block_count`, allowing allocation past `inode_count` to overwrite `data_block_start` (root directory block). (3) `SuperBlock::validate` does not verify `inode_table_block + inode_count.div_ceil(16) <= data_block_start`. | **Critical** | `proof_usable_inode_count_fits_the_table` | **Resolved** (see §6.9) |
-| **SEC-26** | `src/disk.rs:6499-6578, 6695-6756, 6864-7020` (`collect_inode_block_layout`, `defragment_inplace_on`, `defragment_safe`) | `collect_inode_block_layout` ignores `INODE_FLAG_SEEKABLE_64K` and treats 64-bit packed `ChunkEntry` values (`(compressed_len << 48) | (flags << 40) | (block_count << 32) | start_block`) as raw block IDs. Running `defragment_inplace` (or background `auto_defrag`) on an image with seekable-compressed files panics out-of-bounds (`src as usize * BLOCK_SIZE`) or corrupts multi-block chunk extents and packed `ChunkEntry` metadata; `defragment_safe` also checks only `inode.compressed_size > 0` (which is `0` for seekable files). | **High** | - | **Open** (see §3.3) |
-| **SEC-27** | `src/disk.rs:5131-5143, 5240-5287, 6079-6101`, `src/journal.rs:2895-2945` (`allocate_block`, `get_or_alloc_block`, `stage_payload_write`, `truncate_internal`) | Freed data blocks are not zeroed, and newly allocated data blocks are not zero-initialized before partial writes (`file_offset > 0` within a fresh block) or size-extending `truncate(inode_id, new_size)` (Case 2), leaking up to 4,095 bytes per block of previously deleted files' residual plaintext. | **High** | - | **Open** (see §3.3) |
+| **SEC-26** | `src/disk.rs:6499-6578, 6695-6756, 6864-7020` (`collect_inode_block_layout`, `defragment_inplace_on`, `defragment_safe`) | `collect_inode_block_layout` ignores `INODE_FLAG_SEEKABLE_64K` and treats 64-bit packed `ChunkEntry` values (`(compressed_len << 48) | (flags << 40) | (block_count << 32) | start_block`) as raw block IDs. Running `defragment_inplace` (or background `auto_defrag`) on an image with seekable-compressed files panics out-of-bounds (`src as usize * BLOCK_SIZE`) or corrupts multi-block chunk extents and packed `ChunkEntry` metadata; `defragment_safe` also checks only `inode.compressed_size > 0` (which is `0` for seekable files). | **High** | - | **Resolved** (see §6.10) |
+| **SEC-27** | `src/disk.rs:5131-5143, 5240-5287, 6079-6101`, `src/journal.rs:2895-2945` (`allocate_block`, `get_or_alloc_block`, `stage_payload_write`, `truncate_internal`) | Freed data blocks are not zeroed, and newly allocated data blocks are not zero-initialized before partial writes (`file_offset > 0` within a fresh block) or size-extending `truncate(inode_id, new_size)` (Case 2), leaking up to 4,095 bytes per block of previously deleted files' residual plaintext. | **High** | - | **Resolved** (see §6.11) |
 | **SEC-28** | `src/disk.rs:3172-3184, 4031-4096, 2758-2777, 1741-1764, 6113-6129` (`read_at_prepare`, `read_single_chunk_decompressed`, `resolve_logical_block_id`, `append_dir_entry_to_dir`, `truncate_internal`) | Incomplete `SEC-20` `is_data_block` coverage: `read_at_prepare` and `read_single_chunk_decompressed` only check `< block_count` (not `>= data_block_start`), allowing `read_at` or seekable chunk reads on a corrupted inode to leak the SuperBlock, bitmaps, or Inode Table; non-journaled `append_dir_entry_to_dir`, `truncate_internal` slack zeroing, and indirect block pointers (`sib_id`/`dib_id`/`tib_id`) also bypass `is_data_block`. | **Medium** | - | **Open** (see §3.3) |
 | **SEC-29** | `src/disk.rs:6134-6161, 6214-6255, 5677-5705, 5875-5905` (`truncate_internal`, `clear_logical_block_ptr`, `delete_file_journaled`, `delete_file`) | (1) `truncate_internal` Case 3 calls `clear_logical_block_ptr` and `prune_unused_indirect_blocks` before `commit_journal_tx`, mutating indirect pointer blocks directly in `guard.mmap` without `MetadataOp::WriteBlockSlice` WAL entries (violating the WAL-first invariant). (2) `delete_file` / `delete_file_journaled` delete non-empty directories without checking for child entries, permanently orphaning all child inodes and data blocks in the bitmaps. | **Medium** | - | **Open** (see §3.3) |
 | **SEC-30** | `src/session.rs:571`, `src/ipc.rs:775-785, 807-814, 1177` | (1) `OifsSession::Direct` always creates an unbounded `mpsc::channel()` and stores `Some(rx)` in `event_rx`; if `take_event_receiver()` is never called, every IPC request handled by the Master appends a `SessionEvent` forever (unbounded memory growth). (2) In `SessionMode::Local`, `bind_unix_listener(&socket_path)` runs before `write_token_file(&token_path, &auth_secret)`, leaving a brief race window where a connecting client reads a stale `.tok` from a previously crashed Master. | **Low / Medium** | - | **Open** (see §3.3) |
@@ -394,8 +394,8 @@ The following safety and correctness issues were uncovered during the subagent c
 | Finding | Severity | Status |
 | :--- | :--- | :--- |
 | **SEC-25** — inode table / data bitmap bounds, fake inode type confusion | Critical | **Resolved** (§6.9) |
-| **SEC-26** — defragmentation mishandles seekable 64K chunked files (`ChunkEntry` decoding) | High | Open |
-| **SEC-27** — freed / partially written data blocks are not zeroed (cross-file disclosure) | High | Open |
+| **SEC-26** — defragmentation mishandles seekable 64K chunked files (`ChunkEntry` decoding) | High | **Resolved** (§6.10) |
+| **SEC-27** — freed / partially written data blocks are not zeroed (cross-file disclosure) | High | **Resolved** (§6.11) |
 | **SEC-28** — incomplete data-area bounds checks on the read, chunk, directory and indirect paths | Medium | Open |
 | **SEC-29** — WAL-first violation in `truncate_internal`; orphan leak when deleting a non-empty directory | Medium | Open |
 | **SEC-30** — unbounded `SessionEvent` channel; `.tok` creation ordering race | Low / Medium | Open |
@@ -774,3 +774,64 @@ and the fsck report intact, the data allocation stops at the image boundary,
 and `SuperBlock::validate` rejects the impossible layouts. The Kani harness
 `proof_usable_inode_count_fits_the_table` proves that the usable inode ids
 always fit in the inode table.
+
+### 6.10 SEC-26 — Defragmentation of Seekable 64K Chunked Files
+
+**Root cause.** A seekable 64K file does not store raw block ids in its pointer
+slots but packed `ChunkEntry` values
+(`(compressed_len << 48) | (flags << 40) | (block_count << 32) | start_block`),
+whose payload is a *run* of contiguous blocks. The defragmentation treated
+every non-zero slot as a single block id:
+
+* `collect_inode_block_layout` pushed the packed value itself as a payload
+  block, so the relocation moved the wrong blocks (or none at all) and the
+  rebuilt data bitmap freed the file's real blocks — the file's content was
+  lost.
+* The pointer rewrite looked the packed value up in the block map, found
+  nothing and left the old value in place, so the file kept pointing at the
+  blocks that had been moved away.
+* `defragment_safe` decided "compressed" from `inode.compressed_size > 0`,
+  which is `0` for a seekable file, so it copied the content as a plain file
+  while the seekable flag stayed set: the reader then interpreted raw bytes as
+  chunk entries.
+
+**Fix** (`src/disk.rs`):
+
+* `collect_inode_block_layout` decodes the chunk entries of a seekable file
+  and expands every entry into the run of blocks it addresses.
+* New `collect_chunk_entries` returns the packed entries of a seekable file.
+* `defragment_inplace_on` builds a map from a packed entry to its relocated
+  counterpart (the new start block, the same count, flags and length) and uses
+  it in the pointer rewrite. The two value ranges cannot overlap: a non-empty
+  entry has `block_count >= 1` and is therefore at least `1 << 32`, far above
+  any block id.
+* `defragment_safe` copies a seekable file with `CompressionMode::Seekable`,
+  so the defragmented image keeps the chunked format (and the flag stays
+  consistent with the payload).
+
+**Verification**: `tests/sec26_defrag_seekable_test.rs` (2 tests) — the
+in-place and the safe defragmentation both preserve the content of a seekable
+file and keep the filesystem consistent. Both tests fail without the fix.
+
+### 6.11 SEC-27 — Zeroed Data Blocks
+
+**Root cause.** A data block that was freed (file deleted, file truncated) kept
+its plaintext, and a block that was allocated again was handed to the new owner
+without being cleared. A short write into such a block therefore exposed the
+content of the previously deleted file, and extending a file left the slack of
+its last block untouched.
+
+**Fix** (`src/disk.rs`, `src/journal.rs`):
+
+* `allocate_block` zeroes the block it hands out, so a recycled block never
+  exposes the content of its previous owner.
+* `stage_payload_write` (the journaled path) zeroes every block that the
+  simulation has just allocated (`AllocSim::is_fresh`) before the payload is
+  staged into it.
+* `truncate_internal` zeroes the slack between the old and the new size when a
+  file is extended, so the region that becomes readable is zeroed.
+
+**Verification**: `tests/sec27_zeroed_blocks_test.rs` (3 tests) — the raw
+content of a recycled block never contains the plaintext of the deleted file
+(in-place and journaled), and the extended region of a truncated file is
+zeroed. The first two tests fail without the fix.

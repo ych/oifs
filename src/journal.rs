@@ -2524,7 +2524,7 @@ mod log_conformance_tests {
 // ---------------------------------------------------------------------------
 
 use crate::BLOCK_SIZE;
-use crate::allocator::SimpleBlockAllocator;
+use crate::allocator::{BlockAllocator, SimpleBlockAllocator};
 use crate::disk::{DiskManager, DiskManagerError, DiskManagerInner};
 use crate::inode::Inode;
 use memmap2::MmapMut;
@@ -2541,6 +2541,15 @@ pub(crate) struct AllocSim {
     inode_bitmap: Vec<u8>,
     data_bitmap: Vec<u8>,
     data_start: u64,
+    /// Total number of blocks in the image.
+    ///
+    /// SEC-25: the data bitmap is a fixed 4 KiB block, so on a small image it
+    /// can track blocks beyond the end of the image. The simulator must not
+    /// hand those out.
+    block_count: u64,
+    /// Number of inode ids that may be used (bounded by the inode table).
+    #[cfg(test)]
+    usable_inodes: u64,
     pub(crate) free_inode_hint: u64,
     pub(crate) free_block_hint: u64,
     /// Blocks allocated during this simulation, in order.
@@ -2566,6 +2575,9 @@ impl AllocSim {
             inode_bitmap: ib.to_vec(),
             data_bitmap: db.to_vec(),
             data_start: sb.data_block_start,
+            block_count: sb.block_count,
+            #[cfg(test)]
+            usable_inodes: sb.usable_inode_count(),
             free_inode_hint,
             free_block_hint,
             fresh_blocks: Vec::new(),
@@ -2590,6 +2602,9 @@ impl AllocSim {
             inode_bitmap: Vec::new(),
             data_bitmap: db.to_vec(),
             data_start: sb.data_block_start,
+            block_count: sb.block_count,
+            #[cfg(test)]
+            usable_inodes: sb.usable_inode_count(),
             free_inode_hint,
             free_block_hint,
             fresh_blocks: Vec::new(),
@@ -2604,6 +2619,14 @@ impl AllocSim {
         let id = a
             .allocate_with_hint(Some(self.free_inode_hint))
             .map_err(DiskManagerError::Allocator)?;
+        // SEC-25: an id beyond the inode table would be written into the data
+        // area; release it again and report "no space".
+        if id >= self.usable_inodes {
+            let _ = a.free(id);
+            return Err(DiskManagerError::Allocator(
+                crate::allocator::AllocatorError::NoSpace,
+            ));
+        }
         self.free_inode_hint = id + 1;
         Ok(id)
     }
@@ -2613,6 +2636,13 @@ impl AllocSim {
         let blk = a
             .allocate_with_hint(Some(self.free_block_hint))
             .map_err(DiskManagerError::Allocator)?;
+        // SEC-25: never hand out a block outside the image.
+        if blk >= self.block_count {
+            let _ = a.free(blk);
+            return Err(DiskManagerError::Allocator(
+                crate::allocator::AllocatorError::NoSpace,
+            ));
+        }
         self.free_block_hint = blk + 1;
         self.fresh_blocks.push(blk);
         self.fresh_set.insert(blk);
@@ -2627,6 +2657,13 @@ impl AllocSim {
         let blk = a
             .allocate_contiguous(count, Some(self.free_block_hint))
             .map_err(DiskManagerError::Allocator)?;
+        // SEC-25: the run must stay inside the image.
+        if blk.saturating_add(count as u64) > self.block_count {
+            let _ = a.free_contiguous(blk, count);
+            return Err(DiskManagerError::Allocator(
+                crate::allocator::AllocatorError::NoSpace,
+            ));
+        }
         self.free_block_hint = blk + count as u64;
         for i in 0..count {
             let b = blk + i as u64;
@@ -2672,6 +2709,10 @@ impl AllocSim {
             inode_bitmap,
             data_bitmap,
             data_start,
+            // The test simulator is not bound to an image; the limits are
+            // effectively disabled.
+            block_count: u64::MAX,
+            usable_inodes: u64::MAX,
             free_inode_hint,
             free_block_hint,
             fresh_blocks: Vec::new(),

@@ -241,15 +241,22 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-13** | `src/bin/oifs.rs` | Passing `--password <SECRET>` on CLI arguments exposes encryption passwords in plain text in `/proc/<pid>/cmdline` and `ps` process tables to other local users. | **Low** | - | **User Advisory** (`OIFS_PASSWORD` environment variable supported, interactive prompt recommended) |
 | **SEC-14** | `src/directory.rs`, `src/disk.rs`, `src/bin/oifs.rs` | Untrusted disk images or callers with directory entry names containing path traversal components (`/`, `\`, `..`, `.`, `\0`, or empty) can escape target export folders or corrupt directory trees. | **Medium** | - | **Resolved** (`validate_filename` in `serialize_into`/`deserialize_from`, `create_entry_internal`/`journaled`, `resolve_parent`, `resolve_path_iter`; sanitized export in `Commands::Get`) |
 | **SEC-15** | `src/disk.rs:4410-4450` | Seekable 64K Chunked writes previously allocated contiguous blocks and updated on-disk indirect pointer tables in-place before committing the WAL transaction frame, corrupting replay on crash. | **High** | `test_seekable_chunked_journaled_crash_recovery_and_atomicity` | **Resolved in 1.1.0** (Staged through `AllocSim` + ordered payload flush before `commit_journal_tx`) |
-| **SEC-16** | `src/disk.rs:881-1047, 3524-3545` (`plan_write_prepared`, `plan_write`, `write_data_with_filters`) | On encrypted images (`encryption_key.is_some()`), non-zero-offset writes (`file_offset > 0`) to uncompressed or newly created empty files (`old_compressed_size == 0`) fall through to `WriteCase::Raw`, writing **unencrypted plaintext** directly to disk (`inode.encrypted == false`) or overwriting XChaCha20-Poly1305 ciphertext in place and corrupting its Poly1305 tag. Also, shrinking overwrites at `file_offset == 0` on uncompressed encrypted files keep `old_size` via `max(old_size, payload.buffer.len())`, breaking subsequent AEAD decryption. | **Critical** | - | **Resolved** (see §3.3) |
+| **SEC-16** | `src/disk.rs:881-1047, 3524-3545` (`plan_write_prepared`, `plan_write`, `write_data_with_filters`) | On encrypted images (`encryption_key.is_some()`), non-zero-offset writes (`file_offset > 0`) to uncompressed or newly created empty files (`old_compressed_size == 0`) fall through to `WriteCase::Raw`, writing **unencrypted plaintext** directly to disk (`inode.encrypted == false`) or overwriting XChaCha20-Poly1305 ciphertext in place and corrupting its Poly1305 tag. Also, shrinking overwrites at `file_offset == 0` on uncompressed encrypted files keep `old_size` via `max(old_size, payload.buffer.len())`, breaking subsequent AEAD decryption. | **Critical** | - | **Resolved** (see §6.1) |
 | **SEC-17** | `src/ipc.rs:406` (`read_framed`) | `bincode::deserialize(buf.as_slice())` is called with default unlimited options. A tiny 16-byte frame containing a crafted `u64` `Vec`/`String` length prefix forces `bincode` to pre-allocate gigabytes before reading from `buf`, crashing the Master via OOM. | **High** | - | **Resolved** (`frame_codec` limits the deserializer to the frame size) |
-| **SEC-18** | `src/ipc.rs:124-158, 691-760`, `src/session.rs:265-355, 580-607` | (1) `IpcRequest::Authenticate` sends the raw password in cleartext; an attacker who writes a crafted `.{image}.master` rendezvous file can redirect connecting clients and harvest their encryption password. (2) Unencrypted images have zero IPC authentication (`authenticated = !is_encrypted`). (3) `/tmp` Unix sockets lack `0600` permission enforcement. (4) `spawn_client_worker` spawns unbounded OS threads per connection without socket read/write timeouts (Slowloris / thread exhaustion DoS). | **High** | - | **Resolved** (see §3.4) |
+| **SEC-18** | `src/ipc.rs:124-158, 691-760`, `src/session.rs:265-355, 580-607` | (1) `IpcRequest::Authenticate` sends the raw password in cleartext; an attacker who writes a crafted `.{image}.master` rendezvous file can redirect connecting clients and harvest their encryption password. (2) Unencrypted images have zero IPC authentication (`authenticated = !is_encrypted`). (3) `/tmp` Unix sockets lack `0600` permission enforcement. (4) `spawn_client_worker` spawns unbounded OS threads per connection without socket read/write timeouts (Slowloris / thread exhaustion DoS). | **High** | - | **Resolved** (see §6.3) |
 | **SEC-19** | `src/encryption.rs:83-137`, `src/disk.rs:3872-3900` | XChaCha20-Poly1305 AEAD passes empty associated data (`b""`). Because all files and 64K seekable chunks share the same master key without binding `(inode_id, chunk_idx, flags)` in AAD, an attacker with write access to `.img` can swap/reorder/rollback encrypted chunks across files or toggle unauthenticated inode filter flags undetected. | **Medium** | - | **Open / Format v3** (requires an on-disk format change: the AAD binds the inode id, the chunk index and the payload flags, so old ciphertexts become unreadable and a migration is needed) |
 | **SEC-20** | `src/disk.rs:2743-2798`, `src/journal.rs:924-980` (`resolve_logical_block_id`, `get_or_alloc_block`, `apply_op_in_place`) | Resolving data block pointers from inodes/indirect tables and replaying `MetadataOp::WriteBlockSlice` only check `block_id * BLOCK_SIZE <= mmap.len()` without verifying `block_id >= sb.data_block_start` (and `WriteInode` does not check `inode_id < sb.inode_count`), allowing crafted/corrupted pointers to overwrite SuperBlock, bitmaps, or inode tables. | **Medium** | - | **Resolved** (see §6.5) |
 | **SEC-21** | `src/ffi.rs:251, 315, 344, 417, 488, 590` | Several FFI entry points execute `unsafe { CStr::from_ptr(...) }` and `std::slice::from_raw_parts(...)` outside `std::panic::catch_unwind`, and `oifs_write_file_with_policy` silently substitutes `&[]` when `buf.is_null() && buf_size > 0` instead of returning `-1`. | **Medium** | - | **Resolved** (see §6.6) |
 | **SEC-22** | `src/bin/oifs_mcp.rs:154, 188-191, 285, 367` | MCP server constructs JSON responses via `format!` without escaping quotes, backslashes, or control characters in filenames/paths/error messages (JSON injection), and computes `size_mb * 1024 * 1024` without overflow checks. | **Medium** | - | **Resolved** (see §6.7) |
 | **SEC-23** | `src/auto_defrag.rs:66-82, 165-171, 240-318` | `AutoDefragConfig` does not sanitize `NaN` thresholds (`f64::NAN.clamp(0.0, 1.0)` remains `NaN`) or `check_interval == Duration::ZERO` (100% CPU busy-spin loop), and uses `.lock().unwrap()` / `.read().unwrap()` instead of `crate::lock_unpoisoned`. | **Low** | - | **Resolved** (`AutoDefragConfig::sanitized`, `MIN_CHECK_INTERVAL`, `crate::lock_unpoisoned` / `read_unpoisoned`) |
 | **SEC-24** | `src/session.rs:106, 612` | `OifsSession::Remote` retains `password: Option<String>` in plain unzeroized heap memory across the session lifetime for failover reconnection, instead of wrapping it in `zeroize::Zeroizing<String>`. | **Low** | - | **Resolved** (`Option<zeroize::Zeroizing<String>>`) |
+| **SEC-25** | `src/disk.rs` (`inode_slot_range`, `create_entry_internal`, `create_entry_journaled`, `allocate_block`), `src/journal.rs` (`AllocSim::alloc_block`), `src/superblock.rs` (`validate`) | The inode table and the data bitmap are fixed 4 KiB blocks, but the superblock's `inode_count` was sized with the *historical* 128-byte inode records: it is **twice** the number of 256-byte slots that fit between `inode_table_block` and `data_block_start`. `inode_slot_range` only checked the mapped length, so an inode id beyond the table addressed the **data area** (a "fake inode" could be crafted inside a file to read or overwrite another file), the inode allocator could hand out ids that overwrite the root directory's data blocks, and the data allocator could hand out blocks beyond the end of the image. | **Critical** | `proof_usable_inode_count_fits_the_table` | **Resolved** (see §6.9) |
+| **SEC-25** | `src/disk.rs:5025-5051, 2379-2384, 2627-2634, 5131-5143`, `src/journal.rs:2601-2620`, `src/superblock.rs:224-266` | (1) `inode_slot_range` only checks `end <= guard.mmap.len()` without verifying `inode_id < sb.inode_count`; an out-of-range `inode_id` resolves into the **Data Area**, enabling fake-inode type confusion where user file payload bytes are parsed/mutated as `Inode` structs to read, overwrite, or free arbitrary blocks. (2) Inode/data bitmap allocations scan all 32,768 bits without capping at `sb.inode_count` or `sb.block_count`, allowing allocation past `inode_count` to overwrite `data_block_start` (root directory block). (3) `SuperBlock::validate` does not verify `inode_table_block + inode_count.div_ceil(16) <= data_block_start`. | **Critical** | - | **Open** (see §3.3) |
+| **SEC-26** | `src/disk.rs:6499-6578, 6695-6756, 6864-7020` (`collect_inode_block_layout`, `defragment_inplace_on`, `defragment_safe`) | `collect_inode_block_layout` ignores `INODE_FLAG_SEEKABLE_64K` and treats 64-bit packed `ChunkEntry` values (`(compressed_len << 48) | (flags << 40) | (block_count << 32) | start_block`) as raw block IDs. Running `defragment_inplace` (or background `auto_defrag`) on an image with seekable-compressed files panics out-of-bounds (`src as usize * BLOCK_SIZE`) or corrupts multi-block chunk extents and packed `ChunkEntry` metadata; `defragment_safe` also checks only `inode.compressed_size > 0` (which is `0` for seekable files). | **High** | - | **Open** (see §3.3) |
+| **SEC-27** | `src/disk.rs:5131-5143, 5240-5287, 6079-6101`, `src/journal.rs:2895-2945` (`allocate_block`, `get_or_alloc_block`, `stage_payload_write`, `truncate_internal`) | Freed data blocks are not zeroed, and newly allocated data blocks are not zero-initialized before partial writes (`file_offset > 0` within a fresh block) or size-extending `truncate(inode_id, new_size)` (Case 2), leaking up to 4,095 bytes per block of previously deleted files' residual plaintext. | **High** | - | **Open** (see §3.3) |
+| **SEC-28** | `src/disk.rs:3172-3184, 4031-4096, 2758-2777, 1741-1764, 6113-6129` (`read_at_prepare`, `read_single_chunk_decompressed`, `resolve_logical_block_id`, `append_dir_entry_to_dir`, `truncate_internal`) | Incomplete `SEC-20` `is_data_block` coverage: `read_at_prepare` and `read_single_chunk_decompressed` only check `< block_count` (not `>= data_block_start`), allowing `read_at` or seekable chunk reads on a corrupted inode to leak the SuperBlock, bitmaps, or Inode Table; non-journaled `append_dir_entry_to_dir`, `truncate_internal` slack zeroing, and indirect block pointers (`sib_id`/`dib_id`/`tib_id`) also bypass `is_data_block`. | **Medium** | - | **Open** (see §3.3) |
+| **SEC-29** | `src/disk.rs:6134-6161, 6214-6255, 5677-5705, 5875-5905` (`truncate_internal`, `clear_logical_block_ptr`, `delete_file_journaled`, `delete_file`) | (1) `truncate_internal` Case 3 calls `clear_logical_block_ptr` and `prune_unused_indirect_blocks` before `commit_journal_tx`, mutating indirect pointer blocks directly in `guard.mmap` without `MetadataOp::WriteBlockSlice` WAL entries (violating the WAL-first invariant). (2) `delete_file` / `delete_file_journaled` delete non-empty directories without checking for child entries, permanently orphaning all child inodes and data blocks in the bitmaps. | **Medium** | - | **Open** (see §3.3) |
+| **SEC-30** | `src/session.rs:571`, `src/ipc.rs:775-785, 807-814, 1177` | (1) `OifsSession::Direct` always creates an unbounded `mpsc::channel()` and stores `Some(rx)` in `event_rx`; if `take_event_receiver()` is never called, every IPC request handled by the Master appends a `SessionEvent` forever (unbounded memory growth). (2) In `SessionMode::Local`, `bind_unix_listener(&socket_path)` runs before `write_token_file(&token_path, &auth_secret)`, leaving a brief race window where a connecting client reads a stale `.tok` from a previously crashed Master. | **Low / Medium** | - | **Open** (see §3.3) |
 
 ### 3.1 Detailed Threat Model & Residual Security Evaluation
 
@@ -327,6 +334,56 @@ The following safety and correctness issues were uncovered during the subagent c
    - *Target*: [`src/session.rs:106, 612`](file:///Users/ych/oifs/src/session.rs#L612).
    - *Mechanism*: `OifsSession::Remote` stores `password: Option<String>` in heap memory for failover retries without `ZeroizeOnDrop`.
    - *Remediation*: Store `Option<zeroize::Zeroizing<String>>` in `OifsSession::Remote`.
+
+### 3.3 Third-Round Security Audit Findings (SEC-25 – SEC-30)
+
+1. **Inode Table & Data Bitmap Bounds Confusion / Fake Inode Type Confusion (SEC-25 — Critical)**:
+   - *Target*: [`src/disk.rs:5025-5051`](file:///Users/ych/oifs/src/disk.rs#L5025-L5051) (`inode_slot_range`), [`src/disk.rs:2379-2384`](file:///Users/ych/oifs/src/disk.rs#L2379-L2384) (`create_entry_journaled`), [`src/disk.rs:2627-2634`](file:///Users/ych/oifs/src/disk.rs#L2627-L2634) (`create_entry_internal`), [`src/disk.rs:5131-5143`](file:///Users/ych/oifs/src/disk.rs#L5131-L5143) (`allocate_block`), [`src/journal.rs:2601-2620`](file:///Users/ych/oifs/src/journal.rs#L2601-L2620) (`AllocSim::alloc_inode`, `AllocSim::alloc_block`), [`src/superblock.rs:224-266`](file:///Users/ych/oifs/src/superblock.rs#L224-L266) (`SuperBlock::validate`).
+   - *Mechanism*:
+     - **Fake Inode Type Confusion (`inode_id >= sb.inode_count`)**: `inode_slot_range(guard, inode_id)` computes `base + inode_id * 256` and only checks `end <= guard.mmap.len() as u64`, omitting `inode_id < guard.superblock.inode_count`. Because the Data Area immediately follows the Inode Table on disk, passing `inode_id >= sb.inode_count` (via `DiskManager`, `OifsSession`, or `IpcRequest::ReadData`/`WriteData`/`Truncate`/`Stat`) resolves into a **data block**. An attacker or unprivileged IPC peer who writes a crafted 256-byte `Inode` record into their own file's data block can then invoke `read_data(fake_inode_id)`, `write_data(fake_inode_id, ...)`, or `truncate(fake_inode_id, 0)` to read, overwrite, or free arbitrary data blocks belonging to other files.
+     - **Inode & Data Bitmap Over-Allocation Past SuperBlock Geometry**: The inode bitmap and data bitmap each occupy a full 4,096-byte block (32,768 bits), regardless of `sb.inode_count` or `sb.block_count`. In `create_entry_internal`, `create_entry_journaled`, `allocate_block`, and `AllocSim::alloc_block`, the allocator scans the entire 4,096-byte bitmap without checking `new_inode_id < sb.inode_count` or `blk < sb.block_count`. On any image where `inode_count < 32,768` (e.g. a 10 MB image with `inode_count = 640`), creating the 641st file allocates `inode_id = 640`, whose 256-byte slot lands at `data_block_start` (Block 43, the root directory's data block), immediately corrupting the root directory. Similarly, allocating past `sb.block_count` returns out-of-bounds block IDs instead of `StorageError::NoSpace`.
+     - **SuperBlock Geometry Overlap**: `SuperBlock::validate` checks `self.inode_table_block <= self.data_block_start` rather than verifying that the entire inode table fits before `data_block_start` (`inode_table_block + inode_count.div_ceil(16) <= data_block_start`).
+   - *Remediation*:
+     - Enforce `if inode_id >= guard.superblock.inode_count { return Err(StorageError::InodeNotFound(inode_id)); }` at the start of `inode_slot_range`.
+     - Check `new_inode_id < sb.inode_count` and `blk < sb.block_count` in all allocator paths (`create_entry_internal`, `create_entry_journaled`, `allocate_block`, `allocate_contiguous`, `AllocSim`), returning `StorageError::NoSpace` when exceeded.
+     - Verify `self.inode_table_block.checked_add(self.inode_count.div_ceil(16)) <= Some(self.data_block_start)` in `SuperBlock::validate`.
+
+2. **In-Place & Safe Defragmentation Panic or Corrupt Seekable 64K Chunked Files (SEC-26 — High)**:
+   - *Target*: [`src/disk.rs:6499-6578`](file:///Users/ych/oifs/src/disk.rs#L6499-L6578) (`collect_inode_block_layout`), [`src/disk.rs:6864-7020`](file:///Users/ych/oifs/src/disk.rs#L6864-L7020) (`defragment_inplace_on`), [`src/disk.rs:6695-6756`](file:///Users/ych/oifs/src/disk.rs#L6695-L6756) (`defragment_safe`).
+   - *Mechanism*:
+     - For files with `inode.flags & INODE_FLAG_SEEKABLE_64K != 0`, direct and indirect pointer slots do not store raw block numbers; they store 64-bit packed `ChunkEntry` values (`(compressed_len << 48) | (flags << 40) | (block_count << 32) | start_block`), where each entry spans `block_count` contiguous physical blocks (`start_block .. start_block + block_count`).
+     - `collect_inode_block_layout` is completely unaware of `INODE_FLAG_SEEKABLE_64K` and treats every non-zero 64-bit slot value as a single physical block ID `b`. In `defragment_inplace_on` (and background `auto_defrag`), `src as usize * BLOCK_SIZE` overflows or panics out-of-bounds in `guard.mmap.copy_within(s..s + BLOCK_SIZE, d)`, moves only 1 block instead of `block_count` contiguous blocks, and overwrites the packed `ChunkEntry` with a bare block ID (destroying `compressed_len`, `flags`, and `block_count`).
+     - In `defragment_safe`, `let is_compressed = inode.compressed_size > 0;` misses seekable files (which set `inode.compressed_size = 0` and use `INODE_FLAG_SEEKABLE_64K`), causing `defragment_safe` to rewrite them with `CompressionMode::Never`.
+   - *Remediation*: Make `collect_inode_block_layout` and `defragment_inplace_on` decode `ChunkEntry::decode(raw)`, relocate the entire contiguous `entry.block_count` run together, and write back `ChunkEntry { start_block: new_start, ..entry }.encode()`; in `defragment_safe`, preserve `CompressionMode::Seekable64K` when `inode.flags & INODE_FLAG_SEEKABLE_64K != 0`.
+
+3. **Cross-File Information Disclosure via Unzeroed Data Block Allocation & Sparse Writes / Truncate (SEC-27 — High)**:
+   - *Target*: [`src/disk.rs:5131-5143, 5240-5287`](file:///Users/ych/oifs/src/disk.rs#L5240-L5287) (`allocate_block`, `get_or_alloc_block`), [`src/journal.rs:2895-2945`](file:///Users/ych/oifs/src/journal.rs#L2895-L2945) (`stage_payload_write`), [`src/disk.rs:6079-6101`](file:///Users/ych/oifs/src/disk.rs#L6079-L6101) (`truncate_internal` Case 2).
+   - *Mechanism*:
+     - When files are deleted or truncated, their data blocks are only unmarked in the data bitmap; residual plaintext bytes remain on disk.
+     - Neither `allocate_block` (non-journaled) nor `stage_payload_write` (journaled) zeroes newly allocated data blocks when writing only a sub-slice (`offset_in_block > 0` or `write_len < BLOCK_SIZE`). Thus, creating a new uncompressed file and writing 1 byte at `file_offset = 4095` allocates a recycled block and leaves bytes `0..4095` containing the previous file's contents.
+     - Similarly, `truncate(inode_id, new_size)` with `new_size > inode.size` (Case 2) updates `inode.size = new_size` without zeroing trailing slack bytes in the last allocated block (`old_size % 4096 .. 4096`), exposing residual data in that block on subsequent reads.
+   - *Remediation*: Zero-fill newly allocated data blocks in `allocate_block` and `stage_payload_write` (whenever `offset_in_block > 0 || to_copy < BLOCK_SIZE`), and zero the tail of the final allocated block (`old_size..min(new_size, block_end)`) when extending `inode.size` in `truncate_internal`.
+
+4. **Incomplete `SEC-20` Data-Area Bounds Checks on Read, Seekable Chunk, Directory & Indirect Paths (SEC-28 — Medium)**:
+   - *Target*: [`src/disk.rs:3172-3184`](file:///Users/ych/oifs/src/disk.rs#L3172-L3184) (`read_at_prepare`), [`src/disk.rs:4031-4096`](file:///Users/ych/oifs/src/disk.rs#L4031-L4096) (`read_single_chunk_decompressed`), [`src/disk.rs:2758-2777`](file:///Users/ych/oifs/src/disk.rs#L2758-L2777) (`resolve_logical_block_id`), [`src/disk.rs:1741-1764`](file:///Users/ych/oifs/src/disk.rs#L1741-L1764) (`append_dir_entry_to_dir`), [`src/disk.rs:6113-6129`](file:///Users/ych/oifs/src/disk.rs#L6113-L6129) (`truncate_internal` Case 3).
+   - *Mechanism*:
+     - `read_at_prepare` (used by `read_at` across `Mmap`, `Pread`, and `IoUring` backends) and `read_single_chunk_decompressed` only check against `block_count` / `mmap.len()` without checking `is_data_block(blk)` (`blk >= data_block_start`). A corrupted inode can still leak Block 0 (SuperBlock), bitmaps, or the Inode Table via `read_at` or seekable reads.
+     - `resolve_logical_block_id` returns raw `Ok(Some(id))` without checking `is_data_block(id)` (nor checking `sib_id`/`dib_id`/`tib_id` before dereferencing indirect blocks). Callers of `resolve_logical_block_id` on write paths—specifically non-journaled `append_dir_entry_to_dir` and `truncate_internal` slack-zeroing—can therefore overwrite metadata blocks if a pointer is corrupted.
+   - *Remediation*: Enforce `is_data_block` inside `resolve_logical_block_id` (for both indirect table blocks and the resolved target block), `walk_payload_blocks` (for indirect table blocks), and `read_single_chunk_decompressed` (`entry.start_block >= data_block_start`).
+
+5. **WAL-First Invariant Violation in `truncate_internal` & Orphan Leak on Deleting Non-Empty Directories (SEC-29 — Medium)**:
+   - *Target*: [`src/disk.rs:6134-6161, 6214-6255`](file:///Users/ych/oifs/src/disk.rs#L6134-L6161) (`truncate_internal` Case 3, `clear_logical_block_ptr`), [`src/disk.rs:5677-5705, 5875-5905`](file:///Users/ych/oifs/src/disk.rs#L5677-L5705) (`delete_file_journaled`, `delete_file`).
+   - *Mechanism*:
+     - In `truncate_internal` Case 3 (`new_size < inode.size` with `journaled == true`), `clear_logical_block_ptr` and `prune_unused_indirect_blocks` mutate indirect pointer blocks directly in `guard.mmap` *before* `commit_journal_tx(&mut guard, &ops)` and without recording `MetadataOp::WriteBlockSlice` in `ops`, violating the WAL-first invariant.
+     - Neither `delete_file` nor `delete_file_journaled` verifies whether a target `FileType::Directory` inode is empty before unlinking and freeing it, permanently orphaning all child files and subdirectories in the inode and data bitmaps (`fsck` failure / permanent space leak).
+   - *Remediation*: Stage indirect pointer zeroing as `MetadataOp::WriteBlockSlice` operations in `truncate_internal` when `journaled == true`, and check that a directory has zero valid entries before allowing `delete_file` / `delete_file_journaled` to unlink it.
+
+6. **Master Unbounded `SessionEvent` Channel Memory Growth & Local IPC `.tok` Creation Ordering Race (SEC-30 — Low / Medium)**:
+   - *Target*: [`src/session.rs:571`](file:///Users/ych/oifs/src/session.rs#L571) (`open_with_mode_retry`), [`src/ipc.rs:775-785, 807-814, 1177`](file:///Users/ych/oifs/src/ipc.rs#L775-L785) (`IpcServer::bind_or_connect`, `emit_event`).
+   - *Mechanism*:
+     - `OifsSession::Direct` always creates an unbounded `std::sync::mpsc::channel()` (`let (tx, rx) = mpsc::channel();`) and stores `Some(rx)` inside `OifsSession::Direct.event_rx`. Whenever the application does not call `session.take_event_receiver()`, `rx` remains alive for the lifetime of the Master session while `IpcServer::emit_event` pushes a `SessionEvent` on every IPC request (`ReadFile`, `WriteFile`, `CreateFile`, `DeleteFile`, `Truncate`), causing unbounded heap growth proportional to total IPC traffic.
+     - In `IpcServer::bind_or_connect` (`SessionMode::Local`), `Self::bind_unix_listener(&socket_path)` is called *before* `Self::write_token_file(&token_path, &auth_secret)`. If a previous Master crashed and left a stale `.tok` file, a concurrent client connecting in the microsecond window between `bind_unix_listener` and `write_token_file` will read the stale token and fail authentication with `PermissionDenied`.
+   - *Remediation*: Create the `SessionEvent` channel lazily or use a bounded `sync_channel` with `try_send` drop-oldest semantics, and call `write_token_file(&token_path, &auth_secret)` *before* `bind_unix_listener(&socket_path)`.
 
 ---
 
@@ -645,3 +702,60 @@ hardened inside the project are now in place:
   neither leaks its credentials nor talks to an impostor.
 
 **Verification**: `tests/ipc_security_test.rs::test_non_loopback_bind_requires_an_explicit_opt_in`.
+
+### 6.9 SEC-25 — Inode Table and Data Bitmap Bounds
+
+**Root cause.** The layout code sized the inode table with the *historical*
+128-byte `bincode` records (`inodes_per_block = 4096 / 128 = 32`), while the
+records have been 256 bytes wide since the v2 inode format. `inode_count` was
+therefore twice the number of slots that actually fit between
+`inode_table_block` and `data_block_start`, and nothing checked the ids
+against the table:
+
+* `inode_slot_range` only compared the end offset with the mapped length, so
+  an inode id beyond the table addressed the **data area**. A file containing
+  a crafted 256-byte record could be used as a "fake inode" to read or
+  overwrite another file, and `write_inode_internal` would write a real inode
+  record into a foreign file.
+* The inode allocator handed out ids from the bitmap, which tracks 32,768
+  ids, so creating more files than the table could hold overwrote the root
+  directory's data blocks.
+* The data allocator handed out blocks from the data bitmap, which is a full
+  4 KiB block: on an image smaller than 128 MB it could return a block beyond
+  the end of the image.
+
+**Fix**:
+
+* `SuperBlock::inode_table_capacity()` and `SuperBlock::usable_inode_count()`
+  express the real capacity (the table, the bitmap and the claimed count,
+  whichever is smallest). The historical `inode_count` is left untouched, so
+  existing images keep their layout.
+* `inode_slot_range` rejects an inode id outside the usable range, so every
+  entry point that takes an inode id (`read_inode`, `read_data`, `write_data`,
+  `truncate`, the IPC requests) refuses it.
+* The inode allocator (in-place and journaled) never hands out an id beyond
+  the table: the in-place path releases the bit and reports "no space", the
+  journaled path searches the bitmap with the new bounded
+  `BitmapRef::find_next_free_bounded`.
+* The data allocator (in-place and `AllocSim`) never hands out a block beyond
+  the end of the image, and a contiguous run must fit completely.
+* `SuperBlock::validate` rejects an inode count the bitmap cannot track, a
+  root inode outside the usable range and an inode table that does not fit
+  before the data area.
+
+**Deliberate deviation.** The review also asked for
+`block_count - data_block_start <= 32768` in `validate`. That check would
+reject every image larger than 128 MB, because the data bitmap only covers
+32,768 blocks. Such images are valid today (the space beyond the bitmap is
+simply unusable), so rejecting them at mount time would be a breaking change.
+The bound is therefore enforced where it matters — the allocator refuses to
+hand out a block outside the image — and the bitmap capacity is documented
+instead.
+
+**Verification**: `tests/sec25_inode_bounds_test.rs` (4 tests) — a fake inode
+id is refused by every entry point and the victim file stays intact, the
+inode allocation stops exactly at the table boundary with the root directory
+and the fsck report intact, the data allocation stops at the image boundary,
+and `SuperBlock::validate` rejects the impossible layouts. The Kani harness
+`proof_usable_inode_count_fits_the_table` proves that the usable inode ids
+always fit in the inode table.

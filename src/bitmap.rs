@@ -87,6 +87,25 @@ impl<'a> BitmapRef<'a> {
         None
     }
 
+    /// Finds the first free bit in `[start, limit)`, wrapping around inside
+    /// that range.
+    ///
+    /// SEC-25: the inode bitmap can track more ids than the inode table can
+    /// hold, so the search has to be bounded by the table capacity.
+    pub fn find_next_free_bounded(&self, start: usize, limit: usize) -> Option<usize> {
+        if limit == 0 {
+            return None;
+        }
+        let start = start.min(limit);
+        if let Some(bit) = self.find_first_free_from(start)
+            && bit < limit
+        {
+            return Some(bit);
+        }
+        // Wrap around inside the bounded range.
+        self.find_first_free_from(0).filter(|&bit| bit < start)
+    }
+
     /// Finds next free bit starting from `hint`. If not found after `hint`, wraps around to 0.
     pub fn find_next_free_wrapped(&self, hint: usize) -> Option<usize> {
         if let Some(idx) = self.find_first_free_from(hint) {

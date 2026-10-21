@@ -2376,8 +2376,13 @@ impl DiskManager {
             .ok_or_else(|| {
             DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
         })?;
+        // SEC-25: the search is bounded by the inode table, so an id that
+        // would address the data area is never handed out.
         let new_inode_id = crate::bitmap::BitmapRef::new(ib_slice)
-            .find_next_free_wrapped(guard.free_inode_hint as usize)
+            .find_next_free_bounded(
+                guard.free_inode_hint as usize,
+                guard.superblock.usable_inode_count() as usize,
+            )
             .ok_or(DiskManagerError::Allocator(
                 crate::allocator::AllocatorError::NoSpace,
             ))? as u64;
@@ -2626,10 +2631,21 @@ impl DiskManager {
         // 2. Allocate Inode with search hint
         let inode_bitmap = guard.superblock.inode_bitmap_block;
         let hint = guard.free_inode_hint;
+        let usable_inodes = guard.superblock.usable_inode_count();
         let new_inode_id = {
             let bitmap_slice = Self::get_block_mut_from_map(&mut guard.mmap, inode_bitmap).unwrap();
             let mut allocator = SimpleBlockAllocator::new(bitmap_slice, 0);
-            allocator.allocate_with_hint(Some(hint))?
+            let id = allocator.allocate_with_hint(Some(hint))?;
+            // SEC-25: the bitmap can track more ids than the inode table can
+            // hold. An id beyond the table would be written into the data
+            // area, so it is released again and reported as "no space".
+            if id >= usable_inodes {
+                let _ = allocator.free(id);
+                return Err(DiskManagerError::Allocator(
+                    crate::allocator::AllocatorError::NoSpace,
+                ));
+            }
+            id
         };
         guard.free_inode_hint = new_inode_id + 1;
 
@@ -5033,6 +5049,18 @@ impl DiskManager {
                 "Offset overflow",
             ))
         };
+        // SEC-25: an inode id beyond the inode table would address the data
+        // area, where a crafted byte sequence could be mistaken for an inode
+        // (a "fake inode") and used to read or overwrite another file.
+        if inode_id >= guard.superblock.usable_inode_count() {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Inode id {inode_id} is outside the inode table ({} usable inodes)",
+                    guard.superblock.usable_inode_count()
+                ),
+            )));
+        }
         let base = guard
             .superblock
             .inode_table_block
@@ -5135,8 +5163,19 @@ impl DiskManager {
         let blk = {
             let slice = Self::get_block_mut_from_map(&mut guard.mmap, db_blk).unwrap();
             let mut da = SimpleBlockAllocator::new(slice, db_start);
-            da.allocate_with_hint(Some(hint))
-                .map_err(DiskManagerError::Allocator)?
+            let blk = da
+                .allocate_with_hint(Some(hint))
+                .map_err(DiskManagerError::Allocator)?;
+            // SEC-25: the data bitmap is a fixed 4 KiB block, so on a small
+            // image it can track blocks beyond the end of the image. Such a
+            // block is released again and reported as "no space".
+            if blk >= guard.superblock.block_count {
+                let _ = da.free(blk);
+                return Err(DiskManagerError::Allocator(
+                    crate::allocator::AllocatorError::NoSpace,
+                ));
+            }
+            blk
         };
         guard.free_block_hint = blk + 1;
         Ok(blk)

@@ -32,11 +32,12 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **Pre-compression Filters**: Integrated Blosc2 filters (Delta, Byte Shuffle, BitShuffle with Hacker's Delight 8x8 transposition, TruncPrecision) followed by Zstandard.
 - **Encryption**: XChaCha20-Poly1305 with Argon2id KDF and parent-inode tweaked deterministic SIV filename encryption (`_e_...`).
 - **FFI Dynamic Library Handshake**: 3-state runtime version & path verification (`oifs_check_version`, `oifs_loaded_path`): 0=OK, 1=WARN (newer), -1=ERR (older).
-- **Formal Verification**: 76 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, and bounds safety.
+- **Formal Verification**: 77 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, and bounds safety.
 - **On-Disk Format v2**: Fixed 256-byte inode records with explicit little-endian fields, a 1-byte file-type tag, and zeroed reserved space. Deterministic, reproducible, leak-free. Legacy v1 images stay fully readable and writable; `oifs migrate` upgrades them in place.
 - **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file`/`write_data` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Payload data is *not* journaled — it is flushed before the metadata commit (ordered mode), so WAL traffic stays proportional to metadata, not file size. Recovery runs automatically at mount, so a power loss no longer requires a full-image `fsck`.
 - **Durability governs the journal too**: only `DurabilityMode::Strict` pays the per-transaction `msync` barriers (WAL + payload); the process-crash-safe modes rely on the page cache and sync at `flush()`/`Drop`, with the WAL always written before the image.
 - **Encrypted Writes Never Bypass the Cipher (SEC-16)**: A compressed, filtered or encrypted payload is a single blob over the whole file, so any write to such a file rebuilds it (decrypt → splice → re-filter/re-compress/re-encrypt with a fresh nonce). A write at a non-zero offset can therefore never store plaintext on an encrypted image.
+- **Bounded Inode & Data Regions (SEC-25)**: The usable inode range is derived from the real inode-table capacity (the superblock's `inode_count` is twice the table capacity because it was sized for the old 128-byte records), so an inode id can never address the data area, and both allocators stop at the boundary of their own region.
 - **Plain-TCP Network Transport (SEC-10)**: The IPC master binds loopback by default; a non-loopback bind has to be requested explicitly (`--allow-remote-ipsc`) and prints a warning, because the transport itself is not encrypted.
 - **Hardened IPC Transport (SEC-17/SEC-18)**: Frames are deserialized with a hard allocation limit, authentication is a challenge-response (keyed BLAKE2b, the password never crosses the wire), sockets and rendezvous files are owner-only, and the number of concurrent peers is bounded.
 - **Background Auto-Defragmentation (Blueprint item 7)**: Opt-in coordinator (`--auto-defrag[=THRESHOLD]`, `DiskManager::set_auto_defrag`) that measures data-area fragmentation on an interval and runs an in-place defragmentation pass when the threshold is exceeded, keeping large contiguous free runs available for the contiguous allocator and the seekable chunked compressor. The worker holds only a `Weak` reference to the inner state, so it exits as soon as the last manager is dropped, and it refuses to run on WAL-enabled images (in-place defrag is not journalled) unless `allow_journaled` is set.
@@ -92,7 +93,7 @@ An inode stores:
 | `src/ffi.rs` | C-compatible dynamic library bindings (`include/oifs.h`). |
 | `src/bin/oifs.rs` | CLI application entry point (`clap`-based). |
 | `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling. |
-| `tests/` | 60 integration, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, and CLI test suites. |
+| `tests/` | 61 integration, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, inode-bounds, and CLI test suites. |
 | `docs/optimization_roadmap.md` | Detailed changelog and benchmarks for P0, P1, P2, and P3 optimizations. |
 | `docs/metadata_wal_design.md` | Metadata WAL specification and implementation status (M1–M5 complete). |
 | `docs/performance_and_verification_research.md` | In-depth audit of performance bottlenecks, safety vulnerabilities, and Kani blueprints. |
@@ -135,7 +136,7 @@ An inode stores:
 cargo build
 cargo build --release
 
-# 2. Run all standard unit and integration tests (60 test suites)
+# 2. Run all standard unit and integration tests (61 test suites)
 cargo test --release
 
 # 3. Run multi-block directory performance benchmark
@@ -153,7 +154,7 @@ cargo test --release --test ipc_frame_test --test ipc_security_test
 # 4. Run Shuttle randomized concurrency permutation tests
 cargo test --test shuttle_concurrency_test
 
-# 5. Run Kani formal verification proofs (all 76 proofs)
+# 5. Run Kani formal verification proofs (all 77 proofs)
 cargo kani
 
 # 5b. Run the Kani proofs in parallel (one CBMC process per harness).

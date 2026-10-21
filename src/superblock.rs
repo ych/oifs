@@ -220,6 +220,35 @@ impl SuperBlock {
         crate::journal::is_journaled_layout(self)
     }
 
+    /// Number of inode ids the inode bitmap can track (one bitmap block).
+    pub const MAX_TRACKED_INODES: u64 = 4096 * 8;
+
+    /// Number of 256-byte inode slots that fit in one inode-table block.
+    pub const INODE_SLOTS_PER_BLOCK: u64 =
+        crate::BLOCK_SIZE as u64 / crate::inode_format::INODE_SLOT_SIZE as u64;
+
+    /// The number of inode slots that actually fit in the inode table.
+    ///
+    /// The historical layout sized the table with the old 128-byte `bincode`
+    /// records, so `inode_count` can be *twice* the number of 256-byte slots
+    /// that fit between `inode_table_block` and `data_block_start`. Ids beyond
+    /// the real capacity would address the data area, so they must never be
+    /// used (SEC-25).
+    pub fn inode_table_capacity(&self) -> u64 {
+        let table_blocks = self.data_block_start.saturating_sub(self.inode_table_block);
+        table_blocks.saturating_mul(Self::INODE_SLOTS_PER_BLOCK)
+    }
+
+    /// The number of inode ids that may be used.
+    ///
+    /// Bounded by the table capacity, by the inode bitmap and by the claimed
+    /// `inode_count`, whichever is smallest.
+    pub fn usable_inode_count(&self) -> u64 {
+        self.inode_count
+            .min(self.inode_table_capacity())
+            .min(Self::MAX_TRACKED_INODES)
+    }
+
     /// Validates superblock bounds, layout geometry, and alignment invariants against mapped image size.
     pub fn validate(&self, mmap_len: usize) -> Result<(), &'static str> {
         if self.magic != Self::MAGIC {
@@ -259,8 +288,19 @@ impl SuperBlock {
         if self.inode_count == 0 {
             return Err("Inode count cannot be zero");
         }
-        if self.root_inode >= self.inode_count {
-            return Err("Root inode ID exceeds total inode count");
+        if self.inode_count > Self::MAX_TRACKED_INODES {
+            return Err("Inode count exceeds the capacity of the inode bitmap");
+        }
+        // The usable inode ids must fit in the inode table: an id beyond the
+        // table would address the data area (SEC-25).
+        let usable = self.usable_inode_count();
+        let table_blocks = usable.div_ceil(Self::INODE_SLOTS_PER_BLOCK);
+        let table_end = self.inode_table_block.checked_add(table_blocks);
+        if table_end != Some(self.data_block_start) && table_end > Some(self.data_block_start) {
+            return Err("Inode table does not fit before the data area");
+        }
+        if self.root_inode >= usable {
+            return Err("Root inode ID exceeds the usable inode count");
         }
         Ok(())
     }
@@ -316,6 +356,33 @@ mod kani_proofs {
             "Large FS must have full 32,768 inodes"
         );
         kani::cover!(total_blocks >= 1028, "large filesystem reached");
+    }
+
+    /// Prove that the usable inode ids always fit in the inode table.
+    ///
+    /// SEC-25: an inode id beyond the table would address the data area, so
+    /// the usable count must never exceed the table capacity (and the inode
+    /// bitmap capacity).
+    #[kani::proof]
+    fn proof_usable_inode_count_fits_the_table() {
+        let total_blocks: u64 = kani::any();
+        kani::assume(total_blocks >= 5 && total_blocks <= 1_000_000);
+
+        let sb = SuperBlock::new(total_blocks);
+        let usable = sb.usable_inode_count();
+
+        // The bitmap can only track a fixed number of inodes.
+        assert!(usable <= SuperBlock::MAX_TRACKED_INODES);
+        assert!(sb.inode_count <= SuperBlock::MAX_TRACKED_INODES);
+
+        // The usable ids must fit between the table start and the data area.
+        let table_blocks = usable.div_ceil(SuperBlock::INODE_SLOTS_PER_BLOCK);
+        let table_end = sb.inode_table_block + table_blocks;
+        assert!(
+            table_end <= sb.data_block_start,
+            "the usable inode ids must fit in the inode table"
+        );
+        assert!(usable <= sb.inode_table_capacity());
     }
 
     /// Prove that new SuperBlock defaults to unencrypted.

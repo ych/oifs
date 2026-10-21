@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Kani Proofs**:
   - Added `proof_find_next_free_wrapped_soundness` (wrap-around allocator scan), the first `ipc` module harnesses `proof_frame_len_validation_soundness` / `proof_zero_length_frame_is_valid` and `proof_sanitized_config_is_always_valid` for the auto-defrag configuration. The suite now holds 76 harnesses.
   - Added `proof_block_path_tier_boundaries_symbolic`, which proves the pointer-tree tier classification for *every* logical block index instead of a handful of constants.
+  - Added `proof_usable_inode_count_fits_the_table`, which proves that the usable inode ids always fit in the inode table (SEC-25).
   - Every proof that constrains its input with `kani::assume` now carries `kani::cover!` assertions, so no harness can pass vacuously.
 
 ### Security
@@ -42,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 - **Plain-TCP Network Transport (SEC-10, Mitigated)**: The IPC master binds loopback by default, a non-loopback bind address is refused unless `--allow-remote-ipsc` is given, and the library warns when such a bind is requested. The transport itself remains plain TCP and is expected to be tunnelled.
+
+### Security
+- **Inode Table and Data Bitmap Bounds (SEC-25, Critical)**: The superblock's `inode_count` was sized with the historical 128-byte inode records and is therefore twice the number of 256-byte slots that actually fit in the inode table, while `inode_slot_range` only checked the mapped length. An inode id beyond the table addressed the **data area**: a crafted "fake inode" inside a file could be used to read or overwrite another file, creating a file beyond the table capacity overwrote the root directory's data blocks, and the data allocator could hand out blocks beyond the end of a small image. The usable inode range is now derived from the real table capacity, every entry point that takes an inode id refuses an id outside it, both allocators stop at their region boundary, and `SuperBlock::validate` rejects the impossible layouts.
 
 ### Fixed
 - **Broken Kani Build**: `proof_crc_input_is_deterministic` still referenced the `crc_input` helper removed by the P4.13 CRC refactor, so `cargo kani` failed to compile. The harness now uses `crc_frame_checksum` and additionally proves that the sequence number and payload length are covered by the checksum.

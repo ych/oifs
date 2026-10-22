@@ -841,6 +841,42 @@ fn block_range_mut(image: &mut [u8], block_size: u64, block_id: u64) -> Option<&
 /// This is the redo primitive. It performs only absolute post-image writes, so
 /// `apply(op); apply(op)` is indistinguishable from `apply(op)` — the property
 /// the crash-recovery guarantee rests on.
+/// Returns the byte range of a whole bitmap span.
+///
+/// The bitmap blocks are consecutive in the image, so a bitmap that spans
+/// several blocks (P4.25) is one contiguous slice of the mapping and its bits
+/// are addressed by a plain bit index.
+fn bitmap_span_range(
+    image: &[u8],
+    bs: u64,
+    bitmap_start: u64,
+    bitmap_blocks: u64,
+) -> Result<(usize, usize), JournalError> {
+    let start = usize::try_from(bitmap_start)
+        .ok()
+        .and_then(|b| b.checked_mul(bs as usize))
+        .ok_or(JournalError::BlockOutOfRange {
+            block_id: bitmap_start,
+        })?;
+    let len = usize::try_from(bitmap_blocks)
+        .ok()
+        .and_then(|b| b.checked_mul(bs as usize))
+        .ok_or(JournalError::BlockOutOfRange {
+            block_id: bitmap_start,
+        })?;
+    let end = start
+        .checked_add(len)
+        .ok_or(JournalError::BlockOutOfRange {
+            block_id: bitmap_start,
+        })?;
+    if end > image.len() {
+        return Err(JournalError::BlockOutOfRange {
+            block_id: bitmap_start,
+        });
+    }
+    Ok((start, end))
+}
+
 pub fn apply_op_in_place(
     image: &mut [u8],
     sb: &SuperBlock,
@@ -860,23 +896,25 @@ pub fn apply_op_in_place(
                     block_id: *inode_id,
                 });
             }
-            let blk = sb.inode_bitmap_block;
-            let byte = block_range_mut(image, bs, blk)
-                .ok_or(JournalError::BlockOutOfRange { block_id: blk })?;
             let bit = usize::try_from(*inode_id).map_err(|_| JournalError::BlockOutOfRange {
                 block_id: *inode_id,
             })?;
+            // P4.25: the inode bitmap may span several blocks; the whole span
+            // is one contiguous slice.
+            let (start, end) =
+                bitmap_span_range(image, bs, sb.inode_bitmap_block, sb.inode_bitmap_blocks())?;
+            let bitmap = &mut image[start..end];
             let byte_idx = bit / 8;
-            if byte_idx >= byte.len() {
+            if byte_idx >= bitmap.len() {
                 return Err(JournalError::BlockOutOfRange {
                     block_id: *inode_id,
                 });
             }
             let mask = 1u8 << (bit % 8);
             if *allocated {
-                byte[byte_idx] |= mask;
+                bitmap[byte_idx] |= mask;
             } else {
-                byte[byte_idx] &= !mask;
+                bitmap[byte_idx] &= !mask;
             }
             Ok(())
         }
@@ -891,27 +929,24 @@ pub fn apply_op_in_place(
                     block_id: *block_id,
                 });
             }
-            let blk = sb.data_bitmap_block;
-            let byte = block_range_mut(image, bs, blk)
-                .ok_or(JournalError::BlockOutOfRange { block_id: blk })?;
             // Mirrors SimpleBlockAllocator: bit index is relative to data_block_start.
-            let bit =
-                usize::try_from(block_id.saturating_sub(sb.data_block_start)).map_err(|_| {
-                    JournalError::BlockOutOfRange {
-                        block_id: *block_id,
-                    }
-                })?;
-            let byte_idx = bit / 8;
-            if byte_idx >= byte.len() {
+            let bit = block_id.saturating_sub(sb.data_block_start);
+            // P4.25: the data bitmap may span several blocks; the whole span
+            // is one contiguous slice.
+            let (start, end) =
+                bitmap_span_range(image, bs, sb.data_bitmap_block, sb.data_bitmap_blocks())?;
+            let bitmap = &mut image[start..end];
+            let byte_idx = (bit / 8) as usize;
+            if byte_idx >= bitmap.len() {
                 return Err(JournalError::BlockOutOfRange {
                     block_id: *block_id,
                 });
             }
             let mask = 1u8 << (bit % 8);
             if *allocated {
-                byte[byte_idx] |= mask;
+                bitmap[byte_idx] |= mask;
             } else {
-                byte[byte_idx] &= !mask;
+                bitmap[byte_idx] &= !mask;
             }
             Ok(())
         }
@@ -927,14 +962,16 @@ pub fn apply_op_in_place(
                     block_id: *start_block,
                 });
             }
-            let blk = sb.data_bitmap_block;
-            let byte = block_range_mut(image, bs, blk)
-                .ok_or(JournalError::BlockOutOfRange { block_id: blk })?;
+            // P4.25: the range may span several bitmap blocks; the whole
+            // span is one contiguous slice, so the range is set in one go.
+            let (start, end) =
+                bitmap_span_range(image, bs, sb.data_bitmap_block, sb.data_bitmap_blocks())?;
             let start_bit = usize::try_from(start_block.saturating_sub(sb.data_block_start))
                 .map_err(|_| JournalError::BlockOutOfRange {
                     block_id: *start_block,
                 })?;
-            let mut bm = crate::bitmap::Bitmap::new(byte);
+            let bitmap = &mut image[start..end];
+            let mut bm = crate::bitmap::Bitmap::new(bitmap);
             if *allocated {
                 bm.set_range(start_bit, *count as usize);
             } else {
@@ -1664,6 +1701,9 @@ mod kani_proofs {
         };
 
         if apply_op_in_place(&mut image, &sb, &op).is_ok() {
+            // The operation must really be applied: a cover assertion keeps the
+            // proof from passing vacuously.
+            kani::cover!(true, "the operation was applied");
             let once = image;
             // Apply a second time
             let res2 = apply_op_in_place(&mut image, &sb, &op);
@@ -1699,6 +1739,9 @@ mod kani_proofs {
         };
 
         if apply_op_in_place(&mut image, &sb, &op).is_ok() {
+            // The operation must really be applied: a cover assertion keeps the
+            // proof from passing vacuously.
+            kani::cover!(true, "the operation was applied");
             let once = image;
             let res2 = apply_op_in_place(&mut image, &sb, &op);
             assert!(res2.is_ok());
@@ -1717,6 +1760,10 @@ mod kani_proofs {
         let mut image = [0u8; 32];
         let mut sb = SuperBlock::new(100);
         sb.block_size = 16;
+        // The data area starts at zero here, so the assumed block ids are
+        // valid: without this the operation would always be rejected (SEC-20)
+        // and the proof would pass vacuously.
+        sb.data_block_start = 0;
 
         let block_id: u64 = kani::any();
         let offset: u32 = kani::any();
@@ -1733,6 +1780,9 @@ mod kani_proofs {
         };
 
         if apply_op_in_place(&mut image, &sb, &op).is_ok() {
+            // The operation must really be applied: a cover assertion keeps
+            // the proof from passing vacuously.
+            kani::cover!(true, "the operation was applied");
             let once = image;
             let res2 = apply_op_in_place(&mut image, &sb, &op);
             assert!(res2.is_ok());

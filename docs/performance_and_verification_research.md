@@ -342,13 +342,14 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.25: Single-Block Data & Inode Bitmap Capacity Ceiling (~128 MiB Data Area Limit) [OPEN]
+### P4.25: Single-Block Data & Inode Bitmap Capacity Ceiling (~128 MiB Data Area Limit) [RESOLVED]
 * **File & Lines**: [`src/superblock.rs:159-183, 223-247`](file:///Users/ych/oifs/src/superblock.rs#L159-L183) (`SuperBlock::new_with_layout`, `MAX_TRACKED_INODES`)
-* **Status**: **Proposed (Architectural / Format v3)**
+* **Status**: **Completed & Verified** (see §6.16)
 * **Bottleneck Analysis**:
   - Both `inode_bitmap` and `data_bitmap` are hardcoded to a single 4,096-byte block (32,768 bits). Although `Inode` triple-indirect pointers can address up to ~513 GB, the data bitmap can only track 32,768 data blocks ($\approx 128\text{ MiB}$ of usable data), capping the effective capacity of any OIFS image.
-* **Proposed Remedy**:
-  - Scale `data_bitmap_blocks = total_blocks.div_ceil(32768)` (multi-block contiguous bitmap region or allocation groups) in the next on-disk format revision.
+* **Implementation**:
+  - The v3 layout sizes the bitmaps with the image: the data bitmap covers the whole data area, the inode bitmap the inode table. The spans are *derived* from the recorded offsets, so no new superblock field is needed (the superblock is `bincode`-encoded, and a new field would break every existing image).
+  - Every bitmap access now goes through the span helpers (`inode_bitmap_slice`, `data_bitmap_slice`, and their mutable variants); the WAL replay addresses the bits of the whole span instead of a single block.
 * **Expected Impact**: **High (Scalability)** (Unlocks multi-gigabyte images matching the 513 GB inode addressing capability).
 
 ---
@@ -446,7 +447,7 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-16** | `src/disk.rs:881-1047, 3524-3545` (`plan_write_prepared`, `plan_write`, `write_data_with_filters`) | On encrypted images (`encryption_key.is_some()`), non-zero-offset writes (`file_offset > 0`) to uncompressed or newly created empty files (`old_compressed_size == 0`) fall through to `WriteCase::Raw`, writing **unencrypted plaintext** directly to disk (`inode.encrypted == false`) or overwriting XChaCha20-Poly1305 ciphertext in place and corrupting its Poly1305 tag. Also, shrinking overwrites at `file_offset == 0` on uncompressed encrypted files keep `old_size` via `max(old_size, payload.buffer.len())`, breaking subsequent AEAD decryption. | **Critical** | - | **Resolved** (see §6.1) |
 | **SEC-17** | `src/ipc.rs:406` (`read_framed`) | `bincode::deserialize(buf.as_slice())` is called with default unlimited options. A tiny 16-byte frame containing a crafted `u64` `Vec`/`String` length prefix forces `bincode` to pre-allocate gigabytes before reading from `buf`, crashing the Master via OOM. | **High** | - | **Resolved** (`frame_codec` limits the deserializer to the frame size) |
 | **SEC-18** | `src/ipc.rs:124-158, 691-760`, `src/session.rs:265-355, 580-607` | (1) `IpcRequest::Authenticate` sends the raw password in cleartext; an attacker who writes a crafted `.{image}.master` rendezvous file can redirect connecting clients and harvest their encryption password. (2) Unencrypted images have zero IPC authentication (`authenticated = !is_encrypted`). (3) `/tmp` Unix sockets lack `0600` permission enforcement. (4) `spawn_client_worker` spawns unbounded OS threads per connection without socket read/write timeouts (Slowloris / thread exhaustion DoS). | **High** | - | **Resolved** (see §6.3) |
-| **SEC-19** | `src/encryption.rs:83-137`, `src/disk.rs:3872-3900` | XChaCha20-Poly1305 AEAD passes empty associated data (`b""`). Because all files and 64K seekable chunks share the same master key without binding `(inode_id, chunk_idx, flags)` in AAD, an attacker with write access to `.img` can swap/reorder/rollback encrypted chunks across files or toggle unauthenticated inode filter flags undetected. | **Medium** | - | **Open / Format v3** (requires an on-disk format change: the AAD binds the inode id, the chunk index and the payload flags, so old ciphertexts become unreadable and a migration is needed) |
+| **SEC-19** | `src/encryption.rs:83-137`, `src/disk.rs:3872-3900` | XChaCha20-Poly1305 AEAD passes empty associated data (`b""`). Because all files and 64K seekable chunks share the same master key without binding `(inode_id, chunk_idx, flags)` in AAD, an attacker with write access to `.img` can swap/reorder/rollback encrypted chunks across files or toggle unauthenticated inode filter flags undetected. | **Medium** | - | **Resolved** (see §6.15: the associated data binds the inode id, the chunk index and the payload flags; the image-wide `encryption_version` selects the scheme, so images written before SEC-19 stay readable) |
 | **SEC-20** | `src/disk.rs:2743-2798`, `src/journal.rs:924-980` (`resolve_logical_block_id`, `get_or_alloc_block`, `apply_op_in_place`) | Resolving data block pointers from inodes/indirect tables and replaying `MetadataOp::WriteBlockSlice` only check `block_id * BLOCK_SIZE <= mmap.len()` without verifying `block_id >= sb.data_block_start` (and `WriteInode` does not check `inode_id < sb.inode_count`), allowing crafted/corrupted pointers to overwrite SuperBlock, bitmaps, or inode tables. | **Medium** | - | **Resolved** (see §6.5) |
 | **SEC-21** | `src/ffi.rs:251, 315, 344, 417, 488, 590` | Several FFI entry points execute `unsafe { CStr::from_ptr(...) }` and `std::slice::from_raw_parts(...)` outside `std::panic::catch_unwind`, and `oifs_write_file_with_policy` silently substitutes `&[]` when `buf.is_null() && buf_size > 0` instead of returning `-1`. | **Medium** | - | **Resolved** (see §6.6) |
 | **SEC-22** | `src/bin/oifs_mcp.rs:154, 188-191, 285, 367` | MCP server constructs JSON responses via `format!` without escaping quotes, backslashes, or control characters in filenames/paths/error messages (JSON injection), and computes `size_mb * 1024 * 1024` without overflow checks. | **Medium** | - | **Resolved** (see §6.7) |
@@ -1104,3 +1105,74 @@ and the frame overhead of a thousand small appends stays bounded.
 The remaining part of P4.28 — multiplexing several connections per proxy
 process and the duplicate inode lookup of the `ReadAt` handler — is not
 addressed here.
+
+### 6.15 SEC-19 — AEAD Associated Data (Context Binding)
+
+**Root cause.** XChaCha20-Poly1305 was used without associated data. Every file
+of an image shares the same master key, and the nonce is the only thing that
+distinguishes two ciphertexts, so an attacker with write access to the image
+could move a ciphertext to another file, reorder the chunks of a file or roll
+a file back to an older version — the Poly1305 tag still verified, because
+nothing bound the ciphertext to its context.
+
+**Fix** (`src/encryption.rs`, `src/disk.rs`):
+
+* `encrypt_data` / `decrypt_data` / `decrypt_data_in_place` take the
+  associated data and pass it to the AEAD as a `Payload`.
+* `file_aad(inode_id)` binds a whole-file ciphertext to its inode;
+  `chunk_aad(inode_id, chunk_idx, flags)` binds a seekable chunk to its file,
+  its index and its flags.
+* The scheme is selected by the image-wide `encryption_version`:
+  `ENCRYPTION_SCHEME_LEGACY` (1) keeps the empty associated data, so images
+  written before SEC-19 stay readable, and `ENCRYPTION_SCHEME_CONTEXT_BOUND`
+  (2) is used by every new image.
+
+**Verification**: `tests/encrypted_context_binding_test.rs` swaps the
+ciphertexts of two encrypted files on disk — the read must fail — and
+`src/disk.rs::encryption_scheme_tests` proves that a legacy image stays
+readable and that new images use the context-bound scheme.
+
+### 6.16 P4.25 — Multi-Block Bitmaps (the v3 layout)
+
+**Root cause.** The inode bitmap and the data bitmap were hardcoded to a
+single 4 KiB block, so the data area was capped at 32,768 blocks (128 MiB) and
+the inode count at 32,768, no matter how large the image was.
+
+**Fix** (`src/superblock.rs`, `src/disk.rs`, `src/journal.rs`):
+
+* New `SuperBlock::new_v3` lays the image out as
+  `[superblock][inode bitmap: N][data bitmap: M][journal: J][inode table: T][data area]`,
+  with `N` and `M` derived from the image size.
+* The spans are *derived* from the recorded offsets
+  (`inode_bitmap_blocks()`, `data_bitmap_blocks()`), so the `bincode`-encoded
+  superblock needs no new field — adding one would make every existing image
+  unmountable. The layout version is carried by `format_version >= 3`, which
+  still means "the v2 (256-byte) inode records".
+* The inode table keeps its historical size (1024 blocks), but it now reports
+  the 16,384 inodes that actually fit into it instead of the historical 32,768.
+* All bitmap accesses go through the span helpers, and the WAL replay sets the
+  bits of the whole span (a range may cross a block boundary).
+
+**Verification**: `tests/large_image_bitmap_test.rs` checks the layout of a
+200 MiB image (a multi-block data bitmap), that a small image keeps a single
+bitmap block, and that a multi-block image stays consistent through the
+allocator, the fsck and the defragmentation.
+
+### 6.17 Format Review — What Else Can Be Improved
+
+While the format was being revised, the remaining opportunities were
+reviewed. They are **not** implemented, because each of them needs a decision
+that changes the on-disk contract:
+
+| Opportunity | Size | Blocker |
+| :--- | :--- | :--- |
+| The inode record reserves 85 bytes per slot (`[171..256)`) | 85 B × inode count (2.7 MB for 32,768 inodes) | The `Inode` struct is also the `bincode` payload of the **v1** inode format, so a new field changes the v1 encoding and breaks the legacy images. A separate "v1 mirror" struct (or a custom decoder) is needed first. The space is the natural home for a per-file encryption scheme, a Zstd frame count (which would make the append compaction exact instead of the current ratio heuristic) and a chunk-table pointer. |
+| The superblock block is 4 KiB but the struct uses ~100 bytes | ~4 KB per image | Same reason: the superblock is `bincode`-encoded, so a new field breaks every existing image. A fixed 4 KiB superblock record (version + length + payload) would allow a checksum, a feature bitmap and the layout parameters. |
+| The v3 layout still caps the inode table at 1024 blocks (16,384 inodes) | — | A larger table trades data area for inodes; the ratio should be a configurable image property, which needs a superblock field (see above). |
+| The 64 KiB chunk size is fixed in the inode flags | — | A per-image chunk size would need a new flag bit (the reserved inode tail has room) and a format-version gate. |
+
+The two changes that are implemented (the context-bound AEAD and the
+multi-block bitmaps) are the ones that could be made **backward compatible**:
+the AEAD scheme is selected by the existing `encryption_version` field, and the
+v3 layout derives its bitmap spans from the recorded offsets, so an image
+written by an older version keeps its layout and stays readable.

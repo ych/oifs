@@ -249,6 +249,68 @@ pub(crate) struct DiskManagerInner {
 }
 
 impl DiskManagerInner {
+    /// The inode bitmap as one contiguous slice.
+    ///
+    /// The bitmap may span several blocks (P4.25). The blocks are consecutive
+    /// in the image, so the span is a contiguous slice of the mapping.
+    pub(crate) fn inode_bitmap_slice(&self) -> Option<&[u8]> {
+        self.bitmap_span(
+            self.superblock.inode_bitmap_block,
+            self.superblock.inode_bitmap_blocks(),
+        )
+    }
+
+    /// The data bitmap as one contiguous slice.
+    pub(crate) fn data_bitmap_slice(&self) -> Option<&[u8]> {
+        self.bitmap_span(
+            self.superblock.data_bitmap_block,
+            self.superblock.data_bitmap_blocks(),
+        )
+    }
+
+    /// The mutable inode bitmap span.
+    pub(crate) fn inode_bitmap_slice_mut(&mut self) -> Option<&mut [u8]> {
+        let start = self.bitmap_start(self.superblock.inode_bitmap_block)?;
+        let len = self.bitmap_len(self.superblock.inode_bitmap_blocks())?;
+        let end = start.checked_add(len)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        Some(&mut self.mmap[start..end])
+    }
+
+    /// The mutable data bitmap span.
+    pub(crate) fn data_bitmap_slice_mut(&mut self) -> Option<&mut [u8]> {
+        let start = self.bitmap_start(self.superblock.data_bitmap_block)?;
+        let len = self.bitmap_len(self.superblock.data_bitmap_blocks())?;
+        let end = start.checked_add(len)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        Some(&mut self.mmap[start..end])
+    }
+
+    /// The byte offset of the first block of a bitmap.
+    fn bitmap_start(&self, block: u64) -> Option<usize> {
+        usize::try_from(block).ok()?.checked_mul(BLOCK_SIZE)
+    }
+
+    /// The byte length of a bitmap span.
+    fn bitmap_len(&self, blocks: u64) -> Option<usize> {
+        usize::try_from(blocks).ok()?.checked_mul(BLOCK_SIZE)
+    }
+
+    /// The byte range of a bitmap span.
+    fn bitmap_span(&self, start_block: u64, blocks: u64) -> Option<&[u8]> {
+        let start = self.bitmap_start(start_block)?;
+        let len = self.bitmap_len(blocks)?;
+        let end = start.checked_add(len)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        Some(&self.mmap[start..end])
+    }
+
     /// Whether a block id addresses a block inside the data area.
     ///
     /// SEC-20: pointers that leave the data area (superblock, bitmaps, inode
@@ -845,6 +907,15 @@ impl WriteCase {
     }
 }
 
+/// The encryption inputs of a write plan.
+///
+/// The associated data binds the ciphertext to the file it belongs to
+/// (SEC-19); an empty slice means the legacy scheme.
+struct EncryptionContext<'a> {
+    key: Option<&'a crate::encryption::EncryptionKey>,
+    aad: &'a [u8],
+}
+
 /// The decision half of a write: what bytes land where, and what the inode becomes.
 ///
 /// Both the in-place and the journaled write paths consume this, so the four cases
@@ -857,6 +928,15 @@ pub(crate) struct FullOverwritePayload {
     pub buffer: Vec<u8>,
     pub is_compressed: bool,
     pub encryption_nonce: Option<[u8; 24]>,
+}
+
+/// The context that binds a seekable chunk ciphertext to its chunk (SEC-19).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChunkAadContext {
+    pub inode_id: u64,
+    pub chunk_idx: u64,
+    /// The image's encryption scheme (see `crate::encryption`).
+    pub scheme: u8,
 }
 
 /// Result of preparing a seekable 64K chunk payload buffer out-of-lock.
@@ -940,8 +1020,10 @@ fn plan_write_prepared(
     compression_mode: CompressionMode,
     filter_config: &crate::filters::FilterConfig,
     existing_decompressed: Option<&[u8]>,
-    encryption_key: Option<&crate::encryption::EncryptionKey>,
+    encryption: EncryptionContext<'_>,
 ) -> Result<WritePlan, DiskManagerError> {
+    let encryption_key = encryption.key;
+    let aad = encryption.aad;
     let old_size = inode.size;
     let old_compressed_size = inode.compressed_size;
     // A transformed payload (compressed, filtered or encrypted) always has to be
@@ -964,6 +1046,7 @@ fn plan_write_prepared(
             compression_mode,
             &effective,
             encryption_key,
+            aad,
         )?;
         // A compressed payload keeps its logical length in `size`; an uncompressed
         // one never shrinks, matching the in-place path's `max` behaviour.
@@ -1041,6 +1124,7 @@ fn plan_write_prepared(
             compression_mode,
             &effective,
             encryption_key,
+            aad,
         )?;
         let new_size = if payload.is_compressed {
             full.len() as u64
@@ -1076,6 +1160,7 @@ fn plan_write_prepared(
 /// Helper to plan a write when already holding a disk lock (e.g. for re-planning after a race).
 fn plan_write(
     guard: &DiskManagerInner,
+    inode_id: u64,
     inode: &Inode,
     file_offset: u64,
     data: &[u8],
@@ -1096,11 +1181,13 @@ fn plan_write(
     // content has to be read before the plan is computed (SEC-16).
     let existing_decompressed =
         if !is_full_overwrite && transformed && inode.size > 0 && !fast_append {
-            Some(DiskManager::read_data_internal(guard, inode)?)
+            Some(DiskManager::read_data_internal(guard, inode_id, inode)?)
         } else {
             None
         };
 
+    // SEC-19: the associated data binds the ciphertext to the file.
+    let aad = crate::encryption::file_aad_for_scheme(inode_id, guard.superblock.encryption_version);
     plan_write_prepared(
         inode,
         file_offset,
@@ -1108,7 +1195,10 @@ fn plan_write(
         compression_mode,
         filter_config,
         existing_decompressed.as_deref(),
-        guard.encryption_key.as_ref(),
+        EncryptionContext {
+            key: guard.encryption_key.as_ref(),
+            aad: &aad,
+        },
     )
 }
 
@@ -1230,13 +1320,15 @@ impl DiskManager {
                 if let Some(key) = existing_key {
                     sb.encrypted = true;
                     sb.encryption_salt = crate::encryption::generate_salt();
-                    sb.encryption_version = 1;
+                    // SEC-19: new images bind the ciphertext to its file.
+                    sb.encryption_version = crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
                     encryption_key = Some(key);
                 } else {
                     let pwd = password.unwrap_or_default();
                     sb.encrypted = true;
                     sb.encryption_salt = crate::encryption::generate_salt();
-                    sb.encryption_version = 1; // XChaCha20-Poly1305
+                    // SEC-19: new images bind the ciphertext to its file.
+                    sb.encryption_version = crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
                     let key = crate::encryption::derive_key(pwd, &sb.encryption_salt)?;
                     encryption_key = Some(key);
                 }
@@ -1306,11 +1398,9 @@ impl DiskManager {
 
         if is_new {
             let mut guard = dm.inner.write().unwrap();
-            let inode_bitmap_block = guard.superblock.inode_bitmap_block;
-            let bitmap_slice = Self::get_block_mut_from_map(&mut guard.mmap, inode_bitmap_block)
-                .ok_or_else(|| {
-                    DiskManagerError::Io(std::io::Error::other("Failed to get inode bitmap"))
-                })?;
+            let bitmap_slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::other("Failed to get inode bitmap"))
+            })?;
             let mut ia = SimpleBlockAllocator::new(bitmap_slice, 0);
             let root_id = ia.allocate()?;
             if root_id != 0 {
@@ -1319,12 +1409,10 @@ impl DiskManager {
                 )));
             }
 
-            let data_bitmap_block = guard.superblock.data_bitmap_block;
             let data_start = guard.superblock.data_block_start;
-            let data_slice = Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap_block)
-                .ok_or_else(|| {
-                    DiskManagerError::Io(std::io::Error::other("Failed to get data bitmap"))
-                })?;
+            let data_slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::other("Failed to get data bitmap"))
+            })?;
             let mut da = SimpleBlockAllocator::new(data_slice, data_start);
             let root_data = da.allocate()?;
 
@@ -2293,7 +2381,8 @@ impl DiskManager {
         Self::checkpoint_journal(&mut guard.mmap, &sb)?;
 
         // Snapshot the allocation bitmap so we know which slots are in use.
-        let inode_bitmap = Self::get_block_from_map(&guard.mmap, sb.inode_bitmap_block)
+        let inode_bitmap = guard
+            .inode_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("inode bitmap not found")))?
             .to_vec();
 
@@ -2392,10 +2481,9 @@ impl DiskManager {
         }
 
         // ---- Phase 2: simulate allocation ----
-        let ib_slice = Self::get_block_from_map(&guard.mmap, guard.superblock.inode_bitmap_block)
-            .ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
-        })?;
+        let ib_slice = guard
+            .inode_bitmap_slice()
+            .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("inode bitmap not found")))?;
         // SEC-25: the search is bounded by the inode table, so an id that
         // would address the data area is never handed out.
         let new_inode_id = crate::bitmap::BitmapRef::new(ib_slice)
@@ -3067,10 +3155,11 @@ impl DiskManager {
     #[allow(clippy::collapsible_if)]
     fn read_data_internal(
         guard: &DiskManagerInner,
+        inode_id: u64,
         inode: &Inode,
     ) -> Result<Vec<u8>, DiskManagerError> {
         if inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0 {
-            return Self::read_chunked_64k_internal(guard, inode);
+            return Self::read_chunked_64k_internal(guard, inode_id, inode);
         }
 
         let physical_size = if inode.compressed_size > 0 {
@@ -3134,10 +3223,16 @@ impl DiskManager {
                 .as_ref()
                 .ok_or(DiskManagerError::PasswordRequired)?;
 
+            // SEC-19: the associated data binds the ciphertext to the file.
+            let aad = crate::encryption::file_aad_for_scheme(
+                inode_id,
+                guard.superblock.encryption_version,
+            );
             crate::encryption::decrypt_data_in_place(
                 &mut decrypted_data,
                 encryption_key,
                 &inode.encryption_nonce,
+                &aad,
             )
             .map_err(|_| DiskManagerError::DecryptionFailed)?;
         }
@@ -3184,7 +3279,7 @@ impl DiskManager {
     pub fn read_data(&self, inode_id: u64) -> Result<Vec<u8>, DiskManagerError> {
         let guard = self.inner.read().unwrap();
         let inode = Self::read_inode_internal(&guard, inode_id)?;
-        Self::read_data_internal(&guard, &inode)
+        Self::read_data_internal(&guard, inode_id, &inode)
     }
 
     /// Reads up to `buf.len()` bytes starting at `file_offset` from a file.
@@ -3309,12 +3404,12 @@ impl DiskManager {
 
         // Fast path for seekable chunked compressed files: decompress only affected chunks
         if inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0 {
-            return Self::read_at_chunked_64k(guard, &inode, file_offset, buf);
+            return Self::read_at_chunked_64k(guard, inode_id, &inode, file_offset, buf);
         }
 
         // Fallback for compressed or encrypted files: decompress/decrypt and slice
         if inode.compressed_size > 0 || inode.encrypted {
-            let full_data = Self::read_data_internal(guard, &inode)?;
+            let full_data = Self::read_data_internal(guard, inode_id, &inode)?;
             let start = file_offset as usize;
             if start >= full_data.len() {
                 return Ok(0);
@@ -3584,6 +3679,7 @@ impl DiskManager {
         compression_mode: CompressionMode,
         filter_config: &crate::filters::FilterConfig,
         encryption_key: Option<&crate::encryption::EncryptionKey>,
+        aad: &[u8],
     ) -> Result<FullOverwritePayload, DiskManagerError> {
         let filtered = crate::filters::apply_filters_cow(data, filter_config);
         let working: &[u8] = &filtered;
@@ -3626,7 +3722,8 @@ impl DiskManager {
 
         if let Some(key) = encryption_key {
             let nonce = crate::encryption::generate_nonce();
-            let enc = crate::encryption::encrypt_data(final_data.as_ref(), key, &nonce)?;
+            // SEC-19: the associated data binds the ciphertext to the file.
+            let enc = crate::encryption::encrypt_data(final_data.as_ref(), key, &nonce, aad)?;
             return Ok(FullOverwritePayload {
                 buffer: enc,
                 is_compressed,
@@ -3654,6 +3751,7 @@ impl DiskManager {
             compression_mode,
             filter_config,
             guard.encryption_key.as_ref(),
+            &[],
         )?;
         if let Some(n) = payload.encryption_nonce {
             inode.encrypted = true;
@@ -3724,7 +3822,7 @@ impl DiskManager {
 
         // --- STAGE 1: Out-of-Lock Preparation (P4.1) ---
         // Fast shared read-lock inspection to determine plan parameters and extract encryption key.
-        let (initial_inode, existing_decompressed, encryption_key) = {
+        let (initial_inode, existing_decompressed, encryption_key, encryption_scheme) = {
             let guard = self.inner.read().unwrap();
             let inode = Self::read_inode_internal(&guard, inode_id)?;
 
@@ -3749,18 +3847,21 @@ impl DiskManager {
             // A transformed payload is rebuilt from the file's decoded content,
             // so that content has to be read before the plan is computed (SEC-16).
             let existing = if !is_full_overwrite && transformed && inode.size > 0 && !fast_append {
-                Some(Self::read_data_internal(&guard, &inode)?)
+                Some(Self::read_data_internal(&guard, inode_id, &inode)?)
             } else {
                 None
             };
 
             let key = guard.encryption_key.clone();
-            (inode, existing, key)
+            let scheme = guard.superblock.encryption_version;
+            (inode, existing, key, scheme)
         }; // Shared read-guard is dropped immediately here!
 
         // --- STAGE 2: CPU-Bound Processing (ZERO filesystem locks held) ---
         // Perform CPU-heavy filtering, Zstd compression, and XChaCha20 encryption
         // entirely outside the exclusive lock so concurrent readers are not blocked.
+        // SEC-19: the associated data binds the ciphertext to the file.
+        let aad = crate::encryption::file_aad_for_scheme(inode_id, encryption_scheme);
         let prepared_plan = plan_write_prepared(
             &initial_inode,
             file_offset,
@@ -3768,7 +3869,10 @@ impl DiskManager {
             compression_mode,
             &filter_config,
             existing_decompressed.as_deref(),
-            encryption_key.as_ref(),
+            EncryptionContext {
+                key: encryption_key.as_ref(),
+                aad: &aad,
+            },
         )?;
 
         // --- STAGE 3: Exclusive Lock Acquisition & Commit ---
@@ -3795,6 +3899,7 @@ impl DiskManager {
             // Raced with another writer on this specific inode: re-compute plan under write lock.
             plan_write(
                 &guard,
+                inode_id,
                 &inode,
                 file_offset,
                 data,
@@ -4081,6 +4186,7 @@ impl DiskManager {
         chunk_valid_len: usize,
         zstd_level: i32,
         encryption_key: Option<&crate::encryption::EncryptionKey>,
+        aad_ctx: ChunkAadContext,
     ) -> Result<(Vec<u8>, u8, u16, usize), DiskManagerError> {
         let level = if zstd_level <= 0 { 1 } else { zstd_level };
         // P4.26: the pooled compressor avoids a per-chunk `CCtx` allocation.
@@ -4092,7 +4198,15 @@ impl DiskManager {
         if let Some(key) = encryption_key {
             if is_compressed {
                 let nonce = crate::encryption::generate_nonce();
-                let enc = crate::encryption::encrypt_data(&compressed, key, &nonce)?;
+                // SEC-19: the associated data binds the chunk to its file and
+                // to its index.
+                let aad = crate::encryption::chunk_aad_for_scheme(
+                    aad_ctx.inode_id,
+                    aad_ctx.chunk_idx,
+                    crate::inode::ChunkEntry::FLAG_COMPRESSED,
+                    aad_ctx.scheme,
+                );
+                let enc = crate::encryption::encrypt_data(&compressed, key, &nonce, &aad)?;
                 let total_len = 24 + enc.len();
                 if total_len < chunk_valid_len && total_len <= 65535 {
                     let mut payload = Vec::with_capacity(total_len);
@@ -4111,7 +4225,14 @@ impl DiskManager {
 
             // Fallback to RAW with encryption
             let nonce = crate::encryption::generate_nonce();
-            let enc = crate::encryption::encrypt_data(&chunk_buf[..chunk_valid_len], key, &nonce)?;
+            let aad = crate::encryption::chunk_aad_for_scheme(
+                aad_ctx.inode_id,
+                aad_ctx.chunk_idx,
+                crate::inode::ChunkEntry::FLAG_RAW,
+                aad_ctx.scheme,
+            );
+            let enc =
+                crate::encryption::encrypt_data(&chunk_buf[..chunk_valid_len], key, &nonce, &aad)?;
             let mut payload = Vec::with_capacity(24 + enc.len());
             payload.extend_from_slice(&nonce);
             payload.extend_from_slice(&enc);
@@ -4140,6 +4261,7 @@ impl DiskManager {
 
     fn read_single_chunk_decompressed(
         guard: &DiskManagerInner,
+        inode_id: u64,
         inode: &Inode,
         chunk_idx: usize,
         chunk_valid_len: usize,
@@ -4183,8 +4305,17 @@ impl DiskManager {
                     .ok_or(DiskManagerError::PasswordRequired)?;
                 let mut nonce = [0u8; 24];
                 nonce.copy_from_slice(&raw_slice[0..24]);
-                let mut result = crate::encryption::decrypt_data(&raw_slice[24..], key, &nonce)
-                    .map_err(|_| DiskManagerError::DecryptionFailed)?;
+                // SEC-19: the associated data binds the chunk to its file and
+                // to its index.
+                let aad = crate::encryption::chunk_aad_for_scheme(
+                    inode_id,
+                    chunk_idx as u64,
+                    crate::inode::ChunkEntry::FLAG_RAW,
+                    guard.superblock.encryption_version,
+                );
+                let mut result =
+                    crate::encryption::decrypt_data(&raw_slice[24..], key, &nonce, &aad)
+                        .map_err(|_| DiskManagerError::DecryptionFailed)?;
                 if result.len() > chunk_valid_len {
                     result.truncate(chunk_valid_len);
                 } else if result.len() < chunk_valid_len {
@@ -4227,8 +4358,15 @@ impl DiskManager {
                     .ok_or(DiskManagerError::PasswordRequired)?;
                 let mut nonce = [0u8; 24];
                 nonce.copy_from_slice(&comp_slice[0..24]);
-                decrypted_buf = crate::encryption::decrypt_data(&comp_slice[24..], key, &nonce)
-                    .map_err(|_| DiskManagerError::DecryptionFailed)?;
+                let aad = crate::encryption::chunk_aad_for_scheme(
+                    inode_id,
+                    chunk_idx as u64,
+                    crate::inode::ChunkEntry::FLAG_COMPRESSED,
+                    guard.superblock.encryption_version,
+                );
+                decrypted_buf =
+                    crate::encryption::decrypt_data(&comp_slice[24..], key, &nonce, &aad)
+                        .map_err(|_| DiskManagerError::DecryptionFailed)?;
                 &decrypted_buf
             } else {
                 comp_slice
@@ -4257,6 +4395,7 @@ impl DiskManager {
 
     fn read_chunked_64k_internal(
         guard: &DiskManagerInner,
+        inode_id: u64,
         inode: &Inode,
     ) -> Result<Vec<u8>, DiskManagerError> {
         if inode.size == 0 {
@@ -4269,7 +4408,7 @@ impl DiskManager {
             let chunk_start = (chunk_idx * crate::inode::CHUNK_SIZE_64K) as u64;
             let valid_len = ((inode.size - chunk_start) as usize).min(crate::inode::CHUNK_SIZE_64K);
             let chunk_bytes =
-                Self::read_single_chunk_decompressed(guard, inode, chunk_idx, valid_len)?;
+                Self::read_single_chunk_decompressed(guard, inode_id, inode, chunk_idx, valid_len)?;
             out.extend_from_slice(&chunk_bytes);
         }
 
@@ -4278,6 +4417,7 @@ impl DiskManager {
 
     fn read_at_chunked_64k(
         guard: &DiskManagerInner,
+        inode_id: u64,
         inode: &Inode,
         file_offset: u64,
         buf: &mut [u8],
@@ -4303,8 +4443,13 @@ impl DiskManager {
             }
             let chunk_to_copy = (to_read_total - bytes_read).min(rem_in_chunk);
 
-            let chunk_data =
-                Self::read_single_chunk_decompressed(guard, inode, chunk_idx, chunk_valid_len)?;
+            let chunk_data = Self::read_single_chunk_decompressed(
+                guard,
+                inode_id,
+                inode,
+                chunk_idx,
+                chunk_valid_len,
+            )?;
             if in_chunk_offset < chunk_data.len() {
                 let available = (chunk_data.len() - in_chunk_offset).min(chunk_to_copy);
                 buf[bytes_read..bytes_read + available]
@@ -4336,7 +4481,7 @@ impl DiskManager {
         }
 
         // --- STAGE 1: Fast Shared Read-Lock Inspection (Out-of-Lock Preparation) ---
-        let (initial_inode, uncompressed_chunks, encryption_key) = {
+        let (initial_inode, uncompressed_chunks, encryption_key, scheme) = {
             let guard = self.inner.read().unwrap();
             let inode = Self::read_inode_internal(&guard, inode_id)?;
             if inode.mode != crate::inode::FileType::File {
@@ -4379,6 +4524,7 @@ impl DiskManager {
                     let mut buf = if old_valid_len > 0 {
                         Self::read_single_chunk_decompressed(
                             &guard,
+                            inode_id,
                             &inode,
                             chunk_idx,
                             old_valid_len,
@@ -4398,7 +4544,8 @@ impl DiskManager {
             }
 
             let key = guard.encryption_key.clone();
-            (inode, chunks, key)
+            let scheme = guard.superblock.encryption_version;
+            (inode, chunks, key, scheme)
         };
 
         // --- STAGE 2: CPU-Bound Processing (ZERO filesystem locks held) ---
@@ -4412,6 +4559,11 @@ impl DiskManager {
                         chunk_valid_len,
                         level,
                         encryption_key.as_ref(),
+                        ChunkAadContext {
+                            inode_id,
+                            chunk_idx: chunk_idx as u64,
+                            scheme,
+                        },
                     )?;
                     Ok(PreparedChunkPayload {
                         chunk_idx,
@@ -4430,6 +4582,11 @@ impl DiskManager {
                 chunk_valid_len,
                 level,
                 encryption_key.as_ref(),
+                ChunkAadContext {
+                    inode_id,
+                    chunk_idx: chunk_idx as u64,
+                    scheme,
+                },
             )?;
             vec![PreparedChunkPayload {
                 chunk_idx,
@@ -4518,7 +4675,13 @@ impl DiskManager {
                     0
                 };
                 let mut buf = if old_valid_len > 0 {
-                    Self::read_single_chunk_decompressed(guard, &inode, chunk_idx, old_valid_len)?
+                    Self::read_single_chunk_decompressed(
+                        guard,
+                        inode_id,
+                        &inode,
+                        chunk_idx,
+                        old_valid_len,
+                    )?
                 } else {
                     Vec::new()
                 };
@@ -4535,6 +4698,11 @@ impl DiskManager {
                 chunk_valid_len,
                 zstd_level,
                 guard.encryption_key.as_ref(),
+                ChunkAadContext {
+                    inode_id,
+                    chunk_idx: chunk_idx as u64,
+                    scheme: guard.superblock.encryption_version,
+                },
             )?;
 
             prepared_chunks.push(PreparedChunkPayload {
@@ -4915,6 +5083,7 @@ impl DiskManager {
                     if !old_entry.is_empty() {
                         let old_data = Self::read_single_chunk_decompressed(
                             guard,
+                            inode_id,
                             &inode,
                             last_c_idx,
                             last_valid_len,
@@ -4924,6 +5093,11 @@ impl DiskManager {
                             last_valid_len,
                             1,
                             guard.encryption_key.as_ref(),
+                            ChunkAadContext {
+                                inode_id,
+                                chunk_idx: last_c_idx as u64,
+                                scheme: guard.superblock.encryption_version,
+                            },
                         )?;
 
                         let new_start_blk = sim.alloc_contiguous(blocks_needed)?;
@@ -5077,6 +5251,7 @@ impl DiskManager {
                 if !old_entry.is_empty() {
                     let old_data = Self::read_single_chunk_decompressed(
                         guard,
+                        inode_id,
                         &inode,
                         last_c_idx,
                         last_valid_len,
@@ -5086,6 +5261,11 @@ impl DiskManager {
                         last_valid_len,
                         1,
                         guard.encryption_key.as_ref(),
+                        ChunkAadContext {
+                            inode_id,
+                            chunk_idx: last_c_idx as u64,
+                            scheme: guard.superblock.encryption_version,
+                        },
                     )?;
 
                     let new_start_blk =
@@ -6176,7 +6356,7 @@ impl DiskManager {
 
         // Case 1: Compressed / Encrypted / Filtered file
         if inode.compressed_size > 0 || inode.encrypted || inode.filter_typesize > 0 {
-            let mut full_data = Self::read_data_internal(guard, &inode)?;
+            let mut full_data = Self::read_data_internal(guard, inode_id, &inode)?;
             full_data.resize(new_size as usize, 0);
 
             let filter_config = crate::filters::FilterConfig {
@@ -6191,6 +6371,11 @@ impl DiskManager {
                 CompressionMode::Never
             };
 
+            // SEC-19: the associated data binds the ciphertext to the file.
+            let aad = crate::encryption::file_aad_for_scheme(
+                inode_id,
+                guard.superblock.encryption_version,
+            );
             let plan = plan_write_prepared(
                 &inode,
                 0,
@@ -6198,7 +6383,10 @@ impl DiskManager {
                 compression_mode,
                 &filter_config,
                 None,
-                guard.encryption_key.as_ref(),
+                EncryptionContext {
+                    key: guard.encryption_key.as_ref(),
+                    aad: &aad,
+                },
             )?;
 
             if guard.superblock.has_journal_layout() {
@@ -6620,9 +6808,9 @@ impl DiskManager {
     ) -> Result<FragmentationStats, DiskManagerError> {
         let sb = &guard.superblock;
 
-        // Get data bitmap block
-        let bitmap_block = sb.data_bitmap_block;
-        let bitmap_slice = Self::get_block_from_map(&guard.mmap, bitmap_block)
+        // The data bitmap may span several blocks (P4.25).
+        let bitmap_slice = guard
+            .data_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("Bitmap not found")))?;
 
         // Zero-allocation BitmapRef analysis
@@ -7028,11 +7216,8 @@ impl DiskManager {
         // Step 3: Clear data bitmap and preserve directory blocks
         {
             let mut guard = temp_dm.inner.write().unwrap();
-            let data_bitmap_block = guard.superblock.data_bitmap_block;
             let data_start = guard.superblock.data_block_start;
-            if let Some(bitmap_slice) =
-                Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap_block)
-            {
+            if let Some(bitmap_slice) = guard.data_bitmap_slice_mut() {
                 bitmap_slice.fill(0);
                 let mut bitmap = crate::bitmap::Bitmap::new(bitmap_slice);
                 for &dir_blk in &directory_blocks {
@@ -7136,8 +7321,7 @@ impl DiskManager {
 
         // 1. Collect all active allocated inodes
         let mut allocated_inodes = Vec::new();
-        let ib_blk = sb.inode_bitmap_block;
-        if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, ib_blk) {
+        if let Some(bitmap_slice) = guard.inode_bitmap_slice() {
             let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
             bitmap.for_each_set_bit(sb.inode_count as usize, |idx| {
                 allocated_inodes.push(idx as u64);
@@ -7357,10 +7541,7 @@ impl DiskManager {
 
             // 7. Update data bitmap
             let total_used = (next_target - guard.superblock.data_block_start) as usize;
-            let data_bitmap_block = guard.superblock.data_bitmap_block;
-            if let Some(bitmap_slice) =
-                Self::get_block_mut_from_map(&mut guard.mmap, data_bitmap_block)
-            {
+            if let Some(bitmap_slice) = guard.data_bitmap_slice_mut() {
                 bitmap_slice.fill(0);
                 let mut bitmap = crate::bitmap::Bitmap::new(bitmap_slice);
                 for bit in 0..total_used {
@@ -7425,8 +7606,7 @@ impl DiskManager {
 
         // 1. Collect all allocated Inode IDs from Inode Bitmap
         let mut allocated_inodes = std::collections::HashSet::new();
-        let ib_blk = sb.inode_bitmap_block;
-        if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, ib_blk) {
+        if let Some(bitmap_slice) = guard.inode_bitmap_slice() {
             let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
             bitmap.for_each_set_bit(sb.inode_count as usize, |idx| {
                 allocated_inodes.insert(idx as u64);
@@ -7435,9 +7615,8 @@ impl DiskManager {
 
         // 2. Collect all allocated Data Blocks from Data Bitmap
         let mut allocated_data_blocks = std::collections::HashSet::new();
-        let db_blk = sb.data_bitmap_block;
         let db_start = sb.data_block_start;
-        if let Some(bitmap_slice) = Self::get_block_from_map(&guard.mmap, db_blk) {
+        if let Some(bitmap_slice) = guard.data_bitmap_slice() {
             let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
             let max_data_blocks = sb.block_count.saturating_sub(db_start) as usize;
             bitmap.for_each_set_bit(max_data_blocks, |idx| {
@@ -7777,5 +7956,68 @@ mod verification {
         assert!(chunk_offset_end <= chunk_valid_len);
         kani::cover!(first_chunk == last_chunk, "single-chunk write reached");
         kani::cover!(first_chunk < last_chunk, "multi-chunk write reached");
+    }
+}
+
+#[cfg(test)]
+mod encryption_scheme_tests {
+    use super::*;
+    use crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
+
+    /// An image written with the legacy scheme (no associated data) must stay
+    /// readable: SEC-19 introduced the context-bound scheme without breaking
+    /// the images that were written before it.
+    #[test]
+    fn legacy_encryption_scheme_stays_readable() {
+        let path =
+            std::env::temp_dir().join(format!("oifs_legacy_scheme_{}.img", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let dm = DiskManager::create_encrypted(&path, 10 * 1024 * 1024, "pw123456")
+            .expect("create encrypted image");
+
+        // Downgrade the image to the legacy scheme before any data is written.
+        {
+            let mut guard = dm.inner.write().unwrap();
+            let mut sb = guard.superblock;
+            sb.encryption_version = crate::encryption::ENCRYPTION_SCHEME_LEGACY;
+            let serialized = bincode::serialize(&sb).expect("serialize superblock");
+            guard.mmap[0..serialized.len()].copy_from_slice(&serialized);
+            guard.superblock = sb;
+        }
+
+        let root = dm.superblock().root_inode;
+        let id = dm.create_file(root, "legacy.txt").expect("create file");
+        let payload = b"written with the legacy scheme";
+        dm.write_data(id, 0, payload, CompressionMode::Never)
+            .expect("write data");
+
+        // The read must succeed: the legacy scheme uses an empty AAD.
+        assert_eq!(dm.read_data(id).expect("read data"), payload.to_vec());
+        drop(dm);
+
+        // And it must still be readable after a remount.
+        let dm = DiskManager::open_with_password(&path, 0, Some("pw123456"))
+            .expect("reopen encrypted image");
+        assert_eq!(
+            dm.read_data(id).expect("read data after remount"),
+            payload.to_vec()
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A fresh image uses the context-bound scheme.
+    #[test]
+    fn new_images_use_the_context_bound_scheme() {
+        let path =
+            std::env::temp_dir().join(format!("oifs_context_scheme_{}.img", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let dm = DiskManager::create_encrypted(&path, 10 * 1024 * 1024, "pw123456")
+            .expect("create encrypted image");
+        assert_eq!(
+            dm.superblock().encryption_version,
+            ENCRYPTION_SCHEME_CONTEXT_BOUND
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

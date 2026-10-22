@@ -38,6 +38,8 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **Durability governs the journal too**: only `DurabilityMode::Strict` pays the per-transaction `msync` barriers (WAL + payload); the process-crash-safe modes rely on the page cache and sync at `flush()`/`Drop`, with the WAL always written before the image.
 - **Encrypted Writes Never Bypass the Cipher (SEC-16)**: A compressed, filtered or encrypted payload is a single blob over the whole file, so any write to such a file rebuilds it (decrypt → splice → re-filter/re-compress/re-encrypt with a fresh nonce). A write at a non-zero offset can therefore never store plaintext on an encrypted image.
 - **Zeroed Data Blocks (SEC-27)**: A freshly allocated data block is zeroed before it is handed to a new owner, so a recycled block can never expose the plaintext of a deleted or truncated file.
+- **Context-Bound Encryption (SEC-19)**: The AEAD associated data binds a ciphertext to its inode (and a seekable chunk to its chunk index and flags), so a ciphertext cannot be moved to another file or rolled back undetected. The image-wide `encryption_version` selects the scheme, so older images stay readable.
+- **Multi-Block Bitmaps (P4.25)**: The v3 layout sizes the inode and data bitmaps with the image, so the data area is no longer capped at the 32,768 blocks a single bitmap block can track (128 MiB). The spans are derived from the recorded offsets, so the `bincode`-encoded superblock needs no new field.
 - **Pooled Zstd Contexts (P4.26)**: The compression contexts are pooled per thread (one compressor per level, one decompressor), so a frame or a 64 KiB chunk no longer allocates a fresh `CCtx`/`DCtx`.
 - **Chunk-Aware Defragmentation (SEC-26)**: The defragmentation decodes the packed `ChunkEntry` values of seekable 64K files, so their chunk runs are relocated as a unit and the safe pass keeps the chunked format.
 - **Bounded Inode & Data Regions (SEC-25)**: The usable inode range is derived from the real inode-table capacity (the superblock's `inode_count` is twice the table capacity because it was sized for the old 128-byte records), so an inode id can never address the data area, and both allocators stop at the boundary of their own region.
@@ -97,7 +99,7 @@ An inode stores:
 | `src/ffi.rs` | C-compatible dynamic library bindings (`include/oifs.h`). |
 | `src/bin/oifs.rs` | CLI application entry point (`clap`-based). |
 | `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling. |
-| `tests/` | 59 integration test files (454 tests): stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, inode-bounds, defrag-seekable, zeroed-block, zstd-pool, and CLI suites. |
+| `tests/` | 61 integration test files (461 tests): stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, inode-bounds, defrag-seekable, zeroed-block, zstd-pool, encrypted-context-binding, large-image-bitmap, and CLI suites. |
 | `docs/optimization_roadmap.md` | Detailed changelog and benchmarks for P0, P1, P2, and P3 optimizations. |
 | `docs/metadata_wal_design.md` | Metadata WAL specification and implementation status (M1–M5 complete). |
 | `docs/performance_and_verification_research.md` | In-depth audit of performance bottlenecks, safety vulnerabilities, and Kani blueprints. |
@@ -140,7 +142,7 @@ An inode stores:
 cargo build
 cargo build --release
 
-# 2. Run all standard unit and integration tests (59 test files, 454 tests)
+# 2. Run all standard unit and integration tests (61 test files, 461 tests)
 cargo test --release
 
 # 3. Run multi-block directory performance benchmark

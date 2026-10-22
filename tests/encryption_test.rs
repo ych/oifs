@@ -17,7 +17,11 @@ fn test_create_encrypted_filesystem() {
     let sb = dm.superblock();
     assert!(sb.encrypted, "Superblock should have encrypted flag set");
     assert_ne!(sb.encryption_salt, [0u8; 16], "Salt should be non-zero");
-    assert_eq!(sb.encryption_version, 1, "Encryption version should be 1");
+    assert_eq!(
+        sb.encryption_version,
+        oifs::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND,
+        "New images use the context-bound encryption scheme (SEC-19)"
+    );
 }
 
 #[test]

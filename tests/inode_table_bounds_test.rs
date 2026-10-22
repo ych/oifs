@@ -78,9 +78,11 @@ fn test_inode_allocation_stops_at_the_table_boundary() {
     let dm = DiskManager::open(&img.path, 200 * 1024).expect("open dm");
     let root = dm.superblock().root_inode;
     let usable = dm.superblock().usable_inode_count();
+    // The usable ids must fit in the inode table (the v3 layout reports the
+    // count honestly; a legacy image may claim more than fits).
     assert!(
-        usable < dm.superblock().inode_count,
-        "the test image must have a bitmap larger than its table"
+        usable <= dm.superblock().inode_table_capacity(),
+        "the usable inode ids must fit in the inode table"
     );
 
     // Fill the inode table.

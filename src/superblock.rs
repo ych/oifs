@@ -138,7 +138,85 @@ impl SuperBlock {
     /// # Panics
     /// Panics if `total_blocks < 5` (minimum: superblock + 2 bitmaps + 1 inode table + 1 data)
     pub fn new(total_blocks: u64) -> Self {
-        Self::new_with_layout(total_blocks, 3)
+        Self::new_v3(total_blocks, false)
+    }
+
+    /// Creates a new SuperBlock with the v3 layout.
+    ///
+    /// The metadata regions are laid out as
+    ///
+    /// ```text
+    /// [superblock][inode bitmap: N][data bitmap: M][journal: J][inode table: T][data area]
+    /// ```
+    ///
+    /// `N` and `M` grow with the image, so the data area is no longer capped at
+    /// the 32,768 blocks a single bitmap block can track (P4.25).
+    pub fn new_v3(total_blocks: u64, journaled: bool) -> Self {
+        let journal_blocks = if journaled {
+            crate::journal::JOURNAL_RESERVED_BLOCKS
+        } else {
+            0
+        };
+
+        // The inode table keeps the historical sizing (at most 1024 blocks, or
+        // a quarter of the remaining space) but the records are 256 bytes
+        // wide, so a block holds 16 inodes.
+        let inodes_per_block = Self::INODE_SLOTS_PER_BLOCK;
+        // The historical table size (1024 blocks) is kept, so the data area
+        // starts where it always did; the table now honestly reports the
+        // 16,384 inodes that fit into 1024 blocks of 256-byte records.
+        let inode_table_blocks_cap: u64 = 1024;
+
+        // The bitmaps and the table share the space below the metadata. The
+        // sizes are derived in a single pass: an iterative fixed point would
+        // blow up the symbolic proofs (CBMC explores every branch of every
+        // iteration).
+        //
+        //   * the inode table keeps the historical size (at most 1024 blocks),
+        //   * the inode bitmap covers the inodes of that table,
+        //   * the data bitmap covers everything that is left.
+        let metadata_blocks = 1 + 1 + 1 + journal_blocks;
+        let inode_table_blocks = if total_blocks > metadata_blocks + inode_table_blocks_cap {
+            inode_table_blocks_cap
+        } else {
+            total_blocks
+                .saturating_sub(metadata_blocks)
+                .saturating_sub(1)
+                / 4
+        };
+        let inode_count = inode_table_blocks * inodes_per_block;
+        let inode_bitmap_blocks = inode_count.div_ceil(Self::BITMAP_BLOCK_BITS).max(1);
+        let data_blocks = total_blocks
+            .saturating_sub(1 + inode_bitmap_blocks + 1 + journal_blocks + inode_table_blocks);
+        let data_bitmap_blocks = data_blocks.div_ceil(Self::BITMAP_BLOCK_BITS).max(1);
+
+        let inode_count = inode_table_blocks * inodes_per_block;
+        let inode_bitmap_block = 1;
+        let data_bitmap_block = inode_bitmap_block + inode_bitmap_blocks;
+        let inode_table_block = data_bitmap_block + data_bitmap_blocks + journal_blocks;
+        let data_block_start = inode_table_block + inode_table_blocks;
+
+        assert!(
+            total_blocks > data_block_start,
+            "File system too small for the requested metadata layout"
+        );
+
+        Self {
+            magic: Self::MAGIC,
+            block_size: crate::BLOCK_SIZE as u32,
+            block_count: total_blocks,
+            inode_bitmap_block,
+            data_bitmap_block,
+            inode_table_block,
+            inode_count,
+            data_block_start,
+            root_inode: 0,
+            encrypted: false,
+            encryption_salt: [0u8; 16],
+            encryption_version: 0,
+            format_version: Self::FORMAT_VERSION_V3_LAYOUT,
+            migration_cursor: 0,
+        }
     }
 
     /// Creates a new SuperBlock, placing the inode table at `inode_table_block`.
@@ -212,12 +290,19 @@ impl SuperBlock {
     /// # Panics
     /// Panics if `total_blocks` is too small to hold the journal plus one data block.
     pub fn new_journaled(total_blocks: u64) -> Self {
-        Self::new_with_layout(total_blocks, crate::journal::JOURNAL_INODE_TABLE_BLOCK)
+        Self::new_v3(total_blocks, true)
     }
 
     /// Returns `true` when this image reserves a metadata WAL region.
     pub fn has_journal_layout(&self) -> bool {
-        crate::journal::is_journaled_layout(self)
+        if self.is_v3_layout() {
+            // The v3 layout places the journal region between the data bitmap
+            // and the inode table.
+            let without_journal = 1 + self.inode_bitmap_blocks() + self.data_bitmap_blocks();
+            self.inode_table_block == without_journal + crate::journal::JOURNAL_RESERVED_BLOCKS
+        } else {
+            crate::journal::is_journaled_layout(self)
+        }
     }
 
     /// Number of inode ids the inode bitmap can track (one bitmap block).
@@ -237,6 +322,54 @@ impl SuperBlock {
     pub fn inode_table_capacity(&self) -> u64 {
         let table_blocks = self.data_block_start.saturating_sub(self.inode_table_block);
         table_blocks.saturating_mul(Self::INODE_SLOTS_PER_BLOCK)
+    }
+
+    /// The format version of the v3 layout (multi-block bitmaps).
+    ///
+    /// The v1/v2 layouts always use a single bitmap block, which caps the
+    /// data area at 32,768 blocks (128 MiB) and the inode count at 32,768
+    /// (P4.25). The v3 layout sizes the bitmaps with the image.
+    pub const FORMAT_VERSION_V3_LAYOUT: u32 = 3;
+
+    /// The number of bits a single bitmap block tracks.
+    pub const BITMAP_BLOCK_BITS: u64 = 4096 * 8;
+
+    /// Returns `true` when the image uses the v3 layout.
+    pub fn is_v3_layout(&self) -> bool {
+        self.format_version >= Self::FORMAT_VERSION_V3_LAYOUT
+    }
+
+    /// The number of blocks the inode bitmap spans.
+    pub fn inode_bitmap_blocks(&self) -> u64 {
+        if self.is_v3_layout() {
+            self.inode_count.div_ceil(Self::BITMAP_BLOCK_BITS).max(1)
+        } else {
+            1
+        }
+    }
+
+    /// The number of blocks the data bitmap spans.
+    ///
+    /// The span is derived exactly as [`Self::new_v3`] computed it, so the
+    /// layout and the derivation always agree. The journal region sits
+    /// between the data bitmap and the inode table, so both possibilities are
+    /// tried and the one that matches the recorded inode table offset wins.
+    pub fn data_bitmap_blocks(&self) -> u64 {
+        if !self.is_v3_layout() {
+            return 1;
+        }
+        let inode_bitmap_blocks = self.inode_bitmap_blocks();
+        let table_blocks = self.data_block_start.saturating_sub(self.inode_table_block);
+        for journal_blocks in [0u64, crate::journal::JOURNAL_RESERVED_BLOCKS] {
+            let data_blocks = self
+                .block_count
+                .saturating_sub(1 + inode_bitmap_blocks + 1 + journal_blocks + table_blocks);
+            let bitmap_blocks = data_blocks.div_ceil(Self::BITMAP_BLOCK_BITS).max(1);
+            if self.inode_table_block == 1 + inode_bitmap_blocks + bitmap_blocks + journal_blocks {
+                return bitmap_blocks;
+            }
+        }
+        1
     }
 
     /// The number of inode ids that may be used.
@@ -302,6 +435,23 @@ impl SuperBlock {
         if self.root_inode >= usable {
             return Err("Root inode ID exceeds the usable inode count");
         }
+        // The v3 layout records the bitmap spans implicitly: the regions must
+        // fit exactly into the recorded offsets.
+        if self.is_v3_layout() {
+            let inode_bitmap_end = self.inode_bitmap_block + self.inode_bitmap_blocks();
+            if self.data_bitmap_block != inode_bitmap_end {
+                return Err("Data bitmap does not follow the inode bitmap");
+            }
+            let data_bitmap_end = self.data_bitmap_block + self.data_bitmap_blocks();
+            let journal_blocks = if self.has_journal_layout() {
+                crate::journal::JOURNAL_RESERVED_BLOCKS
+            } else {
+                0
+            };
+            if self.inode_table_block != data_bitmap_end + journal_blocks {
+                return Err("Inode table does not follow the data bitmap");
+            }
+        }
         Ok(())
     }
 }
@@ -342,18 +492,45 @@ mod kani_proofs {
         kani::cover!(total_blocks > 1028, "large image reached");
     }
 
-    /// Prove that large file systems (>= 1028 blocks) get the full 32,768 inodes.
+    /// Prove that a large file system fills its inode table and reports the
+    /// inodes that actually fit into it.
+    ///
+    /// The records are 256 bytes wide, so 1024 table blocks hold 16,384
+    /// inodes; the historical count of 32,768 did not fit (SEC-25).
     #[kani::proof]
     fn proof_superblock_large_fs_full_inodes() {
         let total_blocks: u64 = kani::any();
-        // At total_blocks >= 1028: full capacity
+        // At total_blocks >= 1028: the full table
         kani::assume(total_blocks >= 1028 && total_blocks <= 1_000_000);
 
         let sb = SuperBlock::new(total_blocks);
+        // The regions must follow each other exactly (the bitmap spans grow
+        // with the image, so the offsets are relational).
+        assert_eq!(
+            sb.inode_table_block,
+            1 + sb.inode_bitmap_blocks() + sb.data_bitmap_blocks(),
+            "the table must start after the bitmaps"
+        );
+        let table_blocks = sb.data_block_start - sb.inode_table_block;
         assert_eq!(
             sb.inode_count,
-            4096 * 8,
-            "Large FS must have full 32,768 inodes"
+            table_blocks * SuperBlock::INODE_SLOTS_PER_BLOCK,
+            "the inode count must match the table capacity"
+        );
+        assert!(
+            table_blocks <= 1024,
+            "the table must not exceed its historical size"
+        );
+        // The bitmap must be able to track every inode.
+        assert!(
+            sb.inode_bitmap_blocks() * SuperBlock::BITMAP_BLOCK_BITS >= sb.inode_count,
+            "the inode bitmap must cover the inode count"
+        );
+        // And the data bitmap must cover the data area.
+        assert!(
+            sb.data_bitmap_blocks() * SuperBlock::BITMAP_BLOCK_BITS
+                >= sb.block_count - sb.data_block_start,
+            "the data bitmap must cover the data area"
         );
         kani::cover!(total_blocks >= 1028, "large filesystem reached");
     }
@@ -397,13 +574,24 @@ mod kani_proofs {
     /// Prove that `SuperBlock::new` and `SuperBlock::new_with_layout` agree for the
     /// legacy table start, so journaling cannot silently change legacy geometry.
     #[kani::proof]
-    fn proof_legacy_layout_unchanged() {
+    fn proof_v3_layout_keeps_the_legacy_geometry() {
         let total_blocks: u64 = kani::any();
         kani::assume(total_blocks >= 5 && total_blocks <= 1_000_000);
 
-        let legacy = SuperBlock::new(total_blocks);
-        let explicit = SuperBlock::new_with_layout(total_blocks, 3);
-        assert_eq!(legacy, explicit);
+        // The v3 layout (P4.25) keeps the legacy geometry: the table still
+        // starts right after the bitmaps and the data area still follows the
+        // table. Only the reported inode count changes, because the records are
+        // 256 bytes wide.
+        let v3 = SuperBlock::new(total_blocks);
+        assert_eq!(
+            v3.inode_table_block,
+            1 + v3.inode_bitmap_blocks() + v3.data_bitmap_blocks()
+        );
+        assert!(!crate::journal::is_journaled_layout(&v3));
+        assert_eq!(v3, SuperBlock::new_v3(total_blocks, false));
+
+        // The legacy layout stays available for the images that use it.
+        let legacy = SuperBlock::new_with_layout(total_blocks, 3);
         assert_eq!(legacy.inode_table_block, 3);
         assert!(!crate::journal::is_journaled_layout(&legacy));
         kani::cover!(total_blocks == 5, "minimum legacy layout reached");
@@ -491,7 +679,9 @@ mod tests {
         assert_eq!(sb.inode_bitmap_block, 1);
         assert_eq!(sb.data_bitmap_block, 2);
         assert_eq!(sb.inode_table_block, 3);
-        assert_eq!(sb.inode_count, 32768);
+        // The records are 256 bytes wide, so 1024 table blocks hold 16,384
+        // inodes (the historical count of 32,768 did not fit).
+        assert_eq!(sb.inode_count, 16_384);
         assert_eq!(sb.data_block_start, 3 + 1024); // 1027
         assert_eq!(sb.root_inode, 0);
         assert!(!sb.encrypted);
@@ -559,10 +749,16 @@ mod tests {
     #[test]
     fn test_new_images_declare_the_fixed_inode_format() {
         let sb = SuperBlock::new(2560);
-        assert_eq!(sb.format_version, SuperBlock::FORMAT_VERSION_FIXED_INODE);
+        // The format version also marks the layout: >= 3 means the v3 layout
+        // with the v2 (256-byte) inode records.
+        assert_eq!(sb.format_version, SuperBlock::FORMAT_VERSION_V3_LAYOUT);
         assert!(!sb.is_legacy_inode_format());
         assert_eq!(
             sb.inode_record_version(),
+            SuperBlock::FORMAT_VERSION_FIXED_INODE
+        );
+        assert_eq!(
+            sb.inode_record_version_for(0),
             SuperBlock::FORMAT_VERSION_FIXED_INODE
         );
     }

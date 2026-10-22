@@ -4,7 +4,7 @@ use base64ct::{Base64UrlUnpadded, Encoding};
 use blake2::{Blake2b512, Digest};
 use chacha20poly1305::{
     ChaCha20Poly1305, Nonce, XChaCha20Poly1305, XNonce,
-    aead::{Aead, AeadInPlace, KeyInit, OsRng},
+    aead::{Aead, AeadInPlace, KeyInit, OsRng, Payload},
 };
 use std::fmt;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -84,6 +84,7 @@ pub fn encrypt_data(
     plaintext: &[u8],
     key: &EncryptionKey,
     nonce: &[u8; 24],
+    aad: &[u8],
 ) -> Result<Vec<u8>, EncryptionError> {
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
         .map_err(|_| EncryptionError::InvalidKey)?;
@@ -91,7 +92,13 @@ pub fn encrypt_data(
     let xnonce = XNonce::from_slice(nonce);
 
     cipher
-        .encrypt(xnonce, plaintext)
+        .encrypt(
+            xnonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| EncryptionError::EncryptionFailed)
 }
 
@@ -108,6 +115,7 @@ pub fn decrypt_data(
     ciphertext: &[u8],
     key: &EncryptionKey,
     nonce: &[u8; 24],
+    aad: &[u8],
 ) -> Result<Vec<u8>, EncryptionError> {
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
         .map_err(|_| EncryptionError::InvalidKey)?;
@@ -115,7 +123,13 @@ pub fn decrypt_data(
     let xnonce = XNonce::from_slice(nonce);
 
     cipher
-        .decrypt(xnonce, ciphertext)
+        .decrypt(
+            xnonce,
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|_| EncryptionError::DecryptionFailed)
 }
 
@@ -125,6 +139,7 @@ pub fn decrypt_data_in_place(
     buffer: &mut Vec<u8>,
     key: &EncryptionKey,
     nonce: &[u8; 24],
+    aad: &[u8],
 ) -> Result<(), EncryptionError> {
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
         .map_err(|_| EncryptionError::InvalidKey)?;
@@ -132,7 +147,7 @@ pub fn decrypt_data_in_place(
     let xnonce = XNonce::from_slice(nonce);
 
     cipher
-        .decrypt_in_place(xnonce, b"", buffer)
+        .decrypt_in_place(xnonce, aad, buffer)
         .map_err(|_| EncryptionError::DecryptionFailed)
 }
 
@@ -154,6 +169,71 @@ pub fn generate_salt() -> [u8; 16] {
 
 /// Constant prefix for encrypted filenames
 pub const FILENAME_ENC_PREFIX: &str = "_e_";
+
+/// The legacy encryption scheme: XChaCha20-Poly1305 without associated data.
+pub const ENCRYPTION_SCHEME_LEGACY: u8 = 1;
+
+/// The context-bound encryption scheme (SEC-19).
+///
+/// The associated data binds the ciphertext to the file (and, for a seekable
+/// chunk, to the chunk index and its flags), so a chunk cannot be moved to
+/// another file, reordered or rolled back without the authentication failing.
+pub const ENCRYPTION_SCHEME_CONTEXT_BOUND: u8 = 2;
+
+/// Domain separator of the associated data.
+const AAD_DOMAIN: &[u8] = b"OIFS-AAD-v1";
+
+/// The context kind of a whole-file ciphertext.
+const AAD_KIND_FILE: u8 = 0x01;
+
+/// The context kind of a seekable chunk ciphertext.
+const AAD_KIND_CHUNK: u8 = 0x02;
+
+/// Builds the associated data that binds a whole-file ciphertext to its inode.
+///
+/// Without it, every file of an image shares the same master key and nothing
+/// but the nonce distinguishes them, so an attacker with write access to the
+/// image could swap two ciphertexts (or roll one back) without the AEAD
+/// noticing (SEC-19).
+pub fn file_aad(inode_id: u64) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(1 + AAD_DOMAIN.len() + 8);
+    aad.push(AAD_KIND_FILE);
+    aad.extend_from_slice(AAD_DOMAIN);
+    aad.extend_from_slice(&inode_id.to_le_bytes());
+    aad
+}
+
+/// Builds the associated data that binds a chunk ciphertext to its chunk.
+pub fn chunk_aad(inode_id: u64, chunk_idx: u64, flags: u8) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(1 + AAD_DOMAIN.len() + 8 + 8 + 1);
+    aad.push(AAD_KIND_CHUNK);
+    aad.extend_from_slice(AAD_DOMAIN);
+    aad.extend_from_slice(&inode_id.to_le_bytes());
+    aad.extend_from_slice(&chunk_idx.to_le_bytes());
+    aad.push(flags);
+    aad
+}
+
+/// Returns the associated data of a whole-file ciphertext for the given scheme.
+///
+/// The legacy scheme uses empty associated data, so images written before
+/// SEC-19 stay readable.
+pub fn file_aad_for_scheme(inode_id: u64, scheme: u8) -> Vec<u8> {
+    if scheme >= ENCRYPTION_SCHEME_CONTEXT_BOUND {
+        file_aad(inode_id)
+    } else {
+        Vec::new()
+    }
+}
+
+/// Returns the associated data of a chunk ciphertext for the given scheme.
+pub fn chunk_aad_for_scheme(inode_id: u64, chunk_idx: u64, flags: u8, scheme: u8) -> Vec<u8> {
+    if scheme >= ENCRYPTION_SCHEME_CONTEXT_BOUND {
+        chunk_aad(inode_id, chunk_idx, flags)
+    } else {
+        Vec::new()
+    }
+}
 
 /// Encrypts a filename deterministically using Synthetic IV (SIV) with parent_inode as tweak.
 ///
@@ -302,10 +382,10 @@ mod tests {
         let nonce = [2u8; 24];
         let plaintext = b"Hello, encryption!";
 
-        let ciphertext = encrypt_data(plaintext, &key, &nonce).unwrap();
+        let ciphertext = encrypt_data(plaintext, &key, &nonce, &[]).unwrap();
         assert_ne!(ciphertext.as_slice(), plaintext); // Should be encrypted
 
-        let decrypted = decrypt_data(&ciphertext, &key, &nonce).unwrap();
+        let decrypted = decrypt_data(&ciphertext, &key, &nonce, &[]).unwrap();
         assert_eq!(decrypted.as_slice(), plaintext);
     }
 
@@ -316,16 +396,16 @@ mod tests {
         let nonce = [3u8; 24];
         let plaintext = b"Secret data";
 
-        let ciphertext = encrypt_data(plaintext, &key1, &nonce).unwrap();
+        let ciphertext = encrypt_data(plaintext, &key1, &nonce, &[]).unwrap();
 
         // Decryption with wrong key should fail
-        let result = decrypt_data(&ciphertext, &key2, &nonce);
+        let result = decrypt_data(&ciphertext, &key2, &nonce, &[]);
         assert!(result.is_err());
 
         let mut in_place_buf = ciphertext.clone();
-        assert!(decrypt_data_in_place(&mut in_place_buf, &key2, &nonce).is_err());
+        assert!(decrypt_data_in_place(&mut in_place_buf, &key2, &nonce, &[]).is_err());
         let mut in_place_ok = ciphertext;
-        decrypt_data_in_place(&mut in_place_ok, &key1, &nonce).unwrap();
+        decrypt_data_in_place(&mut in_place_ok, &key1, &nonce, &[]).unwrap();
         assert_eq!(in_place_ok.as_slice(), plaintext);
     }
 

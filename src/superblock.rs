@@ -305,6 +305,22 @@ impl SuperBlock {
         }
     }
 
+    /// The block holding the journal header (the ring follows it).
+    ///
+    /// The legacy layouts place it at the fixed
+    /// [`crate::journal::JOURNAL_HEADER_BLOCK`]. The v3 layout places it right
+    /// after the data bitmap, whose span grows with the image, so the fixed
+    /// block would overlap the data bitmap of any image whose data area needs
+    /// more than one bitmap block. For a single-block data bitmap both
+    /// answers agree (`1 + 1 + 1 == 3`).
+    pub fn journal_header_block(&self) -> u64 {
+        if self.is_v3_layout() {
+            self.data_bitmap_block + self.data_bitmap_blocks()
+        } else {
+            crate::journal::JOURNAL_HEADER_BLOCK
+        }
+    }
+
     /// Number of inode ids the inode bitmap can track (one bitmap block).
     pub const MAX_TRACKED_INODES: u64 = 4096 * 8;
 

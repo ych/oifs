@@ -175,3 +175,67 @@ fn test_wal_replay_refuses_blocks_outside_the_data_area() {
     );
     assert!(ok.is_ok(), "a data-area write must still be accepted");
 }
+
+#[test]
+fn test_sec28_read_at_chunked_and_truncate_never_touch_metadata_blocks() {
+    let img = TestImage::new("test_sec28_bounds");
+    let dm = DiskManager::open(&img.path, 10 * 1024 * 1024).expect("open dm");
+    let root = dm.superblock().root_inode;
+
+    // 1. Raw file with forged block[0] = 0 (SuperBlock):
+    //    read_at must return zeros (not SuperBlock bytes), and truncate
+    //    (both shrink and expand) must not zero out SuperBlock slack bytes.
+    let raw_id = dm.create_file(root, "forged_raw.bin").expect("create raw");
+    dm.write_data(raw_id, 0, b"hello world", CompressionMode::Never)
+        .expect("write raw");
+    let mut raw_inode = dm.read_inode(raw_id).expect("read raw inode");
+    raw_inode.blocks[0] = 0; // SuperBlock
+    dm.write_inode(raw_id, &raw_inode).expect("write raw inode");
+
+    let mut buf = [0xAAu8; 64];
+    let n = dm.read_at(raw_id, 0, &mut buf).expect("read_at forged");
+    assert_eq!(n, 11);
+    assert!(
+        buf[..n].iter().all(|&b| b == 0),
+        "read_at must treat a forged metadata pointer as a zero hole"
+    );
+
+    dm.truncate(raw_id, 4).expect("truncate shrink forged");
+    dm.truncate(raw_id, 4096).expect("truncate expand forged");
+
+    // 2. Seekable 64K chunked file with forged ChunkEntry pointing to block 0:
+    let chunk_id = dm
+        .create_file(root, "forged_chunk.bin")
+        .expect("create chunked");
+    dm.write_data(
+        chunk_id,
+        0,
+        b"seekable payload",
+        CompressionMode::Seekable {
+            chunk_size: 65536,
+            level: 1,
+        },
+    )
+    .expect("write chunked");
+    let mut chunk_inode = dm.read_inode(chunk_id).expect("read chunk inode");
+    chunk_inode.blocks[0] =
+        oifs::inode::ChunkEntry::new(0, 1, oifs::inode::ChunkEntry::FLAG_RAW, 16).0;
+    dm.write_inode(chunk_id, &chunk_inode)
+        .expect("write chunk inode");
+
+    assert!(
+        dm.read_data(chunk_id).is_err(),
+        "seekable chunk read must reject start_block < data_block_start"
+    );
+    let mut cbuf = [0u8; 16];
+    assert!(
+        dm.read_at(chunk_id, 0, &mut cbuf).is_err(),
+        "seekable read_at must reject start_block < data_block_start"
+    );
+
+    drop(dm);
+
+    // SuperBlock on disk must remain completely intact after reopen.
+    let dm = DiskManager::open(&img.path, 0).expect("reopen dm after SEC-28 checks");
+    assert_eq!(dm.superblock().magic, SuperBlock::MAGIC);
+}

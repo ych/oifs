@@ -216,44 +216,40 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.15: Eliminate Redundant Full-Block Zeroing Before Overwrite (`SEC-27` Double-Write Bandwidth Waste) [OPEN]
-* **File & Lines**: [`src/journal.rs:3039-3047`](file:///Users/ych/oifs/src/journal.rs#L3039-L3047) (`stage_payload_write`), [`src/disk.rs:5268-5270`](file:///Users/ych/oifs/src/disk.rs#L5268-L5270) (`allocate_block`), [`src/disk.rs:5335-5341`](file:///Users/ych/oifs/src/disk.rs#L5335-L5341) (`alloc_and_zero_block`), [`src/disk.rs:1809-1812`](file:///Users/ych/oifs/src/disk.rs#L1809-L1812) (`append_dir_entry_to_dir`), [`src/disk.rs:3366-3379`](file:///Users/ych/oifs/src/disk.rs#L3366-L3379) (`write_buffer_at_offset`)
-* **Status**: **Proposed (High Priority)**
-* **Bottleneck Analysis**:
-  1. In `stage_payload_write`, every freshly allocated block (`sim.is_fresh(phys)`) executes `slice.fill(0)` (writing 4,096 zero bytes to the `mmap`) and immediately overwrites `slice[in_blk_off..in_blk_off + n]` with payload bytes. For full-block writes (`in_blk_off == 0 && n == BLOCK_SIZE`, which accounts for >99% of blocks in large writes), every 4 KB page is written **twice**, doubling memory-bus write traffic.
-  2. In the non-journaled path, `allocate_block` unconditionally calls `slice.fill(0)`. Callers `alloc_and_zero_block` and `append_dir_entry_to_dir` then call `slice.fill(0)` a **second time** on the same block, and `write_buffer_at_offset` zeroes the entire 4 KB block inside `allocate_block` before immediately overwriting it with payload bytes.
-* **Proposed Remedy**:
-  - In `stage_payload_write` and `write_buffer_at_offset`, when writing to a freshly allocated block, only zero the untouched prefix and suffix slices (`slice[..in_blk_off].fill(0)` and `slice[in_blk_off + n..].fill(0)`). When `in_blk_off == 0 && n == BLOCK_SIZE`, zeroing cost drops to **0 bytes**.
-  - Remove the duplicate `slice.fill(0)` calls in `alloc_and_zero_block` and `append_dir_entry_to_dir`.
-* **Expected Impact**: **High** (~50% reduction in `mmap` write bandwidth on initial file writes for both journaled and legacy paths).
+### P4.15: Eliminate Redundant Full-Block Zeroing Before Overwrite (`SEC-27` Double-Write Bandwidth Waste) [RESOLVED]
+* **File & Lines**: [`src/journal.rs:3039-3065`](file:///Users/ych/oifs/src/journal.rs#L3039-L3065) (`stage_payload_write`), [`src/disk.rs:5260-5385`](file:///Users/ych/oifs/src/disk.rs#L5260-L5385) (`allocate_block_unzeroed`, `allocate_block`, `alloc_and_zero_block`, `get_or_alloc_block_for_write`), [`src/disk.rs:1809-1812`](file:///Users/ych/oifs/src/disk.rs#L1809-L1812) (`append_dir_entry_to_dir`), [`src/disk.rs:3366-3395`](file:///Users/ych/oifs/src/disk.rs#L3366-L3395) (`write_buffer_at_offset`)
+* **Status**: **Completed & Verified** (see §6.20)
+* **Implementation Details**:
+  - In `stage_payload_write`, `AllocSim::take_unzeroed_fresh(phys)` tracks whether a freshly allocated block still requires slack zeroing and only zeroes the untouched prefix `slice[..in_blk_off].fill(0)` and suffix `slice[in_blk_off + n..].fill(0)` on the first write. For full-block writes (`in_blk_off == 0 && n == BLOCK_SIZE`), zeroing cost is **0 bytes**.
+  - Added `allocate_block_unzeroed` and `get_or_alloc_block_for_write` (returning `(u64, bool)`) so `write_buffer_at_offset` only zeroes untouched prefix/suffix bytes on fresh blocks, and removed the duplicate `slice.fill(0)` calls in `alloc_and_zero_block` and `append_dir_entry_to_dir`.
+* **Impact**: **High** (~50% reduction in `mmap` write bandwidth on initial file writes for both journaled and legacy paths while preserving `SEC-27` zero-leak guarantees).
 
 ---
 
-### P4.16: Directory Insert Duplicate Offset Scan & $O(B^2)$ Historical Block Probing [OPEN]
-* **File & Lines**: [`src/disk.rs:1782-1841`](file:///Users/ych/oifs/src/disk.rs#L1782-L1841) (`append_dir_entry_to_dir`, `append_dir_entry_to_block`), [`src/disk.rs:2435-2459`](file:///Users/ych/oifs/src/disk.rs#L2435-L2459) (`create_entry_journaled`), [`src/disk.rs:423-430`](file:///Users/ych/oifs/src/disk.rs#L423-L430) (`DirIndex`)
-* **Status**: **Proposed (High Priority)**
-* **Bottleneck Analysis**:
-  1. **Duplicate Intra-Block Scan**: `append_dir_entry_to_dir` calls `find_insert_offset_in_block(slice)` (walking all existing entries in the 4 KB block from offset 0) to check available space, and then calls `append_dir_entry_to_block`, which calls `find_insert_offset_in_block(block_slice)` a **second time** on the exact same block.
-  2. **$O(B)$ Full-Directory Probe Whenever Last Block Fills**: Both `append_dir_entry_to_dir` and `create_entry_journaled` probe `std::iter::once(num_blocks - 1).chain(0..num_blocks - 1)`. Whenever `num_blocks - 1` cannot fit the new entry (~every 110 files), the loop scans **every earlier block `0..num_blocks - 1` from start to finish** before allocating a new block, re-introducing an $O(B^2)$ cost across large directory populations even when no files were ever deleted.
-* **Proposed Remedy**:
-  - Pass the computed `insert_offset` directly into `append_dir_entry_to_block`.
-  - Track `tail_insert_offset: Option<u16>` and `has_deleted_holes: bool` (set to `true` only when `delete_file` removes an entry from a block) inside `DirIndex`. When `!has_deleted_holes`, a full tail block immediately allocates `new_blk_idx = num_blocks` in $O(1)$ without scanning `0..num_blocks - 1`.
-* **Expected Impact**: **High** (Eliminates quadratic block probing during large directory creation and halves per-insert block scanning).
+### P4.16: Directory Insert Duplicate Offset Scan & $O(B^2)$ Historical Block Probing [RESOLVED]
+* **File & Lines**: [`src/disk.rs:423-440`](file:///Users/ych/oifs/src/disk.rs#L423-L440) (`DirIndex`), [`src/disk.rs:1780-1895`](file:///Users/ych/oifs/src/disk.rs#L1780-L1895) (`find_dir_insert_slot`, `append_dir_entry_to_dir`, `append_dir_entry_to_block`), [`src/disk.rs:2435-2510`](file:///Users/ych/oifs/src/disk.rs#L2435-L2510) (`create_entry_journaled`)
+* **Status**: **Completed & Verified** (see §6.21)
+* **Implementation Details**:
+  - `append_dir_entry_to_block` now accepts the pre-computed `insert_offset: usize`, eliminating the duplicate intra-block scan on every directory insertion.
+  - `DirIndex` tracks `may_have_holes: bool` and `tail_offset: Option<(u64, u16)>` (`(num_blocks, used_bytes_in_last_block)`), populated during `build_dir_index` and `list_dir` and updated in place on `create_entry_*` and `delete_file*`.
+  - Both `append_dir_entry_to_dir` and `create_entry_journaled` resolve the target insertion slot via `find_dir_insert_slot`, using the cached tail offset in $O(1)$ and immediately allocating `new_blk_idx = num_blocks` in $O(1)$ when the tail block fills and `!may_have_holes`.
+* **Impact**: **High** (Eliminates quadratic $O(B^2)$ historical block probing during large directory creation and halves per-insert block scanning).
 
 ---
 
-### P4.17: Seekable 64K Chunked Read/Write Zero-Copy Borrowing, Parallel Decompression & In-Place AEAD [OPEN]
-* **File & Lines**: [`src/disk.rs:4346-4350`](file:///Users/ych/oifs/src/disk.rs#L4346-L4350) (`write_chunked_64k_pipeline`), [`src/disk.rs:4069-4097`](file:///Users/ych/oifs/src/disk.rs#L4069-L4097) (`prepare_chunk_payload`), [`src/disk.rs:4118-4297`](file:///Users/ych/oifs/src/disk.rs#L4118-L4297) (`read_single_chunk_decompressed`, `read_chunked_64k_internal`, `read_at_chunked_64k`)
-* **Status**: **Proposed (High Priority)**
+### P4.17: Seekable 64K Chunked Read/Write Zero-Copy Borrowing, Parallel Decompression, Sub-Chunk Cache & In-Place AEAD [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`write_chunked_64k_pipeline_with_mode`, `prepare_chunk_payload`, `read_single_chunk_into`, `read_chunked_64k_internal`, `read_at_chunked_64k`, `ChunkReadCache`), [`src/encryption.rs`](file:///Users/ych/oifs/src/encryption.rs) (`encrypt_with_nonce_prefix`, `decrypt_into_slice`)
+* **Status**: **Completed & Verified** (see §6.22 — **5.9x** faster 16 MB `read_data`, **12.0x** faster 4 KB sequential `read_at`, **1.49x** faster 64 MB seekable write)
 * **Bottleneck Analysis**:
-  1. **Unnecessary 64 KB Heap Allocation + Copy Under Read Lock (Write Stage 1)**: In `write_chunked_64k_pipeline` ([`src/disk.rs:4346-4350`](file:///Users/ych/oifs/src/disk.rs#L4346-L4350)), when writing a full 64 KB chunk (`chunk_offset_start == 0 && chunk_offset_end >= chunk_valid_len`), Stage 1 allocates `vec![0u8; chunk_valid_len]` and copies `&data[data_start..data_end]` into it while holding `inner.read()`, instead of borrowing `&data[data_start..data_end]` via `Cow::Borrowed`.
-  2. **Single-Threaded Sequential Decompression & Per-Chunk `Vec` Allocation**: While `write_chunked_64k_pipeline` parallelizes chunk compression across CPU cores via Rayon, `read_chunked_64k_internal` and multi-chunk `read_at_chunked_64k` decompress chunks sequentially on a single thread, allocating an intermediate `Vec<u8>` per 64 KB chunk before copying into `out` / `buf`.
-  3. **Out-of-Place Chunk AEAD Encryption/Decryption**: `prepare_chunk_payload` and `read_single_chunk_decompressed` still invoke `encrypt_data` / `decrypt_data` (allocating new buffers) rather than `AeadInPlace`.
-* **Proposed Remedy**:
-  - Use `Cow<'a, [u8]>` in `write_chunked_64k_pipeline` Stage 1 so full-chunk writes perform zero allocations and zero copies under the read lock.
-  - Pre-allocate `out = vec![0u8; inode.size as usize]` in `read_chunked_64k_internal` and decode chunks in parallel via Rayon `par_chunks_mut(CHUNK_SIZE_64K)` directly into the destination slice.
-  - Use in-place XChaCha20-Poly1305 encryption/decryption in `prepare_chunk_payload` and `read_single_chunk_decompressed`.
-* **Expected Impact**: **High** (Multi-core speedup on seekable file reads; eliminates full-file intermediate heap allocations on seekable reads and writes).
+  1. **Unnecessary 64 KB Heap Allocation + Copy Under Read Lock (Write Stage 1)**: In `write_chunked_64k_pipeline`, when writing a full 64 KB chunk (`chunk_offset_start == 0 && chunk_offset_end >= chunk_valid_len`), Stage 1 allocates `vec![0u8; chunk_valid_len]` and copies `&data[data_start..data_end]` into it while holding `inner.read()`, instead of borrowing `&data[data_start..data_end]` via `Cow::Borrowed`.
+  2. **Single-Threaded Sequential Decompression & Per-Chunk `Vec` Allocation**: While `write_chunked_64k_pipeline` parallelizes chunk compression across CPU cores via Rayon (`3.82 ms` for 16 MB), `read_chunked_64k_internal` decompresses chunks sequentially on a single thread (`8.23 ms` for 16 MB — **2.15x slower than compression!**), allocating an intermediate `vec![0u8; 65536]` per 64 KB chunk before copying into `out`.
+  3. **16x Repeated Decompression on Sub-Chunk Sequential `read_at`**: `read_at_chunked_64k` has no last-decoded-chunk cache, so 4 KB sequential `read_at` calls over a 16 MB seekable file decompress each 64 KB Zstd frame **16 times** (`99.58 ms` / `160.7 MB/s` vs `7.22 ms` / `2,216 MB/s` for 1 MB `read_at` — **13.8x slower**).
+  4. **Out-of-Place Chunk AEAD Encryption/Decryption**: `prepare_chunk_payload` and `read_single_chunk_decompressed` invoke `encrypt_data` / `decrypt_data` (allocating new buffers) rather than `AeadInPlace`.
+* **Implementation**:
+  - Stage 1 borrows full chunks via `Cow::Borrowed` under `inner.read()` with zero allocations.
+  - `read_single_chunk_into` decodes directly into caller destination slices using thread-local AEAD/Zstd scratch buffers, and `read_chunked_64k_internal` / aligned multi-chunk `read_at_chunked_64k` parallelize decoding via Rayon `par_chunks_mut(CHUNK_SIZE_64K)`.
+  - Added `ChunkReadCache` (8-slot FIFO cache of `Arc<[u8]>` chunks) invalidated automatically on every inode/file mutation.
+  - `prepare_chunk_payload` checks compressed length before AEAD and encrypts directly with `encrypt_with_nonce_prefix`.
 
 ---
 
@@ -270,42 +266,41 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.19: Sharded `FxHashMap` for `dir_cache` & Encrypted Negative-Lookup Fast Path [OPEN]
-* **File & Lines**: [`src/disk.rs:239, 423-430, 1694-1775, 5530-5556`](file:///Users/ych/oifs/src/disk.rs#L1694-L1775) (`dir_cache`, `DirIndex`, `dir_lookup`, `list_dir`)
-* **Status**: **Proposed (Medium Priority)**
+### P4.19: `FxHashMap` for `dir_cache` & Encrypted Negative-Lookup Fast Path [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`dir_cache`, `DirIndex`, `dir_lookup`, `list_dir`)
+* **Status**: **Completed & Verified** (see §6.22 — **7.3x** faster encrypted negative lookups, **2.8–3.4x** faster 10k `create_file`; outer lock sharding deferred as single `RwLock<FxHashMap>` read-only path suffices)
 * **Bottleneck Analysis**:
   1. **Global `RwLock<std::collections::HashMap>`**: Unlike `inode_cache` (32-shard `FxHashMap`), `dir_cache` uses a single global `RwLock` and standard SipHash `HashMap` for both outer `u64` keys and inner `stored`/`plain` string maps.
   2. **Encrypted Negative Lookups Acquire Write Lock & Re-Run Cipher**: In `dir_lookup` ([`src/disk.rs:1711`](file:///Users/ych/oifs/src/disk.rs#L1711)), `if ix.complete && !encrypted { return Ok(None); }` skips the early return on encrypted images. Every negative lookup on an encrypted directory (including the existence check in every `create_file` call) therefore reads the parent inode, computes `encrypt_filename` (BLAKE2b + XChaCha20-Poly1305), re-acquires `dir_cache.read()`, and then unconditionally acquires `dir_cache.write()` at line 1757 even when `ix.complete` is already `true` and `found.is_none()`.
   3. **Redundant `hash_filename` on Cached `list_dir`**: [`src/disk.rs:5539, 5550`](file:///Users/ych/oifs/src/disk.rs#L5539) recomputes `hash_filename(name)` for every entry on every cached `list_dir` call.
-* **Proposed Remedy**:
-  - Switch `dir_cache` and `DirIndex` maps to `FxHashMap`.
-  - Add `plain_complete: bool` to `DirIndex` and skip acquiring `dir_cache.write()` in `dir_lookup` when `ix.complete && found.is_none()`.
-* **Expected Impact**: **Medium** (Significantly accelerates `create_file` and negative `lookup` on encrypted images and multi-threaded directory workloads).
+* **Implementation**:
+  - Migrated outer `dir_cache` and inner `DirIndex::stored` / `DirIndex::plain` to `FxHashMap`.
+  - Added `plain_complete: bool` to `DirIndex`: when `plain_complete` is `true`, negative lookups on encrypted directories return `Ok(None)` under a single read lock with zero SIV encryption and zero write-lock acquisitions; when `ix.complete && found.is_none()`, `dir_lookup` skips `dir_cache.write()`.
 
 ---
 
-### P4.20: `defragment_inplace_on` Cache Preservation, `Bitmap::set_range` & Redundant `fsck` Removal [OPEN]
-* **File & Lines**: [`src/disk.rs:7042-7285`](file:///Users/ych/oifs/src/disk.rs#L7042-L7285) (`defragment_inplace_on`)
-* **Status**: **Proposed (Medium Priority)**
+### P4.20: `defragment_inplace_on` Zero-Fragmentation Short-Circuit, Cache Preservation, `Bitmap::set_range` & Redundant `fsck` Removal [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`defragment_inplace_on`)
+* **Status**: **Completed & Verified** (see §6.22 — **301.8x** faster no-op `defragment(InPlace)`: `6.64 ms` $\rightarrow$ `0.022 ms`, `0` bytes moved)
 * **Bottleneck Analysis**:
-  1. **Unconditional Full-Filesystem `verify_integrity_on` (`fsck`)**: Line 7278 runs a full `fsck` across the entire image after every in-place defragmentation pass—even when `moves.is_empty()` (`0` blocks moved) and during background `auto_defrag` ticks.
-  2. **Bit-by-Bit Bitmap Loop**: Lines 7247–7249 execute `for bit in 0..total_used { bitmap.set(bit); }` instead of the word-aligned `bitmap.set_range(0, total_used)`.
-  3. **Unnecessary Full Wipe of `inode_cache` & `dir_cache`**: Lines 7254–7255 wipe `guard.inode_cache` (even though Step 5 already updated every modified inode via `write_inode_internal`) and `guard.dir_cache` (even though `DirIndex` maps filenames to `inode_id`s, which never change during block defragmentation).
-  4. **SipHash `HashMap` & `moves.clone()`**: Relocation tables (`old_to_new`, `moves`, `occupied`, `incoming`) use `std::collections::{HashMap, HashSet}` instead of `FxHashMap`/`FxHashSet`.
-* **Proposed Remedy**:
-  - Preserve `inode_cache` and `dir_cache` across `defragment_inplace_on`, use `bitmap.set_range(0, total_used)`, switch relocation maps to `FxHashMap`/`FxHashSet`, and skip `verify_integrity_on` when `moves.is_empty()`.
-* **Expected Impact**: **Medium** (Eliminates post-defrag cache stampedes and cuts background `auto_defrag` overhead).
+  1. **Unnecessary Full-Image Relocation When `fragmentation_ratio == 0.0` (`free_runs <= 1`)**: Because `defragment_inplace_on` places all `dir_inodes` blocks ahead of `file_inodes` blocks, calling `defragment(DefragMode::InPlace)` on a brand-new 5,000-file image with zero deletions (`free_runs == 1`, `fragmentation_ratio == 0.0`) needlessly relocates **4,881 blocks (~20 MB)** in `6.64 ms` just to shift file blocks past multi-block directory growth.
+  2. **Unconditional Full-Filesystem `verify_integrity_on` (`fsck`)**: Runs a full `fsck` across the entire image after every in-place defragmentation pass—even when `moves.is_empty()` (`0` blocks moved) and during background `auto_defrag` ticks.
+  3. **Bit-by-Bit Bitmap Loop**: Executes `for bit in 0..total_used { bitmap.set(bit); }` instead of the word-aligned `bitmap.set_range(0, total_used)`.
+  4. **Unnecessary Full Wipe of `inode_cache` & `dir_cache`**: Wipes `guard.inode_cache` (even though Step 5 already updated every modified inode via `write_inode_internal`) and `guard.dir_cache` (updating `tail_offset` only when relocated).
+  5. **SipHash `HashMap` & `moves.clone()`**: Relocation tables (`old_to_new`, `moves`, `occupied`, `incoming`) use `std::collections::{HashMap, HashSet}` instead of `FxHashMap`/`FxHashSet`.
+* **Implementation**:
+  - Exact compaction short-circuit (`already_compacted`: `stats_before.used_blocks == 0 || (stats_before.free_runs <= 1 && bit 0 is allocated)`, so front-hole `[0..0][1..1]` images still compact to `data_block_start`).
+  - Single-pass `read_inode_uncached` classification, `FxHashMap`/`FxHashSet` relocation tables, `Bitmap::set_range(0, total_used)`, and in-place `dir_cache` physical-block remapping (`stored` + `tail_offset`) preserving both `inode_cache` and `dir_cache`.
 
 ---
 
-### P4.21: In-Place Whole-File Encryption on the Write Path (`encrypt_data_in_place`) [OPEN]
-* **File & Lines**: [`src/disk.rs:3604-3612`](file:///Users/ych/oifs/src/disk.rs#L3604-L3612) (`build_full_overwrite_buffer_pure`), [`src/encryption.rs:83-102`](file:///Users/ych/oifs/src/encryption.rs#L83-L102) (`encrypt_data`)
-* **Status**: **Proposed (Low-Medium Priority)**
+### P4.21: In-Place Whole-File Encryption on the Write Path (`encrypt_data_in_place`) [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`build_full_overwrite_buffer_pure`), [`src/encryption.rs`](file:///Users/ych/oifs/src/encryption.rs) (`encrypt_data_in_place`)
+* **Status**: **Completed & Verified** (see §6.22)
 * **Bottleneck Analysis**:
   - While the read path uses `decrypt_data_in_place` (P4.9), `build_full_overwrite_buffer_pure` still calls `encrypt_data(final_data.as_ref(), key, &nonce)`, which allocates a new `Vec<u8>` and copies the entire buffer even when `final_data` is already `Cow::Owned(Vec<u8>)` (e.g. after Zstd compression or byte/bit-shuffle filters).
-* **Proposed Remedy**:
-  - Add `encrypt_data_in_place(buf: &mut Vec<u8>, key, nonce)` using `AeadInPlace::encrypt_in_place` (appending the 16-byte Poly1305 tag in place) and consume `final_data.into_owned()` directly.
-* **Expected Impact**: **Low-Medium** (Eliminates one full-file heap allocation and `memcpy` per encrypted write).
+* **Implementation**:
+  - Added `encrypt_data_in_place(buf: &mut Vec<u8>, key, nonce, aad)` using `AeadInPlace::encrypt_in_place_detached`, consuming `final_data.into_owned()` directly without allocating a second full-file ciphertext vector.
 
 ---
 
@@ -320,25 +315,23 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.23: $O(N^2)$ Whole-File Rebuild on Sequential Appends/Partial Writes to Encrypted Files [OPEN]
-* **File & Lines**: [`src/disk.rs:896-906, 972-1042`](file:///Users/ych/oifs/src/disk.rs#L896-L1042) (`payload_is_transformed`, `plan_write_prepared`)
-* **Status**: **Proposed (Critical Architectural Priority)**
+### P4.23: $O(N^2)$ Whole-File Rebuild on Sequential Appends/Partial Writes to Encrypted Files [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`write_data_with_filters`, `write_chunked_64k_pipeline_with_mode`, `commit_prepared_chunked_write`)
+* **Status**: **Completed & Verified** (see §6.22 — **108.8x** faster encrypted `CompressionMode::Never` appends: `1,453.41 ms` $\rightarrow$ `13.36 ms`; **6.5x** faster encrypted `CompressionMode::Auto` appends: `89.46 ms` $\rightarrow$ `13.70 ms`)
 * **Bottleneck Analysis**:
   - Whenever `encryption_key.is_some()`, `payload_is_transformed` returns `true` and `fast_append` is disabled (`encryption_key.is_none()`). After `SEC-16`, every `file_offset > 0` write (including sequential streaming appends via FFI/IPC/CLI) triggers `WriteCase::Recompress`, which reads, decrypts, splices, and re-encrypts the **entire file from offset 0**. Streaming a 100 MB file in 64 KB writes therefore performs $O(N^2)$ total cryptographic and I/O work.
-* **Proposed Remedy**:
-  - Default encrypted files (or streaming writes on encrypted images) to the Seekable 64K Chunked layout (`INODE_FLAG_SEEKABLE_64K`), where each 64 KB chunk carries its own independent nonce and Poly1305 tag, reducing append and random-overwrite complexity from $O(\text{filesize})$ to $O(\text{write\_len})$.
-* **Expected Impact**: **Critical** (Eliminates quadratic $O(N^2)$ degradation on streaming writes and partial updates to encrypted images).
+* **Implementation**:
+  - Transparently upgrades non-zero-offset (`file_offset > 0`) writes on encrypted Format-v2+ non-filtered files to `INODE_FLAG_SEEKABLE_64K` (preserving raw encrypted chunks when `CompressionMode::Never` and compressed encrypted chunks otherwise), reclaiming prior whole-file blocks in `commit_prepared_chunked_write` and reducing all subsequent appends and random overwrites to $O(\text{write\_len})$.
 
 ---
 
-### P4.24: $O(N^2)$ Full-File Decode on Positional `read_at` for Non-Seekable Compressed/Encrypted Files [OPEN]
-* **File & Lines**: [`src/disk.rs:3293-3304`](file:///Users/ych/oifs/src/disk.rs#L3293-L3304) (`read_at_prepare`)
-* **Status**: **Proposed (High Priority)**
+### P4.24: $O(N^2)$ Full-File Decode on Positional `read_at` for Non-Seekable Compressed/Encrypted Files [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`DecodedBlobCache`, `read_at_prepare`)
+* **Status**: **Completed & Verified** (see §6.22 — **996.7x** faster sequential 4 KB `read_at` on 4 MB stream-compressed file: `1,933.57 ms` $\rightarrow$ `1.94 ms`, `2.1 MB/s` $\rightarrow$ `2,059.8 MB/s`)
 * **Bottleneck Analysis**:
   - For non-seekable compressed or encrypted files (`inode.compressed_size > 0 || inode.encrypted`), every `read_at` call invokes `Self::read_data_internal(guard, &inode)` to decrypt and decompress the **entire file** into a freshly allocated `Vec<u8>`, copies out `buf.len()` bytes, and drops the decoded buffer. Sequential 4 KB `read_at` calls over a file of size $N$ incur $O(N^2)$ total decompression/decryption work.
-* **Proposed Remedy**:
-  - Maintain a small bounded decoded-payload cache keyed by `(inode_id, modified_at, size)` for active sequential `read_at` streams on whole-file blobs, and prefer `INODE_FLAG_SEEKABLE_64K` for random-access compressed/encrypted files.
-* **Expected Impact**: **High** (Reduces sequential `read_at` on non-seekable compressed/encrypted files from $O(N^2)$ to $O(N)$).
+* **Implementation**:
+  - Added bounded `DecodedBlobCache` (max 4 entries, 16 MiB per entry, 32 MiB total budget) in `DiskManagerInner`, keyed by `(inode_id, modified_at, size, compressed_size, encryption_nonce)` and invalidated explicitly on every write/truncate/delete/migrate/defrag/reload path (guaranteeing coherence even across same-second overwrites).
 
 ---
 
@@ -368,19 +361,18 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.27: Bypass `inode_cache` on Bulk Maintenance Scans (`fsck`, `defragment`, `migrate`) & Bitmap-Based `fsck` [OPEN]
-* **File & Lines**: [`src/disk.rs:5200-5223, 6869, 7030, 7301-7428`](file:///Users/ych/oifs/src/disk.rs#L7301-L7428) (`read_inode_internal`, `verify_integrity_on`)
-* **Status**: **Proposed (Medium Priority)**
+### P4.27: Bypass `inode_cache` on Bulk Maintenance Scans (`fsck`, `defragment`, `migrate`) & Bitmap-Based `fsck` [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`read_inode_uncached`, `for_each_inode_block`, `verify_integrity_on`), [`src/directory.rs`](file:///Users/ych/oifs/src/directory.rs) (`for_each_valid_inode_in_block`)
+* **Status**: **Completed & Verified** (see §6.22 — **3.5–6.2x** faster `verify_integrity` (`fsck`) on 10k-file images: `2.61 ms` $\rightarrow$ `0.42 ms` with zero `inode_cache` pollution)
 * **Bottleneck Analysis**:
   1. **Cache Pollution & Shard Write-Lock Churn on Full-Table Scans**: `verify_integrity_on` (`fsck`), `defragment_safe`, and `defragment_inplace_on` call `read_inode_internal` on every allocated inode in the filesystem, acquiring shard write locks to insert cold inodes and evicting hot working-set inodes from `BoundedInodeCache`.
   2. **Heavy `HashMap<u64, Vec<u64>>` Allocations & Duplicate Directory Reads in `verify_integrity_on`**:
      - `referenced_data_blocks: HashMap<u64, Vec<u64>>` ([`src/disk.rs:7331-7383`](file:///Users/ych/oifs/src/disk.rs#L7331-L7383)) allocates a separate heap `Vec<u64>` for every single referenced data block in the image just to detect `entries.len() > 1` (cross-linked blocks).
      - `allocated_inodes`, `allocated_data_blocks`, `referenced_inodes`, and `visited` all use `std::collections::HashSet<u64>`.
      - During directory traversal ([`src/disk.rs:7347, 7362`](file:///Users/ych/oifs/src/disk.rs#L7347-L7366)), every child inode is decoded inside the parent loop to check `child_inode.mode == FileType::Directory`, and then decoded a second time when popped from `queue` and a third time in the block-collection loop at line 7374.
-* **Proposed Remedy**:
-  - Introduce `read_inode_uncached` (checking `inode_cache.get` first, decoding from `mmap` on miss without inserting into `inode_cache`) for bulk scan paths.
-  - Replace `allocated_data_blocks`, `referenced_data_blocks`, and `cross_linked_blocks` in `verify_integrity_on` with two compact bitsets (`seen_blocks` and `cross_linked_bits` of size `block_count.div_ceil(64)` `u64` words), reducing `fsck` memory overhead from $O(B \times \text{heap Vec})$ to a few kilobytes and decoding each inode exactly once.
-* **Expected Impact**: **Medium** (Order-of-magnitude faster, near-zero-allocation `fsck` with zero cache pollution).
+* **Implementation**:
+  - Added `read_inode_uncached`, `for_each_inode_block`, and zero-allocation `for_each_valid_inode_in_block` (skipping UTF-8 `String` allocation during `fsck`).
+  - Replaced all `HashMap`/`HashSet`/`Vec<u64>` structures in `verify_integrity_on` with compact `u64`-word bitsets (`ref_inodes`, `seen_data`, `cross_linked_data`) and a single-pass reachable tree walk that decodes each inode once.
 
 ---
 
@@ -405,17 +397,67 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.29: Micro-Optimizations in `write_data_with_filters`, `list_dir`, `dir_lookup` & `encrypt_filename` [OPEN]
-* **File & Lines**: [`src/disk.rs:3687-3706, 1746-1764, 5569`](file:///Users/ych/oifs/src/disk.rs#L3687-L3706), [`src/encryption.rs:162-198`](file:///Users/ych/oifs/src/encryption.rs#L162-L198)
-* **Status**: **Proposed (Low Priority)**
+### P4.29: Micro-Optimizations in `write_data_with_filters`, `list_dir`, `dir_lookup` & `encrypt_filename` [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`write_data_with_filters`, `list_dir`), [`src/encryption.rs`](file:///Users/ych/oifs/src/encryption.rs) (`encrypt_filename`, `decrypt_filename`, `file_aad_stack`, `chunk_aad_stack`)
+* **Status**: **Completed & Verified** (see §6.22)
 * **Bottleneck Analysis**:
   1. **Double Read-Lock & Double Inode Lookup in `write_data_with_filters`**: Lines 3687–3692 acquire `self.inner.read()` and call `read_inode_internal` just to check `INODE_FLAG_SEEKABLE_64K`, drop the lock, and immediately re-acquire `self.inner.read()` and call `read_inode_internal` again in Stage 1 (line 3705).
   2. **Unnecessary `raw_entries.clone()` on Unencrypted `list_dir` Slow Path**: At [`src/disk.rs:5569`](file:///Users/ych/oifs/src/disk.rs#L5569), `let mut entries = raw_entries.clone();` clones every `DirectoryEntry` and its `String` filename even when `guard.encryption_key.is_none()`.
   3. **Double Full-Directory Scan on First Cold Negative `dir_lookup`**: At [`src/disk.rs:1746-1764`](file:///Users/ych/oifs/src/disk.rs#L1746-L1764), a cold miss scans all directory blocks in `locate_entry_in_dir`, and then immediately scans all directory blocks a second time in `build_dir_index`.
-  4. **Repeated Key Schedule & Domain Hashing in `encrypt_filename` / `decrypt_filename`**: [`src/encryption.rs:175-186`](file:///Users/ych/oifs/src/encryption.rs#L175-L186) reconstructs `Blake2b512` (hashing `"OIFS_SIV_FILENAME_V1"` + `key`) and `ChaCha20Poly1305::new_from_slice` on every filename operation instead of precomputing the keyed state inside `EncryptionKey`.
+  4. **Repeated Key Schedule & Multi-Allocation Staging in `encrypt_filename` / `decrypt_filename`**: [`src/encryption.rs:175-186`](file:///Users/ych/oifs/src/encryption.rs#L175-L186) allocates multiple intermediate `Vec<u8>`/`String` buffers per filename and heap-allocates `Vec<u8>` AAD slices on every file/chunk AEAD operation.
+* **Implementation**:
+  - Merged the `INODE_FLAG_SEEKABLE_64K` dispatch check into Stage 1 of `write_data_with_filters` (eliminating the extra outer read lock and duplicate inode lookup).
+  - Eliminated `raw_entries.clone()` on unencrypted `list_dir` by building `DirIndex` directly before moving `raw_entries`.
+  - Replaced multi-buffer `encrypt_filename`/`decrypt_filename` with stack-staged `[u8; 512]` in-place AEAD + single-allocation base64 encoding, and replaced per-call `Vec<u8>` AAD builders with zero-allocation stack helpers (`file_aad_stack`, `chunk_aad_stack`).
+
+---
+
+### P4.30: `delete_file` Quadratic $O(N \cdot B)$ Empty-Block Walk & $O(K^2)$ Per-Block String Deserialization Storm [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`DirIndex`, `delete_file`, `delete_file_journaled`, `is_dir_empty`), [`src/directory.rs`](file:///Users/ych/oifs/src/directory.rs) (`remove_entry_in_block_bytes`, `has_valid_entry_in_block`)
+* **Status**: **Completed & Verified** (see §6.22 — **14.4x** faster plain 10k `delete_file`: `52.00 ms` $\rightarrow$ `3.60 ms`; **4.2x** faster encrypted 10k `delete_file`: `23.50 ms` $\rightarrow$ `5.63 ms`)
+* **Bottleneck Analysis**:
+  - Measured on 10,000 files in a single directory: `delete_file` takes **52.00 ms** (`enc=false`, 124 entries/block) vs **8.58 ms** for `create_file` (**6.1x slower**), and is paradoxically 2.2x slower than `enc=true` (`23.50 ms`, 42 entries/block):
+  1. **Missing Physical Block ID in `DirIndex`**: `DirIndex::stored` only maps `stored_name -> inode_id` without recording `phys_blk: u64`. Consequently, `delete_file` ignores `dir_cache` and calls `locate_entry_in_dir` from `blk_idx = 0` on **every delete**. Because emptied leading directory blocks (`0..k`) remain linked, deleting `N` files scans $\sum_{b=0}^{B-1} b \cdot K = O(N \cdot B)$ empty blocks.
+  2. **$O(K^2)$ Heap `String` Allocations & Re-Validation Per Block**: Every single `delete_file` calls `read_dir_entries_from_block`, allocating `K` heap `String`s (`~124` per block) and running `validate_filename` `K` times, filters out 1 entry, and calls `rewrite_dir_entries_in_block` to zero the 4 KB block and re-serialize + re-validate `K - 1` entries (~627,750 heap `String` allocations and >1.25M `validate_filename` calls across 10,000 deletes).
+  3. **Duplicate `read_inode_internal` Call**: `delete_file` reads `target_inode_id` twice under the write lock (once for `SEC-29` directory emptiness check, and again to collect blocks to free).
+* **Implementation**:
+  - Stored `(inode_id: u64, phys_blk: u64)` in `DirIndex::stored` so both `delete_file` and `delete_file_journaled` resolve `(target_inode_id, phys_blk)` in **$O(1)$** from `dir_cache`.
+  - Added zero-allocation `remove_entry_in_block_bytes` (`copy_within` + trailing zero fill on raw 4 KB block bytes) and zero-allocation `has_valid_entry_in_block` for `is_dir_empty`, and deduplicated the `target_inode` read.
+
+---
+
+### P4.31: Stream-Compressed `read_data_internal` Pooled Zstd Fast Path & Contiguous Mmap Zero-Copy Slice [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`read_data_internal`, `decompress_stream_payload`)
+* **Status**: **Completed & Verified** (see §6.22 — **1.35x** faster small stream-compressed `read_data`: `8.14 ms` $\rightarrow$ `6.05 ms`, `2,584.0 MB/s`)
+* **Bottleneck Analysis**:
+  1. **Unpooled `zstd::stream::Decoder::new` on Stream-Compressed Files**: `P4.26` wired `zstd_pool::decompress_frame_into` only into seekable 64K chunks; `read_data_internal` still constructs a brand-new `zstd::stream::Decoder` (allocating a fresh `DCtx` and internal streaming buffer) on every `read_data` call for `CompressionMode::Auto`, `Always`, and `Stream`.
+  2. **Unnecessary `raw_data` Allocation & Copy on Contiguous Unencrypted Mmap Extents**: When `!inode.encrypted && inode.compressed_size > 0 && guard.io_engine.effective() == IoBackend::Mmap` and the compressed blocks are physically contiguous (the common case), `read_data_internal` allocates and zeroes `vec![0u8; physical_size]` and copies out of `&guard.mmap` before decompressing.
+* **Implementation**:
+  - Added contiguous physical-run detection in `read_data_internal` so unencrypted `IoBackend::Mmap` compressed files slice `&guard.mmap[start..start + physical_size]` directly with zero intermediate allocation/copy.
+  - Added `decompress_stream_payload` using thread-local pooled `zstd_pool::decompress_frame_into` directly into an exact-capacity output `Vec<u8>`, falling back to `zstd::stream::Decoder` only for concatenated multi-frame Zstd streams.
+
+---
+
+### P4.32: Filter Pipeline Single-Allocation In-Place `bitshuffle` & SIMD Prefix-Sum `delta_decode_inplace` [RESOLVED]
+* **File & Lines**: [`src/filters.rs`](file:///Users/ych/oifs/src/filters.rs) (`delta_decode_inplace`, `transpose_bit_blocks_inplace`, `bitshuffle_encode`, `bitshuffle_decode`, `FilterPipeline::apply`, `FilterPipeline::unapply_in_place`)
+* **Status**: **Completed & Verified** (see §6.22 — **1.63x** faster `bitshuffle_encode`: `4.01 ms` $\rightarrow$ `2.46 ms`, `6,506.8 MB/s`)
+* **Bottleneck Analysis**:
+  1. **Double Full-Buffer Allocation in `bitshuffle_encode` / `bitshuffle_decode`**: `bitshuffle_encode` (`4.01 ms` / `3.99 GB/s` on 16 MB) allocates `byte_shuffled = shuffle_encode(...)` (`vec![0; len]`) and then allocates a second `out = vec![0u8; len]` for `transpose_8x8_u64`, even though `transpose_8x8_u64` transforms each independent 8-byte word into an 8-byte word **in place**. `bitshuffle_decode` similarly allocates both `unbit` and `shuffle_decode` buffers.
+  2. **3.8x Encode/Decode Asymmetry in `delta_decode_inplace`**: On 16 MB (`typesize = 4`), `delta_encode_inplace` reaches **47.8 GB/s (`0.33 ms`)** via auto-vectorized backward differences, whereas `delta_decode_inplace` drops to **12.7 GB/s (`1.26 ms`)** due to the 1-element loop-carried prefix-sum dependency (`slice[i] = slice[i - 1] + slice[i]`).
+* **Implementation**:
+  - Added `transpose_bit_blocks_inplace` so `bitshuffle_encode`, `FilterPipeline::apply`, and `FilterPipeline::unapply_in_place` perform 8×8 bit-matrix transpositions in place, cutting heap allocations by 50%.
+  - Added `#[cfg(not(kani))]` AArch64 NEON and x86_64 SSE2 2x-unrolled Hillis-Steele block prefix-sum kernels in `delta_decode_inplace` for `typesize == 1, 2, 4` while preserving the scalar Kani-verified implementation under `#[cfg(kani)]`.
+
+---
+
+### P4.33: Batched / Deferred Dirty-Range Coalescing for `DurabilityMode::RangeAsync` [OPEN]
+* **File & Lines**: [`src/disk.rs:448-485`](file:///Users/ych/oifs/src/disk.rs#L448-L485) (`sync_mutation_ranges`)
+* **Status**: **Proposed (Medium Priority)**
+* **Bottleneck Analysis**:
+  - Measured on 200 MiB journaled images: `RangeAsync` achieves **25,782 ops/s** on 512 B writes vs **373,246 ops/s** in `Lazy` (**6.9%**). Because metadata (`4 KB..4.3 MB`) and freshly allocated data blocks often exceed the 1 MB gap-bridging threshold, every mutation executes multiple synchronous `msync(MS_ASYNC)` syscalls (~15–35 µs kernel VM lock + page-table walk each) while holding `inner.write()`.
 * **Proposed Remedy**:
-  - Merge the `is_seekable` check into Stage 1 of `write_data_with_filters`; only clone `raw_entries` when `guard.encryption_key.is_some()` (or populate `ix.stored` before decrypting `entries` in place); precompute the cipher/hasher state in `EncryptionKey`.
-* **Expected Impact**: **Low** (Reduces lock acquisitions, string clones, and per-filename crypto setup overhead).
+  - Buffer dirty `(start, end)` intervals in an interval set and issue coalesced `flush_async_range` calls outside `inner.write()` or every $M$ mutations / periodic tick (preserving asynchronous OS writeback semantics without paying multiple VM syscalls inside every critical section).
+* **Expected Impact**: **Medium-High** (5–10x throughput boost for `DurabilityMode::RangeAsync`).
 
 ---
 
@@ -456,9 +498,12 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-25** | `src/disk.rs:5025-5051, 2379-2384, 2627-2634, 5131-5143`, `src/journal.rs:2601-2620`, `src/superblock.rs:224-266` | (1) `inode_slot_range` only checks `end <= guard.mmap.len()` without verifying `inode_id < sb.inode_count`; an out-of-range `inode_id` resolves into the **Data Area**, enabling fake-inode type confusion where user file payload bytes are parsed/mutated as `Inode` structs to read, overwrite, or free arbitrary blocks. (2) Inode/data bitmap allocations scan all 32,768 bits without capping at `sb.inode_count` or `sb.block_count`, allowing allocation past `inode_count` to overwrite `data_block_start` (root directory block). (3) `SuperBlock::validate` does not verify `inode_table_block + inode_count.div_ceil(16) <= data_block_start`. | **Critical** | `proof_usable_inode_count_fits_the_table` | **Resolved** (see §6.9) |
 | **SEC-26** | `src/disk.rs:6499-6578, 6695-6756, 6864-7020` (`collect_inode_block_layout`, `defragment_inplace_on`, `defragment_safe`) | `collect_inode_block_layout` ignores `INODE_FLAG_SEEKABLE_64K` and treats 64-bit packed `ChunkEntry` values (`(compressed_len << 48) | (flags << 40) | (block_count << 32) | start_block`) as raw block IDs. Running `defragment_inplace` (or background `auto_defrag`) on an image with seekable-compressed files panics out-of-bounds (`src as usize * BLOCK_SIZE`) or corrupts multi-block chunk extents and packed `ChunkEntry` metadata; `defragment_safe` also checks only `inode.compressed_size > 0` (which is `0` for seekable files). | **High** | - | **Resolved** (see §6.10) |
 | **SEC-27** | `src/disk.rs:5131-5143, 5240-5287, 6079-6101`, `src/journal.rs:2895-2945` (`allocate_block`, `get_or_alloc_block`, `stage_payload_write`, `truncate_internal`) | Freed data blocks are not zeroed, and newly allocated data blocks are not zero-initialized before partial writes (`file_offset > 0` within a fresh block) or size-extending `truncate(inode_id, new_size)` (Case 2), leaking up to 4,095 bytes per block of previously deleted files' residual plaintext. | **High** | - | **Resolved** (see §6.11) |
-| **SEC-28** | `src/disk.rs:3172-3184, 4031-4096, 2758-2777, 1741-1764, 6113-6129` (`read_at_prepare`, `read_single_chunk_decompressed`, `resolve_logical_block_id`, `append_dir_entry_to_dir`, `truncate_internal`) | Incomplete `SEC-20` `is_data_block` coverage: `read_at_prepare` and `read_single_chunk_decompressed` only check `< block_count` (not `>= data_block_start`), allowing `read_at` or seekable chunk reads on a corrupted inode to leak the SuperBlock, bitmaps, or Inode Table; non-journaled `append_dir_entry_to_dir`, `truncate_internal` slack zeroing, and indirect block pointers (`sib_id`/`dib_id`/`tib_id`) also bypass `is_data_block`. | **Medium** | - | **Open** (see §3.3) |
+| **SEC-28** | `src/disk.rs:3172-3184, 4031-4096, 2758-2777, 1741-1764, 6113-6129` (`read_at_prepare`, `read_single_chunk_decompressed`, `resolve_logical_block_id`, `append_dir_entry_to_dir`, `truncate_internal`) | Incomplete `SEC-20` `is_data_block` coverage: `read_at_prepare` and `read_single_chunk_decompressed` only check `< block_count` (not `>= data_block_start`), allowing `read_at` or seekable chunk reads on a corrupted inode to leak the SuperBlock, bitmaps, or Inode Table; non-journaled `append_dir_entry_to_dir`, `truncate_internal` slack zeroing, and indirect block pointers (`sib_id`/`dib_id`/`tib_id`) also bypass `is_data_block`. | **Medium** | - | **Resolved** (see §6.18) |
 | **SEC-29** | `src/disk.rs:6134-6161, 6214-6255, 5677-5705, 5875-5905` (`truncate_internal`, `clear_logical_block_ptr`, `delete_file_journaled`, `delete_file`) | (1) `truncate_internal` Case 3 calls `clear_logical_block_ptr` and `prune_unused_indirect_blocks` before `commit_journal_tx`, mutating indirect pointer blocks directly in `guard.mmap` without `MetadataOp::WriteBlockSlice` WAL entries (violating the WAL-first invariant). (2) `delete_file` / `delete_file_journaled` delete non-empty directories without checking for child entries, permanently orphaning all child inodes and data blocks in the bitmaps. | **Medium** | - | **Resolved** (see §6.12) |
-| **SEC-30** | `src/session.rs:571`, `src/ipc.rs:775-785, 807-814, 1177` | (1) `OifsSession::Direct` always creates an unbounded `mpsc::channel()` and stores `Some(rx)` in `event_rx`; if `take_event_receiver()` is never called, every IPC request handled by the Master appends a `SessionEvent` forever (unbounded memory growth). (2) In `SessionMode::Local`, `bind_unix_listener(&socket_path)` runs before `write_token_file(&token_path, &auth_secret)`, leaving a brief race window where a connecting client reads a stale `.tok` from a previously crashed Master. | **Low / Medium** | - | **Open** (see §3.3) |
+| **SEC-30** | `src/session.rs:571`, `src/ipc.rs:775-785, 807-814, 1177` | (1) `OifsSession::Direct` always creates an unbounded `mpsc::channel()` and stores `Some(rx)` in `event_rx`; if `take_event_receiver()` is never called, every IPC request handled by the Master appends a `SessionEvent` forever (unbounded memory growth). (2) In `SessionMode::Local`, `bind_unix_listener(&socket_path)` runs before `write_token_file(&token_path, &auth_secret)`, leaving a brief race window where a connecting client reads a stale `.tok` from a previously crashed Master. | **Low / Medium** | - | **Resolved** (see §6.19) |
+| **SEC-31** | `src/disk.rs` (`journal_region_start`), `src/superblock.rs` (`new_v3`) | `DiskManager::journal_region_start` hardcoded `JOURNAL_HEADER_BLOCK = 3` even on v3 images (`> 128 MiB` data area) where the data bitmap spans multiple blocks (`blocks 2..2+M`), causing WAL writes and bitmap allocations past block 32,768 to overwrite each other (`Journal(BadMagic)` / cross-linked blocks). | **Critical** | - | **Resolved** (`SuperBlock::journal_header_block`, see §6.22) |
+| **SEC-32** | `src/disk.rs` (`write_data_journaled`) | (1) `write_data_journaled` computed `new_physical = max(new_compressed_size, new_size)` instead of `if new_compressed_size > 0 { new_compressed_size } else { new_size }` and gated `prune_stale_pointers` on `file_offset == 0`, leaving stale pointers to freed blocks on shrinking compressed writes/truncates. (2) Reused indirect pointer blocks (`sib`/`dib`/`tib`) were absent from `used`, so `FullOverwrite` / `Recompress` freed still-active indirect tables in the data bitmap. | **High** | - | **Resolved** (`collect_retained_indirect_blocks` + exact `new_physical`, see §6.22) |
+| **SEC-33** | `src/journal.rs` (`sim_ensure_root`, `sim_child`, `coalesce_ops`), `src/disk.rs` (`create_entry_journaled`) | Journaled indirect pointer table allocations (`sim_ensure_root`, intermediate `sim_child`) and new directory root blocks (`mkdir`) did not emit a 4 KiB zero-init `WriteBlockSlice`, causing recycled freed blocks to expose residual file/ciphertext bytes as forged block pointers or directory entries (`BlockOutOfRange`). | **High** | - | **Resolved** (WAL 4 KiB zero-init + chronological overlap splicing in `coalesce_ops`, see §6.22) |
 
 ### 3.1 Detailed Threat Model & Residual Security Evaluation
 
@@ -599,9 +644,9 @@ The following safety and correctness issues were uncovered during the subagent c
 | **SEC-25** — inode table / data bitmap bounds, fake inode type confusion | Critical | **Resolved** (§6.9) |
 | **SEC-26** — defragmentation mishandles seekable 64K chunked files (`ChunkEntry` decoding) | High | **Resolved** (§6.10) |
 | **SEC-27** — freed / partially written data blocks are not zeroed (cross-file disclosure) | High | **Resolved** (§6.11) |
-| **SEC-28** — incomplete data-area bounds checks on the read, chunk, directory and indirect paths | Medium | Open |
+| **SEC-28** — incomplete data-area bounds checks on the read, chunk, directory and indirect paths | Medium | **Resolved** (§6.18) |
 | **SEC-29** — WAL-first violation in `truncate_internal`; orphan leak when deleting a non-empty directory | Medium | **Resolved** (§6.12) |
-| **SEC-30** — unbounded `SessionEvent` channel; `.tok` creation ordering race | Low / Medium | Open |
+| **SEC-30** — unbounded `SessionEvent` channel; `.tok` creation ordering race | Low / Medium | **Resolved** (§6.19) |
 
 ---
 
@@ -1150,13 +1195,16 @@ the inode count at 32,768, no matter how large the image was.
   still means "the v2 (256-byte) inode records".
 * The inode table keeps its historical size (1024 blocks), but it now reports
   the 16,384 inodes that actually fit into it instead of the historical 32,768.
-* All bitmap accesses go through the span helpers, and the WAL replay sets the
-  bits of the whole span (a range may cross a block boundary).
+* All bitmap accesses (including `allocate_block_unzeroed`, `allocate_contiguous_blocks_internal`, `free_contiguous_blocks_internal`, `delete_file`, `truncate_internal`, `defragment_safe`, `AllocSim::new`/`new_data_only`/`apply_to_image`, and `inode_bitmap_byte_range`/`data_bitmap_byte_range`) go through the span helpers, `SuperBlock::journal_header_block()` places the journal region dynamically after `data_bitmap_block + data_bitmap_blocks()` (preventing overlap with the second data bitmap block on >128 MiB journaled images), and the WAL replay sets the bits of the whole span (a range may cross a block boundary).
 
 **Verification**: `tests/large_image_bitmap_test.rs` checks the layout of a
 200 MiB image (a multi-block data bitmap), that a small image keeps a single
-bitmap block, and that a multi-block image stays consistent through the
-allocator, the fsck and the defragmentation.
+bitmap block, that a multi-block image stays consistent through the
+allocator, the fsck and the defragmentation, that allocations and frees
+beyond the first 32,768 data blocks (`test_p425_allocate_and_free_beyond_first_bitmap_block`)
+correctly set and clear bits in the second bitmap block, and that a 512 MiB
+journaled image (`test_journal_does_not_overlap_a_multi_block_data_bitmap`)
+writes >50,000 blocks and reopens cleanly without corrupting the WAL header.
 
 ### 6.17 Format Review — What Else Can Be Improved
 
@@ -1176,3 +1224,85 @@ multi-block bitmaps) are the ones that could be made **backward compatible**:
 the AEAD scheme is selected by the existing `encryption_version` field, and the
 v3 layout derives its bitmap spans from the recorded offsets, so an image
 written by an older version keeps its layout and stays readable.
+
+### 6.18 SEC-28 — Complete Data-Area Bounds Enforcement
+
+**Fix** (`src/disk.rs`, `src/journal.rs`):
+
+* `read_at_prepare` now filters physical block IDs through `guard.is_data_block(blk)` instead of `< block_count`, so positional reads (`Mmap`, `Pread`, `IoUring`) never expose metadata blocks (`0..data_block_start`) when an inode pointer is corrupted.
+* `read_single_chunk_decompressed` validates `entry.start_block >= data_block_start` and `end_block <= block_count` before reading a seekable 64K chunk extent, and `set_logical_chunk_entry` validates indirect table pointers (`sib`, `dib`, `tib`) with `guard.is_data_block(...)` before writing.
+* `walk_payload_blocks` checks `guard.is_data_block` on `sib_id`, `dib_id`, and `tib_id` before reading indirect pointer tables.
+* `find_dir_insert_slot`, `append_dir_entry_to_dir`, `create_entry_journaled`, `truncate_internal` (both extension slack-zeroing and shrink block collection), `clear_logical_block_ptr`, `zero_block_ptr`, and `prune_unused_indirect_blocks` enforce `guard.is_data_block(...)` on all resolved data and indirect blocks.
+* `AllocSim::is_data_block` enforces `blk >= data_block_start && blk < block_count` in `sim_ensure_root`, `sim_child`, and `sim_get_or_alloc_block`.
+
+**Verification**: `tests/block_pointer_bounds_test.rs::test_sec28_read_at_chunked_and_truncate_never_touch_metadata_blocks`.
+
+### 6.19 SEC-30 — Bounded `SessionEvent` Channel & Atomic Token File Publication
+
+**Fix** (`src/session.rs`, `src/ipc.rs`):
+
+* Replaced the unbounded `std::sync::mpsc::channel()` in `OifsSession::Direct` with `mpsc::sync_channel(MAX_PENDING_SESSION_EVENTS)` (`1024`), and switched `IpcServer::emit_event` to non-blocking `try_send`. If the caller never consumes `take_event_receiver()`, queue memory is strictly bounded to 1,024 events and never stalls IPC workers.
+* `IpcServer::write_token_file` writes the 32-byte session secret to a mode-`0600` process-scoped temporary file (`.tok.tmp.<pid>`) and atomically renames it over `token_path` (`std::fs::rename`), eliminating any partial-write or stale-token race window.
+
+**Verification**: `tests/ipc_security_test.rs::test_sec30_session_event_channel_is_bounded`.
+
+### 6.20 P4.15 — Prefix/Suffix-Only Fresh-Block Zeroing
+
+**Fix** (`src/journal.rs`, `src/disk.rs`):
+
+* Added `AllocSim::take_unzeroed_fresh(phys)` in `src/journal.rs`: `stage_payload_write` only zeroes the untouched prefix (`slice[..in_blk_off].fill(0)`) and suffix (`slice[in_blk_off + n..].fill(0)`) on the first write to a freshly allocated block. Full-block writes (`in_blk_off == 0 && n == BLOCK_SIZE`) write **0 zero bytes**, eliminating the 2x memory-bus bandwidth penalty while maintaining `SEC-27` zero-disclosure guarantees.
+* Added `allocate_block_unzeroed` and `get_or_alloc_block_for_write` (returning `(u64, bool)`) in `src/disk.rs` so `write_buffer_at_offset` only zeroes untouched prefix/suffix bytes on fresh blocks, and removed redundant `slice.fill(0)` calls in `alloc_and_zero_block` and `append_dir_entry_to_dir`.
+
+### 6.21 P4.16 — $O(1)$ Tail-Cached Directory Insertion & Hole-Gated Probing
+
+**Fix** (`src/disk.rs`):
+
+* `append_dir_entry_to_block` accepts the pre-computed `insert_offset: usize`, eliminating the duplicate intra-block entry scan on every directory insertion.
+* `DirIndex` tracks `may_have_holes: bool` (set to `true` when `delete_file` or `delete_file_journaled` removes an entry) and `tail_offset: Option<(u64, u16)>` (`(num_blocks, used_bytes_in_last_block)`).
+* `find_dir_insert_slot` checks `tail_offset` in $O(1)$ and only probes earlier directory blocks `0..num_blocks - 1` when `may_have_holes` is `true`, turning multi-block directory population from $O(B^2)$ block scans into $O(1)$ per insert.
+
+### 6.22 P4.17 / P4.19–P4.21 / P4.23–P4.24 / P4.27 / P4.29–P4.32 & SEC-31..SEC-33 — Algorithmic, Parallelism, Cache & SIMD Optimization Wave
+
+**Fixes** (`src/disk.rs`, `src/directory.rs`, `src/encryption.rs`, `src/filters.rs`, `src/journal.rs`, `src/superblock.rs`):
+
+1. **Positional `read_at` & Stream Decompression (`P4.24`, `P4.31`)**:
+   * Added bounded `DecodedBlobCache` (4 slots, 16 MiB/entry, 32 MiB cap) in `DiskManagerInner` with explicit mutation invalidation, turning sequential `read_at` on non-seekable compressed/encrypted files from $O(N^2)$ into $O(N)$.
+   * `read_data_internal` slices physically contiguous unencrypted `Mmap` extents directly (`&guard.mmap[start..end]`) and decodes single-frame Zstd payloads via `zstd_pool::decompress_frame_into` (`decompress_stream_payload`) with zero per-call `DCtx` setup.
+2. **Encrypted Streaming Writes & In-Place AEAD (`P4.23`, `P4.21`, `P4.29`)**:
+   * Non-zero-offset (`file_offset > 0`) writes to encrypted Format-v2+ non-filtered files transparently upgrade to `INODE_FLAG_SEEKABLE_64K` (preserving raw encrypted chunks under `CompressionMode::Never` and compressed encrypted chunks otherwise), eliminating $O(N^2)$ whole-file rebuilds while maintaining `SEC-16` / `SEC-19` security invariants.
+   * Added `encrypt_data_in_place`, `encrypt_with_nonce_prefix`, `decrypt_into_slice`, stack-allocated AAD builders (`file_aad_stack`, `chunk_aad_stack`), and single-allocation stack-staged `encrypt_filename` / `decrypt_filename`.
+3. **Seekable 64K Parallel Read, Zero-Copy Write Stage 1 & Sub-Chunk Cache (`P4.17`)**:
+   * Stage 1 borrows full chunks via `Cow::Borrowed` under `inner.read()`.
+   * `read_single_chunk_into` decodes directly into destination slices using thread-local scratch buffers; `read_chunked_64k_internal` and multi-chunk aligned `read_at_chunked_64k` parallelize decoding across cores via Rayon `par_chunks_mut(CHUNK_SIZE_64K)`; `ChunkReadCache` (8 slots) serves sub-chunk sequential `read_at` calls without re-decoding 64 KiB Zstd/AEAD frames.
+4. **Directory Bulk Unlink, `FxHashMap`, Negative-Lookup Fast Path & Bitset `fsck` (`P4.30`, `P4.19`, `P4.27`)**:
+   * `DirIndex` uses `FxHashMap`, tracks `plain_complete`, and stores `(inode_id, phys_blk)` so `delete_file` / `delete_file_journaled` resolve the target block in $O(1)$ and compact raw block bytes in place via zero-allocation `remove_entry_in_block_bytes`.
+   * `verify_integrity_on` (`fsck`) uses `read_inode_uncached`, `for_each_valid_inode_in_block`, `for_each_inode_block`, and compact `u64` bitsets (`ref_inodes`, `seen_data`, `cross_linked_data`).
+   * `defragment_inplace_on` (`P4.20`) short-circuits in $O(1)$ when `already_compacted`, uses `Bitmap::set_range`, and remaps `dir_cache` block IDs in place without cache stampedes.
+5. **Filter Pipeline Single-Alloc `bitshuffle` & SIMD `delta_decode_inplace` (`P4.32`)**:
+   * Added `transpose_bit_blocks_inplace` (halving `bitshuffle` heap allocations) and `#[cfg(not(kani))]` AArch64 NEON + x86_64 SSE2 2x-unrolled Hillis-Steele prefix-sum kernels for `delta_decode_inplace`.
+6. **WAL & Multi-Block Bitmap Integrity Fixes (`SEC-31`, `SEC-32`, `SEC-33`)**:
+   * `SuperBlock::journal_header_block` places the v3 WAL after multi-block data bitmaps (`> 128 MiB` journaled images).
+   * `write_data_journaled` uses exact physical byte sizes for `prune_stale_pointers` and retains active indirect pointer tables via `collect_retained_indirect_blocks`.
+   * `sim_ensure_root`, intermediate `sim_child`, and `mkdir` (`dir_data_block`) emit 4 KiB zero-init `WriteBlockSlice` ops coalesced in chronological order by `coalesce_ops`.
+
+**Measured Before / After Benchmarks (`--release`, Apple Silicon)**:
+
+| Workload | Before | After | Speedup |
+| :--- | ---: | ---: | ---: |
+| Stream-compressed 4 MB seq `4 KB read_at` (`P4.24` + `P4.31`) | `1,933.57 ms` (`2.1 MB/s`) | **`1.94 ms`** (`2,059.8 MB/s`) | **996.7x** |
+| Clean 5k-file image `defragment(InPlace)` (`P4.20`) | `6.64 ms` (`19.99 MB` moved) | **`0.022 ms`** (`0 B` moved) | **301.8x** |
+| Encrypted `128 × 64 KB` append (`Never`, 8 MB) (`P4.23`) | `1,453.41 ms` (`5.5 MB/s`) | **`13.36 ms`** (`598.6 MB/s`) | **108.8x** |
+| Encrypted `128 × 64 KB` append (`Auto`, 8 MB) (`P4.23`) | `89.46 ms` (`89.4 MB/s`) | **`13.70 ms`** (`583.8 MB/s`) | **6.5x** |
+| Plain 10k-file `delete_file` in 1 dir (`P4.30`) | `52.00 ms` | **`3.60 ms`** | **14.4x** |
+| Encrypted 10k-file `delete_file` in 1 dir (`P4.30`) | `23.50 ms` | **`5.63 ms`** | **4.2x** |
+| Seekable 16 MB seq `4 KB read_at` (`P4.17`) | `99.58 ms` (`160.7 MB/s`) | **`8.28 ms`** (`1,931.9 MB/s`) | **12.0x** |
+| Encrypted 10k negative `lookup` (`P4.19`) | `4.59 ms` | **`0.63 ms`** | **7.3x** |
+| `verify_integrity` (`fsck`, 10k files, plain) (`P4.27`) | `2.61 ms` | **`0.42 ms`** | **6.2x** |
+| Seekable 16 MB `read_data` (`P4.17` Rayon parallel) | `8.23 ms` (`1,944 MB/s`) | **`1.39 ms`** (`11,511 MB/s`) | **5.9x** |
+| Seekable 16 MB seq `1 MB read_at` (`P4.17`) | `7.22 ms` (`2,216 MB/s`) | **`1.76 ms`** (`9,091 MB/s`) | **4.1x** |
+| Plain / Encrypted 10k `create_file` (`P4.19` + `P4.29`) | `8.58 ms` / `15.62 ms` | **`2.53 ms` / `5.59 ms`** | **3.4x / 2.8x** |
+| `bitshuffle_encode` 16 MB (`typesize=4`) (`P4.32`) | `4.01 ms` (`3,987.2 MB/s`) | **`2.46 ms`** (`6,506.8 MB/s`) | **1.63x** |
+| Seekable 64 MB initial `write_data` (`P4.17`) | `12.38 ms` | **`8.30 ms`** | **1.49x** |
+| `1,000 × 16 KB` stream `read_data` (`P4.31`) | `8.14 ms` (`1,918.8 MB/s`) | **`6.05 ms`** (`2,584.0 MB/s`) | **1.35x** |
+
+**Verification**: `tests/p4_perf_optimizations_test.rs`, `tests/large_image_bitmap_test.rs::test_journal_does_not_overlap_a_multi_block_data_bitmap`.

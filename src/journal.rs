@@ -504,7 +504,7 @@ pub fn coalesce_ops(ops: Vec<MetadataOp>) -> Vec<MetadataOp> {
 
     let mut inode_bitmap_ops = Vec::new();
     let mut data_bitmap_ops = Vec::new();
-    let mut block_slice_ops: std::collections::BTreeMap<(u64, u32), Vec<u8>> =
+    let mut block_slice_ops: std::collections::BTreeMap<u64, Vec<(u32, Vec<u8>)>> =
         std::collections::BTreeMap::new();
     let mut inode_ops: Vec<(u64, Box<[u8; INODE_BYTES]>)> = Vec::new();
 
@@ -534,7 +534,10 @@ pub fn coalesce_ops(ops: Vec<MetadataOp>) -> Vec<MetadataOp> {
                 offset,
                 data,
             } => {
-                block_slice_ops.insert((block_id, offset), data);
+                block_slice_ops
+                    .entry(block_id)
+                    .or_default()
+                    .push((offset, data));
             }
             MetadataOp::WriteInode {
                 inode_id,
@@ -603,34 +606,59 @@ pub fn coalesce_ops(ops: Vec<MetadataOp>) -> Vec<MetadataOp> {
         }
     }
 
-    // 3. Block slice ops: merge contiguous slices on the same block
-    let mut cur_slice: Option<(u64, u32, Vec<u8>)> = None;
-    for ((blk, off), data) in block_slice_ops {
-        match cur_slice {
-            Some((cur_blk, cur_off, mut cur_data)) => {
-                if cur_blk == blk && cur_off as usize + cur_data.len() == off as usize {
-                    cur_data.extend_from_slice(&data);
-                    cur_slice = Some((cur_blk, cur_off, cur_data));
-                } else {
-                    coalesced.push(MetadataOp::WriteBlockSlice {
-                        block_id: cur_blk,
-                        offset: cur_off,
-                        data: cur_data,
-                    });
-                    cur_slice = Some((blk, off, data));
+    // 3. Block slice ops: merge overlapping & contiguous slices on the same block
+    //    in chronological order (latest write wins), so a 4 KiB zero-init of a
+    //    freshly recycled indirect/directory block cleanly absorbs subsequent
+    //    slot updates without losing trailing zeros.
+    for (blk, slices) in block_slice_ops {
+        let mut intervals: Vec<(u32, Vec<u8>)> = Vec::new();
+        for (off, data) in slices {
+            let new_s = off as usize;
+            let new_e = new_s + data.len();
+
+            if !data.is_empty() {
+                if intervals.len() == 1 {
+                    let iv_s = intervals[0].0 as usize;
+                    let iv_e = iv_s + intervals[0].1.len();
+                    if iv_s <= new_s && new_e <= iv_e {
+                        let rel = new_s - iv_s;
+                        intervals[0].1[rel..rel + data.len()].copy_from_slice(&data);
+                        continue;
+                    }
+                }
+                if let Some(last) = intervals.last_mut()
+                    && last.0 as usize + last.1.len() == new_s
+                {
+                    last.1.extend_from_slice(&data);
+                    continue;
                 }
             }
-            None => {
-                cur_slice = Some((blk, off, data));
+
+            let lo = intervals.partition_point(|(s, d)| (*s as usize) + d.len() < new_s);
+            let hi = intervals.partition_point(|(s, _)| (*s as usize) <= new_e);
+            if lo == hi {
+                intervals.insert(lo, (off, data));
+            } else {
+                let merged_s = (intervals[lo].0 as usize).min(new_s);
+                let last_iv = &intervals[hi - 1];
+                let merged_e = (last_iv.0 as usize + last_iv.1.len()).max(new_e);
+                let mut merged = vec![0u8; merged_e - merged_s];
+                for (iv_off, iv_data) in &intervals[lo..hi] {
+                    let rel = (*iv_off as usize) - merged_s;
+                    merged[rel..rel + iv_data.len()].copy_from_slice(iv_data);
+                }
+                let rel_new = new_s - merged_s;
+                merged[rel_new..rel_new + data.len()].copy_from_slice(&data);
+                intervals.splice(lo..hi, std::iter::once((merged_s as u32, merged)));
             }
         }
-    }
-    if let Some((blk, off, data)) = cur_slice {
-        coalesced.push(MetadataOp::WriteBlockSlice {
-            block_id: blk,
-            offset: off,
-            data,
-        });
+        for (off, data) in intervals {
+            coalesced.push(MetadataOp::WriteBlockSlice {
+                block_id: blk,
+                offset: off,
+                data,
+            });
+        }
     }
 
     // 4. Inode post-images (deduplicated)
@@ -2605,6 +2633,8 @@ pub(crate) struct AllocSim {
     /// Blocks allocated during this simulation, in order.
     pub(crate) fresh_blocks: Vec<u64>,
     fresh_set: rustc_hash::FxHashSet<u64>,
+    /// Fresh blocks whose unwritten slack bytes have not been zeroed yet (P4.15).
+    unzeroed_fresh: rustc_hash::FxHashSet<u64>,
     /// Simulated pointer modifications: (parent_blk, entry_idx) -> child_blk
     pub(crate) pointers: rustc_hash::FxHashMap<(u64, usize), u64>,
 }
@@ -2617,9 +2647,12 @@ impl AllocSim {
         free_block_hint: u64,
     ) -> Result<Self, DiskManagerError> {
         let sb = guard.superblock;
-        let ib = DiskManager::get_block_from_map(&guard.mmap, sb.inode_bitmap_block)
+        // P4.25: use the full multi-block bitmap spans.
+        let ib = guard
+            .inode_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("inode bitmap not found")))?;
-        let db = DiskManager::get_block_from_map(&guard.mmap, sb.data_bitmap_block)
+        let db = guard
+            .data_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("data bitmap not found")))?;
         Ok(Self {
             inode_bitmap: ib.to_vec(),
@@ -2632,6 +2665,7 @@ impl AllocSim {
             free_block_hint,
             fresh_blocks: Vec::new(),
             fresh_set: rustc_hash::FxHashSet::default(),
+            unzeroed_fresh: rustc_hash::FxHashSet::default(),
             pointers: rustc_hash::FxHashMap::default(),
         })
     }
@@ -2645,7 +2679,9 @@ impl AllocSim {
         free_block_hint: u64,
     ) -> Result<Self, DiskManagerError> {
         let sb = guard.superblock;
-        let db = DiskManager::get_block_from_map(&guard.mmap, sb.data_bitmap_block)
+        // P4.25: use the full multi-block data bitmap span.
+        let db = guard
+            .data_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("data bitmap not found")))?;
         Ok(Self {
             #[cfg(test)]
@@ -2659,6 +2695,7 @@ impl AllocSim {
             free_block_hint,
             fresh_blocks: Vec::new(),
             fresh_set: rustc_hash::FxHashSet::default(),
+            unzeroed_fresh: rustc_hash::FxHashSet::default(),
             pointers: rustc_hash::FxHashMap::default(),
         })
     }
@@ -2696,6 +2733,7 @@ impl AllocSim {
         self.free_block_hint = blk + 1;
         self.fresh_blocks.push(blk);
         self.fresh_set.insert(blk);
+        self.unzeroed_fresh.insert(blk);
         Ok(blk)
     }
 
@@ -2719,6 +2757,7 @@ impl AllocSim {
             let b = blk + i as u64;
             self.fresh_blocks.push(b);
             self.fresh_set.insert(b);
+            self.unzeroed_fresh.insert(b);
         }
         Ok(blk)
     }
@@ -2740,11 +2779,26 @@ impl AllocSim {
         Ok(())
     }
 
+    #[inline]
+    pub(crate) fn is_data_block(&self, block_id: u64) -> bool {
+        block_id >= self.data_start && block_id < self.block_count
+    }
+
     pub(crate) fn is_fresh(&self, block_id: u64) -> bool {
         if self.fresh_blocks.is_empty() {
             return false;
         }
         self.fresh_set.contains(&block_id)
+    }
+
+    /// Returns `true` the first time a freshly allocated block is prepared for
+    /// a payload write (P4.15).
+    #[inline]
+    pub(crate) fn take_unzeroed_fresh(&mut self, block_id: u64) -> bool {
+        if self.unzeroed_fresh.is_empty() {
+            return false;
+        }
+        self.unzeroed_fresh.remove(&block_id)
     }
 
     #[cfg(test)]
@@ -2767,6 +2821,7 @@ impl AllocSim {
             free_block_hint,
             fresh_blocks: Vec::new(),
             fresh_set: rustc_hash::FxHashSet::default(),
+            unzeroed_fresh: rustc_hash::FxHashSet::default(),
             pointers: rustc_hash::FxHashMap::default(),
         }
     }
@@ -2775,11 +2830,19 @@ impl AllocSim {
     pub(crate) fn clear_fresh(&mut self) {
         self.fresh_blocks.clear();
         self.fresh_set.clear();
+        self.unzeroed_fresh.clear();
         self.pointers.clear();
     }
 }
 
+#[inline]
+pub(crate) fn block_has_nonzero_bytes(mmap: &MmapMut, block_id: u64) -> bool {
+    DiskManager::get_block_from_map(mmap, block_id)
+        .is_some_and(|slice| slice.iter().any(|&b| b != 0))
+}
+
 fn sim_ensure_root(
+    mmap: &MmapMut,
     slot: &mut u64,
     sim: &mut AllocSim,
     ops: &mut Vec<crate::journal::MetadataOp>,
@@ -2790,7 +2853,24 @@ fn sim_ensure_root(
             block_id: blk,
             allocated: true,
         });
+        // Zero-initialize the newly allocated pointer table in the WAL when
+        // recycling a dirty freed block, without bloating the WAL on virgin
+        // already-zero blocks.
+        if block_has_nonzero_bytes(mmap, blk) {
+            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                block_id: blk,
+                offset: 0,
+                data: vec![0u8; BLOCK_SIZE],
+            });
+        }
         *slot = blk;
+    }
+    // SEC-28: an indirect root must live in the data area.
+    if *slot != 0 && !sim.is_data_block(*slot) {
+        return Err(DiskManagerError::Io(std::io::Error::other(format!(
+            "Indirect root {} is outside the data area",
+            *slot
+        ))));
     }
     Ok(*slot)
 }
@@ -2799,9 +2879,16 @@ fn sim_child(
     mmap: &MmapMut,
     parent_blk: u64,
     idx: usize,
+    is_pointer_table: bool,
     sim: &mut AllocSim,
     ops: &mut Vec<crate::journal::MetadataOp>,
 ) -> Result<u64, DiskManagerError> {
+    if !sim.is_data_block(parent_blk) {
+        return Err(DiskManagerError::Io(std::io::Error::other(format!(
+            "Indirect block {} is outside the data area",
+            parent_blk
+        ))));
+    }
     if let Some(&cached) = sim.pointers.get(&(parent_blk, idx)) {
         return Ok(cached);
     }
@@ -2812,6 +2899,12 @@ fn sim_child(
         DiskManager::read_block_ptr(mmap, parent_blk, idx)
     };
     if existing != 0 {
+        if !sim.is_data_block(existing) {
+            return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                "Block pointer {} is outside the data area",
+                existing
+            ))));
+        }
         return Ok(existing);
     }
     let blk = sim.alloc_block()?;
@@ -2820,6 +2913,13 @@ fn sim_child(
         block_id: blk,
         allocated: true,
     });
+    if is_pointer_table && block_has_nonzero_bytes(mmap, blk) {
+        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+            block_id: blk,
+            offset: 0,
+            data: vec![0u8; BLOCK_SIZE],
+        });
+    }
     // Record the pointer write into the parent pointer block.
     ops.push(crate::journal::MetadataOp::WriteBlockSlice {
         block_id: parent_blk,
@@ -2853,40 +2953,46 @@ pub(crate) fn sim_get_or_alloc_block(
                 });
                 inode.blocks[i] = blk;
             }
+            if inode.blocks[i] != 0 && !sim.is_data_block(inode.blocks[i]) {
+                return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                    "Block pointer {} is outside the data area",
+                    inode.blocks[i]
+                ))));
+            }
             Ok(inode.blocks[i])
         }
         Some(BlockPath::Single(i)) => {
-            let sib = sim_ensure_root(&mut inode.blocks[10], sim, ops)?;
+            let sib = sim_ensure_root(mmap, &mut inode.blocks[10], sim, ops)?;
             if sib == 0 {
                 return Ok(0);
             }
-            sim_child(mmap, sib, i, sim, ops)
+            sim_child(mmap, sib, i, false, sim, ops)
         }
         Some(BlockPath::Double(a, b)) => {
-            let dib = sim_ensure_root(&mut inode.blocks[11], sim, ops)?;
+            let dib = sim_ensure_root(mmap, &mut inode.blocks[11], sim, ops)?;
             if dib == 0 {
                 return Ok(0);
             }
-            let sib = sim_child(mmap, dib, a, sim, ops)?;
+            let sib = sim_child(mmap, dib, a, true, sim, ops)?;
             if sib == 0 {
                 return Ok(0);
             }
-            sim_child(mmap, sib, b, sim, ops)
+            sim_child(mmap, sib, b, false, sim, ops)
         }
         Some(BlockPath::Triple(a, b, c)) => {
-            let tib = sim_ensure_root(&mut inode.triple_indirect, sim, ops)?;
+            let tib = sim_ensure_root(mmap, &mut inode.triple_indirect, sim, ops)?;
             if tib == 0 {
                 return Ok(0);
             }
-            let dib = sim_child(mmap, tib, a, sim, ops)?;
+            let dib = sim_child(mmap, tib, a, true, sim, ops)?;
             if dib == 0 {
                 return Ok(0);
             }
-            let sib = sim_child(mmap, dib, b, sim, ops)?;
+            let sib = sim_child(mmap, dib, b, true, sim, ops)?;
             if sib == 0 {
                 return Ok(0);
             }
-            sim_child(mmap, sib, c, sim, ops)
+            sim_child(mmap, sib, c, false, sim, ops)
         }
         None => Err(DiskManagerError::Io(std::io::Error::new(
             std::io::ErrorKind::FileTooLarge,
@@ -2928,7 +3034,7 @@ pub(crate) fn sim_set_logical_chunk_entry(
             Some(BlockPath::Double(a, b)) => {
                 let dib = inode.blocks[11];
                 if dib != 0 {
-                    let sib = sim_child(mmap, dib, a, sim, ops)?;
+                    let sib = sim_child(mmap, dib, a, true, sim, ops)?;
                     if sib != 0 {
                         sim.pointers.insert((sib, b), 0);
                         ops.push(crate::journal::MetadataOp::WriteBlockSlice {
@@ -2942,9 +3048,9 @@ pub(crate) fn sim_set_logical_chunk_entry(
             Some(BlockPath::Triple(a, b, c)) => {
                 let tib = inode.triple_indirect;
                 if tib != 0 {
-                    let dib = sim_child(mmap, tib, a, sim, ops)?;
+                    let dib = sim_child(mmap, tib, a, true, sim, ops)?;
                     if dib != 0 {
-                        let sib = sim_child(mmap, dib, b, sim, ops)?;
+                        let sib = sim_child(mmap, dib, b, true, sim, ops)?;
                         if sib != 0 {
                             sim.pointers.insert((sib, c), 0);
                             ops.push(crate::journal::MetadataOp::WriteBlockSlice {
@@ -2967,7 +3073,7 @@ pub(crate) fn sim_set_logical_chunk_entry(
             Ok(())
         }
         Some(BlockPath::Single(i)) => {
-            let sib = sim_ensure_root(&mut inode.blocks[10], sim, ops)?;
+            let sib = sim_ensure_root(mmap, &mut inode.blocks[10], sim, ops)?;
             sim.pointers.insert((sib, i), entry.0);
             ops.push(crate::journal::MetadataOp::WriteBlockSlice {
                 block_id: sib,
@@ -2977,8 +3083,8 @@ pub(crate) fn sim_set_logical_chunk_entry(
             Ok(())
         }
         Some(BlockPath::Double(a, b)) => {
-            let dib = sim_ensure_root(&mut inode.blocks[11], sim, ops)?;
-            let sib = sim_child(mmap, dib, a, sim, ops)?;
+            let dib = sim_ensure_root(mmap, &mut inode.blocks[11], sim, ops)?;
+            let sib = sim_child(mmap, dib, a, true, sim, ops)?;
             sim.pointers.insert((sib, b), entry.0);
             ops.push(crate::journal::MetadataOp::WriteBlockSlice {
                 block_id: sib,
@@ -2988,9 +3094,9 @@ pub(crate) fn sim_set_logical_chunk_entry(
             Ok(())
         }
         Some(BlockPath::Triple(a, b, c)) => {
-            let tib = sim_ensure_root(&mut inode.triple_indirect, sim, ops)?;
-            let dib = sim_child(mmap, tib, a, sim, ops)?;
-            let sib = sim_child(mmap, dib, b, sim, ops)?;
+            let tib = sim_ensure_root(mmap, &mut inode.triple_indirect, sim, ops)?;
+            let dib = sim_child(mmap, tib, a, true, sim, ops)?;
+            let sib = sim_child(mmap, dib, b, true, sim, ops)?;
             sim.pointers.insert((sib, c), entry.0);
             ops.push(crate::journal::MetadataOp::WriteBlockSlice {
                 block_id: sib,
@@ -3074,6 +3180,7 @@ pub(crate) fn stage_payload_write(
         let n = std::cmp::min(buf.len() - written, BLOCK_SIZE - in_blk_off);
 
         let phys = sim_get_or_alloc_block(&guard.mmap, inode, blk_idx, sim, ops)?;
+        let need_zero = phys != 0 && sim.take_unzeroed_fresh(phys);
         if phys != 0 {
             let is_new = match &mut existing_set {
                 Some(set) => set.insert(phys),
@@ -3082,17 +3189,16 @@ pub(crate) fn stage_payload_write(
             if is_new {
                 used.push(phys);
             }
-            // SEC-27: a block that was just allocated may still hold the
-            // plaintext of a deleted or truncated file. Zero it before the
-            // payload is staged, otherwise a partial write would expose the
-            // old content to the new owner of the block.
-            if sim.is_fresh(phys)
-                && let Some(slice) = DiskManager::get_block_mut_from_map(&mut guard.mmap, phys)
-            {
-                slice.fill(0);
-            }
         }
         if let Some(slice) = DiskManager::get_block_mut_from_map(&mut guard.mmap, phys) {
+            // SEC-27 / P4.15: a freshly allocated block may still hold the
+            // plaintext of a deleted or truncated file. Zero only the
+            // untouched prefix and suffix so full-block writes do not write
+            // every 4 KiB page twice.
+            if need_zero {
+                slice[..in_blk_off].fill(0);
+                slice[in_blk_off + n..].fill(0);
+            }
             slice[in_blk_off..in_blk_off + n].copy_from_slice(&buf[written..written + n]);
         }
         written += n;

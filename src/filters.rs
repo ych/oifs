@@ -46,7 +46,14 @@ impl FilterPipeline {
             match f {
                 FilterType::Delta => delta_encode_inplace(&mut cur, self.typesize as usize),
                 FilterType::ByteShuffle => cur = shuffle_encode(&cur, self.typesize as usize),
-                FilterType::BitShuffle => cur = bitshuffle_encode(&cur, self.typesize as usize),
+                FilterType::BitShuffle => {
+                    if self.typesize > 0 {
+                        if self.typesize > 1 {
+                            cur = shuffle_encode(&cur, self.typesize as usize);
+                        }
+                        transpose_bit_blocks_inplace(&mut cur);
+                    }
+                }
                 FilterType::TruncPrecision { prec_bits } => {
                     trunc_precision_encode_inplace(&mut cur, self.typesize as usize, *prec_bits);
                 }
@@ -69,7 +76,14 @@ impl FilterPipeline {
             match f {
                 FilterType::Delta => delta_decode_inplace(data, self.typesize as usize),
                 FilterType::ByteShuffle => *data = shuffle_decode(data, self.typesize as usize),
-                FilterType::BitShuffle => *data = bitshuffle_decode(data, self.typesize as usize),
+                FilterType::BitShuffle => {
+                    if self.typesize > 0 {
+                        transpose_bit_blocks_inplace(data);
+                        if self.typesize > 1 {
+                            *data = shuffle_decode(data, self.typesize as usize);
+                        }
+                    }
+                }
                 FilterType::TruncPrecision { .. } => {} // Truncation is lossy; unapply is identity
             }
         }
@@ -293,22 +307,191 @@ pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
         let ptr = data.as_mut_ptr();
         match typesize {
             1 => {
-                for i in 1..n {
-                    data[i] = data[i - 1].wrapping_add(data[i]);
+                let mut i = 1usize;
+                #[cfg(all(not(kani), target_arch = "aarch64"))]
+                if n >= 32 {
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let zero = vdupq_n_u8(0);
+                        let mut carry = vdupq_n_u8(0);
+                        i = 0;
+                        while i + 32 <= n {
+                            let p = ptr.add(i);
+                            let v0 = vld1q_u8(p);
+                            let v1 = vld1q_u8(p.add(16));
+                            let s1_0 = vaddq_u8(v0, vextq_u8::<15>(zero, v0));
+                            let s1_1 = vaddq_u8(v1, vextq_u8::<15>(zero, v1));
+                            let s2_0 = vaddq_u8(s1_0, vextq_u8::<14>(zero, s1_0));
+                            let s2_1 = vaddq_u8(s1_1, vextq_u8::<14>(zero, s1_1));
+                            let s3_0 = vaddq_u8(s2_0, vextq_u8::<12>(zero, s2_0));
+                            let s3_1 = vaddq_u8(s2_1, vextq_u8::<12>(zero, s2_1));
+                            let s4_0 = vaddq_u8(s3_0, vextq_u8::<8>(zero, s3_0));
+                            let s4_1 = vaddq_u8(s3_1, vextq_u8::<8>(zero, s3_1));
+                            let out0 = vaddq_u8(s4_0, carry);
+                            let carry0 = vdupq_laneq_u8::<15>(out0);
+                            let out1 = vaddq_u8(s4_1, carry0);
+                            carry = vdupq_laneq_u8::<15>(out1);
+                            vst1q_u8(p, out0);
+                            vst1q_u8(p.add(16), out1);
+                            i += 32;
+                        }
+                    }
+                }
+                #[cfg(all(not(kani), target_arch = "x86_64"))]
+                if n >= 32 {
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        let mut carry = _mm_setzero_si128();
+                        i = 0;
+                        while i + 32 <= n {
+                            let p = ptr.add(i) as *mut __m128i;
+                            let v0 = _mm_loadu_si128(p);
+                            let v1 = _mm_loadu_si128(p.add(1));
+                            let s1_0 = _mm_add_epi8(v0, _mm_slli_si128::<1>(v0));
+                            let s1_1 = _mm_add_epi8(v1, _mm_slli_si128::<1>(v1));
+                            let s2_0 = _mm_add_epi8(s1_0, _mm_slli_si128::<2>(s1_0));
+                            let s2_1 = _mm_add_epi8(s1_1, _mm_slli_si128::<2>(s1_1));
+                            let s3_0 = _mm_add_epi8(s2_0, _mm_slli_si128::<4>(s2_0));
+                            let s3_1 = _mm_add_epi8(s2_1, _mm_slli_si128::<4>(s2_1));
+                            let s4_0 = _mm_add_epi8(s3_0, _mm_slli_si128::<8>(s3_0));
+                            let s4_1 = _mm_add_epi8(s3_1, _mm_slli_si128::<8>(s3_1));
+                            let out0 = _mm_add_epi8(s4_0, carry);
+                            let last0 = (_mm_extract_epi16::<7>(out0) >> 8) as i8;
+                            let carry0 = _mm_set1_epi8(last0);
+                            let out1 = _mm_add_epi8(s4_1, carry0);
+                            let last1 = (_mm_extract_epi16::<7>(out1) >> 8) as i8;
+                            carry = _mm_set1_epi8(last1);
+                            _mm_storeu_si128(p, out0);
+                            _mm_storeu_si128(p.add(1), out1);
+                            i += 32;
+                        }
+                    }
+                }
+                for j in i.max(1)..n {
+                    data[j] = data[j - 1].wrapping_add(data[j]);
                 }
                 return;
             }
             2 if (ptr as usize).is_multiple_of(std::mem::align_of::<u16>()) => {
                 let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u16, n) };
-                for i in 1..n {
-                    slice[i] = slice[i - 1].wrapping_add(slice[i]);
+                let mut i = 1usize;
+                #[cfg(all(not(kani), target_arch = "aarch64"))]
+                if n >= 16 {
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let zero = vdupq_n_u16(0);
+                        let mut carry = vdupq_n_u16(0);
+                        let p_base = slice.as_mut_ptr();
+                        i = 0;
+                        while i + 16 <= n {
+                            let p = p_base.add(i);
+                            let v0 = vld1q_u16(p);
+                            let v1 = vld1q_u16(p.add(8));
+                            let s1_0 = vaddq_u16(v0, vextq_u16::<7>(zero, v0));
+                            let s1_1 = vaddq_u16(v1, vextq_u16::<7>(zero, v1));
+                            let s2_0 = vaddq_u16(s1_0, vextq_u16::<6>(zero, s1_0));
+                            let s2_1 = vaddq_u16(s1_1, vextq_u16::<6>(zero, s1_1));
+                            let s3_0 = vaddq_u16(s2_0, vextq_u16::<4>(zero, s2_0));
+                            let s3_1 = vaddq_u16(s2_1, vextq_u16::<4>(zero, s2_1));
+                            let out0 = vaddq_u16(s3_0, carry);
+                            let carry0 = vdupq_laneq_u16::<7>(out0);
+                            let out1 = vaddq_u16(s3_1, carry0);
+                            carry = vdupq_laneq_u16::<7>(out1);
+                            vst1q_u16(p, out0);
+                            vst1q_u16(p.add(8), out1);
+                            i += 16;
+                        }
+                    }
+                }
+                #[cfg(all(not(kani), target_arch = "x86_64"))]
+                if n >= 16 {
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        let mut carry = _mm_setzero_si128();
+                        let p_base = slice.as_mut_ptr();
+                        i = 0;
+                        while i + 16 <= n {
+                            let p = p_base.add(i) as *mut __m128i;
+                            let v0 = _mm_loadu_si128(p);
+                            let v1 = _mm_loadu_si128(p.add(1));
+                            let s1_0 = _mm_add_epi16(v0, _mm_slli_si128::<2>(v0));
+                            let s1_1 = _mm_add_epi16(v1, _mm_slli_si128::<2>(v1));
+                            let s2_0 = _mm_add_epi16(s1_0, _mm_slli_si128::<4>(s1_0));
+                            let s2_1 = _mm_add_epi16(s1_1, _mm_slli_si128::<4>(s1_1));
+                            let s3_0 = _mm_add_epi16(s2_0, _mm_slli_si128::<8>(s2_0));
+                            let s3_1 = _mm_add_epi16(s2_1, _mm_slli_si128::<8>(s2_1));
+                            let out0 = _mm_add_epi16(s3_0, carry);
+                            let carry0 =
+                                _mm_shuffle_epi32::<0xFF>(_mm_shufflehi_epi16::<0xFF>(out0));
+                            let out1 = _mm_add_epi16(s3_1, carry0);
+                            carry = _mm_shuffle_epi32::<0xFF>(_mm_shufflehi_epi16::<0xFF>(out1));
+                            _mm_storeu_si128(p, out0);
+                            _mm_storeu_si128(p.add(1), out1);
+                            i += 16;
+                        }
+                    }
+                }
+                for j in i.max(1)..n {
+                    slice[j] = slice[j - 1].wrapping_add(slice[j]);
                 }
                 return;
             }
             4 if (ptr as usize).is_multiple_of(std::mem::align_of::<u32>()) => {
                 let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
-                for i in 1..n {
-                    slice[i] = slice[i - 1].wrapping_add(slice[i]);
+                let mut i = 1usize;
+                #[cfg(all(not(kani), target_arch = "aarch64"))]
+                if n >= 8 {
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let zero = vdupq_n_u32(0);
+                        let mut carry = vdupq_n_u32(0);
+                        let p_base = slice.as_mut_ptr();
+                        i = 0;
+                        while i + 8 <= n {
+                            let p = p_base.add(i);
+                            let v0 = vld1q_u32(p);
+                            let v1 = vld1q_u32(p.add(4));
+                            let s1_0 = vaddq_u32(v0, vextq_u32::<3>(zero, v0));
+                            let s1_1 = vaddq_u32(v1, vextq_u32::<3>(zero, v1));
+                            let s2_0 = vaddq_u32(s1_0, vextq_u32::<2>(zero, s1_0));
+                            let s2_1 = vaddq_u32(s1_1, vextq_u32::<2>(zero, s1_1));
+                            let out0 = vaddq_u32(s2_0, carry);
+                            let carry0 = vdupq_laneq_u32::<3>(out0);
+                            let out1 = vaddq_u32(s2_1, carry0);
+                            carry = vdupq_laneq_u32::<3>(out1);
+                            vst1q_u32(p, out0);
+                            vst1q_u32(p.add(4), out1);
+                            i += 8;
+                        }
+                    }
+                }
+                #[cfg(all(not(kani), target_arch = "x86_64"))]
+                if n >= 8 {
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        let mut carry = _mm_setzero_si128();
+                        let p_base = slice.as_mut_ptr();
+                        i = 0;
+                        while i + 8 <= n {
+                            let p = p_base.add(i) as *mut __m128i;
+                            let v0 = _mm_loadu_si128(p);
+                            let v1 = _mm_loadu_si128(p.add(1));
+                            let s1_0 = _mm_add_epi32(v0, _mm_slli_si128::<4>(v0));
+                            let s1_1 = _mm_add_epi32(v1, _mm_slli_si128::<4>(v1));
+                            let s2_0 = _mm_add_epi32(s1_0, _mm_slli_si128::<8>(s1_0));
+                            let s2_1 = _mm_add_epi32(s1_1, _mm_slli_si128::<8>(s1_1));
+                            let out0 = _mm_add_epi32(s2_0, carry);
+                            let carry0 = _mm_shuffle_epi32::<0xFF>(out0);
+                            let out1 = _mm_add_epi32(s2_1, carry0);
+                            carry = _mm_shuffle_epi32::<0xFF>(out1);
+                            _mm_storeu_si128(p, out0);
+                            _mm_storeu_si128(p.add(1), out1);
+                            i += 8;
+                        }
+                    }
+                }
+                for j in i.max(1)..n {
+                    slice[j] = slice[j - 1].wrapping_add(slice[j]);
                 }
                 return;
             }
@@ -499,39 +682,42 @@ pub fn transpose_8x8_u64(mut x: u64) -> u64 {
     x
 }
 
+/// In-place 8x8 bit-block transposition over a byte slice.
+///
+/// Transposes each 8-byte word via [`transpose_8x8_u64`], unrolled 2x (16 bytes)
+/// to maximize instruction-level parallelism across superscalar ALU pipes.
+/// Trailing `< 8` bytes are left unchanged.
+#[inline]
+pub fn transpose_bit_blocks_inplace(data: &mut [u8]) {
+    let n_blocks = data.len() / 8;
+    if n_blocks == 0 {
+        return;
+    }
+    let (chunks_16, rem_16) = data[..n_blocks * 8].as_chunks_mut::<16>();
+    for chunk in chunks_16 {
+        let w0 = u64::from_le_bytes(chunk[0..8].try_into().unwrap());
+        let w1 = u64::from_le_bytes(chunk[8..16].try_into().unwrap());
+        let t0 = transpose_8x8_u64(w0);
+        let t1 = transpose_8x8_u64(w1);
+        chunk[0..8].copy_from_slice(&t0.to_le_bytes());
+        chunk[8..16].copy_from_slice(&t1.to_le_bytes());
+    }
+    if rem_16.len() == 8 {
+        let w = u64::from_le_bytes(rem_16.try_into().unwrap());
+        let t = transpose_8x8_u64(w);
+        rem_16.copy_from_slice(&t.to_le_bytes());
+    }
+}
+
 /// Bit-level matrix transposition (BitShuffle)
 pub fn bitshuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
     if data.is_empty() || typesize == 0 {
         return data.to_vec();
     }
-    // Step 1: Byte-level shuffle
-    let byte_shuffled = shuffle_encode(data, typesize);
-    let mut out = vec![0u8; data.len()];
-    let n_bytes = data.len();
-    let n_blocks = n_bytes / 8;
-
-    // Step 2: Transpose 8x8 bit blocks using 64-bit word delta swap
-    // Unroll 2x (16 bytes) to maximize instruction-level parallelism across superscalar ALU pipes
-    let (in_chunks_16, rem_src_16) = byte_shuffled[..n_blocks * 8].as_chunks::<16>();
-    let (out_chunks_16, rem_dst_16) = out[..n_blocks * 8].as_chunks_mut::<16>();
-    for (src, dst) in in_chunks_16.iter().zip(out_chunks_16.iter_mut()) {
-        let w0 = u64::from_le_bytes(src[0..8].try_into().unwrap());
-        let w1 = u64::from_le_bytes(src[8..16].try_into().unwrap());
-        let t0 = transpose_8x8_u64(w0);
-        let t1 = transpose_8x8_u64(w1);
-        dst[0..8].copy_from_slice(&t0.to_le_bytes());
-        dst[8..16].copy_from_slice(&t1.to_le_bytes());
-    }
-    if rem_src_16.len() == 8 {
-        let w = u64::from_le_bytes(rem_src_16.try_into().unwrap());
-        let t = transpose_8x8_u64(w);
-        rem_dst_16.copy_from_slice(&t.to_le_bytes());
-    }
-
-    let rem_start = n_blocks * 8;
-    if rem_start < n_bytes {
-        out[rem_start..].copy_from_slice(&byte_shuffled[rem_start..]);
-    }
+    // Step 1: Byte-level shuffle (single allocation)
+    let mut out = shuffle_encode(data, typesize);
+    // Step 2: In-place 8x8 bit-block transposition (zero extra allocation)
+    transpose_bit_blocks_inplace(&mut out);
     out
 }
 
@@ -540,12 +726,16 @@ pub fn bitshuffle_decode(data: &[u8], typesize: usize) -> Vec<u8> {
     if data.is_empty() || typesize == 0 {
         return data.to_vec();
     }
+    if typesize == 1 {
+        let mut out = data.to_vec();
+        transpose_bit_blocks_inplace(&mut out);
+        return out;
+    }
     let mut unbit = vec![0u8; data.len()];
     let n_bytes = data.len();
     let n_blocks = n_bytes / 8;
 
     // Transpose 8x8 bit blocks (symmetric operation) using 64-bit word delta swap
-    // Unroll 2x (16 bytes) to maximize instruction-level parallelism across superscalar ALU pipes
     let (in_chunks_16, rem_src_16) = data[..n_blocks * 8].as_chunks::<16>();
     let (out_chunks_16, rem_dst_16) = unbit[..n_blocks * 8].as_chunks_mut::<16>();
     for (src, dst) in in_chunks_16.iter().zip(out_chunks_16.iter_mut()) {

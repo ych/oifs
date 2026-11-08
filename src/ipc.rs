@@ -13,7 +13,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -743,17 +743,26 @@ fn read_token_file_once(token_path: &Path) -> Option<[u8; AUTH_SECRET_LEN]> {
 }
 
 /// Writes the session secret of a local (UDS) master with owner-only access.
+///
+/// SEC-30: written to a temporary file and atomically renamed into place so a
+/// concurrent client can never observe a truncated or partially written token.
 fn write_token_file(token_path: &Path, secret: &[u8; AUTH_SECRET_LEN]) -> io::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt;
-    let _ = fs::remove_file(token_path);
+    let tmp_path = token_path.with_extension(format!("tok.tmp.{}", std::process::id()));
+    let _ = fs::remove_file(&tmp_path);
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(token_path)?;
+        .open(&tmp_path)?;
     file.write_all(secret)?;
     file.flush()?;
+    restrict_permissions(&tmp_path, 0o600);
+    if let Err(e) = fs::rename(&tmp_path, token_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
     restrict_permissions(token_path, 0o600);
     Ok(())
 }
@@ -956,12 +965,17 @@ pub struct IpcServer {
     server_thread: Option<JoinHandle<()>>,
 }
 
+/// Maximum number of buffered `SessionEvent`s held by a Master session (SEC-30).
+///
+/// Bounds memory growth when a Direct session never calls `take_event_receiver()`.
+pub const MAX_PENDING_SESSION_EVENTS: usize = 1024;
+
 impl IpcServer {
     /// Starts the background IPC server supporting both Unix and TCP listeners
     pub fn start(
         listener: IpcListener,
         dm: Arc<DiskManager>,
-        event_tx: Option<Sender<SessionEvent>>,
+        event_tx: Option<SyncSender<SessionEvent>>,
     ) -> Self {
         let shutdown_signal = Arc::new(AtomicBool::new(false));
         let peer_counter = Arc::new(AtomicUsize::new(0));
@@ -1070,7 +1084,7 @@ impl IpcServer {
     fn spawn_client_worker(
         mut stream: IpcStream,
         dm: &Arc<DiskManager>,
-        event_tx: &Option<Sender<SessionEvent>>,
+        event_tx: &Option<SyncSender<SessionEvent>>,
         peer_counter: &Arc<AtomicUsize>,
         active_peers: &Arc<AtomicUsize>,
         client_threads: &mut Vec<JoinHandle<()>>,
@@ -1088,7 +1102,7 @@ impl IpcServer {
         active_peers.fetch_add(1, Ordering::SeqCst);
 
         if let Some(tx) = event_tx {
-            let _ = tx.send(SessionEvent::PeerConnected { peer_id });
+            let _ = tx.try_send(SessionEvent::PeerConnected { peer_id });
         }
 
         let dm_worker = dm.clone();
@@ -1197,7 +1211,7 @@ impl IpcServer {
                 }
 
                 if let Some(tx) = &tx_worker {
-                    let _ = tx.send(SessionEvent::RequestHandled {
+                    let _ = tx.try_send(SessionEvent::RequestHandled {
                         peer_id,
                         req_type: short_name.to_string(),
                     });
@@ -1206,7 +1220,7 @@ impl IpcServer {
 
             active_peers_worker.fetch_sub(1, Ordering::SeqCst);
             if let Some(tx) = &tx_worker {
-                let _ = tx.send(SessionEvent::PeerDisconnected { peer_id });
+                let _ = tx.try_send(SessionEvent::PeerDisconnected { peer_id });
             }
         });
 

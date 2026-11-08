@@ -277,6 +277,108 @@ pub fn find_insert_offset_in_block(slice: &[u8]) -> usize {
     offset
 }
 
+/// Removes all entries matching `(target_name, target_hash)` from a directory block in place
+/// with **zero heap allocations** (P4.30), compacting remaining entries forward and zeroing
+/// the trailing tail identically to a full block rewrite.
+///
+/// Returns `Some(inode_id)` of the first matched entry, or `None` if not present.
+#[inline]
+pub fn remove_entry_in_block_bytes(
+    slice: &mut [u8],
+    target_name: &str,
+    target_hash: u64,
+) -> Option<u64> {
+    let target_bytes = target_name.as_bytes();
+    let mut read_pos = 0usize;
+    let mut write_pos = 0usize;
+    let mut matched_inode = None;
+
+    while read_pos + 18 <= slice.len() {
+        let len = u16::from_le_bytes([slice[read_pos + 16], slice[read_pos + 17]]) as usize;
+        if len == 0 {
+            break;
+        }
+        let name_start = read_pos + 18;
+        let name_end = name_start + len;
+        if name_end > slice.len() {
+            break;
+        }
+        let entry_hash = u64::from_le_bytes(slice[read_pos + 8..read_pos + 16].try_into().unwrap());
+        let is_match = (entry_hash == 0 || target_hash == 0 || entry_hash == target_hash)
+            && len == target_bytes.len()
+            && &slice[name_start..name_end] == target_bytes;
+
+        if is_match {
+            if matched_inode.is_none() {
+                let inode = u64::from_le_bytes(slice[read_pos..read_pos + 8].try_into().unwrap());
+                matched_inode = Some(inode);
+            }
+        } else {
+            let entry_len = name_end - read_pos;
+            if write_pos != read_pos {
+                slice.copy_within(read_pos..name_end, write_pos);
+            }
+            write_pos += entry_len;
+        }
+        read_pos = name_end;
+    }
+
+    if matched_inode.is_some() {
+        slice[write_pos..].fill(0);
+    }
+    matched_inode
+}
+
+/// Zero-allocation check for whether a directory block contains at least one valid entry.
+#[inline]
+pub fn has_valid_entry_in_block(slice: &[u8]) -> bool {
+    let mut offset = 0usize;
+    while offset + 18 <= slice.len() {
+        let len = u16::from_le_bytes([slice[offset + 16], slice[offset + 17]]) as usize;
+        if len == 0 {
+            return false;
+        }
+        let name_start = offset + 18;
+        let name_end = name_start + len;
+        if name_end > slice.len() || len > DirectoryEntry::MAX_FILENAME_LEN {
+            return false;
+        }
+        if let Ok(name) = std::str::from_utf8(&slice[name_start..name_end])
+            && validate_filename(name).is_ok()
+        {
+            return true;
+        }
+        offset = name_end;
+    }
+    false
+}
+
+/// Zero-allocation visitor over valid entry inode IDs in a directory block (P4.27 `fsck`).
+#[inline]
+pub fn for_each_valid_inode_in_block(slice: &[u8], mut f: impl FnMut(u64)) {
+    let mut offset = 0usize;
+    while offset + 18 <= slice.len() {
+        let len = u16::from_le_bytes([slice[offset + 16], slice[offset + 17]]) as usize;
+        if len == 0 {
+            break;
+        }
+        let name_start = offset + 18;
+        let name_end = name_start + len;
+        if name_end > slice.len() || len > DirectoryEntry::MAX_FILENAME_LEN {
+            break;
+        }
+        if let Ok(name) = std::str::from_utf8(&slice[name_start..name_end])
+            && validate_filename(name).is_ok()
+        {
+            let inode = u64::from_le_bytes(slice[offset..offset + 8].try_into().unwrap());
+            f(inode);
+        } else {
+            break;
+        }
+        offset = name_end;
+    }
+}
+
 /// Maximum physical blocks an individual directory can span.
 /// 65,536 blocks * 4KB = 256 MB directory table (supports millions of files).
 pub const MAX_DIR_BLOCKS: usize = 65536;

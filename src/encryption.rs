@@ -3,7 +3,7 @@ use argon2::{Argon2, PasswordHasher};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use blake2::{Blake2b512, Digest};
 use chacha20poly1305::{
-    ChaCha20Poly1305, Nonce, XChaCha20Poly1305, XNonce,
+    ChaCha20Poly1305, Nonce, Tag, XChaCha20Poly1305, XNonce,
     aead::{Aead, AeadInPlace, KeyInit, OsRng, Payload},
 };
 use std::fmt;
@@ -133,6 +133,68 @@ pub fn decrypt_data(
         .map_err(|_| EncryptionError::DecryptionFailed)
 }
 
+/// Encrypt data in-place using XChaCha20-Poly1305 AEAD cipher (P4.21),
+/// appending the 16-byte authentication tag directly to `buffer` without
+/// allocating a second full-payload buffer.
+pub fn encrypt_data_in_place(
+    buffer: &mut Vec<u8>,
+    key: &EncryptionKey,
+    nonce: &[u8; 24],
+    aad: &[u8],
+) -> Result<(), EncryptionError> {
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
+        .map_err(|_| EncryptionError::InvalidKey)?;
+    let xnonce = XNonce::from_slice(nonce);
+    cipher
+        .encrypt_in_place(xnonce, aad, buffer)
+        .map_err(|_| EncryptionError::EncryptionFailed)
+}
+
+/// Encrypt `plaintext` into a single `[24-byte nonce | ciphertext | 16-byte tag]`
+/// allocation (P4.17), avoiding an intermediate ciphertext `Vec` copy.
+pub fn encrypt_with_nonce_prefix(
+    plaintext: &[u8],
+    key: &EncryptionKey,
+    nonce: &[u8; 24],
+    aad: &[u8],
+) -> Result<Vec<u8>, EncryptionError> {
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
+        .map_err(|_| EncryptionError::InvalidKey)?;
+    let xnonce = XNonce::from_slice(nonce);
+
+    let mut out = Vec::with_capacity(24 + plaintext.len() + 16);
+    out.extend_from_slice(nonce);
+    out.extend_from_slice(plaintext);
+    let tag = cipher
+        .encrypt_in_place_detached(xnonce, aad, &mut out[24..])
+        .map_err(|_| EncryptionError::EncryptionFailed)?;
+    out.extend_from_slice(tag.as_slice());
+    Ok(out)
+}
+
+/// Decrypt `ciphertext_with_tag` into a caller-provided slice `dst` (which must
+/// have length `ciphertext_with_tag.len() - 16`) without heap allocations (P4.17).
+pub fn decrypt_into_slice(
+    ciphertext_with_tag: &[u8],
+    dst: &mut [u8],
+    key: &EncryptionKey,
+    nonce: &[u8; 24],
+    aad: &[u8],
+) -> Result<(), EncryptionError> {
+    if ciphertext_with_tag.len() < 16 || dst.len() != ciphertext_with_tag.len() - 16 {
+        return Err(EncryptionError::DecryptionFailed);
+    }
+    let ct_len = dst.len();
+    dst.copy_from_slice(&ciphertext_with_tag[..ct_len]);
+    let tag = Tag::from_slice(&ciphertext_with_tag[ct_len..]);
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
+        .map_err(|_| EncryptionError::InvalidKey)?;
+    let xnonce = XNonce::from_slice(nonce);
+    cipher
+        .decrypt_in_place_detached(xnonce, aad, dst, tag)
+        .map_err(|_| EncryptionError::DecryptionFailed)
+}
+
 /// Decrypt data in-place using XChaCha20-Poly1305 AEAD cipher, avoiding
 /// a second full-payload heap allocation.
 pub fn decrypt_data_in_place(
@@ -189,6 +251,28 @@ const AAD_KIND_FILE: u8 = 0x01;
 /// The context kind of a seekable chunk ciphertext.
 const AAD_KIND_CHUNK: u8 = 0x02;
 
+/// Stack-allocated associated data for a whole-file ciphertext (zero heap allocations).
+#[inline]
+pub fn file_aad_stack(inode_id: u64) -> [u8; 20] {
+    let mut aad = [0u8; 20];
+    aad[0] = AAD_KIND_FILE;
+    aad[1..12].copy_from_slice(AAD_DOMAIN);
+    aad[12..20].copy_from_slice(&inode_id.to_le_bytes());
+    aad
+}
+
+/// Stack-allocated associated data for a seekable chunk ciphertext (zero heap allocations).
+#[inline]
+pub fn chunk_aad_stack(inode_id: u64, chunk_idx: u64, flags: u8) -> [u8; 29] {
+    let mut aad = [0u8; 29];
+    aad[0] = AAD_KIND_CHUNK;
+    aad[1..12].copy_from_slice(AAD_DOMAIN);
+    aad[12..20].copy_from_slice(&inode_id.to_le_bytes());
+    aad[20..28].copy_from_slice(&chunk_idx.to_le_bytes());
+    aad[28] = flags;
+    aad
+}
+
 /// Builds the associated data that binds a whole-file ciphertext to its inode.
 ///
 /// Without it, every file of an image shares the same master key and nothing
@@ -196,22 +280,39 @@ const AAD_KIND_CHUNK: u8 = 0x02;
 /// image could swap two ciphertexts (or roll one back) without the AEAD
 /// noticing (SEC-19).
 pub fn file_aad(inode_id: u64) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(1 + AAD_DOMAIN.len() + 8);
-    aad.push(AAD_KIND_FILE);
-    aad.extend_from_slice(AAD_DOMAIN);
-    aad.extend_from_slice(&inode_id.to_le_bytes());
-    aad
+    file_aad_stack(inode_id).to_vec()
 }
 
 /// Builds the associated data that binds a chunk ciphertext to its chunk.
 pub fn chunk_aad(inode_id: u64, chunk_idx: u64, flags: u8) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(1 + AAD_DOMAIN.len() + 8 + 8 + 1);
-    aad.push(AAD_KIND_CHUNK);
-    aad.extend_from_slice(AAD_DOMAIN);
-    aad.extend_from_slice(&inode_id.to_le_bytes());
-    aad.extend_from_slice(&chunk_idx.to_le_bytes());
-    aad.push(flags);
-    aad
+    chunk_aad_stack(inode_id, chunk_idx, flags).to_vec()
+}
+
+/// Returns the associated data of a whole-file ciphertext for the given scheme on the stack
+/// with zero heap allocations (`(buf, len)` -> `&buf[..len]`).
+#[inline]
+pub fn file_aad_for_scheme_stack(inode_id: u64, scheme: u8) -> ([u8; 20], usize) {
+    if scheme >= ENCRYPTION_SCHEME_CONTEXT_BOUND {
+        (file_aad_stack(inode_id), 20)
+    } else {
+        ([0u8; 20], 0)
+    }
+}
+
+/// Returns the associated data of a chunk ciphertext for the given scheme on the stack
+/// with zero heap allocations (`(buf, len)` -> `&buf[..len]`).
+#[inline]
+pub fn chunk_aad_for_scheme_stack(
+    inode_id: u64,
+    chunk_idx: u64,
+    flags: u8,
+    scheme: u8,
+) -> ([u8; 29], usize) {
+    if scheme >= ENCRYPTION_SCHEME_CONTEXT_BOUND {
+        (chunk_aad_stack(inode_id, chunk_idx, flags), 29)
+    } else {
+        ([0u8; 29], 0)
+    }
 }
 
 /// Returns the associated data of a whole-file ciphertext for the given scheme.
@@ -265,8 +366,33 @@ pub fn encrypt_filename(
     let cipher = ChaCha20Poly1305::new_from_slice(key.as_bytes())
         .map_err(|_| EncryptionError::InvalidKey)?;
 
+    let name_bytes = name.as_bytes();
+    if name_bytes.len() <= 255 {
+        // Fast stack-allocated path (P4.29): 1 heap String allocation instead of 4.
+        let total_raw = 12 + name_bytes.len() + 16;
+        let mut raw = [0u8; 12 + 255 + 16];
+        raw[..12].copy_from_slice(&nonce);
+        raw[12..12 + name_bytes.len()].copy_from_slice(name_bytes);
+        let tag = cipher
+            .encrypt_in_place_detached(
+                Nonce::from_slice(&nonce),
+                b"",
+                &mut raw[12..12 + name_bytes.len()],
+            )
+            .map_err(|_| EncryptionError::EncryptionFailed)?;
+        raw[12 + name_bytes.len()..total_raw].copy_from_slice(tag.as_slice());
+
+        let b64_len = Base64UrlUnpadded::encoded_len(&raw[..total_raw]);
+        let mut out = vec![0u8; FILENAME_ENC_PREFIX.len() + b64_len];
+        out[..FILENAME_ENC_PREFIX.len()].copy_from_slice(FILENAME_ENC_PREFIX.as_bytes());
+        Base64UrlUnpadded::encode(&raw[..total_raw], &mut out[FILENAME_ENC_PREFIX.len()..])
+            .map_err(|_| EncryptionError::EncryptionFailed)?;
+        // Base64UrlUnpadded output and "_e_" prefix are guaranteed ASCII.
+        return Ok(String::from_utf8(out).unwrap());
+    }
+
     let ciphertext_with_tag = cipher
-        .encrypt(Nonce::from_slice(&nonce), name.as_bytes())
+        .encrypt(Nonce::from_slice(&nonce), name_bytes)
         .map_err(|_| EncryptionError::EncryptionFailed)?;
 
     let mut payload = Vec::with_capacity(12 + ciphertext_with_tag.len());
@@ -291,6 +417,44 @@ pub fn decrypt_filename(
     }
 
     let b64 = &name[FILENAME_ENC_PREFIX.len()..];
+    if b64.len() <= 400 {
+        let mut decode_buf = [0u8; 320];
+        let payload = match Base64UrlUnpadded::decode(b64, &mut decode_buf) {
+            Ok(p) if p.len() >= 28 => p,
+            _ => return Ok(name.to_string()),
+        };
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&payload[..12]);
+        let pt_len = payload.len() - 28;
+        let mut pt_bytes = Vec::with_capacity(pt_len);
+        pt_bytes.extend_from_slice(&payload[12..12 + pt_len]);
+        let tag = Tag::from_slice(&payload[12 + pt_len..]);
+
+        let cipher = ChaCha20Poly1305::new_from_slice(key.as_bytes())
+            .map_err(|_| EncryptionError::InvalidKey)?;
+        if cipher
+            .decrypt_in_place_detached(Nonce::from_slice(&nonce), b"", &mut pt_bytes, tag)
+            .is_err()
+        {
+            return Ok(name.to_string());
+        }
+        let Ok(plaintext) = String::from_utf8(pt_bytes) else {
+            return Ok(name.to_string());
+        };
+
+        let mut hasher = Blake2b512::new();
+        hasher.update(b"OIFS_SIV_FILENAME_V1");
+        hasher.update(key.as_bytes());
+        hasher.update(parent_inode.to_le_bytes());
+        hasher.update(plaintext.as_bytes());
+        let hash = hasher.finalize();
+
+        if hash[..12] != nonce {
+            return Ok(name.to_string());
+        }
+        return Ok(plaintext);
+    }
+
     let payload = match Base64UrlUnpadded::decode_vec(b64) {
         Ok(p) => p,
         Err(_) => return Ok(name.to_string()),

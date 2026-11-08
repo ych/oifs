@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use thiserror::Error;
 
@@ -571,7 +571,10 @@ impl OifsSession {
                 };
 
                 let dm_arc = Arc::new(dm);
-                let (tx, rx) = channel();
+                // SEC-30: bound the event queue so a Master session whose caller
+                // never drains `take_event_receiver()` does not accumulate events
+                // without bound.
+                let (tx, rx) = sync_channel(crate::ipc::MAX_PENDING_SESSION_EVENTS);
                 let server = IpcServer::start(listener, dm_arc.clone(), Some(tx));
 
                 Ok(OifsSession::Direct {

@@ -232,3 +232,38 @@ fn test_non_loopback_bind_requires_an_explicit_opt_in() {
         "the error should mention the opt-in flag: {stderr}"
     );
 }
+
+#[test]
+fn test_sec30_session_event_channel_is_bounded() {
+    let img = TestImage::new("test_sec30_bounded_events");
+    let master = OifsSession::open_ipc(&img.path, 10 * 1024 * 1024).expect("open ipc master");
+    let client = OifsSession::open_ipc(&img.path, 0).expect("open ipc client");
+    assert!(!client.is_direct());
+
+    let root = client.resolve_path(".").unwrap();
+    let fid = client.create_file(root, "event_storm.bin").unwrap();
+    client
+        .write_data(fid, 0, b"payload", oifs::disk::CompressionMode::Never)
+        .unwrap();
+
+    // Generate more events than MAX_PENDING_SESSION_EVENTS without draining the receiver.
+    let total_ops = oifs::ipc::MAX_PENDING_SESSION_EVENTS + 200;
+    for _ in 0..total_ops {
+        let _ = client.read_data(fid).unwrap();
+    }
+
+    // Drain the receiver and verify that at most MAX_PENDING_SESSION_EVENTS were buffered.
+    let rx = master
+        .take_event_receiver()
+        .expect("master must have an event receiver");
+    let mut buffered = 0usize;
+    while rx.try_recv().is_ok() {
+        buffered += 1;
+    }
+    assert_eq!(
+        buffered,
+        oifs::ipc::MAX_PENDING_SESSION_EVENTS,
+        "event queue must cap at MAX_PENDING_SESSION_EVENTS ({})",
+        oifs::ipc::MAX_PENDING_SESSION_EVENTS
+    );
+}

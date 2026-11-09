@@ -71,6 +71,9 @@ required-features = ["mcp"]
 [dev-dependencies]
 tempfile = "3.8"
 shuttle = "0.9"
+# Property testing / fuzzing: runs under plain `cargo test`, and under
+# `cargo bolero test <name>` (libfuzzer/AFL/honggfuzz/Kani) for continuous fuzzing.
+bolero = "0.13"
 
 [profile.release]
 opt-level = 3

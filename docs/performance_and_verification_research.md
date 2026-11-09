@@ -810,6 +810,8 @@ xcrun llvm-cov report \
 ```
 
 ### 5.3 Unified Property Testing & Fuzzing via Bolero
+> **Implemented**: `bolero = "0.13"` is a dev-dependency and [`tests/bolero_fuzz_test.rs`](../tests/bolero_fuzz_test.rs) holds 15 harnesses (BlockPath, ChunkEntry, SuperBlock, inode_format, directory, bitmap, filters, IPC framing, CRC32C, journal decode/coalesce/recover). They run under `cargo test`; for continuous fuzzing use `cargo bolero test --test bolero_fuzz_test <name>`.
+
 Add `bolero = "0.10"` to `[dev-dependencies]`. A single property test can be verified by both Kani and `cargo-fuzz`:
 ```rust
 #[test]

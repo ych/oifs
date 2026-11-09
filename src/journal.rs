@@ -1537,6 +1537,20 @@ pub const DEFAULT_BLOCK_SIZE: usize = crate::BLOCK_SIZE;
 mod kani_proofs {
     use super::*;
 
+    /// Prove that spans of opposite polarity are never merged.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn proof_push_data_bitmap_op_polarity_never_merges() {
+        let start: u64 = kani::any();
+        let allocated: bool = kani::any();
+        kani::assume(start < 256);
+
+        let mut ops = Vec::new();
+        push_data_bitmap_op(&mut ops, start, 1, allocated);
+        push_data_bitmap_op(&mut ops, start + 1, 1, !allocated);
+        assert_eq!(ops.len(), 2);
+    }
+
     /// Prove the ring cursor advance can never leave the ring.
     ///
     /// Every frame is placed with `(cursor + len) % ring`, so a wrap must be

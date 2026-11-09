@@ -441,6 +441,42 @@ mod kani_proofs {
         assert_eq!(entry.flags(), flags);
         assert_eq!(entry.compressed_len(), compressed_len);
     }
+
+    /// Prove that the chunk state predicates are mutually exclusive, that
+    /// `is_empty` agrees with the all-zero / `FLAG_EMPTY` definition, and that
+    /// an all-zero word decodes to an empty chunk.
+    #[kani::proof]
+    fn proof_chunk_entry_state_predicates() {
+        let raw: u64 = kani::any();
+        let e = ChunkEntry(raw);
+
+        let n = u8::from(e.is_empty()) + u8::from(e.is_compressed()) + u8::from(e.is_raw());
+        assert!(n <= 1, "at most one state predicate holds");
+        assert_eq!(
+            e.is_empty(),
+            raw == 0 || e.flags() == ChunkEntry::FLAG_EMPTY
+        );
+        if e.flags() > ChunkEntry::FLAG_RAW {
+            assert_eq!(n, 0, "unknown flag values match no state");
+        }
+        assert!(ChunkEntry(0).is_empty());
+        assert!(ChunkEntry::EMPTY.is_empty());
+    }
+
+    /// Prove the fields are bit-isolated: changing one field leaves the
+    /// other three untouched.
+    #[kani::proof]
+    fn proof_chunk_entry_field_isolation() {
+        let (sb, bc, fl, cl): (u32, u8, u8, u16) =
+            (kani::any(), kani::any(), kani::any(), kani::any());
+        let new_fl: u8 = kani::any();
+        let a = ChunkEntry::new(sb, bc, fl, cl);
+        let b = ChunkEntry::new(sb, bc, new_fl, cl);
+        assert_eq!(a.start_block(), b.start_block());
+        assert_eq!(a.block_count(), b.block_count());
+        assert_eq!(a.compressed_len(), b.compressed_len());
+        assert_eq!(a == b, fl == new_fl);
+    }
 }
 
 #[cfg(test)]

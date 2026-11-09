@@ -32,7 +32,7 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **Pre-compression Filters**: Integrated Blosc2 filters (Delta, Byte Shuffle, BitShuffle with Hacker's Delight 8x8 transposition, TruncPrecision) followed by Zstandard.
 - **Encryption**: XChaCha20-Poly1305 with Argon2id KDF and parent-inode tweaked deterministic SIV filename encryption (`_e_...`).
 - **FFI Dynamic Library Handshake**: 3-state runtime version & path verification (`oifs_check_version`, `oifs_loaded_path`): 0=OK, 1=WARN (newer), -1=ERR (older).
-- **Formal Verification**: 77 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, and bounds safety.
+- **Formal Verification**: 80 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, chunk entry bit-isolation/state predicates, and bounds safety.
 - **On-Disk Format v2**: Fixed 256-byte inode records with explicit little-endian fields, a 1-byte file-type tag, and zeroed reserved space. Deterministic, reproducible, leak-free. Legacy v1 images stay fully readable and writable; `oifs migrate` upgrades them in place.
 - **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file`/`write_data` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Payload data is *not* journaled — it is flushed before the metadata commit (ordered mode), so WAL traffic stays proportional to metadata, not file size. Recovery runs automatically at mount, so a power loss no longer requires a full-image `fsck`.
 - **Durability governs the journal too**: only `DurabilityMode::Strict` pays the per-transaction `msync` barriers (WAL + payload); the process-crash-safe modes rely on the page cache and sync at `flush()`/`Drop`, with the WAL always written before the image.
@@ -99,7 +99,7 @@ An inode stores:
 | `src/ffi.rs` | C-compatible dynamic library bindings (`include/oifs.h`). |
 | `src/bin/oifs.rs` | CLI application entry point (`clap`-based). |
 | `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling. |
-| `tests/` | 61 integration test files (461 tests): stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, inode-bounds, defrag-seekable, zeroed-block, zstd-pool, encrypted-context-binding, large-image-bitmap, and CLI suites. |
+| `tests/` | 63 integration test files (491 tests): Bolero property/fuzz suites, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, inode-bounds, defrag-seekable, zeroed-block, zstd-pool, encrypted-context-binding, large-image-bitmap, and CLI suites. |
 | `docs/optimization_roadmap.md` | Detailed changelog and benchmarks for P0, P1, P2, and P3 optimizations. |
 | `docs/metadata_wal_design.md` | Metadata WAL specification and implementation status (M1–M5 complete). |
 | `docs/performance_and_verification_research.md` | In-depth audit of performance bottlenecks, safety vulnerabilities, and Kani blueprints. |
@@ -142,7 +142,7 @@ An inode stores:
 cargo build
 cargo build --release
 
-# 2. Run all standard unit and integration tests (61 test files, 461 tests)
+# 2. Run all standard unit and integration tests (68 test suites, 491 tests)
 cargo test --release
 
 # 3. Run multi-block directory performance benchmark
@@ -157,10 +157,13 @@ cargo test --release --test auto_defrag_test
 # 3d. Run the IPC framing / transport security tests
 cargo test --release --test ipc_frame_test --test ipc_security_test
 
+# 3e. Run Bolero property & fuzz test suite
+cargo test --release --test bolero_fuzz_test
+
 # 4. Run Shuttle randomized concurrency permutation tests
 cargo test --test shuttle_concurrency_test
 
-# 5. Run Kani formal verification proofs (all 77 proofs)
+# 5. Run Kani formal verification proofs (all 80 proofs)
 cargo kani
 
 # 5b. Run the Kani proofs in parallel (one CBMC process per harness).

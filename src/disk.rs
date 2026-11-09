@@ -391,6 +391,10 @@ pub(crate) struct DiskManagerInner {
     pub decoded_blob_cache: Mutex<DecodedBlobCache>,
     /// Durability policy governing mmap msync behavior on mutations (P3.3)
     pub durability_mode: std::sync::atomic::AtomicU8,
+    /// Batched dirty-range accumulator for `DurabilityMode::RangeAsync` (P4.33)
+    pub(crate) pending_async_ranges: Mutex<PendingAsyncRanges>,
+    /// Fast atomic flag set when `pending_async_ranges` reaches its drain threshold (P4.33)
+    pub(crate) async_drain_ready: Arc<std::sync::atomic::AtomicBool>,
     /// Payload-block read engine (P3.2)
     io_engine: IoEngine,
 }
@@ -588,21 +592,105 @@ impl DiskManagerInner {
         coalesced
     }
 
+    /// Number of `RangeAsync` mutations buffered before an asynchronous `msync(MS_ASYNC)` batch drain (P4.33).
+    pub const RANGE_ASYNC_BATCH_OPS: usize = 64;
+    /// Dirty byte span buffered before an asynchronous `msync(MS_ASYNC)` batch drain (P4.33).
+    pub const RANGE_ASYNC_BATCH_BYTES: usize = 4 * 1024 * 1024;
+    /// Safety cap that forces an inline drain if internal callers bypass public `DiskManager` wrappers.
+    const RANGE_ASYNC_FALLBACK_INLINE_OPS: usize = 256;
+
+    pub(crate) fn flush_async_batch(&self, batch: &[(usize, usize)]) {
+        if batch.is_empty() {
+            return;
+        }
+        // Preserve WAL-before-metadata writeback ordering when draining a RangeAsync batch.
+        if self.superblock.has_journal_layout() {
+            let bs = self.superblock.block_size as u64;
+            if let Some(start) = DiskManager::journal_region_start(&self.superblock) {
+                let len =
+                    DiskManager::journal_region_len(bs).min(self.mmap.len().saturating_sub(start));
+                if len > 0 {
+                    let _ = self.mmap.flush_async_range(start, len);
+                }
+            }
+        }
+        let coalesced = Self::coalesce_ranges_with_gap(
+            batch,
+            self.mmap.len(),
+            Self::RANGE_ASYNC_GAP_BRIDGE_BYTES,
+        );
+        for (offset, actual_len) in coalesced {
+            let _ = self.mmap.flush_async_range(offset, actual_len);
+        }
+    }
+
     /// Syncs one or more modified byte ranges according to the current `DurabilityMode`.
     ///
-    /// Ranges are automatically coalesced across page boundaries (`BLOCK_SIZE = 4096`)
-    /// to eliminate redundant system calls under `RangeAsync` and `Strict` modes.
+    /// Under `RangeAsync` (P4.33), dirty ranges are accumulated in `pending_async_ranges`
+    /// and drained in coalesced batches outside `inner.write()`, eliminating per-op
+    /// `msync(MS_ASYNC)` syscall overhead while holding the exclusive write lock.
     pub fn sync_mutation_ranges(&self, ranges: &[(usize, usize)]) -> Result<(), DiskManagerError> {
         match self.durability_mode() {
             DurabilityMode::Lazy => Ok(()),
             DurabilityMode::RangeAsync => {
-                let coalesced = Self::coalesce_ranges_with_gap(
-                    ranges,
-                    self.mmap.len(),
-                    Self::RANGE_ASYNC_GAP_BRIDGE_BYTES,
-                );
-                for (offset, actual_len) in coalesced {
-                    let _ = self.mmap.flush_async_range(offset, actual_len);
+                if ranges.is_empty() {
+                    return Ok(());
+                }
+                let mmap_len = self.mmap.len();
+                let mut inline_batch = None;
+                {
+                    let mut pending = crate::lock_unpoisoned(&self.pending_async_ranges);
+                    let mut added = false;
+                    for &(off, len) in ranges {
+                        if len == 0 || off >= mmap_len {
+                            continue;
+                        }
+                        let clamped_len = len.min(mmap_len - off);
+                        if let Some(last) = pending.ranges.last_mut() {
+                            let ls = last.0;
+                            let prev_len = last.1;
+                            let le = ls.saturating_add(prev_len);
+                            let ns = off;
+                            let ne = ns.saturating_add(clamped_len);
+                            if ns <= le.saturating_add(BLOCK_SIZE)
+                                && ls <= ne.saturating_add(BLOCK_SIZE)
+                            {
+                                let merged_s = ls.min(ns);
+                                let merged_e = le.max(ne);
+                                let new_len = merged_e - merged_s;
+                                *last = (merged_s, new_len);
+                                pending.approx_bytes = pending
+                                    .approx_bytes
+                                    .saturating_add(new_len.saturating_sub(prev_len));
+                                added = true;
+                                continue;
+                            }
+                        }
+                        pending.ranges.push((off, clamped_len));
+                        pending.approx_bytes = pending.approx_bytes.saturating_add(clamped_len);
+                        added = true;
+                    }
+                    if added {
+                        pending.pending_ops += 1;
+                        if pending.pending_ops >= Self::RANGE_ASYNC_BATCH_OPS
+                            || pending.approx_bytes >= Self::RANGE_ASYNC_BATCH_BYTES
+                            || pending.ranges.len() >= 256
+                        {
+                            if pending.pending_ops >= Self::RANGE_ASYNC_FALLBACK_INLINE_OPS {
+                                pending.pending_ops = 0;
+                                pending.approx_bytes = 0;
+                                self.async_drain_ready
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                inline_batch = Some(std::mem::take(&mut pending.ranges));
+                            } else {
+                                self.async_drain_ready
+                                    .store(true, std::sync::atomic::Ordering::Release);
+                            }
+                        }
+                    }
+                }
+                if let Some(batch) = inline_batch {
+                    self.flush_async_batch(&batch);
                 }
                 Ok(())
             }
@@ -647,6 +735,14 @@ impl DiskManagerInner {
     }
 }
 
+/// Batched dirty-range state for `DurabilityMode::RangeAsync` (P4.33).
+#[derive(Default)]
+pub(crate) struct PendingAsyncRanges {
+    ranges: Vec<(usize, usize)>,
+    pending_ops: usize,
+    approx_bytes: usize,
+}
+
 /// In-memory index of one directory's entries.
 ///
 /// Starts empty and caches positive lookups. Once a directory has had a negative lookup
@@ -662,10 +758,10 @@ pub(crate) struct DirIndex {
     may_have_holes: bool,
     /// Cached `(physical_block_id, next_insert_offset)` for the directory's tail block (P4.16).
     tail_offset: Option<(u64, u16)>,
-    /// On-disk stored name (ciphertext on encrypted filesystems) -> `(inode_id, physical_block_id)`.
-    stored: FxHashMap<String, (u64, u64)>,
-    /// Plaintext name -> inode id. Only used on encrypted filesystems to skip re-encryption.
-    plain: FxHashMap<String, u64>,
+    /// On-disk stored name (ciphertext on encrypted filesystems) -> `(inode_id, physical_block_id, stored_hash)`.
+    stored: FxHashMap<String, (u64, u64, u64)>,
+    /// Plaintext name -> `(inode_id, plain_hash)`. Only used on encrypted filesystems to skip re-encryption.
+    plain: FxHashMap<String, (u64, u64)>,
 }
 
 /// Cold targeted scans tolerated on a directory before building its full index.
@@ -700,6 +796,8 @@ pub struct DiskManager {
     inner: Arc<RwLock<DiskManagerInner>>,
     /// Dedicated mutex to serialize physical msync calls without blocking readers
     sync_mutex: Arc<Mutex<()>>,
+    /// Shared fast-path flag indicating buffered `RangeAsync` ranges are ready to drain (P4.33)
+    async_drain_ready: Arc<std::sync::atomic::AtomicBool>,
     /// Background automatic defragmentation coordinator (Blueprint item 7)
     auto_defrag: Arc<crate::auto_defrag::AutoDefragController>,
 }
@@ -709,22 +807,20 @@ pub struct DiskManager {
 /// Reaching this limit evicts a single entry; it no longer wipes the whole cache.
 pub const INODE_CACHE_CAPACITY: usize = 2048;
 
-/// Bounded inode cache with FIFO eviction.
-///
-/// The previous policy cleared the *entire* cache whenever it hit 2048 entries,
-/// which turned a single overflow into a cache stampede of up to 2048 synchronous
-/// inode-table reads. Eviction now removes exactly one entry in O(1), so the cost
-/// of an overflow is one miss instead of a full cache.
-///
-/// Lookup uses a fast integer hasher (`FxHashMap`) because keys are dense `u64`
-/// inode ids; SipHash spends most of its time on entropy mixing that buys nothing
-/// for this access pattern.
 /// Number of concurrent shards in the bounded inode cache to eliminate lock contention.
 const NUM_INODE_CACHE_SHARDS: usize = 32;
 
-/// A single shard of the bounded inode cache, protected by its own RwLock.
+struct CachedInodeEntry {
+    inode: Inode,
+    /// Second-chance (Clock) reference bit (P4.22): set with `Relaxed` atomics under
+    /// the shard's shared `.read()` lock so hot directory/file inodes survive cold
+    /// sequential scans without requiring a write lock on cache hits.
+    referenced: std::sync::atomic::AtomicBool,
+}
+
+/// A single shard of the bounded inode cache with Second-Chance (Clock) eviction (P4.22).
 struct InodeCacheShard {
-    map: FxHashMap<u64, Inode>,
+    map: FxHashMap<u64, CachedInodeEntry>,
     order: VecDeque<u64>,
     capacity: usize,
 }
@@ -738,18 +834,45 @@ impl InodeCacheShard {
         }
     }
 
+    #[inline]
     fn get(&self, inode_id: u64) -> Option<Inode> {
-        self.map.get(&inode_id).copied()
+        let entry = self.map.get(&inode_id)?;
+        entry
+            .referenced
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Some(entry.inode)
     }
 
     fn insert(&mut self, inode_id: u64, inode: Inode) {
-        // Re-inserting an existing id must not queue a second eviction slot.
-        if self.map.insert(inode_id, inode).is_none() {
+        // Re-inserting an existing id refreshes its payload and marks it referenced
+        // without queueing a duplicate eviction slot.
+        if let Some(existing) = self.map.get_mut(&inode_id) {
+            existing.inode = inode;
+            existing
+                .referenced
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            self.map.insert(
+                inode_id,
+                CachedInodeEntry {
+                    inode,
+                    referenced: std::sync::atomic::AtomicBool::new(false),
+                },
+            );
             self.order.push_back(inode_id);
         }
-        while self.order.len() > self.capacity {
-            if let Some(victim) = self.order.pop_front() {
-                self.map.remove(&victim);
+        while self.map.len() > self.capacity {
+            let Some(candidate) = self.order.pop_front() else {
+                break;
+            };
+            let give_second_chance = self.map.get(&candidate).is_some_and(|e| {
+                e.referenced
+                    .swap(false, std::sync::atomic::Ordering::Relaxed)
+            });
+            if give_second_chance {
+                self.order.push_back(candidate);
+            } else {
+                self.map.remove(&candidate);
             }
         }
     }
@@ -962,6 +1085,30 @@ mod inode_cache_tests {
             h.join().unwrap();
         }
     }
+
+    #[test]
+    fn test_second_chance_clock_protects_referenced_hot_inode() {
+        let mut shard = InodeCacheShard::new(3);
+        shard.insert(100, ino(crate::inode::FileType::Directory));
+        shard.insert(101, ino(crate::inode::FileType::File));
+        shard.insert(102, ino(crate::inode::FileType::File));
+
+        // Touch 100 via `get()` (shared-read-lock Clock reference bit set, P4.22).
+        assert!(shard.get(100).is_some());
+
+        // Inserting 103 must spare 100 (clearing its reference bit) and evict 101 instead.
+        shard.insert(103, ino(crate::inode::FileType::File));
+        assert!(
+            shard.get(100).is_some(),
+            "hot inode 100 must survive cold eviction"
+        );
+        assert!(
+            shard.get(101).is_none(),
+            "unreferenced cold inode 101 must be evicted"
+        );
+        assert!(shard.get(102).is_some());
+        assert!(shard.get(103).is_some());
+    }
 }
 
 #[cfg(test)]
@@ -1101,8 +1248,8 @@ struct EncryptionContext<'a> {
 /// `data.len()` (logical) for a compressed append while the journaled path added
 /// `frame.len()` (physical), so the same append produced two different file sizes.
 /// Result of preparing a full-overwrite payload buffer out-of-lock.
-pub(crate) struct FullOverwritePayload {
-    pub buffer: Vec<u8>,
+pub(crate) struct FullOverwritePayload<'a> {
+    pub buffer: std::borrow::Cow<'a, [u8]>,
     pub is_compressed: bool,
     pub encryption_nonce: Option<[u8; 24]>,
 }
@@ -1126,12 +1273,12 @@ pub(crate) struct PreparedChunkPayload {
     pub blocks_needed: usize,
 }
 
-struct WritePlan {
+struct WritePlan<'a> {
     case: WriteCase,
     /// Byte offset in the file's payload where `buffer` begins.
     phys_off: u64,
-    /// Exact bytes to store on disk (filtered, compressed and encrypted).
-    buffer: Vec<u8>,
+    /// Exact bytes to store on disk (borrowed directly on raw writes; owned when transformed).
+    buffer: std::borrow::Cow<'a, [u8]>,
     /// New logical size.
     new_size: u64,
     /// New physical size; `0` when the payload is stored raw.
@@ -1140,7 +1287,7 @@ struct WritePlan {
     encryption_nonce: Option<[u8; 24]>,
 }
 
-impl WritePlan {}
+impl WritePlan<'_> {}
 
 /// Whether a compressed file may grow by appending a fresh Zstd frame.
 ///
@@ -1190,15 +1337,15 @@ fn payload_is_transformed(
 /// Decide which of the four write cases applies and compute the exact bytes and
 /// sizes that result, performing CPU-intensive filtering, compression, and encryption
 /// without holding any filesystem lock (P4.1).
-fn plan_write_prepared(
+fn plan_write_prepared<'a>(
     inode: &Inode,
     file_offset: u64,
-    data: &[u8],
+    data: &'a [u8],
     compression_mode: CompressionMode,
     filter_config: &crate::filters::FilterConfig,
     existing_decompressed: Option<&[u8]>,
     encryption: EncryptionContext<'_>,
-) -> Result<WritePlan, DiskManagerError> {
+) -> Result<WritePlan<'a>, DiskManagerError> {
     let encryption_key = encryption.key;
     let aad = encryption.aad;
     let old_size = inode.size;
@@ -1271,7 +1418,7 @@ fn plan_write_prepared(
                 phys_off: old_compressed_size,
                 new_size: old_size.saturating_add(data.len() as u64),
                 new_compressed_size: old_compressed_size + frame.len() as u64,
-                buffer: frame,
+                buffer: std::borrow::Cow::Owned(frame),
                 encryption_nonce: None,
             });
         }
@@ -1313,37 +1460,38 @@ fn plan_write_prepared(
         } else {
             0
         };
+        let owned_buffer = payload.buffer.into_owned();
         return Ok(WritePlan {
             case: WriteCase::Recompress,
             phys_off: 0,
-            buffer: payload.buffer,
+            buffer: std::borrow::Cow::Owned(owned_buffer),
             new_size,
             new_compressed_size,
             encryption_nonce: payload.encryption_nonce,
         });
     }
 
-    // Plain append or random write into an uncompressed file.
+    // Plain append or random write into an uncompressed file: borrow caller slice directly!
     Ok(WritePlan {
         case: WriteCase::Raw,
         phys_off: file_offset,
         new_size: std::cmp::max(old_size, file_offset + data.len() as u64),
         new_compressed_size: 0,
-        buffer: data.to_vec(),
+        buffer: std::borrow::Cow::Borrowed(data),
         encryption_nonce: None,
     })
 }
 
 /// Helper to plan a write when already holding a disk lock (e.g. for re-planning after a race).
-fn plan_write(
+fn plan_write<'a>(
     guard: &DiskManagerInner,
     inode_id: u64,
     inode: &Inode,
     file_offset: u64,
-    data: &[u8],
+    data: &'a [u8],
     compression_mode: CompressionMode,
     filter_config: &crate::filters::FilterConfig,
-) -> Result<WritePlan, DiskManagerError> {
+) -> Result<WritePlan<'a>, DiskManagerError> {
     let transformed = payload_is_transformed(inode, filter_config, guard.encryption_key.as_ref());
     let is_full_overwrite =
         file_offset == 0 && (inode.size == 0 || data.len() as u64 >= inode.size || transformed);
@@ -1553,6 +1701,7 @@ impl DiskManager {
 
         let backing_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let free_block_hint = superblock.data_block_start;
+        let async_drain_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let inner = DiskManagerInner {
             file,
             backing_path,
@@ -1566,6 +1715,8 @@ impl DiskManager {
             chunk_read_cache: Mutex::new(ChunkReadCache::default()),
             decoded_blob_cache: Mutex::new(DecodedBlobCache::default()),
             durability_mode: std::sync::atomic::AtomicU8::new(DurabilityMode::Lazy as u8),
+            pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
+            async_drain_ready: async_drain_ready.clone(),
             io_engine: IoEngine::new(IoBackend::from_env().unwrap_or_default()),
         };
 
@@ -1573,6 +1724,7 @@ impl DiskManager {
         let dm = Self {
             inner: inner.clone(),
             sync_mutex: Arc::new(Mutex::new(())),
+            async_drain_ready,
             auto_defrag: Arc::new(crate::auto_defrag::AutoDefragController::new(&inner)),
         };
 
@@ -1815,10 +1967,38 @@ impl DiskManager {
 
     /// Writes an inode to the inode table
     pub fn write_inode(&self, inode_id: u64, inode: &Inode) -> Result<(), DiskManagerError> {
-        let mut guard = self.inner.write().unwrap();
-        Self::write_inode_internal(&mut guard, inode_id, inode)?;
-        let range = guard.inode_byte_range(inode_id);
-        guard.sync_mutation_ranges(&[range])
+        let res = {
+            let mut guard = self.inner.write().unwrap();
+            Self::write_inode_internal(&mut guard, inode_id, inode)?;
+            let range = guard.inode_byte_range(inode_id);
+            guard.sync_mutation_ranges(&[range])
+        };
+        self.maybe_drain_async_ranges();
+        res
+    }
+
+    #[inline]
+    fn maybe_drain_async_ranges(&self) {
+        if self
+            .async_drain_ready
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            self.drain_pending_async_ranges();
+        }
+    }
+
+    fn drain_pending_async_ranges(&self) {
+        let _sync_guard = crate::lock_unpoisoned(&self.sync_mutex);
+        let guard = self.inner.read().unwrap();
+        let batch = {
+            let mut pending = crate::lock_unpoisoned(&guard.pending_async_ranges);
+            pending.pending_ops = 0;
+            pending.approx_bytes = 0;
+            self.async_drain_ready
+                .store(false, std::sync::atomic::Ordering::Release);
+            std::mem::take(&mut pending.ranges)
+        };
+        guard.flush_async_batch(&batch);
     }
 
     /// Returns the current durability policy mode (P3.3).
@@ -1828,7 +2008,15 @@ impl DiskManager {
 
     /// Updates the durability policy mode (P3.3).
     pub fn set_durability_mode(&self, mode: DurabilityMode) {
-        self.inner.read().unwrap().set_durability_mode(mode);
+        let prev = {
+            let guard = self.inner.read().unwrap();
+            let prev = guard.durability_mode();
+            guard.set_durability_mode(mode);
+            prev
+        };
+        if prev == DurabilityMode::RangeAsync && mode != DurabilityMode::RangeAsync {
+            self.drain_pending_async_ranges();
+        }
     }
 
     /// Builder pattern helper to set durability mode upon initialization.
@@ -1958,13 +2146,15 @@ impl DiskManager {
         None
     }
 
-    /// Reads every entry of a directory into a stored-name -> `(inode, phys_blk)` map, along with
-    /// `(may_have_holes, tail_offset)` metadata for O(1) subsequent insertions and deletions.
+    /// Reads every entry of a directory into a stored-name -> `(inode, phys_blk, stored_hash)` map,
+    /// along with `(may_have_holes, tail_offset)` metadata for O(1) subsequent insertions,
+    /// deletions, and zero-hash-recomputation `list_dir` calls.
     #[allow(clippy::type_complexity)]
     fn build_dir_index(
         mmap: &MmapMut,
         inode: &Inode,
-    ) -> Result<(FxHashMap<String, (u64, u64)>, bool, Option<(u64, u16)>), DiskManagerError> {
+    ) -> Result<(FxHashMap<String, (u64, u64, u64)>, bool, Option<(u64, u16)>), DiskManagerError>
+    {
         let mut map = FxHashMap::default();
         let num_blocks = Self::dir_num_blocks(inode);
         let mut may_have_holes = false;
@@ -1979,7 +2169,8 @@ impl DiskManager {
             for entry in entries {
                 used_bytes += 18 + entry.name.len();
                 // Keep the first occurrence, matching on-disk scan order.
-                map.entry(entry.name).or_insert((entry.inode, phys_blk));
+                map.entry(entry.name)
+                    .or_insert((entry.inode, phys_blk, entry.hash));
             }
             if blk_idx + 1 < num_blocks {
                 if used_bytes + 21 <= BLOCK_SIZE {
@@ -2007,9 +2198,9 @@ impl DiskManager {
         // 1. Fast path: no allocation, no disk access, no SIV filename encryption (P4.19).
         if let Some(ix) = guard.dir_cache.read().unwrap().get(&parent_id) {
             let hit = if encrypted {
-                ix.plain.get(name).copied()
+                ix.plain.get(name).map(|&(id, _)| id)
             } else {
-                ix.stored.get(name).map(|&(id, _)| id)
+                ix.stored.get(name).map(|&(id, _, _)| id)
             };
             if let Some(id) = hit {
                 return Ok(Some(id));
@@ -2033,25 +2224,32 @@ impl DiskManager {
         let candidates = [enc_name.as_deref(), Some(name)];
 
         // 2. Complete index (reachable here on encrypted filesystems when `plain_complete` is false).
-        let indexed = guard
-            .dir_cache
-            .read()
-            .unwrap()
-            .get(&parent_id)
-            .filter(|ix| ix.complete)
-            .map(|ix| {
-                candidates
-                    .iter()
-                    .flatten()
-                    .find_map(|c| ix.stored.get(*c).map(|&(id, _)| id))
-            });
+        let (indexed, has_entry_yet) = {
+            let cache = guard.dir_cache.read().unwrap();
+            match cache.get(&parent_id) {
+                Some(ix) if ix.complete => (
+                    Some(
+                        candidates
+                            .iter()
+                            .flatten()
+                            .find_map(|c| ix.stored.get(*c).map(|&(id, _, _)| id)),
+                    ),
+                    true,
+                ),
+                Some(_) => (None, true),
+                None => (None, false),
+            }
+        };
 
         if let Some(found) = indexed {
             // P4.19: on an authoritative negative lookup, return immediately without taking `dir_cache.write()`.
             if let Some(id) = found {
                 let mut cache = guard.dir_cache.write().unwrap();
                 let ix = cache.entry(parent_id).or_default();
-                ix.plain.insert(name.to_string(), id);
+                ix.plain.insert(
+                    name.to_string(),
+                    (id, crate::directory::hash_filename(name)),
+                );
                 if ix.complete && ix.plain.len() == ix.stored.len() {
                     ix.plain_complete = true;
                 }
@@ -2059,11 +2257,48 @@ impl DiskManager {
             return Ok(found);
         }
 
-        // 3. Targeted on-disk scan.
-        let found = candidates.iter().flatten().find_map(|c| {
-            Self::locate_entry_in_dir(&guard.mmap, &parent, c, crate::directory::hash_filename(c))
-                .map(|(id, _)| id)
+        // 3. First-touch unindexed directory: build the complete index in a single pass
+        //    instead of scanning all blocks twice on a cold negative lookup (P4.19).
+        if !has_entry_yet {
+            let (stored, may_have_holes, tail_offset) =
+                Self::build_dir_index(&guard.mmap, &parent)?;
+            let found = candidates
+                .iter()
+                .flatten()
+                .find_map(|c| stored.get(*c).map(|&(id, _, _)| id));
+            let is_empty = stored.is_empty();
+            let mut cache = guard.dir_cache.write().unwrap();
+            let ix = cache.entry(parent_id).or_default();
+            if !ix.complete {
+                ix.stored = stored;
+                ix.may_have_holes = may_have_holes;
+                ix.tail_offset = tail_offset;
+                ix.complete = true;
+                if is_empty {
+                    ix.plain.clear();
+                    ix.plain_complete = true;
+                }
+            }
+            if let Some(id) = found
+                && encrypted
+            {
+                ix.plain.insert(
+                    name.to_string(),
+                    (id, crate::directory::hash_filename(name)),
+                );
+                if ix.complete && ix.plain.len() == ix.stored.len() {
+                    ix.plain_complete = true;
+                }
+            }
+            return Ok(found);
+        }
+
+        // 4. Targeted on-disk scan (retains `(id, blk, hash)` so a hit never re-scans).
+        let found_loc = candidates.iter().flatten().find_map(|c| {
+            let h = crate::directory::hash_filename(c);
+            Self::locate_entry_in_dir(&guard.mmap, &parent, c, h).map(|(id, blk)| (id, blk, h))
         });
+        let found = found_loc.map(|(id, _, _)| id);
 
         let mut cache = guard.dir_cache.write().unwrap();
         let ix = cache.entry(parent_id).or_default();
@@ -2081,24 +2316,17 @@ impl DiskManager {
                 ix.plain_complete = true;
             }
         }
-        if let Some(id) = found {
+        if let Some((id, blk, h)) = found_loc {
             if encrypted {
-                ix.plain.insert(name.to_string(), id);
+                ix.plain.insert(
+                    name.to_string(),
+                    (id, crate::directory::hash_filename(name)),
+                );
                 if ix.complete && ix.plain.len() == ix.stored.len() {
                     ix.plain_complete = true;
                 }
-            } else {
-                // If not yet complete, locate_entry_in_dir found `name`; record its block too if needed.
-                if !ix.complete
-                    && let Some((_, blk)) = Self::locate_entry_in_dir(
-                        &guard.mmap,
-                        &parent,
-                        name,
-                        crate::directory::hash_filename(name),
-                    )
-                {
-                    ix.stored.insert(name.to_string(), (id, blk));
-                }
+            } else if !ix.complete {
+                ix.stored.insert(name.to_string(), (id, blk, h));
             }
         }
         Ok(found)
@@ -2823,7 +3051,7 @@ impl DiskManager {
                 next_free_inode_hint,
                 guard.free_block_hint,
             )?);
-            let dir_data_block = sim.alloc_block()?;
+            let dir_data_block = sim.alloc_block(&guard.mmap)?;
             ops.push(crate::journal::MetadataOp::SetDataBitmap {
                 block_id: dir_data_block,
                 allocated: true,
@@ -2933,9 +3161,13 @@ impl DiskManager {
         let encrypted = guard.encryption_key.is_some();
         if let Some(ix) = guard.dir_cache.write().unwrap().get_mut(&parent_inode_id) {
             if encrypted {
-                ix.plain.insert(name.to_string(), new_inode_id);
+                ix.plain.insert(
+                    name.to_string(),
+                    (new_inode_id, crate::directory::hash_filename(name)),
+                );
             }
-            ix.stored.insert(stored_name, (new_inode_id, written_blk));
+            ix.stored
+                .insert(stored_name, (new_inode_id, written_blk, stored_hash));
             if encrypted && ix.complete && ix.plain.len() == ix.stored.len() {
                 ix.plain_complete = true;
             }
@@ -3021,7 +3253,7 @@ impl DiskManager {
         // M3: journaled images take the WAL-first path; legacy images keep the
         // original in-place implementation untouched (zero-overhead guarantee).
         if guard.superblock.has_journal_layout() {
-            return Self::create_entry_journaled(
+            let res = Self::create_entry_journaled(
                 &mut guard,
                 parent_inode_id,
                 name,
@@ -3029,6 +3261,9 @@ impl DiskManager {
                 stored_hash,
                 file_type,
             );
+            drop(guard);
+            self.maybe_drain_async_ranges();
+            return res;
         }
 
         // 1. Read Parent (re-verify under write lock in case of concurrent changes)
@@ -3107,9 +3342,13 @@ impl DiskManager {
         let encrypted = guard.encryption_key.is_some();
         if let Some(ix) = guard.dir_cache.write().unwrap().get_mut(&parent_inode_id) {
             if encrypted {
-                ix.plain.insert(name.to_string(), new_inode_id);
+                ix.plain.insert(
+                    name.to_string(),
+                    (new_inode_id, crate::directory::hash_filename(name)),
+                );
             }
-            ix.stored.insert(stored_name, (new_inode_id, written_blk));
+            ix.stored
+                .insert(stored_name, (new_inode_id, written_blk, stored_hash));
             if encrypted && ix.complete && ix.plain.len() == ix.stored.len() {
                 ix.plain_complete = true;
             }
@@ -3121,7 +3360,7 @@ impl DiskManager {
             }
         }
 
-        if guard.durability_mode().is_range_based() {
+        let sync_res = if guard.durability_mode().is_range_based() {
             let ranges = [
                 guard.inode_bitmap_byte_range(),
                 guard.data_bitmap_byte_range(),
@@ -3134,10 +3373,13 @@ impl DiskManager {
                     (0, 0)
                 },
             ];
-            guard.sync_mutation_ranges(&ranges)?;
+            guard.sync_mutation_ranges(&ranges)
         } else {
-            guard.sync_mutation_ranges(&[])?;
-        }
+            guard.sync_mutation_ranges(&[])
+        };
+        drop(guard);
+        self.maybe_drain_async_ranges();
+        sync_res?;
         Ok(new_inode_id)
     }
 
@@ -3722,6 +3964,57 @@ impl DiskManager {
         Ok(n)
     }
 
+    /// Single-lock, single-inode-lookup positional read returning a clamped `Vec<u8>` (P4.28).
+    ///
+    /// Used by `IpcServer` to serve `IpcRequest::ReadAt` without acquiring `inner.read()`
+    /// and looking up `inode_id` twice per RPC.
+    pub(crate) fn read_at_vec(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        max_len: usize,
+    ) -> Result<Vec<u8>, DiskManagerError> {
+        let guard = self.inner.read().unwrap();
+        let inode = Self::read_inode_internal(&guard, inode_id)?;
+        if inode.mode != crate::inode::FileType::File {
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Cannot read non-file inode",
+            )));
+        }
+        if file_offset >= inode.size || max_len == 0 {
+            return Ok(Vec::new());
+        }
+        let available = (inode.size - file_offset) as usize;
+        let alloc_len = max_len.min(available);
+        let mut buf = vec![0u8; alloc_len];
+        let n = if guard.io_engine.effective() == IoBackend::Mmap {
+            Self::read_at_with_inode(&guard, inode_id, &inode, file_offset, &mut buf, None)?
+        } else {
+            let mut extents = ExtentList::new();
+            let n = Self::read_at_with_inode(
+                &guard,
+                inode_id,
+                &inode,
+                file_offset,
+                &mut buf,
+                Some(&mut extents),
+            )?;
+            if !extents.is_empty() {
+                guard.io_engine.read(
+                    &guard.file,
+                    &guard.mmap,
+                    &mut [ReadTarget {
+                        buf: &mut buf,
+                        extents: extents.as_slice(),
+                    }],
+                )?;
+            }
+            n
+        };
+        buf.truncate(n);
+        Ok(buf)
+    }
+
     /// Performs many positional reads under a single read lock and, for raw files, a
     /// single engine submission (P3.2).
     ///
@@ -3790,10 +4083,20 @@ impl DiskManager {
         inode_id: u64,
         file_offset: u64,
         buf: &mut [u8],
-        mut extents: Option<&mut ExtentList>,
+        extents: Option<&mut ExtentList>,
     ) -> Result<usize, DiskManagerError> {
         let inode = Self::read_inode_internal(guard, inode_id)?;
+        Self::read_at_with_inode(guard, inode_id, &inode, file_offset, buf, extents)
+    }
 
+    fn read_at_with_inode(
+        guard: &DiskManagerInner,
+        inode_id: u64,
+        inode: &Inode,
+        file_offset: u64,
+        buf: &mut [u8],
+        mut extents: Option<&mut ExtentList>,
+    ) -> Result<usize, DiskManagerError> {
         if inode.mode != crate::inode::FileType::File {
             return Err(DiskManagerError::Io(std::io::Error::other(
                 "Cannot read non-file inode",
@@ -3809,22 +4112,21 @@ impl DiskManager {
 
         // Fast path for seekable chunked compressed files: decompress only affected chunks
         if inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0 {
-            return Self::read_at_chunked_64k(guard, inode_id, &inode, file_offset, buf);
+            return Self::read_at_chunked_64k(guard, inode_id, inode, file_offset, buf);
         }
 
         // Fallback for compressed or encrypted files: serve from bounded decoded-blob cache (P4.24)
         // when <= 16 MiB, avoiding O(calls * file_size) full-file decompression/decryption cliffs.
         if inode.compressed_size > 0 || inode.encrypted {
             if (inode.size as usize) <= DecodedBlobCache::MAX_ENTRY_BYTES {
-                let cached =
-                    crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, &inode);
+                let cached = crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, inode);
                 let blob = match cached {
                     Some(arc_blob) => arc_blob,
                     None => {
-                        let decoded = Arc::new(Self::read_data_internal(guard, inode_id, &inode)?);
+                        let decoded = Arc::new(Self::read_data_internal(guard, inode_id, inode)?);
                         crate::lock_unpoisoned(&guard.decoded_blob_cache).insert(
                             inode_id,
-                            &inode,
+                            inode,
                             Arc::clone(&decoded),
                         );
                         decoded
@@ -3840,7 +4142,7 @@ impl DiskManager {
                 return Ok(actual);
             }
 
-            let full_data = Self::read_data_internal(guard, inode_id, &inode)?;
+            let full_data = Self::read_data_internal(guard, inode_id, inode)?;
             let start = file_offset as usize;
             if start >= full_data.len() {
                 return Ok(0);
@@ -3861,7 +4163,7 @@ impl DiskManager {
             let rem_in_blk = BLOCK_SIZE - in_blk_offset;
             let chunk_len = std::cmp::min(to_read_total - bytes_read, rem_in_blk);
 
-            let blk_id = Self::resolve_logical_block_id(&guard.mmap, &inode, blk_idx);
+            let blk_id = Self::resolve_logical_block_id(&guard.mmap, inode, blk_idx);
             let dst = &mut buf[bytes_read..bytes_read + chunk_len];
             // SEC-28: reject forged pointers targeting metadata blocks (< data_block_start).
             match Self::get_block_from_map(&guard.mmap, blk_id)
@@ -4021,7 +4323,7 @@ impl DiskManager {
         guard: &mut DiskManagerInner,
         inode_id: u64,
         file_offset: u64,
-        plan: WritePlan,
+        plan: WritePlan<'_>,
         filter_config: crate::filters::FilterConfig,
     ) -> Result<(), DiskManagerError> {
         let mut inode = Self::read_inode_internal(guard, inode_id)?;
@@ -4126,10 +4428,7 @@ impl DiskManager {
             );
             for blk in &old_blocks {
                 if !used_set.contains(blk) {
-                    ops.push(crate::journal::MetadataOp::SetDataBitmap {
-                        block_id: *blk,
-                        allocated: false,
-                    });
+                    crate::journal::push_data_bitmap_op(&mut ops, *blk, 1, false);
                 }
             }
         }
@@ -4137,6 +4436,11 @@ impl DiskManager {
             inode_id,
             inode_bytes: Box::new(Self::build_inode_post_image(guard, inode_id, &inode)?),
         });
+        let ops = if crate::journal::is_already_coalesced(&ops) {
+            ops
+        } else {
+            crate::journal::coalesce_ops(ops)
+        };
 
         // 3. Payload durability BEFORE the metadata commit.
         //
@@ -4192,13 +4496,13 @@ impl DiskManager {
     /// compress, then encrypt, for a write that replaces the whole file.
     ///
     /// This function performs pure CPU-bound processing without holding any disk locks (P4.1).
-    pub(crate) fn build_full_overwrite_buffer_pure(
-        data: &[u8],
+    pub(crate) fn build_full_overwrite_buffer_pure<'a>(
+        data: &'a [u8],
         compression_mode: CompressionMode,
         filter_config: &crate::filters::FilterConfig,
         encryption_key: Option<&crate::encryption::EncryptionKey>,
         aad: &[u8],
-    ) -> Result<FullOverwritePayload, DiskManagerError> {
+    ) -> Result<FullOverwritePayload<'a>, DiskManagerError> {
         let filtered = crate::filters::apply_filters_cow(data, filter_config);
         let working: &[u8] = &filtered;
 
@@ -4217,7 +4521,7 @@ impl DiskManager {
             _ => 0,
         };
 
-        let (final_data, is_compressed): (std::borrow::Cow<[u8]>, bool) = if should_compress {
+        let (final_data, is_compressed): (std::borrow::Cow<'a, [u8]>, bool) = if should_compress {
             // P4.26: the pooled compressor avoids a per-call `CCtx` allocation.
             let compressed =
                 crate::zstd_pool::compress_frame(working, level).map_err(DiskManagerError::Io)?;
@@ -4245,13 +4549,13 @@ impl DiskManager {
             enc.reserve(16);
             crate::encryption::encrypt_data_in_place(&mut enc, key, &nonce, aad)?;
             return Ok(FullOverwritePayload {
-                buffer: enc,
+                buffer: std::borrow::Cow::Owned(enc),
                 is_compressed,
                 encryption_nonce: Some(nonce),
             });
         }
         Ok(FullOverwritePayload {
-            buffer: final_data.into_owned(),
+            buffer: final_data,
             is_compressed,
             encryption_nonce: None,
         })
@@ -4277,7 +4581,7 @@ impl DiskManager {
             inode.encrypted = true;
             inode.encryption_nonce = n;
         }
-        Ok((payload.buffer, payload.is_compressed))
+        Ok((payload.buffer.into_owned(), payload.is_compressed))
     }
 
     /// Filters to apply on a recompression path: the caller's when active, otherwise
@@ -4471,13 +4775,16 @@ impl DiskManager {
         let effective_filter = Self::effective_filter(&inode, &filter_config);
 
         if guard.superblock.has_journal_layout() {
-            return Self::write_data_journaled(
+            let res = Self::write_data_journaled(
                 &mut guard,
                 inode_id,
                 file_offset,
                 plan,
                 effective_filter,
             );
+            drop(guard);
+            self.maybe_drain_async_ranges();
+            return res;
         }
 
         // Decide once, apply in place.
@@ -4533,7 +4840,7 @@ impl DiskManager {
             .as_secs();
         Self::write_inode_internal(&mut guard, inode_id, &inode)?;
 
-        if guard.durability_mode().is_range_based() {
+        let sync_res = if guard.durability_mode().is_range_based() {
             let mut ranges = vec![
                 guard.data_bitmap_byte_range(),
                 guard.inode_byte_range(inode_id),
@@ -4543,10 +4850,13 @@ impl DiskManager {
                     ranges.push(guard.block_byte_range(blk));
                 }
             }
-            guard.sync_mutation_ranges(&ranges)?;
+            guard.sync_mutation_ranges(&ranges)
         } else {
-            guard.sync_mutation_ranges(&[])?;
-        }
+            guard.sync_mutation_ranges(&[])
+        };
+        drop(guard);
+        self.maybe_drain_async_ranges();
+        sync_res?;
 
         Ok(())
     }
@@ -5476,23 +5786,26 @@ impl DiskManager {
             && inode.blocks == initial_inode.blocks
             && inode.triple_indirect == initial_inode.triple_indirect;
 
-        if !can_use_prepared {
-            return Self::write_chunked_64k_internal(
+        let res = if !can_use_prepared {
+            Self::write_chunked_64k_internal(
                 &mut guard,
                 inode_id,
                 file_offset,
                 data,
                 level,
                 compress,
-            );
-        }
-
-        Self::commit_prepared_chunked_write(
-            &mut guard,
-            inode_id,
-            stage1_new_file_size,
-            prepared_chunks,
-        )
+            )
+        } else {
+            Self::commit_prepared_chunked_write(
+                &mut guard,
+                inode_id,
+                stage1_new_file_size,
+                prepared_chunks,
+            )
+        };
+        drop(guard);
+        self.maybe_drain_async_ranges();
+        res
     }
 
     fn write_chunked_64k_internal(
@@ -5741,12 +6054,13 @@ impl DiskManager {
 
             for prepared in prepared_chunks {
                 // 1. Allocate blocks via AllocSim (simulated in memory, NOT touching mmap data bitmap)
-                let new_start_blk = sim.alloc_contiguous(prepared.blocks_needed)?;
-                journal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
-                    start_block: new_start_blk,
-                    count: prepared.blocks_needed as u32,
-                    allocated: true,
-                });
+                let new_start_blk = sim.alloc_contiguous(&guard.mmap, prepared.blocks_needed)?;
+                crate::journal::push_data_bitmap_op(
+                    &mut journal_ops,
+                    new_start_blk,
+                    prepared.blocks_needed as u32,
+                    true,
+                );
 
                 // 2. Stage payload data into physical blocks
                 if prepared.blocks_needed > 0 && guard.durability_mode().is_range_based() {
@@ -5803,22 +6117,20 @@ impl DiskManager {
                 if !old_entry.is_empty() {
                     let old_start = old_entry.start_block() as u64;
                     let old_cnt = old_entry.block_count() as usize;
-                    sim.free_contiguous(old_start, old_cnt)?;
-                    journal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
-                        start_block: old_start,
-                        count: old_cnt as u32,
-                        allocated: false,
-                    });
+                    sim.free_contiguous(&guard.mmap, old_start, old_cnt)?;
+                    crate::journal::push_data_bitmap_op(
+                        &mut journal_ops,
+                        old_start,
+                        old_cnt as u32,
+                        false,
+                    );
                 }
             }
 
             // Reclaim legacy non-seekable blocks when upgrading a non-empty file to chunked format (P4.23).
             for blk in old_non_seekable_blocks {
-                sim.free_contiguous(blk, 1)?;
-                journal_ops.push(crate::journal::MetadataOp::SetDataBitmap {
-                    block_id: blk,
-                    allocated: false,
-                });
+                sim.free_contiguous(&guard.mmap, blk, 1)?;
+                crate::journal::push_data_bitmap_op(&mut journal_ops, blk, 1, false);
             }
 
             // 6. Recalculate inode compressed size & metadata
@@ -5837,6 +6149,11 @@ impl DiskManager {
                 inode_id,
                 inode_bytes: Box::new(post_image),
             });
+            let journal_ops = if crate::journal::is_already_coalesced(&journal_ops) {
+                journal_ops
+            } else {
+                crate::journal::coalesce_ops(journal_ops)
+            };
 
             // 7. Flush payload blocks before metadata commit (Ordered Mode — Strict only)
             if guard.durability_mode() == DurabilityMode::Strict {
@@ -6027,12 +6344,13 @@ impl DiskManager {
                 if !entry.is_empty() {
                     let start = entry.start_block() as u64;
                     let count = entry.block_count() as usize;
-                    sim.free_contiguous(start, count)?;
-                    journal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
-                        start_block: start,
-                        count: count as u32,
-                        allocated: false,
-                    });
+                    sim.free_contiguous(&guard.mmap, start, count)?;
+                    crate::journal::push_data_bitmap_op(
+                        &mut journal_ops,
+                        start,
+                        count as u32,
+                        false,
+                    );
                     crate::journal::sim_set_logical_chunk_entry(
                         &guard.mmap,
                         &mut inode,
@@ -6085,12 +6403,13 @@ impl DiskManager {
                             },
                         )?;
 
-                        let new_start_blk = sim.alloc_contiguous(blocks_needed)?;
-                        journal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
-                            start_block: new_start_blk,
-                            count: blocks_needed as u32,
-                            allocated: true,
-                        });
+                        let new_start_blk = sim.alloc_contiguous(&guard.mmap, blocks_needed)?;
+                        crate::journal::push_data_bitmap_op(
+                            &mut journal_ops,
+                            new_start_blk,
+                            blocks_needed as u32,
+                            true,
+                        );
 
                         if blocks_needed > 0 && guard.durability_mode().is_range_based() {
                             payload_ranges.push((
@@ -6131,12 +6450,13 @@ impl DiskManager {
 
                         let old_start = old_entry.start_block() as u64;
                         let old_cnt = old_entry.block_count() as usize;
-                        sim.free_contiguous(old_start, old_cnt)?;
-                        journal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
-                            start_block: old_start,
-                            count: old_cnt as u32,
-                            allocated: false,
-                        });
+                        sim.free_contiguous(&guard.mmap, old_start, old_cnt)?;
+                        crate::journal::push_data_bitmap_op(
+                            &mut journal_ops,
+                            old_start,
+                            old_cnt as u32,
+                            false,
+                        );
                     }
                 }
 
@@ -6173,6 +6493,11 @@ impl DiskManager {
                 }
             }
 
+            let journal_ops = if crate::journal::is_already_coalesced(&journal_ops) {
+                journal_ops
+            } else {
+                crate::journal::coalesce_ops(journal_ops)
+            };
             Self::commit_journal_tx(guard, &journal_ops)?;
             Self::apply_journal_ops(guard, &journal_ops)?;
 
@@ -6843,7 +7168,8 @@ impl DiskManager {
         let encrypted = guard.encryption_key.is_some();
 
         // 1. Fast path: check directory index cache (P4.6).
-        // If complete, construct entries directly from memory without reading/decoding disk blocks.
+        // If complete, construct entries directly from memory without reading/decoding disk blocks
+        // or recomputing SipHash over filenames.
         if let Some(ix) = guard.dir_cache.read().unwrap().get(&dir_inode_id)
             && ix.complete
         {
@@ -6851,20 +7177,22 @@ impl DiskManager {
                 let entries: Vec<crate::directory::DirectoryEntry> = ix
                     .stored
                     .iter()
-                    .map(|(name, &(inode, _))| crate::directory::DirectoryEntry {
-                        inode,
-                        hash: crate::directory::hash_filename(name),
-                        name: name.clone(),
-                    })
+                    .map(
+                        |(name, &(inode, _, hash))| crate::directory::DirectoryEntry {
+                            inode,
+                            hash,
+                            name: name.clone(),
+                        },
+                    )
                     .collect();
                 return Ok(entries);
             } else if ix.plain.len() == ix.stored.len() {
                 let entries: Vec<crate::directory::DirectoryEntry> = ix
                     .plain
                     .iter()
-                    .map(|(name, &inode)| crate::directory::DirectoryEntry {
+                    .map(|(name, &(inode, hash))| crate::directory::DirectoryEntry {
                         inode,
-                        hash: crate::directory::hash_filename(name),
+                        hash,
                         name: name.clone(),
                     })
                     .collect();
@@ -6886,7 +7214,7 @@ impl DiskManager {
             let used: usize = block_entries.iter().map(|e| 18 + e.name.len()).sum();
             last_tail = Some((phys_blk, used.min(BLOCK_SIZE) as u16));
             for e in block_entries {
-                stored_entries.push((e.name.clone(), e.inode, phys_blk));
+                stored_entries.push((e.name.clone(), e.inode, phys_blk, e.hash));
                 entries.push(e);
             }
         }
@@ -6897,6 +7225,7 @@ impl DiskManager {
                     crate::encryption::decrypt_filename(key, dir_inode_id, &entry.name)
                     && crate::directory::validate_filename(&decrypted).is_ok()
                 {
+                    entry.hash = crate::directory::hash_filename(&decrypted);
                     entry.name = decrypted;
                 }
             }
@@ -6907,13 +7236,15 @@ impl DiskManager {
             let mut cache = guard.dir_cache.write().unwrap();
             let ix = cache.entry(dir_inode_id).or_default();
             ix.stored.clear();
-            for (raw_name, raw_inode, raw_blk) in stored_entries {
-                ix.stored.entry(raw_name).or_insert((raw_inode, raw_blk));
+            for (raw_name, raw_inode, raw_blk, raw_hash) in stored_entries {
+                ix.stored
+                    .entry(raw_name)
+                    .or_insert((raw_inode, raw_blk, raw_hash));
             }
             if encrypted {
                 ix.plain.clear();
                 for e in &entries {
-                    ix.plain.insert(e.name.clone(), e.inode);
+                    ix.plain.insert(e.name.clone(), (e.inode, e.hash));
                 }
                 ix.plain_complete = ix.plain.len() == ix.stored.len();
             }
@@ -7002,6 +7333,14 @@ impl DiskManager {
         // concurrent readers to proceed.
         {
             let guard = self.inner.read().unwrap();
+            {
+                let mut pending = crate::lock_unpoisoned(&guard.pending_async_ranges);
+                pending.ranges.clear();
+                pending.pending_ops = 0;
+                pending.approx_bytes = 0;
+                self.async_drain_ready
+                    .store(false, std::sync::atomic::Ordering::Release);
+            }
             // WAL first: a sync point must never let image bytes reach disk ahead of
             // the log describing them, even when individual transactions skipped
             // their own barrier because of a non-Strict durability mode.
@@ -7037,6 +7376,14 @@ impl DiskManager {
     pub fn flush_async(&self) -> Result<(), DiskManagerError> {
         let _sync_guard = crate::lock_unpoisoned(&self.sync_mutex);
         let guard = self.inner.read().unwrap();
+        {
+            let mut pending = crate::lock_unpoisoned(&guard.pending_async_ranges);
+            pending.ranges.clear();
+            pending.pending_ops = 0;
+            pending.approx_bytes = 0;
+            self.async_drain_ready
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
         // WAL first, then the rest of the mapping, so a sync point never lets the
         // image reach disk ahead of the log describing it.
         if guard.superblock.has_journal_layout() {
@@ -7157,26 +7504,30 @@ impl DiskManager {
             .as_secs();
         let parent_image = Self::build_inode_post_image(guard, parent_inode_id, &parent_inode)?;
 
-        let mut ops = Vec::with_capacity(blocks_to_free.len() + 3);
+        // Emit ops in canonical phase order (SetInodeBitmap -> SetDataBitmapRange ->
+        // WriteBlockSlice -> WriteInode) with on-the-fly bitmap range coalescing (P4.18).
+        let mut ops = Vec::with_capacity(8);
+        ops.push(crate::journal::MetadataOp::SetInodeBitmap {
+            inode_id: target_inode_id,
+            allocated: false,
+        });
+        for &blk in &blocks_to_free {
+            crate::journal::push_data_bitmap_op(&mut ops, blk, 1, false);
+        }
         ops.push(crate::journal::MetadataOp::WriteBlockSlice {
             block_id: phys_blk,
             offset: 0,
             data: dir_image,
         });
-        for blk in &blocks_to_free {
-            ops.push(crate::journal::MetadataOp::SetDataBitmap {
-                block_id: *blk,
-                allocated: false,
-            });
-        }
-        ops.push(crate::journal::MetadataOp::SetInodeBitmap {
-            inode_id: target_inode_id,
-            allocated: false,
-        });
         ops.push(crate::journal::MetadataOp::WriteInode {
             inode_id: parent_inode_id,
             inode_bytes: Box::new(parent_image),
         });
+        let ops = if crate::journal::is_already_coalesced(&ops) {
+            ops
+        } else {
+            crate::journal::coalesce_ops(ops)
+        };
 
         // ---- Phase 2: commit point ----
         Self::commit_journal_tx(guard, &ops)?;
@@ -7259,7 +7610,7 @@ impl DiskManager {
                     let found = candidates.iter().flatten().find_map(|c| {
                         ix.stored
                             .get(*c)
-                            .map(|&(id, blk)| ((*c).to_string(), id, blk))
+                            .map(|&(id, blk, _)| ((*c).to_string(), id, blk))
                     });
                     (found, ix.complete)
                 })
@@ -7300,7 +7651,7 @@ impl DiskManager {
         // M3: journaled images take the WAL-first path; legacy images keep the
         // original in-place implementation untouched (zero-overhead guarantee).
         if guard.superblock.has_journal_layout() {
-            return Self::delete_file_journaled(
+            let res = Self::delete_file_journaled(
                 &mut guard,
                 parent_inode_id,
                 name,
@@ -7308,6 +7659,11 @@ impl DiskManager {
                 target_inode_id,
                 phys_blk,
             );
+            drop(guard);
+            if res.is_ok() {
+                self.maybe_drain_async_ranges();
+            }
+            return res;
         }
 
         let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
@@ -7433,6 +7789,8 @@ impl DiskManager {
         } else {
             guard.sync_mutation_ranges(&[])?;
         }
+        drop(guard);
+        self.maybe_drain_async_ranges();
         Ok(())
     }
 
@@ -7443,8 +7801,14 @@ impl DiskManager {
     /// If `new_size` is greater than current size, the file is extended (sparse
     /// extension with zeroed reads for raw files; zero-padded for compressed/encrypted files).
     pub fn truncate(&self, inode_id: u64, new_size: u64) -> Result<(), DiskManagerError> {
-        let mut guard = self.inner.write().unwrap();
-        Self::truncate_internal(&mut guard, inode_id, new_size)
+        let res = {
+            let mut guard = self.inner.write().unwrap();
+            Self::truncate_internal(&mut guard, inode_id, new_size)
+        };
+        if res.is_ok() {
+            self.maybe_drain_async_ranges();
+        }
+        res
     }
 
     /// Truncates or extends a file by its path.
@@ -7710,16 +8074,18 @@ impl DiskManager {
 
         if guard.superblock.has_journal_layout() {
             let post_image = Self::build_inode_post_image(guard, inode_id, &inode)?;
-            for blk in &freed_blocks {
-                ops.push(crate::journal::MetadataOp::SetDataBitmap {
-                    block_id: *blk,
-                    allocated: false,
-                });
+            for &blk in &freed_blocks {
+                crate::journal::push_data_bitmap_op(&mut ops, blk, 1, false);
             }
             ops.push(crate::journal::MetadataOp::WriteInode {
                 inode_id,
                 inode_bytes: Box::new(post_image),
             });
+            let ops = if crate::journal::is_already_coalesced(&ops) {
+                ops
+            } else {
+                crate::journal::coalesce_ops(ops)
+            };
             Self::commit_journal_tx(guard, &ops)?;
             Self::apply_journal_ops(guard, &ops)?;
 
@@ -7836,11 +8202,12 @@ impl DiskManager {
         }
         match ops {
             Some(ops) => {
-                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                crate::journal::push_block_slice_op(
+                    ops,
                     block_id,
-                    offset: (entry_idx * 8) as u32,
-                    data: vec![0u8; 8],
-                });
+                    (entry_idx * 8) as u32,
+                    &[0u8; 8],
+                );
             }
             None => {
                 Self::write_block_ptr(&mut guard.mmap, block_id, entry_idx, 0);
@@ -7906,11 +8273,12 @@ impl DiskManager {
                 }
                 match ops {
                     Some(ops) => {
-                        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                            block_id: dib_id,
-                            offset: (a_idx * 8) as u32,
-                            data: vec![0u8; 8],
-                        });
+                        crate::journal::push_block_slice_op(
+                            ops,
+                            dib_id,
+                            (a_idx * 8) as u32,
+                            &[0u8; 8],
+                        );
                     }
                     None => {
                         Self::write_block_ptr(&mut guard.mmap, dib_id, a_idx, 0);
@@ -8757,7 +9125,7 @@ impl DiskManager {
         {
             let mut cache = guard.dir_cache.write().unwrap();
             for ix in cache.values_mut() {
-                for (_, blk) in ix.stored.values_mut() {
+                for (_, blk, _) in ix.stored.values_mut() {
                     if let Some(&new_blk) = old_to_new.get(blk) {
                         *blk = new_blk;
                     }

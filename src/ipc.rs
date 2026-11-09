@@ -14,7 +14,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -315,20 +315,21 @@ fn auth_mac(key: &[u8], transcript: &[u8]) -> [u8; AUTH_MAC_LEN] {
     tag
 }
 
-/// Builds the handshake transcript for one direction of the exchange.
+/// Builds the handshake transcript for one direction of the exchange on the stack.
 ///
 /// The direction byte keeps the two tags from being interchangeable.
+#[inline]
 fn auth_transcript(
     direction: u8,
     client_nonce: &[u8; AUTH_NONCE_LEN],
     server_nonce: &[u8; AUTH_NONCE_LEN],
     salt: &[u8; 16],
-) -> Vec<u8> {
-    let mut transcript = Vec::with_capacity(1 + AUTH_NONCE_LEN + AUTH_NONCE_LEN + 16);
-    transcript.push(direction);
-    transcript.extend_from_slice(client_nonce);
-    transcript.extend_from_slice(server_nonce);
-    transcript.extend_from_slice(salt);
+) -> [u8; 1 + AUTH_NONCE_LEN + AUTH_NONCE_LEN + 16] {
+    let mut transcript = [0u8; 1 + AUTH_NONCE_LEN + AUTH_NONCE_LEN + 16];
+    transcript[0] = direction;
+    transcript[1..1 + AUTH_NONCE_LEN].copy_from_slice(client_nonce);
+    transcript[1 + AUTH_NONCE_LEN..1 + 2 * AUTH_NONCE_LEN].copy_from_slice(server_nonce);
+    transcript[1 + 2 * AUTH_NONCE_LEN..].copy_from_slice(salt);
     transcript
 }
 
@@ -553,8 +554,6 @@ thread_local! {
     static FRAME_WRITE_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// Reusable scratch buffer for the *read* path.
     static FRAME_READ_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    /// Reusable staging buffer used to stream payload bytes off the wire.
-    static FRAME_CHUNK_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Releases the capacity of a pooled buffer that grew beyond the threshold.
@@ -620,21 +619,19 @@ pub fn read_framed<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T
         let mut buf = cell.borrow_mut();
         buf.clear();
         if len > 0 {
-            // Reserve progressively; never allocate the announced size blindly.
-            buf.reserve(FRAME_READ_CHUNK.min(len));
-            let mut remaining = len;
-            while remaining > 0 {
-                let taken = FRAME_CHUNK_BUF.with(|cell| {
-                    let mut stage = cell.borrow_mut();
-                    if stage.len() < FRAME_READ_CHUNK {
-                        stage.resize(FRAME_READ_CHUNK, 0);
-                    }
-                    let taken = remaining.min(stage.len());
-                    reader.read_exact(&mut stage[..taken])?;
-                    buf.extend_from_slice(&stage[..taken]);
-                    Ok::<usize, io::Error>(taken)
-                })?;
-                remaining -= taken;
+            // Stream directly into `FRAME_READ_BUF` in bounded 64 KiB chunks (P4.28):
+            // never allocate an unverified announced size up front, and avoid staging
+            // through a separate chunk buffer.
+            let mut offset = 0usize;
+            while offset < len {
+                let chunk = (len - offset).min(FRAME_READ_CHUNK);
+                buf.resize(offset + chunk, 0);
+                if let Err(e) = reader.read_exact(&mut buf[offset..offset + chunk]) {
+                    buf.clear();
+                    shrink_frame_buf(&mut buf);
+                    return Err(e);
+                }
+                offset += chunk;
             }
         }
         // The limit is the size of the frame itself: a payload can never claim
@@ -1281,19 +1278,9 @@ impl IpcServer {
                 file_offset,
                 len,
             } => {
-                // P4.28: the size is needed to clamp the allocation, but the
-                // inode lookup itself is left to `read_at` (which validates
-                // the inode) instead of doing it twice.
-                let inode = dm.read_inode(inode_id)?;
-                let available = inode.size.saturating_sub(file_offset) as usize;
-                let alloc_len = len.min(available).min(128 * 1024 * 1024);
-                let mut buf = vec![0u8; alloc_len];
-                let n = if alloc_len > 0 {
-                    dm.read_at(inode_id, file_offset, &mut buf)?
-                } else {
-                    0
-                };
-                buf.truncate(n);
+                // P4.28: single shared-lock acquisition and single inode lookup via
+                // `read_at_vec` (which clamps allocation to `inode.size - file_offset`).
+                let buf = dm.read_at_vec(inode_id, file_offset, len.min(MAX_FRAME_BYTES))?;
                 Ok(IpcResponseData::Data(buf))
             }
             IpcRequest::WriteData {
@@ -1395,18 +1382,275 @@ impl Drop for IpcServer {
     }
 }
 
-/// Client IPC proxy for communicating with the Master process
+/// Maximum number of concurrent authenticated streams pooled by a single [`IpcClient`] (P4.28).
+///
+/// Additional streams are opened lazily only when multiple caller threads contend
+/// simultaneously; single-threaded clients maintain a single socket.
+pub const MAX_CLIENT_POOL_STREAMS: usize = 8;
+
+#[derive(Clone, Copy)]
+enum ClientTransport {
+    Unix,
+    Tcp {
+        peer_addr: Option<std::net::SocketAddr>,
+    },
+}
+
+#[derive(Clone)]
+struct ClientAuthCache {
+    /// Cached 32-byte key (Argon2id-derived filesystem key or published session secret),
+    /// wiped automatically on drop so secondary pooled connections authenticate via fast
+    /// keyed BLAKE2b without repeating Argon2id KDF.
+    key: zeroize::Zeroizing<[u8; 32]>,
+    salt: [u8; 16],
+    has_password: bool,
+    expected_encrypted: bool,
+}
+
+struct ClientPoolState {
+    idle: Vec<IpcStream>,
+    total_streams: usize,
+    auth: Option<ClientAuthCache>,
+}
+
+/// RAII checkout guard for one pooled [`IpcStream`].
+///
+/// Protocol-synchronization invariant: while an RPC is in flight, the stream lives
+/// exclusively inside this guard (outside `ClientPoolState::idle`). If `write_framed`,
+/// `read_framed`, or an unwinding panic aborts mid-exchange, `return_to_pool` is
+/// never called and `Drop` closes the desynchronized socket and decrements
+/// `total_streams`. Only a clean request+response frame pair returns the socket to `idle`.
+struct CheckedOutStream<'a> {
+    client: &'a IpcClient,
+    stream: Option<IpcStream>,
+}
+
+impl<'a> CheckedOutStream<'a> {
+    #[inline]
+    fn stream_mut(&mut self) -> &mut IpcStream {
+        self.stream.as_mut().expect("checked-out stream present")
+    }
+
+    #[inline]
+    fn return_to_pool(mut self) {
+        if let Some(stream) = self.stream.take() {
+            let mut guard = crate::lock_unpoisoned(&self.client.pool);
+            guard.idle.push(stream);
+            self.client.pool_cv.notify_one();
+        }
+    }
+}
+
+impl Drop for CheckedOutStream<'_> {
+    fn drop(&mut self) {
+        if let Some(stream) = self.stream.take() {
+            drop(stream);
+            let mut guard = crate::lock_unpoisoned(&self.client.pool);
+            guard.total_streams = guard.total_streams.saturating_sub(1);
+            if guard.total_streams == 0 {
+                self.client.pool_cv.notify_all();
+            } else {
+                self.client.pool_cv.notify_one();
+            }
+        }
+    }
+}
+
+struct PendingStreamSlot<'a> {
+    client: &'a IpcClient,
+    active: bool,
+}
+
+impl<'a> PendingStreamSlot<'a> {
+    #[inline]
+    fn disarm(mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for PendingStreamSlot<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let mut guard = crate::lock_unpoisoned(&self.client.pool);
+            guard.total_streams = guard.total_streams.saturating_sub(1);
+            if guard.total_streams == 0 {
+                self.client.pool_cv.notify_all();
+            } else {
+                self.client.pool_cv.notify_one();
+            }
+        }
+    }
+}
+
+/// Client IPC proxy for communicating with the Master process (with bounded
+/// concurrent connection pooling, P4.28).
 pub struct IpcClient {
-    stream: Mutex<IpcStream>,
+    pool: Mutex<ClientPoolState>,
+    pool_cv: Condvar,
+    transport: ClientTransport,
     target_path: PathBuf,
 }
 
 impl IpcClient {
-    /// Creates a new IpcClient with an existing IpcStream
+    /// Creates a new IpcClient seeded with an initial connected [`IpcStream`].
     pub fn new(stream: IpcStream, target_path: PathBuf) -> Self {
+        let transport = match &stream {
+            IpcStream::Unix(_) => ClientTransport::Unix,
+            IpcStream::Tcp(tcp) => ClientTransport::Tcp {
+                peer_addr: tcp.peer_addr().ok(),
+            },
+        };
+        let mut idle = Vec::with_capacity(MAX_CLIENT_POOL_STREAMS);
+        idle.push(stream);
         Self {
-            stream: Mutex::new(stream),
+            pool: Mutex::new(ClientPoolState {
+                idle,
+                total_streams: 1,
+                auth: None,
+            }),
+            pool_cv: Condvar::new(),
+            transport,
             target_path,
+        }
+    }
+
+    fn rpc_on_stream(stream: &mut IpcStream, req: &IpcRequest) -> Result<IpcResponse, io::Error> {
+        write_framed(stream, req)?;
+        read_framed(stream)
+    }
+
+    fn decode_response(resp: IpcResponse) -> Result<IpcResponseData, io::Error> {
+        match resp {
+            IpcResponse::Success(data) => Ok(data),
+            IpcResponse::Error(err_msg) => Err(io::Error::other(err_msg)),
+        }
+    }
+
+    fn open_secondary_stream(&self) -> Result<IpcStream, io::Error> {
+        let connect_res = match self.transport {
+            ClientTransport::Unix => UnixStream::connect(&self.target_path).map(IpcStream::Unix),
+            ClientTransport::Tcp { peer_addr } => {
+                let tcp_res = if let Some(addr) = peer_addr {
+                    TcpStream::connect(addr)
+                } else {
+                    let content = fs::read_to_string(&self.target_path)?;
+                    let info: MasterInfo = serde_json::from_str(&content)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+                    TcpStream::connect(&info.addr)
+                };
+                tcp_res.map(|s| {
+                    let _ = s.set_nodelay(true);
+                    IpcStream::Tcp(s)
+                })
+            }
+        };
+        connect_res.map_err(|e| {
+            if e.kind() == io::ErrorKind::NotFound || e.kind() == io::ErrorKind::ConnectionRefused {
+                io::Error::new(io::ErrorKind::NotConnected, e)
+            } else {
+                e
+            }
+        })
+    }
+
+    fn open_and_auth_secondary(&self, auth: &ClientAuthCache) -> Result<IpcStream, io::Error> {
+        let mut stream = self.open_secondary_stream()?;
+        let mut client_nonce = [0u8; AUTH_NONCE_LEN];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut client_nonce);
+
+        let challenge_resp = Self::rpc_on_stream(
+            &mut stream,
+            &IpcRequest::AuthChallenge {
+                client_nonce,
+                has_password: auth.has_password,
+            },
+        )?;
+        let (server_nonce, salt, encrypted) = match Self::decode_response(challenge_resp)? {
+            IpcResponseData::AuthChallenge {
+                server_nonce,
+                salt,
+                encrypted,
+            } => (server_nonce, salt, encrypted),
+            _ => return Err(io::Error::other("Unexpected authentication response")),
+        };
+
+        if encrypted != auth.expected_encrypted || (encrypted && salt != auth.salt) {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "Master authentication parameters changed",
+            ));
+        }
+
+        let client_mac = auth_mac(
+            &auth.key[..],
+            &auth_transcript(0, &client_nonce, &server_nonce, &salt),
+        );
+        let verify_resp =
+            Self::rpc_on_stream(&mut stream, &IpcRequest::AuthResponse { client_mac })?;
+        match Self::decode_response(verify_resp)? {
+            IpcResponseData::AuthVerify { server_mac } => {
+                let expected = auth_mac(
+                    &auth.key[..],
+                    &auth_transcript(1, &client_nonce, &server_nonce, &salt),
+                );
+                if ct_eq(&server_mac, &expected) {
+                    Ok(stream)
+                } else {
+                    Err(io::Error::other(
+                        "Master failed to prove it holds the filesystem key",
+                    ))
+                }
+            }
+            _ => Err(io::Error::other("Unexpected authentication response")),
+        }
+    }
+
+    fn checkout_stream(&self) -> Result<CheckedOutStream<'_>, io::Error> {
+        let mut guard = crate::lock_unpoisoned(&self.pool);
+        loop {
+            if let Some(stream) = guard.idle.pop() {
+                return Ok(CheckedOutStream {
+                    client: self,
+                    stream: Some(stream),
+                });
+            }
+
+            if let Some(auth) = guard.auth.clone()
+                && guard.total_streams < MAX_CLIENT_POOL_STREAMS
+            {
+                guard.total_streams += 1;
+                drop(guard);
+                let slot = PendingStreamSlot {
+                    client: self,
+                    active: true,
+                };
+                match self.open_and_auth_secondary(&auth) {
+                    Ok(stream) => {
+                        slot.disarm();
+                        return Ok(CheckedOutStream {
+                            client: self,
+                            stream: Some(stream),
+                        });
+                    }
+                    Err(err) => {
+                        drop(slot);
+                        guard = crate::lock_unpoisoned(&self.pool);
+                        if guard.total_streams == 0 {
+                            return Err(err);
+                        }
+                    }
+                }
+            } else if guard.total_streams == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "IPC connection closed",
+                ));
+            }
+
+            guard = match self.pool_cv.wait(guard) {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
         }
     }
 
@@ -1418,14 +1662,26 @@ impl IpcClient {
     /// fake master therefore neither leaks its password nor talks to the
     /// impostor (SEC-18).
     pub fn authenticate(&self, credential: &AuthCredential) -> Result<(), io::Error> {
+        let mut checked = self.checkout_stream()?;
+
         let mut client_nonce = [0u8; AUTH_NONCE_LEN];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut client_nonce);
         let has_password = matches!(credential, AuthCredential::Password(_));
 
-        let challenge = self.send(&IpcRequest::AuthChallenge {
-            client_nonce,
-            has_password,
-        })?;
+        let challenge_resp = Self::rpc_on_stream(
+            checked.stream_mut(),
+            &IpcRequest::AuthChallenge {
+                client_nonce,
+                has_password,
+            },
+        )?;
+        let challenge = match Self::decode_response(challenge_resp) {
+            Ok(data) => data,
+            Err(err) => {
+                checked.return_to_pool();
+                return Err(err);
+            }
+        };
         let (server_nonce, salt, encrypted) = match challenge {
             IpcResponseData::AuthChallenge {
                 server_nonce,
@@ -1433,6 +1689,7 @@ impl IpcClient {
                 encrypted,
             } => (server_nonce, salt, encrypted),
             _ => {
+                checked.return_to_pool();
                 return Err(io::Error::other("Unexpected authentication response"));
             }
         };
@@ -1440,39 +1697,61 @@ impl IpcClient {
         // The master tells the client which credential it expects: an
         // encrypted image requires the filesystem password, a plain image uses
         // the published session secret.
-        let key: Vec<u8> = match credential {
+        let key: zeroize::Zeroizing<[u8; 32]> = match credential {
             AuthCredential::Password(password) => {
                 if !encrypted {
+                    checked.return_to_pool();
                     return Err(io::Error::other(
                         "Master does not accept a password for an unencrypted filesystem",
                     ));
                 }
                 let derived = crate::encryption::derive_key(password, &salt)
                     .map_err(|e| io::Error::other(e.to_string()))?;
-                derived.as_bytes().to_vec()
+                zeroize::Zeroizing::new(*derived.as_bytes())
             }
             AuthCredential::Secret(secret) => {
                 if encrypted {
+                    checked.return_to_pool();
                     return Err(io::Error::other(
                         "Password required to access encrypted filesystem",
                     ));
                 }
-                secret.to_vec()
+                zeroize::Zeroizing::new(*secret)
             }
         };
 
         let client_mac = auth_mac(
-            &key,
+            &key[..],
             &auth_transcript(0, &client_nonce, &server_nonce, &salt),
         );
-        let verified = self.send(&IpcRequest::AuthResponse { client_mac })?;
+        let verify_resp = Self::rpc_on_stream(
+            checked.stream_mut(),
+            &IpcRequest::AuthResponse { client_mac },
+        )?;
+        let verified = match Self::decode_response(verify_resp) {
+            Ok(data) => data,
+            Err(err) => {
+                checked.return_to_pool();
+                return Err(err);
+            }
+        };
         match verified {
             IpcResponseData::AuthVerify { server_mac } => {
                 let expected = auth_mac(
-                    &key,
+                    &key[..],
                     &auth_transcript(1, &client_nonce, &server_nonce, &salt),
                 );
                 if ct_eq(&server_mac, &expected) {
+                    {
+                        let mut guard = crate::lock_unpoisoned(&self.pool);
+                        guard.auth = Some(ClientAuthCache {
+                            key,
+                            salt,
+                            has_password,
+                            expected_encrypted: encrypted,
+                        });
+                    }
+                    checked.return_to_pool();
                     Ok(())
                 } else {
                     Err(io::Error::other(
@@ -1489,19 +1768,10 @@ impl IpcClient {
     /// The request is taken by reference (P4.28): a `WriteData` payload would
     /// otherwise be copied in full on every attempt of the retry loop.
     pub fn send(&self, req: &IpcRequest) -> Result<IpcResponseData, io::Error> {
-        // Deliberately NOT `lock_unpoisoned`: a panic between `write_framed` and
-        // `read_framed` leaves a partially written frame in the stream, so the peer
-        // is now out of step. Recovering the lock would let the next caller write
-        // into a desynchronized stream and silently corrupt the protocol, which is
-        // far worse than propagating the panic.
-        let mut guard = self.stream.lock().unwrap();
-        write_framed(&mut *guard, &req)?;
-        let resp: IpcResponse = read_framed(&mut *guard)?;
-
-        match resp {
-            IpcResponse::Success(data) => Ok(data),
-            IpcResponse::Error(err_msg) => Err(io::Error::other(err_msg)),
-        }
+        let mut checked = self.checkout_stream()?;
+        let resp = Self::rpc_on_stream(checked.stream_mut(), req)?;
+        checked.return_to_pool();
+        Self::decode_response(resp)
     }
 
     /// Returns the target socket/master file path

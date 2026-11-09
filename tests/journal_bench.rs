@@ -273,8 +273,9 @@ fn bench_range_async_scales_with_block_count() {
             size, blocks, rates[0], rates[1]
         );
     }
-    println!("  (async stays ~6-8% of lazy across all sizes: a fixed per-range cost,");
-    println!("   plus a per-block cost that only becomes dominant for large payloads)");
+    println!(
+        "  (P4.33 deferred dirty-range batching amortizes RangeAsync msync(MS_ASYNC) overhead)"
+    );
 }
 
 /// Read-heavy workloads should be unaffected by the journal; this guards against a

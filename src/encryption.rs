@@ -419,26 +419,27 @@ pub fn decrypt_filename(
     let b64 = &name[FILENAME_ENC_PREFIX.len()..];
     if b64.len() <= 400 {
         let mut decode_buf = [0u8; 320];
-        let payload = match Base64UrlUnpadded::decode(b64, &mut decode_buf) {
-            Ok(p) if p.len() >= 28 => p,
+        let payload_len = match Base64UrlUnpadded::decode(b64, &mut decode_buf) {
+            Ok(p) if p.len() >= 28 => p.len(),
             _ => return Ok(name.to_string()),
         };
         let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&payload[..12]);
-        let pt_len = payload.len() - 28;
-        let mut pt_bytes = Vec::with_capacity(pt_len);
-        pt_bytes.extend_from_slice(&payload[12..12 + pt_len]);
-        let tag = Tag::from_slice(&payload[12 + pt_len..]);
+        nonce.copy_from_slice(&decode_buf[..12]);
+        let pt_len = payload_len - 28;
+        let mut tag_bytes = [0u8; 16];
+        tag_bytes.copy_from_slice(&decode_buf[12 + pt_len..payload_len]);
+        let tag = Tag::from_slice(&tag_bytes);
 
         let cipher = ChaCha20Poly1305::new_from_slice(key.as_bytes())
             .map_err(|_| EncryptionError::InvalidKey)?;
+        let pt_slice = &mut decode_buf[12..12 + pt_len];
         if cipher
-            .decrypt_in_place_detached(Nonce::from_slice(&nonce), b"", &mut pt_bytes, tag)
+            .decrypt_in_place_detached(Nonce::from_slice(&nonce), b"", pt_slice, tag)
             .is_err()
         {
             return Ok(name.to_string());
         }
-        let Ok(plaintext) = String::from_utf8(pt_bytes) else {
+        let Ok(plaintext) = std::str::from_utf8(pt_slice) else {
             return Ok(name.to_string());
         };
 
@@ -452,7 +453,7 @@ pub fn decrypt_filename(
         if hash[..12] != nonce {
             return Ok(name.to_string());
         }
-        return Ok(plaintext);
+        return Ok(plaintext.to_string());
     }
 
     let payload = match Base64UrlUnpadded::decode_vec(b64) {

@@ -681,75 +681,182 @@ pub fn encode_ops(ops: &[MetadataOp]) -> Vec<u8> {
     out
 }
 
-/// Fast check for whether `ops` is already in canonical coalesced form,
-/// avoiding `ops.to_vec()` and temporary `BTreeMap` allocations on the
-/// common write/create/delete paths.
+/// Push a data-bitmap allocation/free span onto `ops`, coalescing adjacent spans
+/// of the same polarity into `SetDataBitmapRange` in O(1) on the fly (P4.18).
 #[inline]
-fn is_already_coalesced(ops: &[MetadataOp]) -> bool {
+pub(crate) fn push_data_bitmap_op(
+    ops: &mut Vec<MetadataOp>,
+    start_block: u64,
+    count: u32,
+    allocated: bool,
+) {
+    if count == 0 {
+        return;
+    }
+    if let Some(last) = ops.last_mut() {
+        match last {
+            MetadataOp::SetDataBitmap {
+                block_id,
+                allocated: prev_alloc,
+            } if *prev_alloc == allocated => {
+                if start_block == block_id.saturating_add(1) {
+                    *last = MetadataOp::SetDataBitmapRange {
+                        start_block: *block_id,
+                        count: 1 + count,
+                        allocated,
+                    };
+                    return;
+                }
+                if start_block.saturating_add(count as u64) == *block_id {
+                    *last = MetadataOp::SetDataBitmapRange {
+                        start_block,
+                        count: count + 1,
+                        allocated,
+                    };
+                    return;
+                }
+            }
+            MetadataOp::SetDataBitmapRange {
+                start_block: prev_start,
+                count: prev_count,
+                allocated: prev_alloc,
+            } if *prev_alloc == allocated => {
+                if start_block == prev_start.saturating_add(*prev_count as u64) {
+                    *prev_count = prev_count.saturating_add(count);
+                    return;
+                }
+                if start_block.saturating_add(count as u64) == *prev_start {
+                    *prev_start = start_block;
+                    *prev_count = prev_count.saturating_add(count);
+                    return;
+                }
+            }
+            _ => {}
+        }
+    }
+    if count == 1 {
+        ops.push(MetadataOp::SetDataBitmap {
+            block_id: start_block,
+            allocated,
+        });
+    } else {
+        ops.push(MetadataOp::SetDataBitmapRange {
+            start_block,
+            count,
+            allocated,
+        });
+    }
+}
+
+/// Push a block-slice write onto `ops`, extending or overwriting the tail
+/// `WriteBlockSlice` in place when it targets the same block and is contiguous
+/// or contained within it (P4.18).
+#[inline]
+pub(crate) fn push_block_slice_op(
+    ops: &mut Vec<MetadataOp>,
+    block_id: u64,
+    offset: u32,
+    data: &[u8],
+) {
+    if let Some(MetadataOp::WriteBlockSlice {
+        block_id: prev_blk,
+        offset: prev_off,
+        data: prev_data,
+    }) = ops.last_mut()
+        && *prev_blk == block_id
+    {
+        let ps = *prev_off as usize;
+        let pe = ps + prev_data.len();
+        let ns = offset as usize;
+        let ne = ns + data.len();
+        if pe == ns {
+            prev_data.extend_from_slice(data);
+            return;
+        }
+        if ps <= ns && ne <= pe {
+            prev_data[ns - ps..ne - ps].copy_from_slice(data);
+            return;
+        }
+    }
+    ops.push(MetadataOp::WriteBlockSlice {
+        block_id,
+        offset,
+        data: data.to_vec(),
+    });
+}
+
+/// Fast O(N) zero-allocation check for whether `ops` is already in canonical
+/// coalesced form, avoiding `ops.to_vec()` and temporary `BTreeMap` allocations
+/// when encoding WAL frames (P4.18).
+#[inline]
+pub(crate) fn is_already_coalesced(ops: &[MetadataOp]) -> bool {
     if ops.len() <= 1 {
+        if let Some(MetadataOp::SetDataBitmapRange { count, .. }) = ops.first()
+            && *count <= 1
+        {
+            return false;
+        }
         return true;
     }
     let mut phase = 0u8;
-    let mut data_bitmap_count = 0usize;
-    let mut first_data_alloc = false;
-    let mut slice_count = 0usize;
+    let mut prev_bitmap: Option<(bool, u64)> = None; // (allocated, end_exclusive)
+    let mut prev_slice: Option<(u64, usize)> = None; // (block_id, end_exclusive)
+    let mut seen_inodes = [0u64; 4];
     let mut inode_count = 0usize;
-    let mut first_inode_id = 0u64;
 
     for op in ops {
         let op_phase = match op {
             MetadataOp::SetInodeBitmap { .. } => 1,
-            MetadataOp::SetDataBitmap { allocated, .. } => {
-                data_bitmap_count += 1;
-                if data_bitmap_count == 1 {
-                    first_data_alloc = *allocated;
-                } else if data_bitmap_count == 2 {
-                    // Two data bitmap ops are only already-sorted and non-mergeable
-                    // when the first is `allocated: false` and the second is `allocated: true`.
-                    if !(!first_data_alloc && *allocated) {
-                        return false;
-                    }
-                } else {
+            MetadataOp::SetDataBitmap {
+                block_id,
+                allocated,
+            } => {
+                if let Some((pa, pe)) = prev_bitmap
+                    && ((pa && !*allocated) || (pa == *allocated && pe >= *block_id))
+                {
                     return false;
                 }
+                prev_bitmap = Some((*allocated, block_id.saturating_add(1)));
                 2
             }
             MetadataOp::SetDataBitmapRange {
-                count, allocated, ..
+                start_block,
+                count,
+                allocated,
             } => {
-                if *count == 1 {
+                if *count <= 1 {
                     return false;
                 }
-                data_bitmap_count += 1;
-                if data_bitmap_count == 1 {
-                    first_data_alloc = *allocated;
-                } else if data_bitmap_count == 2 {
-                    if !(!first_data_alloc && *allocated) {
-                        return false;
-                    }
-                } else {
+                if let Some((pa, pe)) = prev_bitmap
+                    && ((pa && !*allocated) || (pa == *allocated && pe >= *start_block))
+                {
                     return false;
                 }
+                prev_bitmap = Some((*allocated, start_block.saturating_add(*count as u64)));
                 2
             }
-            MetadataOp::WriteBlockSlice { .. } => {
-                slice_count += 1;
-                if slice_count > 1 {
+            MetadataOp::WriteBlockSlice {
+                block_id,
+                offset,
+                data,
+            } => {
+                let s = *offset as usize;
+                let e = s.saturating_add(data.len());
+                if let Some((pb, pe)) = prev_slice
+                    && (pb > *block_id || (pb == *block_id && pe >= s))
+                {
                     return false;
                 }
+                prev_slice = Some((*block_id, e));
                 3
             }
             MetadataOp::WriteInode { inode_id, .. } => {
-                inode_count += 1;
-                if inode_count == 1 {
-                    first_inode_id = *inode_id;
-                } else if inode_count == 2 {
-                    if *inode_id == first_inode_id {
-                        return false;
-                    }
-                } else {
+                if inode_count >= seen_inodes.len() || seen_inodes[..inode_count].contains(inode_id)
+                {
                     return false;
                 }
+                seen_inodes[inode_count] = *inode_id;
+                inode_count += 1;
                 4
             }
         };
@@ -2617,7 +2724,11 @@ use memmap2::MmapMut;
 pub(crate) struct AllocSim {
     #[cfg(test)]
     inode_bitmap: Vec<u8>,
-    data_bitmap: Vec<u8>,
+    /// Lazily materialized data-bitmap copy (P4.18): stays `None` on pure in-place
+    /// overwrites so `write_data_journaled` pays zero heap allocations or 4-64 KB
+    /// `memcpy`s when no blocks are allocated or freed through `AllocSim`.
+    data_bitmap: Option<Vec<u8>>,
+    data_bitmap_range: (usize, usize),
     data_start: u64,
     /// Total number of blocks in the image.
     ///
@@ -2654,9 +2765,11 @@ impl AllocSim {
         let db = guard
             .data_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("data bitmap not found")))?;
+        let db_range = guard.data_bitmap_byte_range();
         Ok(Self {
             inode_bitmap: ib.to_vec(),
-            data_bitmap: db.to_vec(),
+            data_bitmap: Some(db.to_vec()),
+            data_bitmap_range: db_range,
             data_start: sb.data_block_start,
             block_count: sb.block_count,
             #[cfg(test)]
@@ -2672,21 +2785,25 @@ impl AllocSim {
 
     /// Construct an allocation simulator for data-only transactions (`write_data`,
     /// `commit_prepared_chunked_write`, `truncate_chunked_64k`, `create_entry_journaled`)
-    /// that never allocate inodes through `AllocSim`, avoiding the 4 KB `inode_bitmap` copy.
+    /// that never allocate inodes through `AllocSim`, avoiding the `inode_bitmap` copy
+    /// and deferring the `data_bitmap` copy until the first block allocation/free (P4.18).
     pub(crate) fn new_data_only(
         guard: &DiskManagerInner,
         free_inode_hint: u64,
         free_block_hint: u64,
     ) -> Result<Self, DiskManagerError> {
         let sb = guard.superblock;
-        // P4.25: use the full multi-block data bitmap span.
-        let db = guard
+        // Validate that the multi-block data bitmap span lies inside the image (P4.25),
+        // without copying its bytes unless an allocation or free actually happens (P4.18).
+        let _ = guard
             .data_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("data bitmap not found")))?;
+        let db_range = guard.data_bitmap_byte_range();
         Ok(Self {
             #[cfg(test)]
             inode_bitmap: Vec::new(),
-            data_bitmap: db.to_vec(),
+            data_bitmap: None,
+            data_bitmap_range: db_range,
             data_start: sb.data_block_start,
             block_count: sb.block_count,
             #[cfg(test)]
@@ -2698,6 +2815,18 @@ impl AllocSim {
             unzeroed_fresh: rustc_hash::FxHashSet::default(),
             pointers: rustc_hash::FxHashMap::default(),
         })
+    }
+
+    #[inline]
+    fn ensure_data_bitmap(&mut self, mmap: &[u8]) -> Result<&mut [u8], DiskManagerError> {
+        if self.data_bitmap.is_none() {
+            let (start, len) = self.data_bitmap_range;
+            let slice = mmap.get(start..start.saturating_add(len)).ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
+            })?;
+            self.data_bitmap = Some(slice.to_vec());
+        }
+        Ok(self.data_bitmap.as_mut().unwrap())
     }
 
     #[cfg(test)]
@@ -2718,13 +2847,17 @@ impl AllocSim {
         Ok(id)
     }
 
-    pub(crate) fn alloc_block(&mut self) -> Result<u64, DiskManagerError> {
-        let mut a = SimpleBlockAllocator::new(&mut self.data_bitmap, self.data_start);
+    pub(crate) fn alloc_block(&mut self, mmap: &[u8]) -> Result<u64, DiskManagerError> {
+        let data_start = self.data_start;
+        let hint = self.free_block_hint;
+        let block_count = self.block_count;
+        let bm = self.ensure_data_bitmap(mmap)?;
+        let mut a = SimpleBlockAllocator::new(bm, data_start);
         let blk = a
-            .allocate_with_hint(Some(self.free_block_hint))
+            .allocate_with_hint(Some(hint))
             .map_err(DiskManagerError::Allocator)?;
         // SEC-25: never hand out a block outside the image.
-        if blk >= self.block_count {
+        if blk >= block_count {
             let _ = a.free(blk);
             return Err(DiskManagerError::Allocator(
                 crate::allocator::AllocatorError::NoSpace,
@@ -2737,16 +2870,24 @@ impl AllocSim {
         Ok(blk)
     }
 
-    pub(crate) fn alloc_contiguous(&mut self, count: usize) -> Result<u64, DiskManagerError> {
+    pub(crate) fn alloc_contiguous(
+        &mut self,
+        mmap: &[u8],
+        count: usize,
+    ) -> Result<u64, DiskManagerError> {
         if count == 0 {
             return Ok(self.free_block_hint);
         }
-        let mut a = SimpleBlockAllocator::new(&mut self.data_bitmap, self.data_start);
+        let data_start = self.data_start;
+        let hint = self.free_block_hint;
+        let block_count = self.block_count;
+        let bm = self.ensure_data_bitmap(mmap)?;
+        let mut a = SimpleBlockAllocator::new(bm, data_start);
         let blk = a
-            .allocate_contiguous(count, Some(self.free_block_hint))
+            .allocate_contiguous(count, Some(hint))
             .map_err(DiskManagerError::Allocator)?;
         // SEC-25: the run must stay inside the image.
-        if blk.saturating_add(count as u64) > self.block_count {
+        if blk.saturating_add(count as u64) > block_count {
             let _ = a.free_contiguous(blk, count);
             return Err(DiskManagerError::Allocator(
                 crate::allocator::AllocatorError::NoSpace,
@@ -2764,19 +2905,27 @@ impl AllocSim {
 
     pub(crate) fn free_contiguous(
         &mut self,
+        mmap: &[u8],
         start_blk: u64,
         count: usize,
     ) -> Result<(), DiskManagerError> {
         if count == 0 {
             return Ok(());
         }
-        let mut a = SimpleBlockAllocator::new(&mut self.data_bitmap, self.data_start);
+        let data_start = self.data_start;
+        let bm = self.ensure_data_bitmap(mmap)?;
+        let mut a = SimpleBlockAllocator::new(bm, data_start);
         a.free_contiguous(start_blk, count)
             .map_err(DiskManagerError::Allocator)?;
         if start_blk < self.free_block_hint {
             self.free_block_hint = start_blk;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_materialized_data_bitmap(&self) -> bool {
+        self.data_bitmap.is_some()
     }
 
     #[inline]
@@ -2809,9 +2958,11 @@ impl AllocSim {
         free_inode_hint: u64,
         free_block_hint: u64,
     ) -> Self {
+        let len = data_bitmap.len();
         Self {
             inode_bitmap,
-            data_bitmap,
+            data_bitmap: Some(data_bitmap),
+            data_bitmap_range: (0, len),
             data_start,
             // The test simulator is not bound to an image; the limits are
             // effectively disabled.
@@ -2848,7 +2999,7 @@ fn sim_ensure_root(
     ops: &mut Vec<crate::journal::MetadataOp>,
 ) -> Result<u64, DiskManagerError> {
     if *slot == 0 {
-        let blk = sim.alloc_block()?;
+        let blk = sim.alloc_block(mmap)?;
         ops.push(crate::journal::MetadataOp::SetDataBitmap {
             block_id: blk,
             allocated: true,
@@ -2907,7 +3058,7 @@ fn sim_child(
         }
         return Ok(existing);
     }
-    let blk = sim.alloc_block()?;
+    let blk = sim.alloc_block(mmap)?;
     sim.pointers.insert((parent_blk, idx), blk);
     ops.push(crate::journal::MetadataOp::SetDataBitmap {
         block_id: blk,
@@ -2946,7 +3097,7 @@ pub(crate) fn sim_get_or_alloc_block(
     match BlockPath::from_logical(logical_idx) {
         Some(BlockPath::Direct(i)) => {
             if inode.blocks[i] == 0 {
-                let blk = sim.alloc_block()?;
+                let blk = sim.alloc_block(mmap)?;
                 ops.push(crate::journal::MetadataOp::SetDataBitmap {
                     block_id: blk,
                     allocated: true,
@@ -2993,6 +3144,145 @@ pub(crate) fn sim_get_or_alloc_block(
                 return Ok(0);
             }
             sim_child(mmap, sib, c, false, sim, ops)
+        }
+        None => Err(DiskManagerError::Io(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            "File too large (max 513GB)",
+        ))),
+    }
+}
+
+fn sim_ensure_root_coalesced(
+    mmap: &MmapMut,
+    slot: &mut u64,
+    sim: &mut AllocSim,
+    bitmap_ops: &mut Vec<MetadataOp>,
+    slice_ops: &mut Vec<MetadataOp>,
+) -> Result<u64, DiskManagerError> {
+    if *slot == 0 {
+        let blk = sim.alloc_block(mmap)?;
+        push_data_bitmap_op(bitmap_ops, blk, 1, true);
+        if block_has_nonzero_bytes(mmap, blk) {
+            push_block_slice_op(slice_ops, blk, 0, &[0u8; BLOCK_SIZE]);
+        }
+        *slot = blk;
+    }
+    if *slot != 0 && !sim.is_data_block(*slot) {
+        return Err(DiskManagerError::Io(std::io::Error::other(format!(
+            "Indirect root {} is outside the data area",
+            *slot
+        ))));
+    }
+    Ok(*slot)
+}
+
+fn sim_child_coalesced(
+    mmap: &MmapMut,
+    parent_blk: u64,
+    idx: usize,
+    is_pointer_table: bool,
+    sim: &mut AllocSim,
+    bitmap_ops: &mut Vec<MetadataOp>,
+    slice_ops: &mut Vec<MetadataOp>,
+) -> Result<u64, DiskManagerError> {
+    if !sim.is_data_block(parent_blk) {
+        return Err(DiskManagerError::Io(std::io::Error::other(format!(
+            "Indirect block {} is outside the data area",
+            parent_blk
+        ))));
+    }
+    if let Some(&cached) = sim.pointers.get(&(parent_blk, idx)) {
+        return Ok(cached);
+    }
+    let existing = if sim.is_fresh(parent_blk) {
+        0
+    } else {
+        DiskManager::read_block_ptr(mmap, parent_blk, idx)
+    };
+    if existing != 0 {
+        if !sim.is_data_block(existing) {
+            return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                "Block pointer {} is outside the data area",
+                existing
+            ))));
+        }
+        return Ok(existing);
+    }
+    let blk = sim.alloc_block(mmap)?;
+    sim.pointers.insert((parent_blk, idx), blk);
+    push_data_bitmap_op(bitmap_ops, blk, 1, true);
+    if is_pointer_table && block_has_nonzero_bytes(mmap, blk) {
+        push_block_slice_op(slice_ops, blk, 0, &[0u8; BLOCK_SIZE]);
+    }
+    push_block_slice_op(slice_ops, parent_blk, (idx * 8) as u32, &blk.to_le_bytes());
+    Ok(blk)
+}
+
+fn sim_get_or_alloc_block_coalesced(
+    mmap: &MmapMut,
+    inode: &mut Inode,
+    logical_idx: usize,
+    sim: &mut AllocSim,
+    bitmap_ops: &mut Vec<MetadataOp>,
+    slice_ops: &mut Vec<MetadataOp>,
+) -> Result<u64, DiskManagerError> {
+    use crate::inode::BlockPath;
+
+    match BlockPath::from_logical(logical_idx) {
+        Some(BlockPath::Direct(i)) => {
+            if inode.blocks[i] == 0 {
+                let blk = sim.alloc_block(mmap)?;
+                push_data_bitmap_op(bitmap_ops, blk, 1, true);
+                inode.blocks[i] = blk;
+            }
+            if inode.blocks[i] != 0 && !sim.is_data_block(inode.blocks[i]) {
+                return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                    "Block pointer {} is outside the data area",
+                    inode.blocks[i]
+                ))));
+            }
+            Ok(inode.blocks[i])
+        }
+        Some(BlockPath::Single(i)) => {
+            let sib =
+                sim_ensure_root_coalesced(mmap, &mut inode.blocks[10], sim, bitmap_ops, slice_ops)?;
+            if sib == 0 {
+                return Ok(0);
+            }
+            sim_child_coalesced(mmap, sib, i, false, sim, bitmap_ops, slice_ops)
+        }
+        Some(BlockPath::Double(a, b)) => {
+            let dib =
+                sim_ensure_root_coalesced(mmap, &mut inode.blocks[11], sim, bitmap_ops, slice_ops)?;
+            if dib == 0 {
+                return Ok(0);
+            }
+            let sib = sim_child_coalesced(mmap, dib, a, true, sim, bitmap_ops, slice_ops)?;
+            if sib == 0 {
+                return Ok(0);
+            }
+            sim_child_coalesced(mmap, sib, b, false, sim, bitmap_ops, slice_ops)
+        }
+        Some(BlockPath::Triple(a, b, c)) => {
+            let tib = sim_ensure_root_coalesced(
+                mmap,
+                &mut inode.triple_indirect,
+                sim,
+                bitmap_ops,
+                slice_ops,
+            )?;
+            if tib == 0 {
+                return Ok(0);
+            }
+            let dib = sim_child_coalesced(mmap, tib, a, true, sim, bitmap_ops, slice_ops)?;
+            if dib == 0 {
+                return Ok(0);
+            }
+            let sib = sim_child_coalesced(mmap, dib, b, true, sim, bitmap_ops, slice_ops)?;
+            if sib == 0 {
+                return Ok(0);
+            }
+            sim_child_coalesced(mmap, sib, c, false, sim, bitmap_ops, slice_ops)
         }
         None => Err(DiskManagerError::Io(std::io::Error::new(
             std::io::ErrorKind::FileTooLarge,
@@ -3172,6 +3462,8 @@ pub(crate) fn stage_payload_write(
         None
     };
 
+    let mut bitmap_ops: Vec<MetadataOp> = Vec::new();
+    let mut slice_ops: Vec<MetadataOp> = Vec::new();
     let mut written = 0usize;
     let mut cur = phys_off;
     while written < buf.len() {
@@ -3179,7 +3471,14 @@ pub(crate) fn stage_payload_write(
         let in_blk_off = (cur % BLOCK_SIZE as u64) as usize;
         let n = std::cmp::min(buf.len() - written, BLOCK_SIZE - in_blk_off);
 
-        let phys = sim_get_or_alloc_block(&guard.mmap, inode, blk_idx, sim, ops)?;
+        let phys = sim_get_or_alloc_block_coalesced(
+            &guard.mmap,
+            inode,
+            blk_idx,
+            sim,
+            &mut bitmap_ops,
+            &mut slice_ops,
+        )?;
         let need_zero = phys != 0 && sim.take_unzeroed_fresh(phys);
         if phys != 0 {
             let is_new = match &mut existing_set {
@@ -3204,6 +3503,8 @@ pub(crate) fn stage_payload_write(
         written += n;
         cur += n as u64;
     }
+    ops.extend(bitmap_ops);
+    ops.extend(slice_ops);
     Ok(())
 }
 
@@ -3642,7 +3943,7 @@ mod alloc_sim_and_staging_tests {
             Err(DiskManagerError::Allocator(AllocatorError::NoSpace)) => {}
             other => panic!("expected NoSpace, got {other:?}"),
         }
-        match sim.alloc_block() {
+        match sim.alloc_block(&[]) {
             Err(DiskManagerError::Allocator(AllocatorError::NoSpace)) => {}
             other => panic!("expected NoSpace, got {other:?}"),
         }
@@ -3661,8 +3962,8 @@ mod alloc_sim_and_staging_tests {
         assert_eq!(ino2, 1);
         assert_eq!(sim.free_inode_hint, 2);
 
-        let blk1 = sim.alloc_block().expect("alloc block 1");
-        let blk2 = sim.alloc_block().expect("alloc block 2");
+        let blk1 = sim.alloc_block(&[]).expect("alloc block 1");
+        let blk2 = sim.alloc_block(&[]).expect("alloc block 2");
         assert_eq!(blk1, 100);
         assert_eq!(blk2, 101);
         assert_eq!(sim.free_block_hint, 102);
@@ -4042,6 +4343,29 @@ mod alloc_sim_and_staging_tests {
 
         let b0_slice2 = DiskManager::get_block_from_map(&guard.mmap, blk0).unwrap();
         assert_eq!(&b0_slice2[4050..4070], &[0xFF; 20]);
+
+        // P4.18: a fresh `AllocSim::new_data_only` on an already-allocated file
+        // must NOT materialize a copy of `data_bitmap` during an in-place overwrite!
+        let mut sim_overwrite =
+            AllocSim::new_data_only(&guard, guard.free_inode_hint, guard.free_block_hint).unwrap();
+        assert!(!sim_overwrite.has_materialized_data_bitmap());
+        let mut ow_ops = Vec::new();
+        let mut ow_used = Vec::new();
+        stage_payload_write(
+            &mut guard,
+            &mut inode,
+            0,
+            &[0xCC; 4096],
+            &mut sim_overwrite,
+            &mut ow_ops,
+            &mut ow_used,
+        )
+        .unwrap();
+        assert!(
+            !sim_overwrite.has_materialized_data_bitmap(),
+            "in-place overwrite must not clone data_bitmap"
+        );
+        assert!(ow_ops.is_empty());
     }
 
     #[test]

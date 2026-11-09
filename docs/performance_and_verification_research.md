@@ -253,16 +253,16 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.18: Lazy `AllocSim` Bitmap Copy & On-the-Fly `MetadataOp` Coalescing in Journaled Writes [OPEN]
-* **File & Lines**: [`src/journal.rs:2592-2614, 2774-2803`](file:///Users/ych/oifs/src/journal.rs#L2592-L2614) (`AllocSim::new_data_only`, `sim_child`, `sim_get_or_alloc_block`), [`src/disk.rs:3437-3504, 5815-5834`](file:///Users/ych/oifs/src/disk.rs#L3437-L3504) (`write_data_journaled`, `delete_file_journaled`)
-* **Status**: **Proposed (Medium-High Priority)**
+### P4.18: Lazy `AllocSim` Bitmap Copy, Zero-Copy `WritePlan` & On-the-Fly `MetadataOp` Coalescing in Journaled Writes [RESOLVED]
+* **File & Lines**: [`src/journal.rs`](file:///Users/ych/oifs/src/journal.rs) (`AllocSim`, `push_data_bitmap_op`, `push_block_slice_op`, `is_already_coalesced`, `sim_get_or_alloc_block_coalesced`), [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`WritePlan`, `FullOverwritePayload`, `write_data_journaled`, `delete_file_journaled`, `truncate_internal`, `truncate_chunked_64k`, `commit_prepared_chunked_write`)
+* **Status**: **Completed & Verified** (see §6.23 — **2.00x** faster 5,000 × 4 KB journaled in-place overwrites: `2.39 ms` $\rightarrow$ `1.19 ms`; **3.28x** faster 8 × 16 MB journaled deletes: `330.1 µs` $\rightarrow$ `100.8 µs`; **1.55x** faster 32 MB journaled initial writes: `5.07 ms` $\rightarrow$ `3.27 ms`)
 * **Bottleneck Analysis**:
-  1. **Unconditional 4 KB `data_bitmap` Copy on Overwrites**: `write_data_journaled` always calls `AllocSim::new_data_only` (cloning the 4 KB `data_bitmap` block into a `Vec<u8>`) even when overwriting already-allocated blocks where `AllocSim` never allocates a single block.
-  2. **Fragmented `SetDataBitmap` & 8-Byte `WriteBlockSlice` Emission**: `sim_get_or_alloc_block`, `write_data_journaled` (block freeing), and `delete_file_journaled` push one `MetadataOp::SetDataBitmap` per block and allocate a separate 8-byte `Vec<u8>` (`blk.to_le_bytes().to_vec()`) for each indirect pointer entry in `sim_child`. On multi-megabyte writes/deletes, `ops` accumulates thousands of entries, causing `is_already_coalesced(ops)` in `encode_frame` to return `false` and forcing a full `ops.to_vec()` clone plus `BTreeMap` sorting/merging.
-* **Proposed Remedy**:
-  - Make `AllocSim::data_bitmap` copy-on-write (`Cow<[u8]>`), cloning the 4 KB bitmap only on the first actual block allocation or deallocation.
-  - Coalesce contiguous `SetDataBitmap` into `SetDataBitmapRange` and adjacent indirect pointer writes into the tail `MetadataOp::WriteBlockSlice` at push time (`push_bitmap_op` / `push_block_slice_op`), keeping `ops` compact and already coalesced without `BTreeMap` passes.
-* **Expected Impact**: **Medium-High** (Eliminates 4 KB bitmap copies on in-place overwrites and removes thousands of small heap allocations on large journaled writes/deletes).
+  1. **Unconditional `data_bitmap` Copy & Raw `data.to_vec()` Clone on Overwrites**: `write_data_journaled` always cloned the entire 4–64 KB `data_bitmap` into a `Vec<u8>` inside `AllocSim::new_data_only` even when overwriting already-allocated blocks, and `WritePlan` / `FullOverwritePayload` copied raw caller buffers (`data.to_vec()` / `final_data.into_owned()`) on every uncompressed write.
+  2. **Fragmented `SetDataBitmap` & 8-Byte `WriteBlockSlice` Emission + Uncoalesced In-Place Replay**: `stage_payload_write`, `write_data_journaled`, `delete_file_journaled`, and `truncate_internal` pushed individual `SetDataBitmap` ops and 8-byte `Vec<u8>` indirect-pointer writes, causing `encode_frame` to clone `ops.to_vec()` while `apply_journal_ops` still replayed thousands of uncoalesced single-bit and 8-byte operations.
+* **Implementation**:
+  - Made `AllocSim.data_bitmap` lazy copy-on-write (`Option<Vec<u8>>`), materializing a mutable copy of `&guard.mmap[data_bitmap_range]` only on the first block allocation or free.
+  - Changed `WritePlan<'a>` and `FullOverwritePayload<'a>` to hold `Cow<'a, [u8]>`, borrowing caller slices with zero heap allocation or extra `memcpy` on raw uncompressed writes.
+  - Added `push_data_bitmap_op` and `push_block_slice_op` for on-the-fly coalescing, generalized `is_already_coalesced` to $O(N)$ over sorted non-adjacent range/slice ops, and pre-coalesced `ops` by value before `commit_journal_tx` + `apply_journal_ops`.
 
 ---
 
@@ -304,14 +304,13 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.22: Second-Chance (Clock) Eviction in `BoundedInodeCache` Shards [OPEN]
-* **File & Lines**: [`src/disk.rs:487-532`](file:///Users/ych/oifs/src/disk.rs#L487-L532) (`InodeCacheShard`)
-* **Status**: **Proposed (Low Priority)**
+### P4.22: Second-Chance (Clock) Eviction in `BoundedInodeCache` Shards [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`CachedInodeEntry`, `InodeCacheShard`)
+* **Status**: **Completed & Verified** (see §6.23)
 * **Bottleneck Analysis**:
-  - `InodeCacheShard` uses strict FIFO (`order: VecDeque<u64>`). Because `get()` does not record reference activity, hot directory inodes (such as root inode `0` or active parent directories) inserted early are evicted first whenever a workload scans or creates >64 files mapping to the same shard.
-* **Proposed Remedy**:
-  - Track a lightweight reference bit per cached inode (Second-Chance / Clock policy) so frequently read parent directory and hot file inodes survive sequential scans without requiring a write lock on `get()`.
-* **Expected Impact**: **Low** (Improves cache hit rate under mixed directory-lookup + large-scan workloads).
+  - `InodeCacheShard` used strict FIFO (`order: VecDeque<u64>`). Because `get()` did not record reference activity, hot directory inodes (such as root inode `0` or active parent directories) inserted early were evicted first whenever a workload scanned or created >64 files mapping to the same shard.
+* **Implementation**:
+  - Added `referenced: AtomicBool` inside `CachedInodeEntry`. `get()` sets `referenced = true` with `Ordering::Relaxed` under the shard's shared `.read()` lock (zero write-lock contention on cache hits), and `insert()` performs Second-Chance (Clock) eviction (`referenced.swap(false, Relaxed)` re-queues hot entries once while evicting cold entries in $O(1)$ amortized time).
 
 ---
 
@@ -377,23 +376,18 @@ This document consolidates deep codebase investigations and findings recovered f
 ---
 
 ### P4.28: IPC & Remote Session Payload Copies, Pooled Buffer Shrinkage & Connection Multiplexing [RESOLVED]
-* **File & Lines**: [`src/session.rs:741-752, 980-986`](file:///Users/ych/oifs/src/session.rs#L741-L752), [`src/ipc.rs:589-629, 1098, 1242-1258, 1448-1462`](file:///Users/ych/oifs/src/ipc.rs#L589-L629)
-* **Status**: **Partially completed** (see §6.14: the pooled buffer retention, the per-request payload clone and the per-request string allocation are fixed; the connection multiplexing and the duplicate inode lookup remain)
+* **File & Lines**: [`src/session.rs`](file:///Users/ych/oifs/src/session.rs) (`OifsSession::Remote`, `send_request`), [`src/ipc.rs`](file:///Users/ych/oifs/src/ipc.rs) (`read_framed`, `IpcServer::handle_request`, `IpcClient`, `CheckedOutStream`), [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`read_at_vec`)
+* **Status**: **Completed & Verified** (see §6.14 & §6.23 — **3.1x** faster 8-thread concurrent IPC Proxy `read_at`: `131.64 ms` $\rightarrow$ `41.99 ms`, `569.7 MB/s` $\rightarrow$ `1,786.1 MB/s`)
 * **Bottleneck Analysis**:
-  1. **4–5x Payload Copies on Remote `write_data`**:
-     - `OifsSession::write_data_with_filters` ([`src/session.rs:983`](file:///Users/ych/oifs/src/session.rs#L983)) copies `data: &[u8]` into `data.to_vec()`.
-     - `OifsSession::send_request` ([`src/session.rs:751`](file:///Users/ych/oifs/src/session.rs#L751)) calls `current_client.send(req.clone())` on **attempt 0**, cloning the entire `IpcRequest::WriteData` `Vec<u8>` payload before even sending it once!
-     - `read_framed` ([`src/ipc.rs:609-620`](file:///Users/ych/oifs/src/ipc.rs#L609-L620)) reads into a 64 KB `FRAME_CHUNK_BUF` stage buffer and copies (`buf.extend_from_slice`) into `FRAME_READ_BUF`, and `bincode::deserialize` copies the payload out into `IpcRequest::WriteData.data`.
-  2. **Unbounded Thread-Local Frame Buffer Retention**: `FRAME_WRITE_BUF` and `FRAME_READ_BUF` never call `shrink_to` after handling a large frame (up to `MAX_FRAME_BYTES = 128 MiB`). Across `MAX_CONCURRENT_PEERS = 256` worker threads, peak RSS can remain permanently pinned at multi-gigabyte levels.
-  3. **Single-Stream Mutex Serialization in `IpcClient`**: `IpcClient` wraps a single `Mutex<IpcStream>` ([`src/ipc.rs:1360, 1454`](file:///Users/ych/oifs/src/ipc.rs#L1454)), serializing all concurrent threads in a Proxy process into 1-in-flight request at a time, and `send_request` locks `dm_fallback: Arc<Mutex<Option<Arc<DiskManager>>>>` on every request.
+  1. **4–5x Payload Copies on Remote `write_data` / `read_at`**:
+     - `OifsSession::send_request` previously cloned `IpcRequest::WriteData` before attempt 0, and `read_framed` staged every incoming frame through a separate 64 KB `FRAME_CHUNK_BUF` before copying into `FRAME_READ_BUF`.
+  2. **Unbounded Thread-Local Frame Buffer Retention**: `FRAME_WRITE_BUF` and `FRAME_READ_BUF` never shrank after handling large frames (up to `MAX_FRAME_BYTES = 128 MiB`).
+  3. **Single-Stream Mutex Serialization in `IpcClient` & `dm_fallback` Mutex Contention**: `IpcClient` serialized all concurrent Proxy threads behind a single `Mutex<IpcStream>`, and `OifsSession::send_request` locked `dm_fallback` on every RPC.
   4. **Per-Request Minor Overheads in Master Worker**:
-     - [`src/ipc.rs:1098`](file:///Users/ych/oifs/src/ipc.rs#L1098) allocates `let short_name = req.name().to_string();` on every request even when `tx_worker.is_none()` (and `req.name()` is already `&'static str`).
-     - [`IpcServer::handle_request` (`ReadAt`)](file:///Users/ych/oifs/src/ipc.rs#L1242-L1258) calls `dm.read_inode(inode_id)` and then `dm.read_at(inode_id, ...)`, acquiring the read lock and looking up the inode twice.
-* **Proposed Remedy**:
-  - Pass `&IpcRequest` to `IpcClient::send(&self, req: &IpcRequest)` so `send_request` never clones `req` across the retry loop.
-  - Read directly into `FRAME_READ_BUF` spare capacity in 64 KB chunks without the intermediate `FRAME_CHUNK_BUF` copy, and `shrink_to(1024 * 1024)` when thread-local buffer capacity exceeds 1 MiB.
-  - Change `SessionEvent::RequestHandled.req_type` (or compute `short_name` only inside `if let Some(tx) = &tx_worker`), and avoid double inode lookup in `IpcRequest::ReadAt`.
-* **Expected Impact**: **Medium** (Cuts IPC write memory copies by >50%, bounds idle worker RSS, and reduces per-RPC latency).
+     - `req.name()` allocated strings unconditionally, and `IpcServer::handle_request` (`ReadAt`) acquired the read lock and decoded the inode twice (`dm.read_inode` + `dm.read_at`).
+* **Implementation**:
+  - Borrowed `&IpcRequest` across `IpcClient::send`, added `shrink_frame_buf` (`1 MiB` threshold), removed `FRAME_CHUNK_BUF` so `read_framed` streams directly into `FRAME_READ_BUF` in bounded `64 KiB` chunks, and switched `IpcRequest::ReadAt` to single-lock, single-lookup `DiskManager::read_at_vec`.
+  - Replaced single-socket `IpcClient` with a bounded concurrent connection pool (`MAX_CLIENT_POOL_STREAMS = 8`) using RAII `CheckedOutStream` guards (discarding desynchronized sockets on I/O error or panic) and cached `Zeroizing<[u8; 32]>` KDF keys for fast BLAKE2b secondary stream authentication, plus an `AtomicBool` fast path for `dm_fallback` in `OifsSession::Remote`.
 
 ---
 
@@ -450,14 +444,14 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
-### P4.33: Batched / Deferred Dirty-Range Coalescing for `DurabilityMode::RangeAsync` [OPEN]
-* **File & Lines**: [`src/disk.rs:448-485`](file:///Users/ych/oifs/src/disk.rs#L448-L485) (`sync_mutation_ranges`)
-* **Status**: **Proposed (Medium Priority)**
+### P4.33: Batched / Deferred Dirty-Range Coalescing for `DurabilityMode::RangeAsync` [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`PendingAsyncRanges`, `sync_mutation_ranges`, `flush_async_batch`, `drain_pending_async_ranges`, `maybe_drain_async_ranges`, `set_durability_mode`, `flush`, `flush_async`)
+* **Status**: **Completed & Verified** (see §6.23 — **15.7x** faster `500 × 512 B` journaled `RangeAsync` create+write+flush: `43.46 ms` $\rightarrow$ `2.77 ms`; **11.5–24.2x** faster `journal_bench` `RangeAsync` write rate)
 * **Bottleneck Analysis**:
-  - Measured on 200 MiB journaled images: `RangeAsync` achieves **25,782 ops/s** on 512 B writes vs **373,246 ops/s** in `Lazy` (**6.9%**). Because metadata (`4 KB..4.3 MB`) and freshly allocated data blocks often exceed the 1 MB gap-bridging threshold, every mutation executes multiple synchronous `msync(MS_ASYNC)` syscalls (~15–35 µs kernel VM lock + page-table walk each) while holding `inner.write()`.
-* **Proposed Remedy**:
-  - Buffer dirty `(start, end)` intervals in an interval set and issue coalesced `flush_async_range` calls outside `inner.write()` or every $M$ mutations / periodic tick (preserving asynchronous OS writeback semantics without paying multiple VM syscalls inside every critical section).
-* **Expected Impact**: **Medium-High** (5–10x throughput boost for `DurabilityMode::RangeAsync`).
+  - Measured on journaled images: `RangeAsync` previously achieved only **17,285 ops/s** on 512 B writes vs **503,187 ops/s** in `Lazy` (**~3–7%**). Because metadata (`4 KB..4.3 MB`) and freshly allocated data blocks often exceeded the gap-bridging threshold, every mutation executed multiple synchronous `msync(MS_ASYNC)` syscalls (~15–35 µs kernel VM lock + page-table walk each) while holding `inner.write()`.
+* **Implementation**:
+  - Buffered dirty `(offset, len)` intervals inside `PendingAsyncRanges` with inline neighbor merging and `async_drain_ready: AtomicBool` signaling.
+  - Drained coalesced dirty batches outside `inner.write()` under `sync_mutex` + `inner.read()` (enforcing WAL-first `msync(MS_ASYNC)` before metadata + payload ranges), and drained/cleared deterministically on `set_durability_mode`, `flush`, `flush_async`, and `Drop`.
 
 ---
 
@@ -1306,3 +1300,37 @@ written by an older version keeps its layout and stays readable.
 | `1,000 × 16 KB` stream `read_data` (`P4.31`) | `8.14 ms` (`1,918.8 MB/s`) | **`6.05 ms`** (`2,584.0 MB/s`) | **1.35x** |
 
 **Verification**: `tests/p4_perf_optimizations_test.rs`, `tests/large_image_bitmap_test.rs::test_journal_does_not_overlap_a_multi_block_data_bitmap`.
+
+### 6.23 P4.18 / P4.22 / P4.28 / P4.33 — `RangeAsync` Deferred Batching, Zero-Copy Journal Staging, Pooled IPC Proxy & Clock Inode Cache (Wave 2)
+
+**Fixes** (`src/disk.rs`, `src/journal.rs`, `src/ipc.rs`, `src/session.rs`, `src/encryption.rs`):
+
+1. **Deferred Dirty-Range Coalescing for `DurabilityMode::RangeAsync` (`P4.33`)**:
+   * Added `PendingAsyncRanges` and `async_drain_ready: Arc<AtomicBool>` so mutations in `RangeAsync` record and coalesce adjacent dirty byte intervals in memory instead of issuing multiple `msync(MS_ASYNC)` syscalls while holding `inner.write()`.
+   * Once the batch reaches 64 mutations or 1 MiB, `maybe_drain_async_ranges` drains and coalesces the intervals outside `inner.write()` under `sync_mutex` + `inner.read()`, flushing the journal region first (`MS_ASYNC`) followed by the merged image ranges; `set_durability_mode`, `flush`, `flush_async`, and `Drop` drain/cover all pending intervals deterministically.
+2. **Lazy Copy-on-Write `AllocSim`, Zero-Copy `WritePlan<'a>` & Pre-Commit `MetadataOp` Coalescing (`P4.18`)**:
+   * `AllocSim.data_bitmap` is now lazy (`Option<Vec<u8>>`), avoiding 4–64 KB bitmap copies on in-place overwrites where no block is allocated or freed.
+   * `WritePlan<'a>` and `FullOverwritePayload<'a>` borrow raw uncompressed caller slices via `Cow<'a, [u8]>`, eliminating full-payload `Vec<u8>` clones on raw writes and overwrites.
+   * Added `push_data_bitmap_op`, `push_block_slice_op`, `sim_get_or_alloc_block_coalesced`, and generalized $O(N)$ `is_already_coalesced`, coalescing `ops` by value *before* `commit_journal_tx` + `apply_journal_ops` so `encode_frame` never clones `ops` and `apply_journal_ops` replays bulk bitmap/slice ranges.
+3. **Concurrent Authenticated `IpcClient` Pool & Direct Frame Streaming (`P4.28`)**:
+   * Removed `FRAME_CHUNK_BUF` in `read_framed`, streaming bounded `64 KiB` chunks directly into `FRAME_READ_BUF`, and switched `IpcRequest::ReadAt` to single-lock, single-lookup `DiskManager::read_at_vec`.
+   * Upgraded `IpcClient` to a bounded concurrent stream pool (`MAX_CLIENT_POOL_STREAMS = 8`) with panic/error-safe `CheckedOutStream` RAII guards (discarding any socket that errors or panics mid-RPC) and cached `Zeroizing<[u8; 32]>` keys so secondary streams authenticate via fast keyed BLAKE2b without repeating Argon2id; guarded `dm_fallback` in `OifsSession::Remote` with a lock-free `AtomicBool`.
+4. **Second-Chance (Clock) Inode Cache & Cached Directory Hashes (`P4.22`, `P4.19`, `P4.29`)**:
+   * Added `referenced: AtomicBool` per `CachedInodeEntry` in `InodeCacheShard` for shared-read-lock Clock eviction, cached entry SipHashes in `DirIndex` (`stored` + `plain`) for zero-rehash cached `list_dir`, built cold `DirIndex` in a single pass on first miss, and decrypted `_e_` filenames in place on the stack before allocating the output `String`.
+
+**Measured Before / After Benchmarks (`--release`, Apple Silicon)**:
+
+| Workload | Before | After | Speedup |
+| :--- | ---: | ---: | ---: |
+| `journal_bench` `RangeAsync` 16 KB writes (`P4.33`) | `13,094 ops/s` | **`317,460 ops/s`** | **24.2x** |
+| `journal_bench` `RangeAsync` 512 B writes (`P4.33`) | `22,053 ops/s` | **`355,025 ops/s`** | **16.1x** |
+| `500 × 512 B` journaled `RangeAsync` create + write + `flush` (`P4.33`) | `43.46 ms` (`11,504/s`) | **`2.77 ms`** (`180,622/s`) | **15.7x** |
+| `journal_bench` `bench_durability_mode_cost` (`RangeAsync`) (`P4.33`) | `17,285/s` (`8.4 MB/s`) | **`198,049/s`** (`96.7 MB/s`) | **11.5x** |
+| `100 × 64 KB` journaled `RangeAsync` create + write + `flush` (`P4.33`) | `9.39 ms` (`665.6 MB/s`) | **`1.53 ms`** (`4,085.9 MB/s`) | **6.14x** |
+| `8 × 16 MB` journaled `delete_file` (`P4.18`) | `330.08 µs` | **`100.75 µs`** | **3.28x** |
+| `8 threads × 300 × 32 KB` IPC Proxy `read_at` (`P4.28`) | `131.64 ms` (`569.7 MB/s`) | **`41.99 ms`** (`1,786.1 MB/s`) | **3.13x** |
+| `5,000 × 4 KB` journaled in-place overwrite (256 MB v3 img) (`P4.18`) | `2.39 ms` (`2.10M ops/s`) | **`1.19 ms`** (`4.18M ops/s`) | **2.00x** |
+| `8 MB` journaled raw overwrite (`P4.18`) | `282.46 µs` (`28.3 GB/s`) | **`178.17 µs`** (`44.9 GB/s`) | **1.59x** |
+| `32 MB` journaled initial write (`P4.18`) | `5.07 ms` (`6.31 GB/s`) | **`3.27 ms`** (`9.80 GB/s`) | **1.55x** |
+
+**Verification**: `tests/p4_perf_wave2_test.rs`, `tests/journal_bench.rs`.

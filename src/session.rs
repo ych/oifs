@@ -76,6 +76,8 @@ pub enum OifsSession {
         /// session is dropped instead of lingering in plain heap memory.
         password: Option<zeroize::Zeroizing<String>>,
         dm_fallback: Arc<Mutex<Option<Arc<DiskManager>>>>,
+        /// Lock-free fast-path flag set once `dm_fallback` has been populated (P4.28).
+        has_fallback: Arc<std::sync::atomic::AtomicBool>,
     },
 }
 
@@ -637,6 +639,7 @@ impl OifsSession {
                     mode,
                     password: password.map(|s| zeroize::Zeroizing::new(s.to_string())),
                     dm_fallback: Arc::new(Mutex::new(None)),
+                    has_fallback: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 })
             }
         }
@@ -738,12 +741,14 @@ impl OifsSession {
                 mode,
                 password,
                 dm_fallback,
+                has_fallback,
             } => {
-                // 1. If we already fell back to a local DiskManager:
-                {
-                    let guard = crate::lock_unpoisoned(dm_fallback);
-                    if let Some(ref local_dm) = *guard {
-                        return IpcServer::handle_request(local_dm, req)
+                // 1. Lock-free check on steady-state Remote RPCs (P4.28): only acquire
+                // `dm_fallback` if this session previously failed over to a local Master.
+                if has_fallback.load(std::sync::atomic::Ordering::Acquire) {
+                    let local_dm = crate::lock_unpoisoned(dm_fallback).clone();
+                    if let Some(dm) = local_dm {
+                        return IpcServer::handle_request(&dm, req)
                             .map_err(SessionError::DiskManager);
                     }
                 }
@@ -779,8 +784,11 @@ impl OifsSession {
 
                             match retry_session {
                                 OifsSession::Direct { dm, .. } => {
-                                    let mut guard = crate::lock_unpoisoned(dm_fallback);
-                                    *guard = Some(dm.clone());
+                                    {
+                                        let mut guard = crate::lock_unpoisoned(dm_fallback);
+                                        *guard = Some(dm.clone());
+                                    }
+                                    has_fallback.store(true, std::sync::atomic::Ordering::Release);
                                     return IpcServer::handle_request(&dm, req)
                                         .map_err(SessionError::DiskManager);
                                 }

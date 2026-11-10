@@ -13,9 +13,9 @@
 //! * Every pass takes the inner **write** lock, so it serializes against
 //!   metadata mutations exactly like any other writer; no two defrag passes
 //!   can overlap.
-//! * In-place defragmentation is *not* journalled. On a WAL-enabled image the
-//!   coordinator therefore refuses to run unless `allow_journaled` is set
-//!   explicitly.
+//! * In-place defragmentation is fully journaled and atomic. On a WAL-enabled image,
+//!   payload moves are ordered before metadata commits, and metadata updates
+//!   are recorded in the WAL with batched checkpointing. Defaults to enabled.
 //! * The worker is a daemon thread that exits as soon as the manager is
 //!   dropped (see `AutoDefragController::shutdown`).
 
@@ -55,9 +55,9 @@ pub struct AutoDefragConfig {
     pub min_free_blocks: u64,
     /// Whether the coordinator may run on a WAL-enabled (journaled) image.
     ///
-    /// In-place defragmentation rewrites block pointers without emitting WAL
-    /// transactions, so a crash mid-pass would leave the image unrecoverable
-    /// by the journal. It stays disabled by default.
+    /// Background defragmentation is fully journaled and atomic: payload
+    /// moves are ordered before metadata commits, and metadata updates
+    /// are recorded in the WAL with batched checkpointing. Defaults to true.
     pub allow_journaled: bool,
 }
 
@@ -68,7 +68,7 @@ impl Default for AutoDefragConfig {
             fragmentation_threshold: DEFAULT_FRAGMENTATION_THRESHOLD,
             check_interval: Duration::from_secs(300),
             min_free_blocks: 0,
-            allow_journaled: false,
+            allow_journaled: true,
         }
     }
 }
@@ -325,8 +325,7 @@ fn skip_reason(
         .has_journal_layout();
     if journaled && !config.allow_journaled {
         return Some(
-            "image is WAL-enabled; in-place defragmentation is not journalled \
-             (set allow_journaled to enable)"
+            "image is WAL-enabled; in-place defragmentation was disabled via allow_journaled = false"
                 .to_string(),
         );
     }

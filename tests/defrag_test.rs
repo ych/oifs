@@ -190,6 +190,92 @@ fn test_inplace_defragmentation() {
 }
 
 #[test]
+fn test_inplace_defragmentation_journaled() {
+    let ctx = TestContext::new("test_defrag_inplace_journaled");
+    let dm =
+        DiskManager::open_journaled(&ctx.image_path, 10 * 1024 * 1024).expect("open journaled dm");
+    let root_id = dm.superblock().root_inode;
+
+    // Create 12 files
+    let mut files_data = Vec::new();
+    for i in 0..12 {
+        let name = format!("journal_file_{}.txt", i);
+        let id = dm.create_file(root_id, &name).expect("create file");
+        let content = format!(
+            "InPlace Journaled File {} Payload: {}",
+            i,
+            "W".repeat(4096 * (1 + (i % 3)))
+        );
+        dm.write_data(id, 0, content.as_bytes(), CompressionMode::Never)
+            .expect("write data");
+        files_data.push((name, content));
+    }
+
+    // Delete alternating files (1, 3, 5, 7, 9, 11) to create multiple fragmentation gaps
+    for i in (1..12).step_by(2) {
+        let name = format!("journal_file_{}.txt", i);
+        dm.delete_file(root_id, &name).expect("delete file");
+    }
+
+    let stats_before = dm.analyze_fragmentation().expect("analyze frag before");
+    assert!(
+        stats_before.free_runs > 1,
+        "Should have multiple free runs: {:?}",
+        stats_before
+    );
+    assert!(stats_before.fragmentation_ratio > 0.0);
+
+    // Run IN-PLACE defragmentation on journaled image
+    let defrag_stats = dm
+        .defragment(&ctx.image_path, DefragMode::InPlace, None)
+        .expect("defrag inplace journaled");
+
+    assert_eq!(defrag_stats.files_processed, 6);
+    assert_eq!(
+        defrag_stats.frag_after, 0.0,
+        "In-place defrag must eliminate all gaps"
+    );
+    assert!(defrag_stats.bytes_moved > 0);
+
+    // Verify surviving files directly on the live dm handle
+    for i in (0..12).step_by(2) {
+        let (ref name, ref expected_content) = files_data[i];
+        let file_id = dm.lookup(root_id, name).expect("lookup existing file");
+        let data = dm.read_data(file_id).expect("read data");
+        assert_eq!(
+            data,
+            expected_content.as_bytes(),
+            "Data for {} must match",
+            name
+        );
+    }
+
+    // Verify live handle integrity
+    let fsck = dm.verify_integrity().expect("verify integrity");
+    assert!(
+        fsck.is_clean,
+        "In-place defrag must leave journaled filesystem clean: {:?}",
+        fsck
+    );
+
+    // Reopen and verify disk persistence under journaled mode
+    drop(dm);
+    let dm_reopened = DiskManager::open_journaled(&ctx.image_path, 0).expect("reopen journaled dm");
+    for i in (0..12).step_by(2) {
+        let (ref name, ref expected_content) = files_data[i];
+        let file_id = dm_reopened
+            .lookup(root_id, name)
+            .expect("lookup existing file");
+        let data = dm_reopened.read_data(file_id).expect("read data");
+        assert_eq!(data, expected_content.as_bytes());
+    }
+    let fsck_reopened = dm_reopened
+        .verify_integrity()
+        .expect("verify integrity reopened");
+    assert!(fsck_reopened.is_clean);
+}
+
+#[test]
 fn test_safe_defragmentation_live_reload() {
     let ctx = TestContext::new("test_defrag_live_reload");
     let dm = DiskManager::open(&ctx.image_path, 10 * 1024 * 1024).expect("open dm");

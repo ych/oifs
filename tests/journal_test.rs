@@ -1776,3 +1776,74 @@ fn test_empty_compressed_append_emits_a_frame_on_both_paths() {
         );
     }
 }
+
+#[test]
+fn test_journaled_defragment_inplace_and_redo_replay() {
+    let img = Img::new("defrag_inplace_redo");
+    let files_data = {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create journaled");
+        let root = dm.superblock().root_inode;
+        let mut files = Vec::new();
+        for i in 0..10 {
+            let name = format!("f_{i}.bin");
+            let id = dm.create_file(root, &name).expect("create");
+            let payload = vec![(i as u8).wrapping_mul(17); 4096 * (1 + (i % 3))];
+            dm.write_data(id, 0, &payload, CompressionMode::Never)
+                .expect("write");
+            files.push((name, payload));
+        }
+
+        // Delete odd files to create gaps.
+        for i in (1..10).step_by(2) {
+            dm.delete_file(root, &format!("f_{i}.bin")).expect("delete");
+        }
+
+        // Run in-place defragmentation.
+        let stats = dm
+            .defragment(
+                img.path.to_str().unwrap(),
+                oifs::disk::DefragMode::InPlace,
+                None,
+            )
+            .expect("defrag inplace");
+        assert_eq!(stats.files_processed, 5);
+        assert_eq!(stats.frag_after, 0.0);
+        assert!(dm.verify_integrity().expect("fsck").is_clean);
+        files
+    };
+
+    // Simulate crash after defragmentation commit but before checkpoint:
+    // Rewind tail to 0 and mark cleanly_unmounted = false so mount recovery replays.
+    {
+        let mut bytes = fs::read(&img.path).expect("read img");
+        let hdr_off = (JOURNAL_HEADER_BLOCK as usize) * 4096;
+        let mut state = JournalState::decode(&bytes[hdr_off..]).expect("decode header");
+        assert!(state.head > 0, "WAL head should have advanced: {state:?}");
+        state.tail = 0;
+        state.cleanly_unmounted = false;
+        bytes[hdr_off..hdr_off + oifs::journal::JOURNAL_HEADER_LEN]
+            .copy_from_slice(&state.encode());
+        fs::write(&img.path, &bytes).expect("write modified img");
+    }
+
+    // Mount triggers recovery: replays transactions from 0 to head.
+    let dm2 = oifs::DiskManager::open(&img.path, 0).expect("mount triggers redo recovery");
+    let report = dm2.verify_integrity().expect("fsck after recovery");
+    assert!(
+        report.is_clean,
+        "fsck after replaying defragmentation transactions must be clean: {report:?}"
+    );
+
+    // Verify all surviving files are 100% intact.
+    let root = dm2.superblock().root_inode;
+    for (i, (name, payload)) in files_data.iter().enumerate() {
+        let lookup_res = dm2.lookup(root, name);
+        if i % 2 == 0 {
+            let id = lookup_res.unwrap_or_else(|e| panic!("file {name} should exist: {e}"));
+            let data = dm2.read_data(id).expect("read after redo");
+            assert_eq!(&data, payload, "content mismatch for {name}");
+        } else {
+            assert!(lookup_res.is_err(), "file {name} should remain deleted");
+        }
+    }
+}

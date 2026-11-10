@@ -624,6 +624,18 @@ impl DiskManagerInner {
         }
     }
 
+    pub(crate) fn drain_pending_async_ranges_internal(&self) {
+        let batch = {
+            let mut pending = crate::lock_unpoisoned(&self.pending_async_ranges);
+            pending.pending_ops = 0;
+            pending.approx_bytes = 0;
+            self.async_drain_ready
+                .store(false, std::sync::atomic::Ordering::Release);
+            std::mem::take(&mut pending.ranges)
+        };
+        self.flush_async_batch(&batch);
+    }
+
     /// Syncs one or more modified byte ranges according to the current `DurabilityMode`.
     ///
     /// Under `RangeAsync` (P4.33), dirty ranges are accumulated in `pending_async_ranges`
@@ -8881,6 +8893,22 @@ impl DiskManager {
         }
 
         let sb = guard.superblock;
+        let is_journaled = sb.has_journal_layout();
+        let bs = sb.block_size as u64;
+
+        // Phase 0: If journaled, pre-defrag quiesce:
+        // 1. Drain pending async ranges (RangeAsync durability mode).
+        // 2. Flush dirty mmap pages to disk so in-place data matches previous WAL commits.
+        // 3. Checkpoint WAL to head so the WAL ring is clean (used() == 0).
+        if is_journaled {
+            guard.drain_pending_async_ranges_internal();
+            guard.mmap.flush()?;
+            let region = Self::journal_region(&mut guard.mmap, &sb)?;
+            let mut ring = crate::journal::JournalRing::open(region, bs)?;
+            ring.checkpoint();
+            ring.persist();
+            Self::sync_journal_region(&guard)?;
+        }
 
         // 1. Collect and decode all active allocated inodes in a single pass without
         //    thrashing `inode_cache` (P4.20).
@@ -9048,6 +9076,14 @@ impl DiskManager {
             }
         }
 
+        // In ordered mode: relocated payload blocks must be physically on disk
+        // before any metadata pointers referencing them are committed to the WAL.
+        if is_journaled {
+            guard.mmap.flush()?;
+        }
+
+        let mut wal_ops: Vec<crate::journal::MetadataOp> = Vec::new();
+
         // 5. Update inode block pointers
         //
         // A pointer slot holds either a raw block id or, for a seekable
@@ -9094,6 +9130,13 @@ impl DiskManager {
             }
             if modified {
                 Self::write_inode_internal(&mut guard, *inode_id, inode)?;
+                if is_journaled {
+                    let slot = Self::encode_inode_slot(&guard, *inode_id, inode)?;
+                    wal_ops.push(crate::journal::MetadataOp::WriteInode {
+                        inode_id: *inode_id,
+                        inode_bytes: Box::new(slot),
+                    });
+                }
             }
         }
 
@@ -9101,13 +9144,22 @@ impl DiskManager {
         for &old_ind_blk in &all_indirect_blocks {
             let new_ind_blk = *old_to_new.get(&old_ind_blk).unwrap_or(&old_ind_blk);
             if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, new_ind_blk) {
+                let mut ind_modified = false;
                 for chunk in slice.as_chunks_mut::<8>().0 {
                     let ptr = u64::from_le_bytes(*chunk);
                     if ptr != 0
                         && let Some(new_ptr) = lookup_new(ptr)
                     {
                         *chunk = new_ptr.to_le_bytes();
+                        ind_modified = true;
                     }
+                }
+                if ind_modified && is_journaled {
+                    wal_ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                        block_id: new_ind_blk,
+                        offset: 0,
+                        data: slice.to_vec(),
+                    });
                 }
             }
         }
@@ -9118,6 +9170,22 @@ impl DiskManager {
             bitmap_slice.fill(0);
             let mut bitmap = crate::bitmap::Bitmap::new(bitmap_slice);
             bitmap.set_range(0, total_used);
+        }
+        if is_journaled {
+            let db_start = guard.superblock.data_block_start;
+            let total_data = guard.superblock.block_count.saturating_sub(db_start);
+            wal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
+                start_block: db_start,
+                count: total_used as u32,
+                allocated: true,
+            });
+            if (total_used as u64) < total_data {
+                wal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
+                    start_block: db_start + total_used as u64,
+                    count: (total_data - total_used as u64) as u32,
+                    allocated: false,
+                });
+            }
         }
 
         // 8. Update hints & remap cached directory block IDs in place (preserving hot caches, P4.20)
@@ -9139,20 +9207,58 @@ impl DiskManager {
         }
         guard.clear_payload_caches();
 
-        // 9. Reset / checkpoint WAL if journaled
-        if guard.superblock.has_journal_layout() {
-            let sb = guard.superblock;
-            let bs = sb.block_size as u64;
-            if let Ok(region) = Self::journal_region(&mut guard.mmap, &sb)
-                && let Ok(mut ring) = crate::journal::JournalRing::open(region, bs)
-            {
-                ring.checkpoint();
-                ring.mark_clean_shutdown();
+        // 9. Commit metadata updates to WAL in bounded transaction batches (WAL-atomic defrag)
+        if is_journaled && !wal_ops.is_empty() {
+            let ring_bytes = {
+                let region = Self::journal_region(&mut guard.mmap, &sb)?;
+                let ring = crate::journal::JournalRing::open(region, bs)?;
+                ring.ring_bytes() as usize
+            };
+            // Keep batches bounded so each transaction frame comfortably fits within the ring
+            let max_payload_per_tx = (ring_bytes.saturating_sub(128)) / 2;
+            let mut batch = Vec::new();
+            let mut batch_bytes = 0usize;
+
+            for op in wal_ops {
+                let op_sz = op.encoded_size();
+                if batch_bytes + op_sz > max_payload_per_tx && !batch.is_empty() {
+                    {
+                        let region = Self::journal_region(&mut guard.mmap, &sb)?;
+                        let mut ring = crate::journal::JournalRing::open(region, bs)?;
+                        let _ = ring.append(&batch)?;
+                        ring.persist();
+                    }
+                    Self::sync_journal_region(&guard)?;
+                    batch.clear();
+                    batch_bytes = 0;
+                }
+                batch_bytes += op_sz;
+                batch.push(op);
+            }
+            if !batch.is_empty() {
+                {
+                    let region = Self::journal_region(&mut guard.mmap, &sb)?;
+                    let mut ring = crate::journal::JournalRing::open(region, bs)?;
+                    let _ = ring.append(&batch)?;
+                    ring.persist();
+                }
+                Self::sync_journal_region(&guard)?;
             }
         }
 
-        // 10. Flush mmap
+        // 10. Flush in-place metadata to disk
         guard.mmap.flush()?;
+
+        // 11. Checkpoint WAL now that in-place data is durable
+        if is_journaled {
+            {
+                let region = Self::journal_region(&mut guard.mmap, &sb)?;
+                let mut ring = crate::journal::JournalRing::open(region, bs)?;
+                ring.checkpoint();
+                ring.persist();
+            }
+            Self::sync_journal_region(&guard)?;
+        }
 
         // 11. Fragmentation after
         let stats_after = Self::analyze_fragmentation_internal(&guard)?;

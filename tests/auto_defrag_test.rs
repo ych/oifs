@@ -67,7 +67,7 @@ fn test_auto_defrag_config_defaults() {
     assert!(!config.enabled, "auto-defrag must be opt-in");
     assert_eq!(config.fragmentation_threshold, 0.25);
     assert_eq!(config.check_interval, Duration::from_secs(300));
-    assert!(!config.allow_journaled);
+    assert!(config.allow_journaled);
 
     let enabled = AutoDefragConfig::new(0.5);
     assert!(enabled.enabled);
@@ -235,12 +235,88 @@ fn test_auto_defrag_stops_on_disable() {
 }
 
 #[test]
-fn test_auto_defrag_skips_journaled_image_by_default() {
-    let img = TestImage::new("test_auto_defrag_journaled");
+fn test_auto_defrag_runs_on_journaled_image() {
+    let img = TestImage::new("test_auto_defrag_journaled_run");
+    let dm = DiskManager::open_journaled(&img.path, 10 * 1024 * 1024).expect("open journaled dm");
+    let files = build_fragmented_image(&dm);
+
+    let before = dm.analyze_fragmentation().expect("frag before");
+    assert!(
+        before.free_runs > 1,
+        "image should be fragmented initially: {:?}",
+        before
+    );
+
+    dm.set_auto_defrag(AutoDefragConfig::new(0.0).with_check_interval(Duration::from_millis(30)));
+
+    assert!(wait_until(Duration::from_secs(5), || dm
+        .auto_defrag_stats()
+        .passes
+        >= 1));
+
+    let stats = dm.auto_defrag_stats();
+    assert!(
+        stats.passes >= 1,
+        "pass should have executed on WAL-enabled image: {stats:?}"
+    );
+    dm.stop_auto_defrag();
+
+    // Verify all remaining files are intact.
+    let root_id = dm.superblock().root_inode;
+    for (i, (name, content)) in files.iter().enumerate() {
+        let lookup_res = dm.lookup(root_id, name);
+        if i % 2 == 0 {
+            let id = lookup_res.unwrap_or_else(|e| panic!("file {name} should exist: {e}"));
+            let read_bytes = dm.read_data(id).expect("read surviving file");
+            assert_eq!(
+                read_bytes,
+                content.as_bytes(),
+                "payload must match for {name}"
+            );
+        } else {
+            assert!(lookup_res.is_err(), "file {name} should remain deleted");
+        }
+    }
+
+    // Verify fsck is clean.
+    let report = dm
+        .verify_integrity()
+        .expect("verify integrity after defragmentation");
+    assert!(
+        report.is_clean,
+        "fsck should pass cleanly after defragmentation: {report:?}"
+    );
+
+    // Close and reopen the journaled image to ensure journal recovery and superblock are completely clean.
+    drop(dm);
+    let dm2 =
+        DiskManager::open_journaled(&img.path, 10 * 1024 * 1024).expect("reopen journaled dm");
+    let report2 = dm2.verify_integrity().expect("fsck after reopen");
+    assert!(
+        report2.is_clean,
+        "fsck after reopen should pass cleanly: {report2:?}"
+    );
+    for (i, (name, content)) in files.iter().enumerate() {
+        let lookup_res = dm2.lookup(root_id, name);
+        if i % 2 == 0 {
+            let id = lookup_res.unwrap();
+            let read_bytes = dm2.read_data(id).expect("read surviving file after reopen");
+            assert_eq!(read_bytes, content.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn test_auto_defrag_skips_journaled_image_when_disallowed() {
+    let img = TestImage::new("test_auto_defrag_journaled_disallowed");
     let dm = DiskManager::open_journaled(&img.path, 10 * 1024 * 1024).expect("open journaled dm");
     build_fragmented_image(&dm);
 
-    dm.set_auto_defrag(AutoDefragConfig::new(0.0).with_check_interval(Duration::from_millis(30)));
+    dm.set_auto_defrag(
+        AutoDefragConfig::new(0.0)
+            .with_check_interval(Duration::from_millis(30))
+            .with_allow_journaled(false),
+    );
 
     assert!(wait_until(Duration::from_secs(5), || dm
         .auto_defrag_stats()
@@ -249,7 +325,7 @@ fn test_auto_defrag_skips_journaled_image_by_default() {
     let stats = dm.auto_defrag_stats();
     assert_eq!(
         stats.passes, 0,
-        "in-place defrag must not run on a WAL-enabled image: {stats:?}"
+        "in-place defrag must not run when allow_journaled is false: {stats:?}"
     );
     assert!(stats.skipped >= 1);
     assert!(

@@ -321,8 +321,8 @@ int ret = oifs_write_file_with_policy(
 | 連續區塊回收 | 通過 `defragment_inplace_on` 執行就地重排，讓 `find_contiguous_free_from` 能取得長連續區段 |
 | 背景執行緒生命週期 | 工作緒僅持有 `Weak<RwLock<DiskManagerInner>>`；當最後一個 `DiskManager` 被釋放時，`upgrade()` 失敗使工作緒自動結束，不會洩漏映射 |
 | 與寫入的互斥 | 每次 pass 取得 inner **寫入鎖**，與 metadata 變更序列化成同一排他區段 |
-| WAL 影像安全 | 就地 defrag 不會產生 WAL 交易，故預設在 journaled 影像上跳過（`allow_journaled` 需明確開啟） |
+| WAL 影像安全 | 就地 defrag 支援 WAL 原生交易原子性（payload 提早 flush，metadata 變更拆分為有界交易幀寫入 WAL，最終 checkpoint），預設支援 journaled 影像（`allow_journaled` 預設開啟） |
 | 空間保護 | `min_free_blocks` 避免在接近寫滿的影像上執行收益低、阻塞寫入的整體重排 |
 | 可觀測性 | `AutoDefragStats` 記錄 `checks` / `passes` / `skipped` / `errors` / `last_pass` / `last_error` |
 
-**驗證**：`tests/auto_defrag_test.rs`（6 個測試）涵蓋：預設關閉、門檻觸發與資料完整性（fsck 乾淨、檔案內容不變）、停用後不再執行、journaled 影像跳過、`min_free_blocks` 跳過。
+**驗證**：`tests/auto_defrag_test.rs`（10 個測試）涵蓋：預設關閉、門檻觸發與資料完整性（fsck 乾淨、檔案內容不變）、停用後不再執行、journaled 影像就地重排驗證與 skip 測試、`min_free_blocks` 跳過。

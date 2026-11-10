@@ -1294,6 +1294,11 @@ impl<'a> JournalRing<'a> {
         self.last_write
     }
 
+    /// Byte size of the record ring.
+    pub fn ring_bytes(&self) -> u64 {
+        self.ring_bytes
+    }
+
     /// Number of bytes currently occupied by un-checkpointed transactions.
     pub fn used(&self) -> u64 {
         let ring = self.ring_bytes;

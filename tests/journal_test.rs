@@ -1847,3 +1847,79 @@ fn test_journaled_defragment_inplace_and_redo_replay() {
         }
     }
 }
+
+#[test]
+fn test_journaled_defragment_crash_midway_with_stale_disk_metadata() {
+    let img = Img::new("defrag_crash_midway");
+    let files_data = {
+        let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create journaled");
+        let root = dm.superblock().root_inode;
+        let mut files = Vec::new();
+        for i in 0..8 {
+            let name = format!("mid_{i}.bin");
+            let id = dm.create_file(root, &name).expect("create");
+            let payload = vec![(i as u8).wrapping_mul(31); 4096 * (1 + (i % 2))];
+            dm.write_data(id, 0, &payload, CompressionMode::Never)
+                .expect("write");
+            files.push((name, payload));
+        }
+
+        // Delete odd files to create fragmentation gaps.
+        for i in (1..8).step_by(2) {
+            dm.delete_file(root, &format!("mid_{i}.bin"))
+                .expect("delete");
+        }
+
+        // Run in-place defragmentation.
+        dm.defragment(
+            img.path.to_str().unwrap(),
+            oifs::disk::DefragMode::InPlace,
+            None,
+        )
+        .expect("defrag inplace");
+        files
+    };
+
+    // Simulate crash where WAL was committed, but on-disk metadata (data bitmap)
+    // was not written or was corrupted before power loss.
+    {
+        let mut bytes = fs::read(&img.path).expect("read img");
+        let hdr_off = (JOURNAL_HEADER_BLOCK as usize) * 4096;
+        let mut state = JournalState::decode(&bytes[hdr_off..]).expect("decode header");
+        assert!(state.head > 0, "WAL head must have advanced: {state:?}");
+
+        // 1. Rewind tail and mark dirty shutdown.
+        state.tail = 0;
+        state.cleanly_unmounted = false;
+        bytes[hdr_off..hdr_off + oifs::journal::JOURNAL_HEADER_LEN]
+            .copy_from_slice(&state.encode());
+
+        // 2. Zero the on-disk data bitmap block to simulate unwritten metadata.
+        let sb: SuperBlock = bincode::deserialize(&bytes[0..4096]).expect("decode sb");
+        let bitmap_off = (sb.data_bitmap_block as usize) * 4096;
+        bytes[bitmap_off..bitmap_off + 4096].fill(0);
+
+        fs::write(&img.path, &bytes).expect("write crashed img");
+    }
+
+    // Mount triggers recovery: WAL replay must reconstruct the data bitmap and all inodes!
+    let dm2 = oifs::DiskManager::open(&img.path, 0).expect("mount triggers recovery");
+    let report = dm2.verify_integrity().expect("fsck after recovery");
+    assert!(
+        report.is_clean,
+        "fsck after WAL recovery of unwritten metadata must be completely clean: {report:?}"
+    );
+
+    // Verify all surviving files are 100% intact.
+    let root = dm2.superblock().root_inode;
+    for (i, (name, payload)) in files_data.iter().enumerate() {
+        let lookup_res = dm2.lookup(root, name);
+        if i % 2 == 0 {
+            let id = lookup_res.unwrap_or_else(|e| panic!("file {name} should exist: {e}"));
+            let data = dm2.read_data(id).expect("read after redo");
+            assert_eq!(&data, payload, "content mismatch for {name}");
+        } else {
+            assert!(lookup_res.is_err(), "file {name} should remain deleted");
+        }
+    }
+}

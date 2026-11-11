@@ -9096,6 +9096,7 @@ impl DiskManager {
                 .copied()
                 .or_else(|| old_entry_to_new.get(&value).copied())
         };
+        let mut staged_inodes = Vec::new();
         for (inode_id, inode) in dir_inodes
             .iter_mut()
             .chain(file_inodes.iter_mut())
@@ -9129,7 +9130,7 @@ impl DiskManager {
                 modified = true;
             }
             if modified {
-                Self::write_inode_internal(&mut guard, *inode_id, inode)?;
+                staged_inodes.push((*inode_id, *inode));
                 if is_journaled {
                     let slot = Self::encode_inode_slot(&guard, *inode_id, inode)?;
                     wal_ops.push(crate::journal::MetadataOp::WriteInode {
@@ -9140,12 +9141,14 @@ impl DiskManager {
             }
         }
 
-        // 6. Update indirect block pointers
+        // 6. Stage indirect block pointers and emit WriteBlockSlice WAL ops
+        let mut staged_indirects = Vec::new();
         for &old_ind_blk in &all_indirect_blocks {
             let new_ind_blk = *old_to_new.get(&old_ind_blk).unwrap_or(&old_ind_blk);
-            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, new_ind_blk) {
+            if let Some(slice) = Self::get_block_from_map(&guard.mmap, new_ind_blk) {
+                let mut updated_data = slice.to_vec();
                 let mut ind_modified = false;
-                for chunk in slice.as_chunks_mut::<8>().0 {
+                for chunk in updated_data.as_chunks_mut::<8>().0 {
                     let ptr = u64::from_le_bytes(*chunk);
                     if ptr != 0
                         && let Some(new_ptr) = lookup_new(ptr)
@@ -9154,23 +9157,21 @@ impl DiskManager {
                         ind_modified = true;
                     }
                 }
-                if ind_modified && is_journaled {
-                    wal_ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                        block_id: new_ind_blk,
-                        offset: 0,
-                        data: slice.to_vec(),
-                    });
+                if ind_modified {
+                    staged_indirects.push((new_ind_blk, updated_data.clone()));
+                    if is_journaled {
+                        wal_ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                            block_id: new_ind_blk,
+                            offset: 0,
+                            data: updated_data,
+                        });
+                    }
                 }
             }
         }
 
-        // 7. Update data bitmap via word-aligned `set_range` (P4.20)
+        // 7. Stage data bitmap range WAL ops
         let total_used = (next_target - guard.superblock.data_block_start) as usize;
-        if let Some(bitmap_slice) = guard.data_bitmap_slice_mut() {
-            bitmap_slice.fill(0);
-            let mut bitmap = crate::bitmap::Bitmap::new(bitmap_slice);
-            bitmap.set_range(0, total_used);
-        }
         if is_journaled {
             let db_start = guard.superblock.data_block_start;
             let total_data = guard.superblock.block_count.saturating_sub(db_start);
@@ -9188,26 +9189,7 @@ impl DiskManager {
             }
         }
 
-        // 8. Update hints & remap cached directory block IDs in place (preserving hot caches, P4.20)
-        guard.free_block_hint = next_target;
-        {
-            let mut cache = guard.dir_cache.write().unwrap();
-            for ix in cache.values_mut() {
-                for (_, blk, _) in ix.stored.values_mut() {
-                    if let Some(&new_blk) = old_to_new.get(blk) {
-                        *blk = new_blk;
-                    }
-                }
-                if let Some((tb, off)) = ix.tail_offset
-                    && let Some(&new_tb) = old_to_new.get(&tb)
-                {
-                    ix.tail_offset = Some((new_tb, off));
-                }
-            }
-        }
-        guard.clear_payload_caches();
-
-        // 9. Commit metadata updates to WAL in bounded transaction batches (WAL-atomic defrag)
+        // 8. Commit metadata updates to WAL in bounded transaction batches (WAL-first durability)
         if is_journaled && !wal_ops.is_empty() {
             let ring_bytes = {
                 let region = Self::journal_region(&mut guard.mmap, &sb)?;
@@ -9246,10 +9228,44 @@ impl DiskManager {
             }
         }
 
-        // 10. Flush in-place metadata to disk
+        // 9. Apply metadata updates in-place to mmap (only after WAL commit succeeded)
+        for (inode_id, inode) in &staged_inodes {
+            Self::write_inode_internal(&mut guard, *inode_id, inode)?;
+        }
+        for (new_ind_blk, data) in &staged_indirects {
+            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, *new_ind_blk) {
+                slice.copy_from_slice(data);
+            }
+        }
+        if let Some(bitmap_slice) = guard.data_bitmap_slice_mut() {
+            bitmap_slice.fill(0);
+            let mut bitmap = crate::bitmap::Bitmap::new(bitmap_slice);
+            bitmap.set_range(0, total_used);
+        }
+
+        // 10. Update hints & remap cached directory block IDs in place (preserving hot caches, P4.20)
+        guard.free_block_hint = next_target;
+        {
+            let mut cache = guard.dir_cache.write().unwrap();
+            for ix in cache.values_mut() {
+                for (_, blk, _) in ix.stored.values_mut() {
+                    if let Some(&new_blk) = old_to_new.get(blk) {
+                        *blk = new_blk;
+                    }
+                }
+                if let Some((tb, off)) = ix.tail_offset
+                    && let Some(&new_tb) = old_to_new.get(&tb)
+                {
+                    ix.tail_offset = Some((new_tb, off));
+                }
+            }
+        }
+        guard.clear_payload_caches();
+
+        // 11. Flush in-place metadata to disk
         guard.mmap.flush()?;
 
-        // 11. Checkpoint WAL now that in-place data is durable
+        // 12. Checkpoint WAL now that in-place data is durable
         if is_journaled {
             {
                 let region = Self::journal_region(&mut guard.mmap, &sb)?;

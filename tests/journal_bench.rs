@@ -355,3 +355,76 @@ fn bench_large_file_journaled_write_and_append() {
         );
     }
 }
+
+/// Benchmarks in-place defragmentation comparing Legacy vs Journaled images across various file counts.
+#[test]
+#[ignore]
+fn bench_defragment_inplace_journal_vs_legacy() {
+    println!("\n=== In-Place Defragmentation Benchmark: Journaled vs Legacy ===");
+    for (n_files, file_size_kb) in [(100, 8), (300, 16), (600, 16), (1000, 16)] {
+        let payload_len = file_size_kb * 1024;
+        let payload = vec![0xABu8; payload_len];
+
+        for (label, journal) in [("Legacy", false), ("Journaled", true)] {
+            let img = Img::new(&format!("defrag_bench_{label}_{n_files}"));
+            let dm = if journal {
+                DiskManager::open_journaled(&img.0, 300 * MB).expect("create journaled")
+            } else {
+                DiskManager::open(&img.0, 300 * MB).expect("create legacy")
+            };
+            let root = dm.superblock().root_inode;
+
+            // 1. Create N files
+            for i in 0..n_files {
+                let name = format!("file_{i}.bin");
+                let id = dm.create_file(root, &name).expect("create");
+                dm.write_data(id, 0, &payload, CompressionMode::Never)
+                    .expect("write");
+            }
+
+            // 2. Delete every other file to create fragmentation holes
+            for i in (1..n_files).step_by(2) {
+                let name = format!("file_{i}.bin");
+                dm.delete_file(root, &name).expect("delete");
+            }
+
+            let frag_before = dm.analyze_fragmentation().expect("frag before");
+
+            // 3. Measure defragment(InPlace)
+            let t0 = Instant::now();
+            let stats = dm
+                .defragment(
+                    img.0.to_str().unwrap(),
+                    oifs::disk::DefragMode::InPlace,
+                    None,
+                )
+                .expect("defrag inplace");
+            let defrag_dur = t0.elapsed();
+
+            // 4. Measure no-op defragment(InPlace) when already compacted
+            let t1 = Instant::now();
+            let _ = dm
+                .defragment(
+                    img.0.to_str().unwrap(),
+                    oifs::disk::DefragMode::InPlace,
+                    None,
+                )
+                .expect("defrag noop");
+            let noop_dur = t1.elapsed();
+
+            println!(
+                "  [{:>9}] {:>4} files ({}KB) | Frag: {:>5.1}% -> {:>4.1}% | Moved: {:>4} blocks ({:>6.2} MB) | Defrag: {:>8.2?} | No-op: {:>8.2?}",
+                label,
+                n_files / 2,
+                file_size_kb,
+                frag_before.fragmentation_ratio * 100.0,
+                stats.frag_after * 100.0,
+                stats.bytes_moved / 4096,
+                stats.bytes_moved as f64 / MB as f64,
+                defrag_dur,
+                noop_dur,
+            );
+        }
+        println!();
+    }
+}

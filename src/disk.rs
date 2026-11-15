@@ -8924,18 +8924,59 @@ impl DiskManager {
         let mut file_inodes: Vec<(u64, Inode)> = Vec::new();
         let mut other_inodes: Vec<(u64, Inode)> = Vec::new();
         for inode_id in allocated_ids {
-            if let Ok(inode) = Self::read_inode_uncached(&guard, inode_id) {
-                if inode.mode == crate::inode::FileType::Directory {
-                    dir_inodes.push((inode_id, inode));
-                } else if inode.mode == crate::inode::FileType::File && inode.size > 0 {
-                    file_inodes.push((inode_id, inode));
-                } else {
-                    other_inodes.push((inode_id, inode));
-                }
+            let inode = Self::read_inode_uncached(&guard, inode_id)?;
+            if inode.mode == crate::inode::FileType::Directory {
+                dir_inodes.push((inode_id, inode));
+            } else if inode.mode == crate::inode::FileType::File && inode.size > 0 {
+                file_inodes.push((inode_id, inode));
+            } else {
+                other_inodes.push((inode_id, inode));
             }
         }
         let files_processed = file_inodes.len();
 
+        let bytes_moved = if is_journaled {
+            Self::defragment_inplace_journaled_cow(&mut guard, dir_inodes, file_inodes)?
+        } else {
+            Self::defragment_inplace_legacy(
+                &mut guard,
+                &stats_before,
+                dir_inodes,
+                file_inodes,
+                other_inodes,
+            )?
+        };
+
+        // Fragmentation after
+        let stats_after = Self::analyze_fragmentation_internal(&guard)?;
+        drop(guard);
+
+        // Verify filesystem consistency
+        let fsck = Self::verify_integrity_on(inner)?;
+        if !fsck.is_clean {
+            return Err(DiskManagerError::Io(std::io::Error::other(format!(
+                "In-place defragmentation integrity check failed: {:?}",
+                fsck
+            ))));
+        }
+
+        Ok(DefragStats {
+            files_processed,
+            bytes_moved,
+            blocks_freed: stats_before.free_runs.saturating_sub(stats_after.free_runs),
+            frag_before: stats_before.fragmentation_ratio,
+            frag_after: stats_after.fragmentation_ratio,
+        })
+    }
+
+    /// Legacy non-journaled in-place defragmentation using cycle-aware permutation.
+    fn defragment_inplace_legacy(
+        guard: &mut DiskManagerInner,
+        stats_before: &FragmentationStats,
+        mut dir_inodes: Vec<(u64, Inode)>,
+        mut file_inodes: Vec<(u64, Inode)>,
+        mut other_inodes: Vec<(u64, Inode)>,
+    ) -> Result<u64, DiskManagerError> {
         // 2. Compute contiguous target locations for all blocks
         let mut next_target = guard.superblock.data_block_start;
         let mut old_to_new: FxHashMap<u64, u64> =
@@ -8956,12 +8997,7 @@ impl DiskManager {
             }
         }
 
-        // Place regular file blocks next
-        //
-        // SEC-26: a seekable 64K file stores packed `ChunkEntry` values in its
-        // leaf pointer slots. The payload of a chunk is a run of contiguous
-        // blocks, so the run is relocated as a unit and the entry is rewritten
-        // with the new start block.
+        // Place regular file blocks next (SEC-26: seekable 64K ChunkEntry runs)
         let mut chunk_entries: Vec<(u64, crate::inode::ChunkEntry)> = Vec::new();
         for (_, inode) in &file_inodes {
             let (payloads, indirects) = Self::collect_inode_block_layout(&guard.mmap, inode);
@@ -8977,7 +9013,6 @@ impl DiskManager {
             chunk_entries.extend(Self::collect_chunk_entries(&guard.mmap, inode));
         }
 
-        // The map from a packed chunk entry to its relocated counterpart.
         let mut old_entry_to_new: FxHashMap<u64, u64> = FxHashMap::default();
         for (packed, entry) in &chunk_entries {
             let Some(&new_start) = old_to_new.get(&(entry.start_block() as u64)) else {
@@ -9005,13 +9040,7 @@ impl DiskManager {
         let bytes_moved = num_moves as u64 * BLOCK_SIZE as u64;
 
         if pending.is_empty() {
-            return Ok(DefragStats {
-                files_processed,
-                bytes_moved: 0,
-                blocks_freed: 0,
-                frag_before: stats_before.fragmentation_ratio,
-                frag_after: stats_before.fragmentation_ratio,
-            });
+            return Ok(0);
         }
 
         // 4. Cycle-aware block permutation
@@ -9044,7 +9073,6 @@ impl DiskManager {
                     }
                 }
             } else {
-                // Cycle detected: break by saving leader into temporary 4KB buffer
                 let (&leader_src, _) = pending.iter().next().unwrap();
                 let mut scratch = [0u8; BLOCK_SIZE];
                 let leader_off = leader_src as usize * BLOCK_SIZE;
@@ -9076,27 +9104,13 @@ impl DiskManager {
             }
         }
 
-        // In ordered mode: relocated payload blocks must be physically on disk
-        // before any metadata pointers referencing them are committed to the WAL.
-        if is_journaled {
-            guard.mmap.flush()?;
-        }
-
-        let mut wal_ops: Vec<crate::journal::MetadataOp> = Vec::new();
-
         // 5. Update inode block pointers
-        //
-        // A pointer slot holds either a raw block id or, for a seekable
-        // 64K file, a packed `ChunkEntry` (SEC-26). The two ranges cannot
-        // overlap: a non-empty entry has `block_count >= 1` and is
-        // therefore at least `1 << 32`, far above any block id.
         let lookup_new = |value: u64| -> Option<u64> {
             old_to_new
                 .get(&value)
                 .copied()
                 .or_else(|| old_entry_to_new.get(&value).copied())
         };
-        let mut staged_inodes = Vec::new();
         for (inode_id, inode) in dir_inodes
             .iter_mut()
             .chain(file_inodes.iter_mut())
@@ -9130,172 +9144,581 @@ impl DiskManager {
                 modified = true;
             }
             if modified {
-                staged_inodes.push((*inode_id, *inode));
-                if is_journaled {
-                    let slot = Self::encode_inode_slot(&guard, *inode_id, inode)?;
-                    wal_ops.push(crate::journal::MetadataOp::WriteInode {
-                        inode_id: *inode_id,
-                        inode_bytes: Box::new(slot),
-                    });
-                }
+                Self::write_inode_internal(guard, *inode_id, inode)?;
             }
         }
 
-        // 6. Stage indirect block pointers and emit WriteBlockSlice WAL ops
-        let mut staged_indirects = Vec::new();
+        // 6. Update indirect block pointers
         for &old_ind_blk in &all_indirect_blocks {
             let new_ind_blk = *old_to_new.get(&old_ind_blk).unwrap_or(&old_ind_blk);
-            if let Some(slice) = Self::get_block_from_map(&guard.mmap, new_ind_blk) {
-                let mut updated_data = slice.to_vec();
-                let mut ind_modified = false;
-                for chunk in updated_data.as_chunks_mut::<8>().0 {
+            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, new_ind_blk) {
+                for chunk in slice.as_chunks_mut::<8>().0 {
                     let ptr = u64::from_le_bytes(*chunk);
                     if ptr != 0
                         && let Some(new_ptr) = lookup_new(ptr)
                     {
                         *chunk = new_ptr.to_le_bytes();
-                        ind_modified = true;
-                    }
-                }
-                if ind_modified {
-                    staged_indirects.push((new_ind_blk, updated_data.clone()));
-                    if is_journaled {
-                        wal_ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                            block_id: new_ind_blk,
-                            offset: 0,
-                            data: updated_data,
-                        });
                     }
                 }
             }
         }
 
-        // 7. Stage data bitmap range WAL ops
+        // 7. Update data bitmap via word-aligned `set_range` (P4.20)
         let total_used = (next_target - guard.superblock.data_block_start) as usize;
-        if is_journaled {
-            let db_start = guard.superblock.data_block_start;
-            let total_data = guard.superblock.block_count.saturating_sub(db_start);
-            wal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
-                start_block: db_start,
-                count: total_used as u32,
-                allocated: true,
-            });
-            if (total_used as u64) < total_data {
-                wal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
-                    start_block: db_start + total_used as u64,
-                    count: (total_data - total_used as u64) as u32,
-                    allocated: false,
-                });
-            }
-        }
-
-        // 8. Commit metadata updates to WAL in bounded transaction batches (WAL-first durability)
-        if is_journaled && !wal_ops.is_empty() {
-            let ring_bytes = {
-                let region = Self::journal_region(&mut guard.mmap, &sb)?;
-                let ring = crate::journal::JournalRing::open(region, bs)?;
-                ring.ring_bytes() as usize
-            };
-            // Keep batches bounded so each transaction frame comfortably fits within the ring
-            let max_payload_per_tx = (ring_bytes.saturating_sub(128)) / 2;
-            let mut batch = Vec::new();
-            let mut batch_bytes = 0usize;
-
-            for op in wal_ops {
-                let op_sz = op.encoded_size();
-                if batch_bytes + op_sz > max_payload_per_tx && !batch.is_empty() {
-                    {
-                        let region = Self::journal_region(&mut guard.mmap, &sb)?;
-                        let mut ring = crate::journal::JournalRing::open(region, bs)?;
-                        let _ = ring.append(&batch)?;
-                        ring.persist();
-                    }
-                    Self::sync_journal_region(&guard)?;
-                    batch.clear();
-                    batch_bytes = 0;
-                }
-                batch_bytes += op_sz;
-                batch.push(op);
-            }
-            if !batch.is_empty() {
-                {
-                    let region = Self::journal_region(&mut guard.mmap, &sb)?;
-                    let mut ring = crate::journal::JournalRing::open(region, bs)?;
-                    let _ = ring.append(&batch)?;
-                    ring.persist();
-                }
-                Self::sync_journal_region(&guard)?;
-            }
-        }
-
-        // 9. Apply metadata updates in-place to mmap (only after WAL commit succeeded)
-        for (inode_id, inode) in &staged_inodes {
-            Self::write_inode_internal(&mut guard, *inode_id, inode)?;
-        }
-        for (new_ind_blk, data) in &staged_indirects {
-            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, *new_ind_blk) {
-                slice.copy_from_slice(data);
-            }
-        }
         if let Some(bitmap_slice) = guard.data_bitmap_slice_mut() {
             bitmap_slice.fill(0);
             let mut bitmap = crate::bitmap::Bitmap::new(bitmap_slice);
             bitmap.set_range(0, total_used);
         }
 
-        // 10. Update hints & remap cached directory block IDs in place (preserving hot caches, P4.20)
+        // 8. Update hints & remap cached directory block IDs in place (P4.20)
         guard.free_block_hint = next_target;
-        {
-            let mut cache = guard.dir_cache.write().unwrap();
-            for ix in cache.values_mut() {
-                for (_, blk, _) in ix.stored.values_mut() {
-                    if let Some(&new_blk) = old_to_new.get(blk) {
-                        *blk = new_blk;
+        Self::remap_dir_cache_and_clear_payloads(guard, &old_to_new);
+        guard.mmap.flush()?;
+        Ok(bytes_moved)
+    }
+
+    /// WAL-atomic round-based copy-on-write in-place defragmentation.
+    ///
+    /// Every round copies blocks exclusively into currently free blocks, flushes
+    /// those destination blocks, commits a single bounded WAL transaction (never
+    /// overflowing the ring), applies the metadata updates via `apply_journal_ops`,
+    /// flushes metadata, and checkpoints the WAL before the next round reuses the
+    /// freed source blocks.
+    fn defragment_inplace_journaled_cow(
+        guard: &mut DiskManagerInner,
+        dir_inodes: Vec<(u64, Inode)>,
+        file_inodes: Vec<(u64, Inode)>,
+    ) -> Result<u64, DiskManagerError> {
+        #[derive(Clone, Copy)]
+        enum UnitOwner {
+            InodeDirect {
+                inode_idx: usize,
+                slot: usize,
+            },
+            InodeSib {
+                inode_idx: usize,
+            },
+            InodeDib {
+                inode_idx: usize,
+            },
+            InodeTib {
+                inode_idx: usize,
+            },
+            IndirectSlot {
+                parent_ind_idx: usize,
+                slot_idx: usize,
+            },
+        }
+
+        struct RelocUnit {
+            curr_start: u64,
+            block_count: u64,
+            target_start: u64,
+            owner: UnitOwner,
+            chunk_entry: Option<crate::inode::ChunkEntry>,
+            self_ind_idx: Option<usize>,
+        }
+
+        let sb = guard.superblock;
+        let bs = sb.block_size as u64;
+        let db_start = sb.data_block_start;
+        let total_data = sb.block_count.saturating_sub(db_start) as usize;
+
+        let mut inodes: Vec<(u64, Inode)> = dir_inodes;
+        inodes.extend(file_inodes);
+
+        let mut units: Vec<RelocUnit> = Vec::new();
+        let mut indirect_blocks: Vec<u64> = Vec::new();
+        let mut old_to_new: FxHashMap<u64, u64> = FxHashMap::default();
+        let mut next_target = db_start;
+
+        let read_slots = |mmap: &MmapMut, blk: u64| -> Vec<u64> {
+            Self::get_block_from_map(mmap, blk)
+                .map(|s| {
+                    s.as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| u64::from_le_bytes(*c))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        for (inode_idx, (_, inode)) in inodes.iter().enumerate() {
+            let is_seekable = inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0;
+            let mut deferred_inds: Vec<(u64, UnitOwner, usize)> = Vec::new();
+
+            let mut push_leaf =
+                |raw: u64, owner: UnitOwner, next_t: &mut u64, units: &mut Vec<RelocUnit>| {
+                    if raw == 0 {
+                        return;
                     }
-                }
-                if let Some((tb, off)) = ix.tail_offset
-                    && let Some(&new_tb) = old_to_new.get(&tb)
-                {
-                    ix.tail_offset = Some((new_tb, off));
+                    if is_seekable {
+                        let entry = crate::inode::ChunkEntry(raw);
+                        if entry.is_empty() {
+                            return;
+                        }
+                        let start = entry.start_block() as u64;
+                        let count = entry.block_count() as u64;
+                        let target = *next_t;
+                        *next_t += count;
+                        for k in 0..count {
+                            old_to_new.insert(start + k, target + k);
+                        }
+                        units.push(RelocUnit {
+                            curr_start: start,
+                            block_count: count,
+                            target_start: target,
+                            owner,
+                            chunk_entry: Some(entry),
+                            self_ind_idx: None,
+                        });
+                    } else {
+                        let target = *next_t;
+                        *next_t += 1;
+                        old_to_new.insert(raw, target);
+                        units.push(RelocUnit {
+                            curr_start: raw,
+                            block_count: 1,
+                            target_start: target,
+                            owner,
+                            chunk_entry: None,
+                            self_ind_idx: None,
+                        });
+                    }
+                };
+
+            for slot in 0..10 {
+                push_leaf(
+                    inode.blocks[slot],
+                    UnitOwner::InodeDirect { inode_idx, slot },
+                    &mut next_target,
+                    &mut units,
+                );
+            }
+
+            if inode.blocks[10] != 0 {
+                let sib = inode.blocks[10];
+                let sib_idx = indirect_blocks.len();
+                indirect_blocks.push(sib);
+                deferred_inds.push((sib, UnitOwner::InodeSib { inode_idx }, sib_idx));
+                for (slot_idx, raw) in read_slots(&guard.mmap, sib).into_iter().enumerate() {
+                    push_leaf(
+                        raw,
+                        UnitOwner::IndirectSlot {
+                            parent_ind_idx: sib_idx,
+                            slot_idx,
+                        },
+                        &mut next_target,
+                        &mut units,
+                    );
                 }
             }
+
+            if inode.blocks[11] != 0 {
+                let dib = inode.blocks[11];
+                let dib_idx = indirect_blocks.len();
+                indirect_blocks.push(dib);
+                deferred_inds.push((dib, UnitOwner::InodeDib { inode_idx }, dib_idx));
+                for (dib_slot, sib) in read_slots(&guard.mmap, dib).into_iter().enumerate() {
+                    if sib != 0 {
+                        let sib_idx = indirect_blocks.len();
+                        indirect_blocks.push(sib);
+                        deferred_inds.push((
+                            sib,
+                            UnitOwner::IndirectSlot {
+                                parent_ind_idx: dib_idx,
+                                slot_idx: dib_slot,
+                            },
+                            sib_idx,
+                        ));
+                        for (slot_idx, raw) in read_slots(&guard.mmap, sib).into_iter().enumerate()
+                        {
+                            push_leaf(
+                                raw,
+                                UnitOwner::IndirectSlot {
+                                    parent_ind_idx: sib_idx,
+                                    slot_idx,
+                                },
+                                &mut next_target,
+                                &mut units,
+                            );
+                        }
+                    }
+                }
+            }
+
+            if inode.triple_indirect != 0 {
+                let tib = inode.triple_indirect;
+                let tib_idx = indirect_blocks.len();
+                indirect_blocks.push(tib);
+                deferred_inds.push((tib, UnitOwner::InodeTib { inode_idx }, tib_idx));
+                for (tib_slot, dib) in read_slots(&guard.mmap, tib).into_iter().enumerate() {
+                    if dib != 0 {
+                        let dib_idx = indirect_blocks.len();
+                        indirect_blocks.push(dib);
+                        deferred_inds.push((
+                            dib,
+                            UnitOwner::IndirectSlot {
+                                parent_ind_idx: tib_idx,
+                                slot_idx: tib_slot,
+                            },
+                            dib_idx,
+                        ));
+                        for (dib_slot, sib) in read_slots(&guard.mmap, dib).into_iter().enumerate()
+                        {
+                            if sib != 0 {
+                                let sib_idx = indirect_blocks.len();
+                                indirect_blocks.push(sib);
+                                deferred_inds.push((
+                                    sib,
+                                    UnitOwner::IndirectSlot {
+                                        parent_ind_idx: dib_idx,
+                                        slot_idx: dib_slot,
+                                    },
+                                    sib_idx,
+                                ));
+                                for (slot_idx, raw) in
+                                    read_slots(&guard.mmap, sib).into_iter().enumerate()
+                                {
+                                    push_leaf(
+                                        raw,
+                                        UnitOwner::IndirectSlot {
+                                            parent_ind_idx: sib_idx,
+                                            slot_idx,
+                                        },
+                                        &mut next_target,
+                                        &mut units,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (ind_blk, owner, ind_idx) in deferred_inds {
+                let target = next_target;
+                next_target += 1;
+                old_to_new.insert(ind_blk, target);
+                units.push(RelocUnit {
+                    curr_start: ind_blk,
+                    block_count: 1,
+                    target_start: target,
+                    owner,
+                    chunk_entry: None,
+                    self_ind_idx: Some(ind_idx),
+                });
+            }
         }
-        guard.clear_payload_caches();
 
-        // 11. Flush in-place metadata to disk
-        guard.mmap.flush()?;
+        let mut pending: Vec<usize> = units
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, u)| (u.curr_start != u.target_start).then_some(idx))
+            .collect();
 
-        // 12. Checkpoint WAL now that in-place data is durable
-        if is_journaled {
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        // Initialize in-memory mirror of data bitmap allocation state.
+        let mut alloc_map = vec![false; total_data];
+        if let Some(bitmap_slice) = guard.data_bitmap_slice() {
+            let bm = crate::bitmap::BitmapRef::new(bitmap_slice);
+            for (i, slot) in alloc_map.iter_mut().enumerate() {
+                *slot = bm.get(i);
+            }
+        }
+
+        let is_range_free = |map: &[bool], start: u64, count: u64| -> bool {
+            let Some(rel) = start.checked_sub(db_start).map(|r| r as usize) else {
+                return false;
+            };
+            let cnt = count as usize;
+            rel.checked_add(cnt).is_some_and(|end| end <= map.len())
+                && map[rel..rel + cnt].iter().all(|&b| !b)
+        };
+
+        let find_free_run_high_to_low = |map: &[bool], count: u64| -> Option<u64> {
+            let cnt = count as usize;
+            if cnt == 0 || cnt > map.len() {
+                return None;
+            }
+            let mut run = 0usize;
+            for idx in (0..map.len()).rev() {
+                if !map[idx] {
+                    run += 1;
+                    if run == cnt {
+                        return Some(db_start + idx as u64);
+                    }
+                } else {
+                    run = 0;
+                }
+            }
+            None
+        };
+
+        let ring_bytes = {
+            let region = Self::journal_region(&mut guard.mmap, &sb)?;
+            let ring = crate::journal::JournalRing::open(region, bs)?;
+            ring.ring_bytes() as usize
+        };
+        let max_payload_per_tx = (ring_bytes.saturating_sub(128)) / 2;
+
+        let mut bytes_moved = 0u64;
+
+        while !pending.is_empty() {
+            // Step A: Select a COW batch whose targets are currently free and whose
+            // WAL transaction fits comfortably within half the journal ring.
+            let mut round_moves: Vec<(usize, u64)> = Vec::new();
+            let mut est_tx_bytes = crate::journal::TX_HEADER_LEN + 4;
+            let mut touched_inode_set: FxHashSet<usize> = FxHashSet::default();
+
+            for &u_idx in &pending {
+                let u = &units[u_idx];
+                if !is_range_free(&alloc_map, u.target_start, u.block_count) {
+                    continue;
+                }
+                let mut delta = 28usize; // alloc + free SetDataBitmapRange
+                match u.owner {
+                    UnitOwner::InodeDirect { inode_idx, .. }
+                    | UnitOwner::InodeSib { inode_idx }
+                    | UnitOwner::InodeDib { inode_idx }
+                    | UnitOwner::InodeTib { inode_idx } => {
+                        if !touched_inode_set.contains(&inode_idx) {
+                            delta += 1 + 8 + crate::journal::INODE_BYTES;
+                        }
+                    }
+                    UnitOwner::IndirectSlot { .. } => {
+                        delta += 1 + 8 + 4 + 4 + 8;
+                    }
+                }
+                if u.self_ind_idx.is_some() {
+                    delta += 1 + 8 + 4 + 4 + BLOCK_SIZE;
+                }
+                if est_tx_bytes + delta > max_payload_per_tx && !round_moves.is_empty() {
+                    break;
+                }
+                if let UnitOwner::InodeDirect { inode_idx, .. }
+                | UnitOwner::InodeSib { inode_idx }
+                | UnitOwner::InodeDib { inode_idx }
+                | UnitOwner::InodeTib { inode_idx } = u.owner
+                {
+                    touched_inode_set.insert(inode_idx);
+                }
+                est_tx_bytes += delta;
+                round_moves.push((u_idx, u.target_start));
+            }
+
+            // Cycle breaker: move one blocking unit to a free scratch run.
+            if round_moves.is_empty() {
+                let u_idx = pending
+                    .iter()
+                    .copied()
+                    .min_by_key(|&idx| units[idx].block_count)
+                    .unwrap();
+                let count = units[u_idx].block_count;
+                let scratch_start = find_free_run_high_to_low(&alloc_map, count).ok_or_else(|| {
+                    DiskManagerError::Io(std::io::Error::other(
+                        "Insufficient contiguous free blocks for WAL-atomic in-place defragmentation",
+                    ))
+                })?;
+                round_moves.push((u_idx, scratch_start));
+            }
+
+            // Step B: Copy payload blocks to free destinations and flush them before WAL commit.
+            let mut dst_ranges: Vec<(usize, usize)> = Vec::with_capacity(round_moves.len());
+            for &(u_idx, dst_start) in &round_moves {
+                let u = &units[u_idx];
+                let src_off = u.curr_start as usize * BLOCK_SIZE;
+                let dst_off = dst_start as usize * BLOCK_SIZE;
+                let len = u.block_count as usize * BLOCK_SIZE;
+                guard.mmap.copy_within(src_off..src_off + len, dst_off);
+                dst_ranges.push((dst_off, len));
+                bytes_moved += len as u64;
+            }
+            for (off, len) in DiskManagerInner::coalesce_ranges(&dst_ranges, guard.mmap.len()) {
+                guard.mmap.flush_range(off, len)?;
+            }
+
+            // Step C: Stage WAL metadata ops without modifying live metadata yet.
+            let mut round_ind_new_block: FxHashMap<usize, u64> = FxHashMap::default();
+            for &(u_idx, dst_start) in &round_moves {
+                if let Some(ind_idx) = units[u_idx].self_ind_idx {
+                    round_ind_new_block.insert(ind_idx, dst_start);
+                }
+            }
+
+            let mut touched_inodes: FxHashMap<usize, Inode> = FxHashMap::default();
+            let mut wal_ops: Vec<crate::journal::MetadataOp> = Vec::new();
+
+            for &(u_idx, dst_start) in &round_moves {
+                let u = &units[u_idx];
+                let new_slot_val = match u.chunk_entry {
+                    Some(entry) => {
+                        crate::inode::ChunkEntry::new(
+                            dst_start as u32,
+                            entry.block_count(),
+                            entry.flags(),
+                            entry.compressed_len(),
+                        )
+                        .0
+                    }
+                    None => dst_start,
+                };
+
+                match u.owner {
+                    UnitOwner::InodeDirect { inode_idx, slot } => {
+                        let inode = touched_inodes
+                            .entry(inode_idx)
+                            .or_insert_with(|| inodes[inode_idx].1);
+                        inode.blocks[slot] = new_slot_val;
+                    }
+                    UnitOwner::InodeSib { inode_idx } => {
+                        let inode = touched_inodes
+                            .entry(inode_idx)
+                            .or_insert_with(|| inodes[inode_idx].1);
+                        inode.blocks[10] = new_slot_val;
+                    }
+                    UnitOwner::InodeDib { inode_idx } => {
+                        let inode = touched_inodes
+                            .entry(inode_idx)
+                            .or_insert_with(|| inodes[inode_idx].1);
+                        inode.blocks[11] = new_slot_val;
+                    }
+                    UnitOwner::InodeTib { inode_idx } => {
+                        let inode = touched_inodes
+                            .entry(inode_idx)
+                            .or_insert_with(|| inodes[inode_idx].1);
+                        inode.triple_indirect = new_slot_val;
+                    }
+                    UnitOwner::IndirectSlot {
+                        parent_ind_idx,
+                        slot_idx,
+                    } => {
+                        let target_ind_blk = round_ind_new_block
+                            .get(&parent_ind_idx)
+                            .copied()
+                            .unwrap_or(indirect_blocks[parent_ind_idx]);
+                        wal_ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                            block_id: target_ind_blk,
+                            offset: (slot_idx * 8) as u32,
+                            data: new_slot_val.to_le_bytes().to_vec(),
+                        });
+                    }
+                }
+
+                wal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
+                    start_block: dst_start,
+                    count: u.block_count as u32,
+                    allocated: true,
+                });
+                wal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
+                    start_block: u.curr_start,
+                    count: u.block_count as u32,
+                    allocated: false,
+                });
+            }
+
+            for (&inode_idx, inode) in &touched_inodes {
+                let inode_id = inodes[inode_idx].0;
+                let slot = Self::encode_inode_slot(guard, inode_id, inode)?;
+                wal_ops.push(crate::journal::MetadataOp::WriteInode {
+                    inode_id,
+                    inode_bytes: Box::new(slot),
+                });
+            }
+
+            let wal_ops = crate::journal::coalesce_ops(wal_ops);
+
+            // Step D: Commit single bounded WAL transaction and sync WAL region.
+            {
+                let region = Self::journal_region(&mut guard.mmap, &sb)?;
+                let mut ring = crate::journal::JournalRing::open(region, bs)?;
+                let _ = ring.append(&wal_ops)?;
+                ring.persist();
+            }
+            Self::sync_journal_region(guard)?;
+
+            // Step E: Apply metadata updates in-place via the exact same WAL op applier.
+            Self::apply_journal_ops(guard, &wal_ops)?;
+
+            let mut meta_ranges: Vec<(usize, usize)> = vec![guard.data_bitmap_byte_range()];
+            for (&inode_idx, new_inode) in &touched_inodes {
+                let inode_id = inodes[inode_idx].0;
+                inodes[inode_idx].1 = *new_inode;
+                guard.inode_cache.remove(inode_id);
+                meta_ranges.push(guard.inode_byte_range(inode_id));
+            }
+            for op in &wal_ops {
+                if let crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } = op {
+                    meta_ranges.push(guard.block_byte_range(*block_id));
+                }
+            }
+
+            for &(u_idx, dst_start) in &round_moves {
+                let u = &mut units[u_idx];
+                let old_rel = (u.curr_start - db_start) as usize;
+                let new_rel = (dst_start - db_start) as usize;
+                let cnt = u.block_count as usize;
+                alloc_map[old_rel..old_rel + cnt].fill(false);
+                alloc_map[new_rel..new_rel + cnt].fill(true);
+
+                u.curr_start = dst_start;
+                if let Some(entry) = u.chunk_entry {
+                    u.chunk_entry = Some(crate::inode::ChunkEntry::new(
+                        dst_start as u32,
+                        entry.block_count(),
+                        entry.flags(),
+                        entry.compressed_len(),
+                    ));
+                }
+                if let Some(ind_idx) = u.self_ind_idx {
+                    indirect_blocks[ind_idx] = dst_start;
+                }
+            }
+
+            pending.retain(|&idx| units[idx].curr_start != units[idx].target_start);
+
+            // Step F: Flush in-place metadata and checkpoint WAL before next round.
+            for (off, len) in DiskManagerInner::coalesce_ranges(&meta_ranges, guard.mmap.len()) {
+                guard.mmap.flush_range(off, len)?;
+            }
             {
                 let region = Self::journal_region(&mut guard.mmap, &sb)?;
                 let mut ring = crate::journal::JournalRing::open(region, bs)?;
                 ring.checkpoint();
                 ring.persist();
             }
-            Self::sync_journal_region(&guard)?;
+            Self::sync_journal_region(guard)?;
         }
 
-        // 11. Fragmentation after
-        let stats_after = Self::analyze_fragmentation_internal(&guard)?;
-        drop(guard);
+        guard.free_block_hint = next_target;
+        Self::remap_dir_cache_and_clear_payloads(guard, &old_to_new);
+        Ok(bytes_moved)
+    }
 
-        // 12. Verify filesystem consistency
-        let fsck = Self::verify_integrity_on(inner)?;
-        if !fsck.is_clean {
-            return Err(DiskManagerError::Io(std::io::Error::other(format!(
-                "In-place defragmentation integrity check failed: {:?}",
-                fsck
-            ))));
+    fn remap_dir_cache_and_clear_payloads(
+        guard: &mut DiskManagerInner,
+        old_to_new: &FxHashMap<u64, u64>,
+    ) {
+        let mut cache = guard.dir_cache.write().unwrap();
+        for ix in cache.values_mut() {
+            for (_, blk, _) in ix.stored.values_mut() {
+                if let Some(&new_blk) = old_to_new.get(blk) {
+                    *blk = new_blk;
+                }
+            }
+            if let Some((tb, off)) = ix.tail_offset
+                && let Some(&new_tb) = old_to_new.get(&tb)
+            {
+                ix.tail_offset = Some((new_tb, off));
+            }
         }
-
-        Ok(DefragStats {
-            files_processed,
-            bytes_moved,
-            blocks_freed: stats_before.free_runs.saturating_sub(stats_after.free_runs),
-            frag_before: stats_before.fragmentation_ratio,
-            frag_after: stats_after.fragmentation_ratio,
-        })
+        drop(cache);
+        guard.clear_payload_caches();
     }
 
     /// Structural consistency check (fsck) for OIFS filesystem

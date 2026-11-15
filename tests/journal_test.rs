@@ -1851,58 +1851,82 @@ fn test_journaled_defragment_inplace_and_redo_replay() {
 #[test]
 fn test_journaled_defragment_crash_midway_with_stale_disk_metadata() {
     let img = Img::new("defrag_crash_midway");
-    let files_data = {
+    let (files_data, pre_defrag_bytes) = {
         let dm = oifs::DiskManager::open_journaled(&img.path, 20 * MB).expect("create journaled");
         let root = dm.superblock().root_inode;
         let mut files = Vec::new();
-        for i in 0..8 {
+        // Create 4 equal-sized files; deleting 0 and 1 frees 2 contiguous slots at
+        // the front so files 2 and 3 relocate in a single COW round.
+        for i in 0..4 {
             let name = format!("mid_{i}.bin");
             let id = dm.create_file(root, &name).expect("create");
-            let payload = vec![(i as u8).wrapping_mul(31); 4096 * (1 + (i % 2))];
+            let payload = vec![(i as u8).wrapping_mul(31); 4096];
             dm.write_data(id, 0, &payload, CompressionMode::Never)
                 .expect("write");
             files.push((name, payload));
         }
 
-        // Delete odd files to create fragmentation gaps.
-        for i in (1..8).step_by(2) {
+        for i in 0..2 {
             dm.delete_file(root, &format!("mid_{i}.bin"))
                 .expect("delete");
         }
+        drop(dm);
+
+        let pre_bytes = fs::read(&img.path).expect("read pre-defrag img");
 
         // Run in-place defragmentation.
+        let dm = oifs::DiskManager::open(&img.path, 0).expect("reopen");
         dm.defragment(
             img.path.to_str().unwrap(),
             oifs::disk::DefragMode::InPlace,
             None,
         )
         .expect("defrag inplace");
-        files
+        (files, pre_bytes)
     };
 
-    // Simulate crash where WAL was committed, but on-disk metadata (data bitmap)
-    // was not written or was corrupted before power loss.
+    let post_defrag_bytes = fs::read(&img.path).expect("read post-defrag img");
+    let sb: SuperBlock = bincode::deserialize(&post_defrag_bytes[0..4096]).expect("decode sb");
+    let dbs_off = (sb.data_block_start as usize) * 4096;
+    let hdr_off = (JOURNAL_HEADER_BLOCK as usize) * 4096;
+    let j_end = hdr_off + (JOURNAL_RESERVED_BLOCKS as usize) * 4096;
+
+    // Case 1: Crash during payload copy (before WAL commit):
+    // Data area has post-defrag payload (written only to free blocks), while
+    // metadata + WAL are still pre-defrag.
     {
-        let mut bytes = fs::read(&img.path).expect("read img");
-        let hdr_off = (JOURNAL_HEADER_BLOCK as usize) * 4096;
-        let mut state = JournalState::decode(&bytes[hdr_off..]).expect("decode header");
-        assert!(state.head > 0, "WAL head must have advanced: {state:?}");
+        let mut crash = pre_defrag_bytes[..dbs_off].to_vec();
+        crash.extend_from_slice(&post_defrag_bytes[dbs_off..]);
+        fs::write(&img.path, &crash).expect("write pre-commit crash img");
 
-        // 1. Rewind tail and mark dirty shutdown.
-        state.tail = 0;
-        state.cleanly_unmounted = false;
-        bytes[hdr_off..hdr_off + oifs::journal::JOURNAL_HEADER_LEN]
-            .copy_from_slice(&state.encode());
-
-        // 2. Zero the on-disk data bitmap block to simulate unwritten metadata.
-        let sb: SuperBlock = bincode::deserialize(&bytes[0..4096]).expect("decode sb");
-        let bitmap_off = (sb.data_bitmap_block as usize) * 4096;
-        bytes[bitmap_off..bitmap_off + 4096].fill(0);
-
-        fs::write(&img.path, &bytes).expect("write crashed img");
+        let dm_pre = oifs::DiskManager::open(&img.path, 0).expect("mount pre-commit crash");
+        let report = dm_pre.verify_integrity().expect("fsck pre-commit");
+        assert!(report.is_clean, "pre-commit crash fsck: {report:?}");
+        let root = dm_pre.superblock().root_inode;
+        for (i, (name, payload)) in files_data.iter().enumerate() {
+            if i >= 2 {
+                let id = dm_pre.lookup(root, name).expect("lookup");
+                assert_eq!(dm_pre.read_data(id).expect("read"), *payload);
+            }
+        }
     }
 
-    // Mount triggers recovery: WAL replay must reconstruct the data bitmap and all inodes!
+    // Case 2: Crash after WAL commit, before in-place metadata (inode/bitmap) apply:
+    // Metadata is pre-defrag, data area is post-defrag, WAL has committed defrag tx.
+    {
+        let mut crash = pre_defrag_bytes[..dbs_off].to_vec();
+        crash.extend_from_slice(&post_defrag_bytes[dbs_off..]);
+        crash[hdr_off..j_end].copy_from_slice(&post_defrag_bytes[hdr_off..j_end]);
+
+        let mut state = JournalState::decode(&crash[hdr_off..]).expect("decode header");
+        assert!(state.head > 0, "WAL head must have advanced: {state:?}");
+        state.tail = 0;
+        state.cleanly_unmounted = false;
+        crash[hdr_off..hdr_off + oifs::journal::JOURNAL_HEADER_LEN]
+            .copy_from_slice(&state.encode());
+        fs::write(&img.path, &crash).expect("write post-commit crash img");
+    }
+
     let dm2 = oifs::DiskManager::open(&img.path, 0).expect("mount triggers recovery");
     let report = dm2.verify_integrity().expect("fsck after recovery");
     assert!(
@@ -1910,16 +1934,61 @@ fn test_journaled_defragment_crash_midway_with_stale_disk_metadata() {
         "fsck after WAL recovery of unwritten metadata must be completely clean: {report:?}"
     );
 
-    // Verify all surviving files are 100% intact.
     let root = dm2.superblock().root_inode;
     for (i, (name, payload)) in files_data.iter().enumerate() {
         let lookup_res = dm2.lookup(root, name);
-        if i % 2 == 0 {
+        if i >= 2 {
             let id = lookup_res.unwrap_or_else(|e| panic!("file {name} should exist: {e}"));
             let data = dm2.read_data(id).expect("read after redo");
             assert_eq!(&data, payload, "content mismatch for {name}");
         } else {
             assert!(lookup_res.is_err(), "file {name} should remain deleted");
         }
+    }
+}
+
+#[test]
+fn test_journaled_defragment_large_exceeding_wal_ring() {
+    let img = Img::new("defrag_large_wal_ring");
+    let n = 1000usize;
+    let dm = oifs::DiskManager::open_journaled(&img.path, 64 * MB).expect("create journaled");
+    let root = dm.superblock().root_inode;
+
+    let mut survivors = Vec::new();
+    for i in 0..n {
+        let name = format!("lg_{i}.bin");
+        let id = dm.create_file(root, &name).expect("create");
+        let payload = vec![(i % 251) as u8; 4096];
+        dm.write_data(id, 0, &payload, CompressionMode::Never)
+            .expect("write");
+        if i % 2 == 0 {
+            survivors.push((name, payload));
+        }
+    }
+    for i in (1..n).step_by(2) {
+        dm.delete_file(root, &format!("lg_{i}.bin"))
+            .expect("delete");
+    }
+
+    // ~500 surviving inodes * 269B > 128 KiB WAL ring; must complete in multiple
+    // checkpointed COW rounds without overflowing the WAL ring.
+    let stats = dm
+        .defragment(
+            img.path.to_str().unwrap(),
+            oifs::disk::DefragMode::InPlace,
+            None,
+        )
+        .expect("large journaled defrag");
+    assert_eq!(stats.files_processed, n / 2);
+    assert_eq!(stats.frag_after, 0.0);
+    assert!(dm.verify_integrity().expect("fsck").is_clean);
+
+    drop(dm);
+    let dm2 = oifs::DiskManager::open(&img.path, 0).expect("reopen");
+    assert!(dm2.verify_integrity().expect("fsck reopen").is_clean);
+    let root2 = dm2.superblock().root_inode;
+    for (name, payload) in &survivors {
+        let id = dm2.lookup(root2, name).expect("lookup");
+        assert_eq!(dm2.read_data(id).expect("read"), *payload);
     }
 }

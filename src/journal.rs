@@ -1091,7 +1091,12 @@ pub fn apply_op_in_place(
             allocated,
         } => {
             // SEC-20: the range must stay inside the data area.
-            let end_block = start_block.saturating_add(*count as u64);
+            let end_block =
+                start_block
+                    .checked_add(*count as u64)
+                    .ok_or(JournalError::BlockOutOfRange {
+                        block_id: *start_block,
+                    })?;
             if *start_block < sb.data_block_start || end_block > sb.block_count {
                 return Err(JournalError::BlockOutOfRange {
                     block_id: *start_block,
@@ -1105,12 +1110,27 @@ pub fn apply_op_in_place(
                 .map_err(|_| JournalError::BlockOutOfRange {
                     block_id: *start_block,
                 })?;
+            let count_usize =
+                usize::try_from(*count).map_err(|_| JournalError::BlockOutOfRange {
+                    block_id: *start_block,
+                })?;
             let bitmap = &mut image[start..end];
+            let end_bit =
+                start_bit
+                    .checked_add(count_usize)
+                    .ok_or(JournalError::BlockOutOfRange {
+                        block_id: *start_block,
+                    })?;
+            if end_bit > bitmap.len().saturating_mul(8) {
+                return Err(JournalError::BlockOutOfRange {
+                    block_id: *start_block,
+                });
+            }
             let mut bm = crate::bitmap::Bitmap::new(bitmap);
             if *allocated {
-                bm.set_range(start_bit, *count as usize);
+                bm.set_range(start_bit, count_usize);
             } else {
-                bm.clear_range(start_bit, *count as usize);
+                bm.clear_range(start_bit, count_usize);
             }
             Ok(())
         }
@@ -1332,14 +1352,30 @@ impl<'a> JournalRing<'a> {
         let mut cursor = self.state.tail % ring;
         let buf = self.ring_ref();
         let mut count = 0usize;
-        while cursor != head {
+        let mut bytes_traversed = 0u64;
+        while cursor != head && bytes_traversed < ring {
             let off = usize::try_from(cursor).unwrap_or(0);
+            if off >= buf.len() {
+                break;
+            }
             match decode_frame(&buf[off..]) {
                 Some((_, total)) => {
-                    cursor = (cursor + total as u64) % ring;
+                    if total == 0 {
+                        break;
+                    }
+                    let total64 = total as u64;
+                    cursor = (cursor + total64) % ring;
+                    bytes_traversed = bytes_traversed.saturating_add(total64);
                     count += 1;
                 }
-                None => break,
+                None => {
+                    if cursor > head && buf[off..].iter().all(|&b| b == 0) {
+                        bytes_traversed = bytes_traversed.saturating_add(ring - cursor);
+                        cursor = 0;
+                    } else {
+                        break;
+                    }
+                }
             }
         }
         count
@@ -1355,7 +1391,7 @@ impl<'a> JournalRing<'a> {
         let tx_seq = self.state.tx_seq.wrapping_add(1);
         let frame = encode_frame(tx_seq, ops);
 
-        if frame.len() as u64 > self.ring_bytes {
+        if frame.len() as u64 >= self.ring_bytes {
             return Err(JournalError::TransactionTooLarge {
                 len: frame.len(),
                 ring: self.ring_bytes,
@@ -1363,12 +1399,23 @@ impl<'a> JournalRing<'a> {
         }
         let len = frame.len() as u64;
 
+        let old_head = self.state.head;
+        let old_tail = self.state.tail;
+        let was_empty = old_head == old_tail;
+
         // Wrap so the frame stays contiguous.
-        if self.state.head.saturating_add(len) > self.ring_bytes {
+        if old_head.saturating_add(len) > self.ring_bytes {
+            let pad_start = usize::try_from(old_head).unwrap_or(0);
+            let ring_len = self.ring().len();
+            if pad_start < ring_len {
+                self.ring()[pad_start..ring_len].fill(0);
+            }
             self.state.head = 0;
-        }
-        // Drop transactions we are about to overwrite.
-        if self.used().saturating_add(len) > self.ring_bytes {
+            if was_empty || old_tail > old_head || len >= old_tail {
+                self.state.tail = 0;
+            }
+        } else if !was_empty && self.used().saturating_add(len) >= self.ring_bytes {
+            // Drop transactions we are about to overwrite.
             self.state.tail = self.state.head;
         }
 
@@ -1436,8 +1483,13 @@ impl<'a> JournalRing<'a> {
                     replayed += 1;
                 }
                 None => {
-                    // Torn or corrupt frame: everything before it is valid.
-                    break;
+                    if cursor > target_head && buf.iter().all(|&b| b == 0) {
+                        bytes_traversed = bytes_traversed.saturating_add(ring - cursor);
+                        cursor = 0;
+                    } else {
+                        // Torn or corrupt frame: everything before it is valid.
+                        break;
+                    }
                 }
             }
         }
@@ -1974,6 +2026,431 @@ mod kani_proofs {
             );
         }
     }
+
+    /// Prove that `MetadataOp::SetDataBitmapRange` is strictly idempotent and
+    /// rejects any out-of-range block span without mutating the image.
+    #[kani::proof]
+    fn proof_apply_op_set_data_bitmap_range_idempotent() {
+        let mut image = [0u8; 32];
+        // Symbolically initialize the data bitmap block (block 1 = bytes 16..32)
+        let b0: u8 = kani::any();
+        let b1: u8 = kani::any();
+        image[16] = b0;
+        image[17] = b1;
+
+        let mut sb = SuperBlock::new(100);
+        sb.block_size = 16;
+        sb.data_bitmap_block = 1;
+        sb.inode_table_block = 2;
+        sb.data_block_start = 2;
+        sb.block_count = 18; // 16 data blocks (bits 0..16 in image[16..18])
+
+        let start_block: u64 = kani::any();
+        let count: u32 = kani::any();
+        let allocated: bool = kani::any();
+
+        let op = MetadataOp::SetDataBitmapRange {
+            start_block,
+            count,
+            allocated,
+        };
+
+        let before = image;
+        match apply_op_in_place(&mut image, &sb, &op) {
+            Ok(()) => {
+                kani::cover!(count > 0 && allocated, "non-empty range allocated");
+                kani::cover!(count > 0 && !allocated, "non-empty range deallocated");
+                let once = image;
+                let res2 = apply_op_in_place(&mut image, &sb, &op);
+                assert!(
+                    res2.is_ok(),
+                    "re-applying an already applied SetDataBitmapRange must succeed"
+                );
+                assert_eq!(
+                    image, once,
+                    "SetDataBitmapRange must be strictly idempotent"
+                );
+            }
+            Err(_) => {
+                kani::cover!(true, "out-of-range SetDataBitmapRange rejected");
+                assert_eq!(
+                    image, before,
+                    "rejected SetDataBitmapRange must not mutate the image"
+                );
+            }
+        }
+    }
+
+    /// Prove that a coalesced `SetDataBitmapRange` of length 2 is observationally
+    /// equivalent to applying two adjacent `SetDataBitmap` operations.
+    #[kani::proof]
+    fn proof_apply_op_set_data_bitmap_range_equiv_single_ops() {
+        let b0: u8 = kani::any();
+        let b1: u8 = kani::any();
+        let mut img_range = [0u8; 32];
+        img_range[16] = b0;
+        img_range[17] = b1;
+        let mut img_single = img_range;
+
+        let mut sb = SuperBlock::new(100);
+        sb.block_size = 16;
+        sb.data_bitmap_block = 1;
+        sb.inode_table_block = 2;
+        sb.data_block_start = 2;
+        sb.block_count = 18; // 16 data blocks (2..18)
+
+        let start_block: u64 = kani::any();
+        let allocated: bool = kani::any();
+        kani::assume(start_block >= 2 && start_block <= 16);
+
+        let range_op = MetadataOp::SetDataBitmapRange {
+            start_block,
+            count: 2,
+            allocated,
+        };
+        let single_op1 = MetadataOp::SetDataBitmap {
+            block_id: start_block,
+            allocated,
+        };
+        let single_op2 = MetadataOp::SetDataBitmap {
+            block_id: start_block + 1,
+            allocated,
+        };
+
+        let r_range = apply_op_in_place(&mut img_range, &sb, &range_op);
+        let r_s1 = apply_op_in_place(&mut img_single, &sb, &single_op1);
+        let r_s2 = apply_op_in_place(&mut img_single, &sb, &single_op2);
+
+        assert!(r_range.is_ok() && r_s1.is_ok() && r_s2.is_ok());
+        assert_eq!(
+            img_range, img_single,
+            "SetDataBitmapRange(count=2) must produce the exact same bitmap as two SetDataBitmap ops"
+        );
+    }
+
+    /// Prove that `JournalState::encode` and `JournalState::decode` form a bijection
+    /// and that any corruption of the magic, version, or ring_blocks fields is rejected.
+    #[kani::proof]
+    fn proof_journal_state_encode_decode_roundtrip() {
+        let head: u64 = kani::any();
+        let tail: u64 = kani::any();
+        let tx_seq: u64 = kani::any();
+        let cleanly_unmounted: bool = kani::any();
+
+        let state = JournalState {
+            head,
+            tail,
+            tx_seq,
+            cleanly_unmounted,
+        };
+        let encoded = state.encode();
+        let decoded = JournalState::decode(&encoded);
+        assert_eq!(
+            decoded,
+            Some(state),
+            "JournalState::decode(state.encode()) must recover the exact state"
+        );
+
+        // Flipping any bit in the 12-byte fixed header prefix (magic 0..4,
+        // version 4..8, ring_blocks 8..12) must cause decode to reject the header.
+        let corrupt_idx: usize = kani::any();
+        let mask: u8 = kani::any();
+        kani::assume(corrupt_idx < 12);
+        kani::assume(mask != 0);
+
+        let mut bad = encoded;
+        bad[corrupt_idx] ^= mask;
+        assert_eq!(
+            JournalState::decode(&bad),
+            None,
+            "corrupted magic/version/ring_blocks must be rejected"
+        );
+    }
+
+    /// Prove that `MetadataOp::encode` and `MetadataOp::decode` round-trip accurately
+    /// and agree with `MetadataOp::encoded_size`, while rejecting unknown tags.
+    #[kani::proof]
+    fn proof_metadata_op_encode_decode_roundtrip() {
+        let variant: u8 = kani::any();
+        let id: u64 = kani::any();
+        let count: u32 = kani::any();
+        let allocated: bool = kani::any();
+
+        let op = match variant % 3 {
+            0 => MetadataOp::SetInodeBitmap {
+                inode_id: id,
+                allocated,
+            },
+            1 => MetadataOp::SetDataBitmap {
+                block_id: id,
+                allocated,
+            },
+            _ => MetadataOp::SetDataBitmapRange {
+                start_block: id,
+                count,
+                allocated,
+            },
+        };
+
+        let mut buf = Vec::with_capacity(16);
+        op.encode(&mut buf);
+        assert_eq!(
+            buf.len(),
+            op.encoded_size(),
+            "encoded length must match encoded_size()"
+        );
+
+        let (decoded, consumed) =
+            MetadataOp::decode(&buf).expect("validly encoded MetadataOp must decode");
+        assert_eq!(consumed, buf.len(), "decoder must consume exact op length");
+        match (&op, &decoded) {
+            (
+                MetadataOp::SetInodeBitmap {
+                    inode_id: a,
+                    allocated: ba,
+                },
+                MetadataOp::SetInodeBitmap {
+                    inode_id: b,
+                    allocated: bb,
+                },
+            ) => {
+                assert_eq!(*a, *b);
+                assert_eq!(*ba, *bb);
+            }
+            (
+                MetadataOp::SetDataBitmap {
+                    block_id: a,
+                    allocated: ba,
+                },
+                MetadataOp::SetDataBitmap {
+                    block_id: b,
+                    allocated: bb,
+                },
+            ) => {
+                assert_eq!(*a, *b);
+                assert_eq!(*ba, *bb);
+            }
+            (
+                MetadataOp::SetDataBitmapRange {
+                    start_block: a,
+                    count: ca,
+                    allocated: ba,
+                },
+                MetadataOp::SetDataBitmapRange {
+                    start_block: b,
+                    count: cb,
+                    allocated: bb,
+                },
+            ) => {
+                assert_eq!(*a, *b);
+                assert_eq!(*ca, *cb);
+                assert_eq!(*ba, *bb);
+            }
+            _ => panic!("decoded MetadataOp variant mismatch"),
+        }
+
+        let bad_tag: u8 = kani::any();
+        kani::assume(bad_tag == 0 || bad_tag > 5);
+        buf[0] = bad_tag;
+        assert!(
+            MetadataOp::decode(&buf).is_none(),
+            "unknown op discriminant must be rejected"
+        );
+    }
+
+    /// Prove that `push_data_bitmap_op` coalesces adjacent spans of identical polarity
+    /// (both forward and backward) and conserves total block count.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn proof_push_data_bitmap_op_coalesces_adjacent_same_polarity() {
+        let start1: u64 = kani::any();
+        let count1: u32 = kani::any();
+        let count2: u32 = kani::any();
+        let allocated: bool = kani::any();
+        let forward: bool = kani::any();
+
+        kani::assume(count1 > 0 && count2 > 0);
+        let total_count = count1.checked_add(count2);
+        kani::assume(total_count.is_some());
+        let total_count = total_count.unwrap();
+
+        let start2 = if forward {
+            let s2 = start1.checked_add(count1 as u64);
+            kani::assume(s2.is_some());
+            s2.unwrap()
+        } else {
+            let s2 = start1.checked_sub(count2 as u64);
+            kani::assume(s2.is_some());
+            s2.unwrap()
+        };
+
+        let mut ops = Vec::with_capacity(2);
+        push_data_bitmap_op(&mut ops, start1, count1, allocated);
+        push_data_bitmap_op(&mut ops, start2, count2, allocated);
+
+        assert_eq!(
+            ops.len(),
+            1,
+            "adjacent same-polarity spans must coalesce into a single op"
+        );
+        match &ops[0] {
+            MetadataOp::SetDataBitmapRange {
+                start_block,
+                count,
+                allocated: alloc,
+            } => {
+                assert_eq!(*start_block, start1.min(start2));
+                assert_eq!(*count, total_count);
+                assert_eq!(*alloc, allocated);
+            }
+            _ => panic!("coalesced span of count >= 2 must be SetDataBitmapRange"),
+        }
+        kani::cover!(forward, "forward coalescing reached");
+        kani::cover!(!forward, "backward coalescing reached");
+    }
+
+    /// Prove that `push_block_slice_op` coalesces contiguous and contained slices
+    /// on the same block while keeping disjoint slices separate.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn proof_push_block_slice_op_coalesces_contiguous_and_contained() {
+        let block_id: u64 = kani::any();
+        let off1: u32 = kani::any();
+        let a0: u8 = kani::any();
+        let a1: u8 = kani::any();
+        let b0: u8 = kani::any();
+        let b1: u8 = kani::any();
+        kani::assume(off1 <= 4000);
+
+        // 1. Contiguous extension: [off1..off1+2] followed by [off1+2..off1+4]
+        let mut initial_data = Vec::with_capacity(4);
+        initial_data.push(a0);
+        initial_data.push(a1);
+        let mut ops = Vec::with_capacity(2);
+        ops.push(MetadataOp::WriteBlockSlice {
+            block_id,
+            offset: off1,
+            data: initial_data,
+        });
+        push_block_slice_op(&mut ops, block_id, off1 + 2, &[b0, b1]);
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            MetadataOp::WriteBlockSlice {
+                block_id: blk,
+                offset,
+                data,
+            } => {
+                assert_eq!(*blk, block_id);
+                assert_eq!(*offset, off1);
+                assert_eq!(data.len(), 4);
+                assert_eq!(data[0], a0);
+                assert_eq!(data[1], a1);
+                assert_eq!(data[2], b0);
+                assert_eq!(data[3], b1);
+            }
+            _ => panic!("expected WriteBlockSlice"),
+        }
+
+        // 2. Contained overwrite: [off1+1..off1+3] inside [off1..off1+4]
+        let c0: u8 = kani::any();
+        let c1: u8 = kani::any();
+        push_block_slice_op(&mut ops, block_id, off1 + 1, &[c0, c1]);
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            MetadataOp::WriteBlockSlice {
+                block_id: blk,
+                offset,
+                data,
+            } => {
+                assert_eq!(*blk, block_id);
+                assert_eq!(*offset, off1);
+                assert_eq!(data.len(), 4);
+                assert_eq!(data[0], a0);
+                assert_eq!(data[1], c0);
+                assert_eq!(data[2], c1);
+                assert_eq!(data[3], b1);
+            }
+            _ => panic!("expected WriteBlockSlice"),
+        }
+    }
+
+    /// Prove the state-transition invariants of `JournalRing::append`:
+    /// 1. For any `0 < len < ring_bytes`, after `append`, `head != tail` (`used() > 0`)
+    ///    always holds — a transaction can never cause `head == tail` and make the ring
+    ///    appear empty.
+    /// 2. When starting from a checkpointed ring (`old_head == old_tail`, as in each
+    ///    round of COW WAL-atomic defragmentation), `new_tail == write_start` and
+    ///    `new_used == len` always hold, even when `old_head + len > ring_bytes` wraps to 0.
+    #[kani::proof]
+    fn proof_ring_append_state_transition_invariants() {
+        let ring_bytes: u64 = kani::any();
+        let old_head: u64 = kani::any();
+        let old_tail: u64 = kani::any();
+        let len: u64 = kani::any();
+
+        kani::assume(ring_bytes >= 64 && ring_bytes <= (1 << 20));
+        kani::assume(old_head < ring_bytes);
+        kani::assume(old_tail < ring_bytes);
+        kani::assume(len > 0 && len < ring_bytes);
+
+        let mut head = old_head;
+        let mut tail = old_tail;
+        let was_empty = old_head == old_tail;
+        let old_used = (old_head + ring_bytes - old_tail) % ring_bytes;
+
+        // Exact state transition of JournalRing::append
+        if old_head.saturating_add(len) > ring_bytes {
+            head = 0;
+            if was_empty || old_tail > old_head || len >= old_tail {
+                tail = 0;
+            }
+        } else if !was_empty && old_used.saturating_add(len) >= ring_bytes {
+            tail = head;
+        }
+
+        let write_start = head;
+        let write_end = head.checked_add(len).unwrap();
+        assert!(write_end <= ring_bytes, "frame write must stay within ring");
+
+        let new_head = write_end % ring_bytes;
+        let new_tail = tail;
+        assert!(new_head < ring_bytes);
+        assert!(new_tail < ring_bytes);
+
+        let new_used = (new_head + ring_bytes - new_tail) % ring_bytes;
+        assert_ne!(
+            new_head, new_tail,
+            "ring must never become empty (head == tail) immediately after appending a frame"
+        );
+        assert!(
+            new_used >= len && new_used < ring_bytes,
+            "new_used must include at least the newly appended frame and stay < ring_bytes"
+        );
+
+        if was_empty {
+            assert_eq!(
+                new_tail, write_start,
+                "appending to a checkpointed ring must place tail at the new frame start"
+            );
+            assert_eq!(
+                new_used, len,
+                "appending to a checkpointed ring must result in used() == len"
+            );
+        }
+
+        kani::cover!(
+            was_empty && old_head.saturating_add(len) > ring_bytes,
+            "checkpointed ring wrapped to 0"
+        );
+        kani::cover!(
+            !was_empty && old_head.saturating_add(len) > ring_bytes && len < old_tail,
+            "non-empty ring wrapped to 0 preserving pre-wrap tail"
+        );
+        kani::cover!(
+            !was_empty && old_used.saturating_add(len) == ring_bytes,
+            "exact ring-full collision avoided"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2414,6 +2891,120 @@ mod checkpoint_tests {
         })
         .expect("recover");
         assert_eq!(replayed, 0, "checkpointed transactions must not replay");
+    }
+
+    #[test]
+    fn test_ring_wrap_after_checkpoint_recovers_post_wrap_frames() {
+        let (mut region, bs) = make();
+        {
+            let mut ring = JournalRing::create(&mut region, bs).expect("create");
+            let chunk = vec![0xAAu8; 4000];
+            // Advance head to ~100 KiB and checkpoint there so head == tail == ~100 KiB.
+            for i in 0..25u64 {
+                ring.append(&[MetadataOp::WriteBlockSlice {
+                    block_id: 2000 + i,
+                    offset: 0,
+                    data: chunk.clone(),
+                }])
+                .expect("append pre-checkpoint");
+            }
+            ring.checkpoint();
+            assert_eq!(ring.used(), 0);
+            assert!(ring.state().head > 90_000);
+
+            // Now append a ~40 KiB transaction that wraps head to 0, while len < old_tail.
+            let wrap_ops: Vec<MetadataOp> = (0..10u64)
+                .map(|i| MetadataOp::WriteBlockSlice {
+                    block_id: 3000 + i,
+                    offset: 0,
+                    data: chunk.clone(),
+                })
+                .collect();
+            ring.append(&wrap_ops).expect("append wrapping tx");
+            assert_eq!(
+                ring.state().tail,
+                0,
+                "wrapping an empty (checkpointed) ring must also wrap tail to 0"
+            );
+            assert_eq!(ring.pending_transactions(), 1);
+        }
+
+        let mut ring = JournalRing::open(&mut region, bs).expect("reopen");
+        let mut replayed_ops = 0usize;
+        let tx_count = ring
+            .recover(|_| {
+                replayed_ops += 1;
+                Ok(())
+            })
+            .expect("recover wrapped tx");
+        assert_eq!(tx_count, 1, "post-wrap transaction must be replayed");
+        assert_eq!(replayed_ops, 10);
+    }
+
+    #[test]
+    fn test_ring_wrap_preserves_pre_wrap_uncheckpointed_frames() {
+        let (mut region, bs) = make();
+        {
+            let mut ring = JournalRing::create(&mut region, bs).expect("create");
+            let chunk = vec![0xBBu8; 4000];
+            // Advance head to ~80 KiB and checkpoint so tail == ~80 KiB.
+            for i in 0..20u64 {
+                ring.append(&[MetadataOp::WriteBlockSlice {
+                    block_id: 2000 + i,
+                    offset: 0,
+                    data: chunk.clone(),
+                }])
+                .expect("append");
+            }
+            ring.checkpoint();
+            let checkpoint_tail = ring.state().tail;
+            assert!(checkpoint_tail > 80_000);
+
+            // Append 10 uncheckpointed transactions (~40 KiB), bringing head to ~121 KiB.
+            for i in 0..10u64 {
+                ring.append(&[MetadataOp::WriteBlockSlice {
+                    block_id: 4000 + i,
+                    offset: 0,
+                    data: chunk.clone(),
+                }])
+                .expect("append pre-wrap uncheckpointed");
+            }
+            assert_eq!(ring.state().tail, checkpoint_tail);
+
+            // Append 5 more transactions (~20 KiB) that force a wrap to 0 without
+            // overwriting `checkpoint_tail`.
+            for i in 0..5u64 {
+                ring.append(&[MetadataOp::WriteBlockSlice {
+                    block_id: 5000 + i,
+                    offset: 0,
+                    data: chunk.clone(),
+                }])
+                .expect("append post-wrap uncheckpointed");
+            }
+            assert_eq!(
+                ring.state().tail,
+                checkpoint_tail,
+                "pre-wrap tail must be preserved when post-wrap writes stay below tail"
+            );
+            assert_eq!(ring.pending_transactions(), 15);
+        }
+
+        let mut ring = JournalRing::open(&mut region, bs).expect("reopen");
+        let mut seen_blocks = Vec::new();
+        let tx_count = ring
+            .recover(|op| {
+                if let MetadataOp::WriteBlockSlice { block_id, .. } = op {
+                    seen_blocks.push(*block_id);
+                }
+                Ok(())
+            })
+            .expect("recover across wrap");
+        assert_eq!(
+            tx_count, 15,
+            "both pre-wrap and post-wrap transactions must replay"
+        );
+        let expected: Vec<u64> = (4000..4010).chain(5000..5005).collect();
+        assert_eq!(seen_blocks, expected);
     }
 }
 

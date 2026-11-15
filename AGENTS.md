@@ -84,7 +84,10 @@ An inode stores:
 | `src/superblock.rs` | `SuperBlock` definition, layout geometry calculation, Kani proofs. |
 | `src/inode.rs` | `Inode` (256B `#[repr(C)]`), `FileType`, `BlockPath` tier resolver. |
 | `src/inode_format.rs` | On-disk inode encoding: fixed 256B v2 record, legacy `bincode` v1 decoder, version dispatch. |
-| `src/disk.rs` | Core storage engine: `DiskManager`, `DiskManagerInner`, `DurabilityMode`, caches, bounded inode cache, journaled write paths. |
+| `src/disk.rs` | Core storage engine: `DiskManager`, `DiskManagerInner`, `DurabilityMode`, open/mount/WAL recovery, directory & standard file read/write/truncate paths. |
+| `src/disk/caches.rs` | In-memory caches: `ChunkReadCache`, `DecodedBlobCache`, 32-shard `ShardedDirCache`, and 32-shard Second-Chance `BoundedInodeCache`. |
+| `src/disk/chunked.rs` | Seekable 64K chunked compression/encryption engine (`write_chunked_64k`, `read_at_chunked_64k`, `truncate_chunked_64k`). |
+| `src/disk/maintenance.rs` | Online maintenance: `migrate`, `analyze_fragmentation`, `defragment` (`Safe` / `InPlace` / `Journaled COW`), and `verify_integrity` (`fsck`). |
 | `src/directory.rs` | `DirectoryEntry`, multi-block directory iteration, 64-bit SipHash filename hashing. |
 | `src/io_engine.rs` | `IoEngine`, `IoBackend` (`Mmap`, `Pread`, `IoUring`), `ExtentList`, extent merging. |
 | `src/journal.rs` | Optional Metadata WAL: CRC32C, transaction frames, `MetadataOp`, `JournalRing`, idempotent redo. |

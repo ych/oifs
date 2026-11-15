@@ -434,3 +434,88 @@ fn test_shuttle_concurrent_same_filename_creation() {
         40,
     );
 }
+
+/// Test 8: Concurrent multi-directory `ShardedDirCache` promotion (P4.35) and
+/// indirect `read_at` (P4.34) under Shuttle's randomized scheduler.
+/// Verifies that out-of-lock directory index promotion across multiple directories,
+/// concurrent negative/positive `lookup` calls, `delete_file` across parent/target
+/// shards, and concurrent indirect-tier `read_at` calls never deadlock or return stale data.
+#[test]
+fn test_shuttle_sharded_dir_cache_multi_dir_and_read_at() {
+    shuttle::check_random(
+        || {
+            let dir = tempdir().unwrap();
+            let img_path = dir.path().join("shuttle_p4_34_35.img");
+
+            let dm = DiskManager::open(&img_path, 4 * 1024 * 1024).expect("create image");
+            let root = dm.resolve_path(".").unwrap();
+            let d1 = dm.create_directory(root, "shard_dir_a").unwrap();
+            let d2 = dm.create_directory(root, "shard_dir_b").unwrap();
+
+            // Populate > 8 files in d1 so cold lookup on a reopened handle triggers out-of-lock build_dir_index
+            for i in 0..9usize {
+                let fid = dm.create_file(d1, &format!("f_{i}.bin")).unwrap();
+                dm.write_data(fid, 0, &[i as u8 + 1; 64], CompressionMode::Never)
+                    .unwrap();
+            }
+
+            // Create a multi-block file spanning Direct (0..9) + Single Indirect (10..13) with a hole at block 11
+            let big_fid = dm.create_file(d2, "indirect.bin").unwrap();
+            dm.write_data(big_fid, 9 * 4096, &[0xA9u8; 8192], CompressionMode::Never)
+                .unwrap();
+            dm.write_data(big_fid, 12 * 4096, &[0xCCu8; 4096], CompressionMode::Never)
+                .unwrap();
+
+            let dm = Arc::new(dm);
+
+            // Thread 1: Repeatedly looks up existing & missing entries in d1 (testing out-of-lock promotion)
+            let dm1 = dm.clone();
+            let h1 = thread::spawn(move || {
+                for i in 0..9usize {
+                    let id = dm1.lookup(d1, &format!("f_{i}.bin")).unwrap();
+                    let mut b = [0u8; 64];
+                    let n = dm1.read_at(id, 0, &mut b).unwrap();
+                    assert_eq!(n, 64);
+                    assert_eq!(b, [i as u8 + 1; 64]);
+                }
+                assert!(dm1.lookup(d1, "non_existent.bin").is_err());
+            });
+
+            // Thread 2: Creates and deletes a subdirectory in d2 while also reading across Direct -> Single Indirect + hole
+            let dm2 = dm.clone();
+            let h2 = thread::spawn(move || {
+                let sub = dm2.create_directory(d2, "temp_sub").unwrap();
+                assert!(dm2.lookup(d2, "temp_sub").is_ok());
+                dm2.delete_file(d2, "temp_sub").unwrap();
+                let _ = sub;
+
+                let mut buf = vec![0xFFu8; 4 * 4096];
+                let n = dm2.read_at(big_fid, 9 * 4096, &mut buf).unwrap();
+                assert_eq!(n, 4 * 4096);
+                assert_eq!(&buf[..8192], &[0xA9u8; 8192]);
+                assert_eq!(&buf[8192..12288], &[0u8; 4096]);
+                assert_eq!(&buf[12288..16384], &[0xCCu8; 4096]);
+            });
+
+            // Thread 3: Concurrent reader on big_fid and concurrent negative lookup on d1
+            let dm3 = dm.clone();
+            let h3 = thread::spawn(move || {
+                assert!(dm3.lookup(d1, "also_missing.bin").is_err());
+                let mut buf = vec![0xEEu8; 4 * 4096];
+                let n = dm3.read_at(big_fid, 9 * 4096, &mut buf).unwrap();
+                assert_eq!(n, 4 * 4096);
+                assert_eq!(&buf[..8192], &[0xA9u8; 8192]);
+                assert_eq!(&buf[8192..12288], &[0u8; 4096]);
+                assert_eq!(&buf[12288..16384], &[0xCCu8; 4096]);
+            });
+
+            h1.join().unwrap();
+            h2.join().unwrap();
+            h3.join().unwrap();
+
+            let report = dm.verify_integrity().expect("fsck");
+            assert!(report.is_clean);
+        },
+        40,
+    );
+}

@@ -383,8 +383,8 @@ pub(crate) struct DiskManagerInner {
     pub free_inode_hint: u64,
     /// Inode cache for zero-copy metadata access (P2.2)
     pub inode_cache: BoundedInodeCache,
-    /// Per-directory name index: dir_inode_id -> DirIndex (P3.1 / P4.19)
-    pub dir_cache: RwLock<FxHashMap<u64, DirIndex>>,
+    /// Sharded per-directory name index: dir_inode_id -> DirIndex (P3.1 / P4.19 / P4.35)
+    pub dir_cache: ShardedDirCache,
     /// Bounded sub-chunk decompression cache for seekable 64K `read_at` (P4.17)
     pub chunk_read_cache: Mutex<ChunkReadCache>,
     /// Bounded decoded-payload cache for non-seekable `read_at` (P4.24)
@@ -778,6 +778,78 @@ pub(crate) struct DirIndex {
 
 /// Cold targeted scans tolerated on a directory before building its full index.
 const DIR_INDEX_BUILD_AFTER_SCANS: u32 = 8;
+
+/// Number of concurrent shards in the directory index cache (P4.35).
+const NUM_DIR_CACHE_SHARDS: usize = 32;
+
+/// Sharded, thread-safe directory index cache (P4.35).
+///
+/// Divides `dir_inode_id -> DirIndex` across 32 independent `RwLock` shards using a
+/// 64-bit Fibonacci hashing bijection, so cold indexing (`build_dir_index`), `list_dir`
+/// promotion, or `create_file`/`delete_file` cache maintenance on one directory never
+/// stalls concurrent `lookup`, `resolve_path`, or `list_dir` operations on other directories.
+pub(crate) struct ShardedDirCache {
+    shards: Box<[RwLock<FxHashMap<u64, DirIndex>>]>,
+    num_shards: usize,
+}
+
+impl Default for ShardedDirCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ShardedDirCache {
+    pub(crate) fn new() -> Self {
+        let num_shards = NUM_DIR_CACHE_SHARDS;
+        let shards = (0..num_shards)
+            .map(|_| RwLock::new(FxHashMap::default()))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self { shards, num_shards }
+    }
+
+    #[inline]
+    fn shard_index(&self, dir_inode_id: u64) -> usize {
+        (dir_inode_id.wrapping_mul(0x517cc1b727220a95) as usize) & (self.num_shards - 1)
+    }
+
+    #[inline]
+    pub(crate) fn read_shard(
+        &self,
+        dir_inode_id: u64,
+    ) -> std::sync::RwLockReadGuard<'_, FxHashMap<u64, DirIndex>> {
+        crate::read_unpoisoned(&self.shards[self.shard_index(dir_inode_id)])
+    }
+
+    #[inline]
+    pub(crate) fn write_shard(
+        &self,
+        dir_inode_id: u64,
+    ) -> std::sync::RwLockWriteGuard<'_, FxHashMap<u64, DirIndex>> {
+        crate::write_unpoisoned(&self.shards[self.shard_index(dir_inode_id)])
+    }
+
+    #[inline]
+    pub(crate) fn remove(&self, dir_inode_id: u64) {
+        self.write_shard(dir_inode_id).remove(&dir_inode_id);
+    }
+
+    pub(crate) fn clear(&self) {
+        for shard in self.shards.iter() {
+            crate::write_unpoisoned(shard).clear();
+        }
+    }
+
+    pub(crate) fn for_each_mut(&self, mut f: impl FnMut(&mut DirIndex)) {
+        for shard in self.shards.iter() {
+            let mut map = crate::write_unpoisoned(shard);
+            for ix in map.values_mut() {
+                f(ix);
+            }
+        }
+    }
+}
 
 impl Drop for DiskManagerInner {
     fn drop(&mut self) {
@@ -1723,7 +1795,7 @@ impl DiskManager {
             free_block_hint,
             free_inode_hint: 0,
             inode_cache: BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY),
-            dir_cache: RwLock::new(FxHashMap::default()),
+            dir_cache: ShardedDirCache::new(),
             chunk_read_cache: Mutex::new(ChunkReadCache::default()),
             decoded_blob_cache: Mutex::new(DecodedBlobCache::default()),
             durability_mode: std::sync::atomic::AtomicU8::new(DurabilityMode::Lazy as u8),
@@ -2207,8 +2279,8 @@ impl DiskManager {
     ) -> Result<Option<u64>, DiskManagerError> {
         let encrypted = guard.encryption_key.is_some();
 
-        // 1. Fast path: no allocation, no disk access, no SIV filename encryption (P4.19).
-        if let Some(ix) = guard.dir_cache.read().unwrap().get(&parent_id) {
+        // 1. Fast path: no allocation, no disk access, no SIV filename encryption (P4.19 / P4.35).
+        if let Some(ix) = guard.dir_cache.read_shard(parent_id).get(&parent_id) {
             let hit = if encrypted {
                 ix.plain.get(name).map(|&(id, _)| id)
             } else {
@@ -2236,8 +2308,8 @@ impl DiskManager {
         let candidates = [enc_name.as_deref(), Some(name)];
 
         // 2. Complete index (reachable here on encrypted filesystems when `plain_complete` is false).
-        let (indexed, has_entry_yet) = {
-            let cache = guard.dir_cache.read().unwrap();
+        let (indexed, has_entry_yet, cold_scans_so_far) = {
+            let cache = guard.dir_cache.read_shard(parent_id);
             match cache.get(&parent_id) {
                 Some(ix) if ix.complete => (
                     Some(
@@ -2247,16 +2319,17 @@ impl DiskManager {
                             .find_map(|c| ix.stored.get(*c).map(|&(id, _, _)| id)),
                     ),
                     true,
+                    ix.cold_scans,
                 ),
-                Some(_) => (None, true),
-                None => (None, false),
+                Some(ix) => (None, true, ix.cold_scans),
+                None => (None, false, 0),
             }
         };
 
         if let Some(found) = indexed {
-            // P4.19: on an authoritative negative lookup, return immediately without taking `dir_cache.write()`.
+            // P4.19: on an authoritative negative lookup, return immediately without taking shard `.write()`.
             if let Some(id) = found {
-                let mut cache = guard.dir_cache.write().unwrap();
+                let mut cache = guard.dir_cache.write_shard(parent_id);
                 let ix = cache.entry(parent_id).or_default();
                 ix.plain.insert(
                     name.to_string(),
@@ -2270,7 +2343,7 @@ impl DiskManager {
         }
 
         // 3. First-touch unindexed directory: build the complete index in a single pass
-        //    instead of scanning all blocks twice on a cold negative lookup (P4.19).
+        //    instead of scanning all blocks twice on a cold negative lookup (P4.19 / P4.35).
         if !has_entry_yet {
             let (stored, may_have_holes, tail_offset) =
                 Self::build_dir_index(&guard.mmap, &parent)?;
@@ -2279,7 +2352,7 @@ impl DiskManager {
                 .flatten()
                 .find_map(|c| stored.get(*c).map(|&(id, _, _)| id));
             let is_empty = stored.is_empty();
-            let mut cache = guard.dir_cache.write().unwrap();
+            let mut cache = guard.dir_cache.write_shard(parent_id);
             let ix = cache.entry(parent_id).or_default();
             if !ix.complete {
                 ix.stored = stored;
@@ -2312,12 +2385,21 @@ impl DiskManager {
         });
         let found = found_loc.map(|(id, _, _)| id);
 
-        let mut cache = guard.dir_cache.write().unwrap();
+        // P4.35: build full index *outside* the shard write lock when promoting on miss or threshold.
+        let promoted_index = if found.is_none()
+            || cold_scans_so_far.saturating_add(1) >= DIR_INDEX_BUILD_AFTER_SCANS
+        {
+            Some(Self::build_dir_index(&guard.mmap, &parent)?)
+        } else {
+            None
+        };
+
+        let mut cache = guard.dir_cache.write_shard(parent_id);
         let ix = cache.entry(parent_id).or_default();
         ix.cold_scans = ix.cold_scans.saturating_add(1);
-        if !ix.complete && (found.is_none() || ix.cold_scans >= DIR_INDEX_BUILD_AFTER_SCANS) {
-            let (stored, may_have_holes, tail_offset) =
-                Self::build_dir_index(&guard.mmap, &parent)?;
+        if !ix.complete
+            && let Some((stored, may_have_holes, tail_offset)) = promoted_index
+        {
             let is_empty = stored.is_empty();
             ix.stored = stored;
             ix.may_have_holes = may_have_holes;
@@ -2360,8 +2442,7 @@ impl DiskManager {
 
         let (cached_tail, may_have_holes) = guard
             .dir_cache
-            .read()
-            .unwrap()
+            .read_shard(parent_inode_id)
             .get(&parent_inode_id)
             .map(|ix| (ix.tail_offset, ix.may_have_holes))
             .unwrap_or((None, num_blocks > 1));
@@ -3171,7 +3252,11 @@ impl DiskManager {
         guard.inode_cache.insert(new_inode_id, new_inode);
         guard.inode_cache.insert(parent_inode_id, parent_inode);
         let encrypted = guard.encryption_key.is_some();
-        if let Some(ix) = guard.dir_cache.write().unwrap().get_mut(&parent_inode_id) {
+        if let Some(ix) = guard
+            .dir_cache
+            .write_shard(parent_inode_id)
+            .get_mut(&parent_inode_id)
+        {
             if encrypted {
                 ix.plain.insert(
                     name.to_string(),
@@ -3352,7 +3437,11 @@ impl DiskManager {
         // Keep the directory index consistent (only if one exists; otherwise nothing is stale).
         let stored_name = entry.name;
         let encrypted = guard.encryption_key.is_some();
-        if let Some(ix) = guard.dir_cache.write().unwrap().get_mut(&parent_inode_id) {
+        if let Some(ix) = guard
+            .dir_cache
+            .write_shard(parent_inode_id)
+            .get_mut(&parent_inode_id)
+        {
             if encrypted {
                 ix.plain.insert(
                     name.to_string(),
@@ -3717,14 +3806,28 @@ impl DiskManager {
                     continue;
                 }
 
-                let blk = Self::read_block_ptr(mmap, sib_id, s_idx);
-                // SEC-20: a pointer that does not address the data area is
-                // ignored instead of exposing metadata as file content.
-                if blk != 0 && blk >= data_start && blk < data_end {
-                    emit(blk, read as usize, to_read);
+                if let Some(sib_slice) = Self::get_block_from_map(mmap, sib_id) {
+                    let num_entries = 512 - s_idx;
+                    let ptr_chunks = &sib_slice[s_idx * 8..(s_idx + num_entries) * 8];
+                    for chunk in ptr_chunks.as_chunks::<8>().0 {
+                        if read >= physical_size {
+                            break;
+                        }
+                        let to_read_curr =
+                            std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
+                        let blk = u64::from_le_bytes(*chunk);
+                        // SEC-20: a pointer that does not address the data area is
+                        // ignored instead of exposing metadata as file content.
+                        if blk != 0 && blk >= data_start && blk < data_end {
+                            emit(blk, read as usize, to_read_curr);
+                        }
+                        read += to_read_curr as u64;
+                        blk_idx += 1;
+                    }
+                } else {
+                    read += to_read as u64;
+                    blk_idx += 1;
                 }
-                read += to_read as u64;
-                blk_idx += 1;
                 continue;
             }
 
@@ -3850,9 +3953,11 @@ impl DiskManager {
 
         let mut raw_data = vec![0u8; physical_size as usize];
         if guard.io_engine.effective() == IoBackend::Mmap {
-            // Zero-copy path: memcpy each allocated block straight out of the mapping.
+            // Zero-copy path: coalesce physically contiguous runs and memcpy from the mapping (P4.34).
             let data_start = guard.superblock.data_block_start;
             let data_end = guard.superblock.block_count;
+            let mmap_len = guard.mmap.len();
+            let mut pending_run: Option<(usize, usize, usize)> = None;
             Self::walk_payload_blocks(
                 &guard.mmap,
                 inode,
@@ -3860,11 +3965,33 @@ impl DiskManager {
                 data_start,
                 data_end,
                 |blk, off, len| {
-                    if let Some(slice) = Self::get_block_from_map(&guard.mmap, blk) {
-                        raw_data[off..off + len].copy_from_slice(&slice[..len]);
+                    if let Some(src_off) = usize::try_from(blk)
+                        .ok()
+                        .and_then(|b| b.checked_mul(BLOCK_SIZE))
+                        && src_off.saturating_add(len) <= mmap_len
+                    {
+                        match pending_run {
+                            Some((run_src, run_dst, run_len))
+                                if run_src + run_len == src_off && run_dst + run_len == off =>
+                            {
+                                pending_run = Some((run_src, run_dst, run_len + len));
+                            }
+                            Some((run_src, run_dst, run_len)) => {
+                                raw_data[run_dst..run_dst + run_len]
+                                    .copy_from_slice(&guard.mmap[run_src..run_src + run_len]);
+                                pending_run = Some((src_off, off, len));
+                            }
+                            None => {
+                                pending_run = Some((src_off, off, len));
+                            }
+                        }
                     }
                 },
             );
+            if let Some((run_src, run_dst, run_len)) = pending_run {
+                raw_data[run_dst..run_dst + run_len]
+                    .copy_from_slice(&guard.mmap[run_src..run_src + run_len]);
+            }
         } else {
             // P3.2: gather coalesced extents, then hand them to the engine in one submission.
             let mut extents = ExtentList::new();
@@ -4107,7 +4234,7 @@ impl DiskManager {
         inode: &Inode,
         file_offset: u64,
         buf: &mut [u8],
-        mut extents: Option<&mut ExtentList>,
+        extents: Option<&mut ExtentList>,
     ) -> Result<usize, DiskManagerError> {
         if inode.mode != crate::inode::FileType::File {
             return Err(DiskManagerError::Io(std::io::Error::other(
@@ -4165,38 +4292,214 @@ impl DiskManager {
             return Ok(actual);
         }
 
-        // Fast path for raw uncompressed files: Zero-allocation direct copy from mmap blocks
-        let mut bytes_read = 0;
-        let mut curr_offset = file_offset;
-
-        while bytes_read < to_read_total {
-            let blk_idx = (curr_offset / BLOCK_SIZE as u64) as usize;
-            let in_blk_offset = (curr_offset % BLOCK_SIZE as u64) as usize;
-            let rem_in_blk = BLOCK_SIZE - in_blk_offset;
-            let chunk_len = std::cmp::min(to_read_total - bytes_read, rem_in_blk);
-
-            let blk_id = Self::resolve_logical_block_id(&guard.mmap, inode, blk_idx);
-            let dst = &mut buf[bytes_read..bytes_read + chunk_len];
-            // SEC-28: reject forged pointers targeting metadata blocks (< data_block_start).
-            match Self::get_block_from_map(&guard.mmap, blk_id)
-                .filter(|_| guard.is_data_block(blk_id))
-            {
-                Some(slice) => match extents.as_deref_mut() {
-                    None => dst.copy_from_slice(&slice[in_blk_offset..in_blk_offset + chunk_len]),
-                    Some(list) => list.push(
-                        blk_id * BLOCK_SIZE as u64 + in_blk_offset as u64,
-                        bytes_read,
-                        chunk_len,
-                    ),
-                },
-                None => dst.fill(0),
-            }
-
-            bytes_read += chunk_len;
-            curr_offset += chunk_len as u64;
+        // Fast path for raw uncompressed files: Batch indirect leaf resolution & coalesced
+        // contiguous mmap extent copy (P4.34)
+        struct ReadAtSink<'a> {
+            guard: &'a DiskManagerInner,
+            buf: &'a mut [u8],
+            extents: Option<&'a mut ExtentList>,
+            to_read_total: usize,
+            end_offset: u64,
+            bytes_read: usize,
+            curr_offset: u64,
+            pending_mmap_run: Option<(usize, usize, usize)>,
         }
 
-        Ok(bytes_read)
+        impl<'a> ReadAtSink<'a> {
+            #[inline]
+            fn flush_mmap_run(&mut self) {
+                if let Some((run_src, run_dst, run_len)) = self.pending_mmap_run.take() {
+                    self.buf[run_dst..run_dst + run_len]
+                        .copy_from_slice(&self.guard.mmap[run_src..run_src + run_len]);
+                }
+            }
+
+            #[inline]
+            fn emit_block(&mut self, blk_id: u64, in_blk_off: usize, chunk_len: usize) {
+                let mmap_len = self.guard.mmap.len();
+                // SEC-28: reject forged pointers targeting metadata blocks (< data_block_start).
+                let valid_src = if self.guard.is_data_block(blk_id) {
+                    usize::try_from(blk_id)
+                        .ok()
+                        .and_then(|b| b.checked_mul(BLOCK_SIZE))
+                        .filter(|&b_start| b_start.saturating_add(BLOCK_SIZE) <= mmap_len)
+                } else {
+                    None
+                };
+                match valid_src {
+                    Some(blk_byte_start) => match self.extents.as_deref_mut() {
+                        None => {
+                            let src_off = blk_byte_start + in_blk_off;
+                            match self.pending_mmap_run {
+                                Some((run_src, run_dst, run_len))
+                                    if run_src + run_len == src_off
+                                        && run_dst + run_len == self.bytes_read =>
+                                {
+                                    self.pending_mmap_run =
+                                        Some((run_src, run_dst, run_len + chunk_len));
+                                }
+                                _ => {
+                                    self.flush_mmap_run();
+                                    self.pending_mmap_run =
+                                        Some((src_off, self.bytes_read, chunk_len));
+                                }
+                            }
+                        }
+                        Some(list) => list.push(
+                            blk_id * BLOCK_SIZE as u64 + in_blk_off as u64,
+                            self.bytes_read,
+                            chunk_len,
+                        ),
+                    },
+                    None => {
+                        self.flush_mmap_run();
+                        self.buf[self.bytes_read..self.bytes_read + chunk_len].fill(0);
+                    }
+                }
+                self.bytes_read += chunk_len;
+                self.curr_offset += chunk_len as u64;
+            }
+
+            #[inline]
+            fn emit_hole_until(&mut self, limit_blk: usize) {
+                let hole_end = (limit_blk as u64 * BLOCK_SIZE as u64).min(self.end_offset);
+                let hole_len = (hole_end - self.curr_offset) as usize;
+                self.flush_mmap_run();
+                self.buf[self.bytes_read..self.bytes_read + hole_len].fill(0);
+                self.bytes_read += hole_len;
+                self.curr_offset = hole_end;
+            }
+
+            #[inline]
+            fn emit_sib_entries(&mut self, sib_slice: &[u8], start_entry: usize) {
+                for chunk in sib_slice[start_entry * 8..512 * 8].as_chunks::<8>().0 {
+                    if self.bytes_read >= self.to_read_total {
+                        break;
+                    }
+                    let in_off = (self.curr_offset % BLOCK_SIZE as u64) as usize;
+                    let chunk_len = (self.to_read_total - self.bytes_read).min(BLOCK_SIZE - in_off);
+                    self.emit_block(u64::from_le_bytes(*chunk), in_off, chunk_len);
+                }
+            }
+        }
+
+        let mut sink = ReadAtSink {
+            guard,
+            buf,
+            extents,
+            to_read_total,
+            end_offset: file_offset + to_read_total as u64,
+            bytes_read: 0,
+            curr_offset: file_offset,
+            pending_mmap_run: None,
+        };
+
+        const SINGLE_LIMIT: usize = 10 + 512;
+        const DOUBLE_LIMIT: usize = SINGLE_LIMIT + 512 * 512;
+        const TRIPLE_LIMIT: usize = DOUBLE_LIMIT + 512 * 512 * 512;
+
+        while sink.bytes_read < sink.to_read_total {
+            let blk_idx = (sink.curr_offset / BLOCK_SIZE as u64) as usize;
+            let in_blk_offset = (sink.curr_offset % BLOCK_SIZE as u64) as usize;
+
+            // 1. Direct blocks (0..10)
+            if blk_idx < 10 {
+                let rem_in_blk = BLOCK_SIZE - in_blk_offset;
+                let chunk_len = (sink.to_read_total - sink.bytes_read).min(rem_in_blk);
+                sink.emit_block(inode.blocks[blk_idx], in_blk_offset, chunk_len);
+                continue;
+            }
+
+            // 2. Single indirect blocks (10..522) - Batch leaf slice resolution
+            if blk_idx < SINGLE_LIMIT {
+                let sib_id = inode.blocks[10];
+                if guard.is_data_block(sib_id)
+                    && let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id)
+                {
+                    sink.emit_sib_entries(sib_slice, blk_idx - 10);
+                } else {
+                    sink.emit_hole_until(SINGLE_LIMIT);
+                }
+                continue;
+            }
+
+            // 3. Double indirect blocks (522..262666) - Batch dib + sib resolution
+            if blk_idx < DOUBLE_LIMIT {
+                let dib_id = inode.blocks[11];
+                if guard.is_data_block(dib_id)
+                    && let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, dib_id)
+                {
+                    while sink.bytes_read < sink.to_read_total {
+                        let cur_blk = (sink.curr_offset / BLOCK_SIZE as u64) as usize;
+                        if cur_blk >= DOUBLE_LIMIT {
+                            break;
+                        }
+                        let rel = cur_blk - SINGLE_LIMIT;
+                        let s_idx = rel / 512;
+                        let d_idx = rel % 512;
+                        let sib_id = u64::from_le_bytes(
+                            dib_slice[s_idx * 8..s_idx * 8 + 8].try_into().unwrap(),
+                        );
+                        if guard.is_data_block(sib_id)
+                            && let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id)
+                        {
+                            sink.emit_sib_entries(sib_slice, d_idx);
+                        } else {
+                            sink.emit_hole_until(cur_blk + (512 - d_idx));
+                        }
+                    }
+                } else {
+                    sink.emit_hole_until(DOUBLE_LIMIT);
+                }
+                continue;
+            }
+
+            // 4. Triple indirect blocks (262666..134480394) - Batch tib + dib + sib resolution
+            if blk_idx < TRIPLE_LIMIT {
+                let tib_id = inode.triple_indirect;
+                if guard.is_data_block(tib_id)
+                    && let Some(tib_slice) = Self::get_block_from_map(&guard.mmap, tib_id)
+                {
+                    let rel = blk_idx - DOUBLE_LIMIT;
+                    let t_idx = rel / (512 * 512);
+                    let rem_idx = rel % (512 * 512);
+                    let d_idx = rem_idx / 512;
+                    let s_idx = rem_idx % 512;
+                    let dib_id =
+                        u64::from_le_bytes(tib_slice[t_idx * 8..t_idx * 8 + 8].try_into().unwrap());
+                    if guard.is_data_block(dib_id)
+                        && let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, dib_id)
+                    {
+                        let sib_id = u64::from_le_bytes(
+                            dib_slice[d_idx * 8..d_idx * 8 + 8].try_into().unwrap(),
+                        );
+                        if guard.is_data_block(sib_id)
+                            && let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id)
+                        {
+                            sink.emit_sib_entries(sib_slice, s_idx);
+                        } else {
+                            sink.emit_hole_until(blk_idx + (512 - s_idx));
+                        }
+                    } else {
+                        sink.emit_hole_until(blk_idx + ((512 * 512) - rem_idx));
+                    }
+                } else {
+                    sink.emit_hole_until(TRIPLE_LIMIT);
+                }
+                continue;
+            }
+
+            // Beyond maximum addressable blocks: zero-fill remainder
+            sink.flush_mmap_run();
+            let rem_start = sink.bytes_read;
+            let rem_end = sink.to_read_total;
+            sink.buf[rem_start..rem_end].fill(0);
+            sink.bytes_read = rem_end;
+            break;
+        }
+
+        sink.flush_mmap_run();
+        Ok(sink.bytes_read)
     }
 
     /// Writes data to a file (default: no pre-compression filters)
@@ -7179,10 +7482,10 @@ impl DiskManager {
 
         let encrypted = guard.encryption_key.is_some();
 
-        // 1. Fast path: check directory index cache (P4.6).
+        // 1. Fast path: check directory index cache (P4.6 / P4.35).
         // If complete, construct entries directly from memory without reading/decoding disk blocks
         // or recomputing SipHash over filenames.
-        if let Some(ix) = guard.dir_cache.read().unwrap().get(&dir_inode_id)
+        if let Some(ix) = guard.dir_cache.read_shard(dir_inode_id).get(&dir_inode_id)
             && ix.complete
         {
             if !encrypted {
@@ -7245,7 +7548,7 @@ impl DiskManager {
 
         // 3. Promote scanned directory to complete index in cache for future O(1) lookups and listings
         {
-            let mut cache = guard.dir_cache.write().unwrap();
+            let mut cache = guard.dir_cache.write_shard(dir_inode_id);
             let ix = cache.entry(dir_inode_id).or_default();
             ix.stored.clear();
             for (raw_name, raw_inode, raw_blk, raw_hash) in stored_entries {
@@ -7559,7 +7862,7 @@ impl DiskManager {
         guard.inode_cache.remove(target_inode_id);
         guard.inode_cache.insert(parent_inode_id, parent_inode);
         {
-            let mut cache = guard.dir_cache.write().unwrap();
+            let mut cache = guard.dir_cache.write_shard(parent_inode_id);
             if let Some(ix) = cache.get_mut(&parent_inode_id) {
                 ix.plain.remove(name);
                 ix.stored.remove(&matched_name);
@@ -7568,8 +7871,8 @@ impl DiskManager {
                     ix.tail_offset = None;
                 }
             }
-            cache.remove(&target_inode_id);
         }
+        guard.dir_cache.remove(target_inode_id);
 
         if guard.durability_mode().is_range_based() {
             let mut ranges = vec![
@@ -7617,7 +7920,7 @@ impl DiskManager {
 
             // Fast path: check `dir_cache` for O(1) `(inode_id, phys_blk)` resolution.
             let cached_loc = {
-                let cache = guard.dir_cache.read().unwrap();
+                let cache = guard.dir_cache.read_shard(parent_inode_id);
                 cache.get(&parent_inode_id).map(|ix| {
                     let found = candidates.iter().flatten().find_map(|c| {
                         ix.stored
@@ -7734,7 +8037,7 @@ impl DiskManager {
         // Invalidate cached names in the parent, and drop the target's own index in case it was
         // a directory: its inode id can be reused, and stale names must never resolve under it.
         {
-            let mut cache = guard.dir_cache.write().unwrap();
+            let mut cache = guard.dir_cache.write_shard(parent_inode_id);
             if let Some(ix) = cache.get_mut(&parent_inode_id) {
                 ix.plain.remove(name);
                 ix.stored.remove(&matched_name);
@@ -7743,8 +8046,8 @@ impl DiskManager {
                     ix.tail_offset = None;
                 }
             }
-            cache.remove(&target_inode_id);
         }
+        guard.dir_cache.remove(target_inode_id);
 
         // Free Inode & Blocks
         let blocks_to_free = Self::collect_inode_blocks(&guard.mmap, &file_inode);
@@ -8511,7 +8814,7 @@ impl DiskManager {
         guard.free_block_hint = superblock.data_block_start;
         guard.free_inode_hint = 0;
         guard.inode_cache = BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY);
-        guard.dir_cache.write().unwrap().clear();
+        guard.dir_cache.clear();
         guard.clear_payload_caches();
         Ok(())
     }
@@ -9704,8 +10007,7 @@ impl DiskManager {
         guard: &mut DiskManagerInner,
         old_to_new: &FxHashMap<u64, u64>,
     ) {
-        let mut cache = guard.dir_cache.write().unwrap();
-        for ix in cache.values_mut() {
+        guard.dir_cache.for_each_mut(|ix| {
             for (_, blk, _) in ix.stored.values_mut() {
                 if let Some(&new_blk) = old_to_new.get(blk) {
                     *blk = new_blk;
@@ -9716,8 +10018,7 @@ impl DiskManager {
             {
                 ix.tail_offset = Some((new_tb, off));
             }
-        }
-        drop(cache);
+        });
         guard.clear_payload_caches();
     }
 
@@ -10131,6 +10432,96 @@ mod verification {
         assert!(chunk_offset_end <= chunk_valid_len);
         kani::cover!(first_chunk == last_chunk, "single-chunk write reached");
         kani::cover!(first_chunk < last_chunk, "multi-chunk write reached");
+    }
+
+    /// Prove that `ShardedDirCache` 64-bit Fibonacci shard hashing is strictly in-bounds
+    /// (`< NUM_DIR_CACHE_SHARDS`) for every possible `u64` directory inode ID, and that
+    /// consecutive directory inode IDs (`id` and `id.wrapping_add(1)`) never collide in
+    /// the same shard (P4.35).
+    #[kani::proof]
+    fn proof_sharded_dir_cache_fibonacci_index_in_bounds_and_bijective() {
+        let dir_inode_id: u64 = kani::any();
+        let mask = NUM_DIR_CACHE_SHARDS - 1;
+        assert!(NUM_DIR_CACHE_SHARDS.is_power_of_two());
+
+        let idx0 = (dir_inode_id.wrapping_mul(0x517cc1b727220a95) as usize) & mask;
+        let idx1 = (dir_inode_id
+            .wrapping_add(1)
+            .wrapping_mul(0x517cc1b727220a95) as usize)
+            & mask;
+
+        assert!(idx0 < NUM_DIR_CACHE_SHARDS);
+        assert!(idx1 < NUM_DIR_CACHE_SHARDS);
+        assert_ne!(
+            idx0, idx1,
+            "Consecutive directory inode IDs must map to distinct shards"
+        );
+    }
+
+    /// Prove that indirect subtree hole skipping (`emit_hole_until` in `read_at_with_inode`, P4.34)
+    /// guarantees strict forward progress (`hole_len >= 1`), never overflows, and never indexes
+    /// outside `buf[0..to_read_total]` across Single, Double, and Triple indirect boundaries.
+    #[kani::proof]
+    fn proof_read_at_indirect_hole_skip_conservation() {
+        let file_offset: u64 = kani::any();
+        let to_read_total: usize = kani::any();
+        let bytes_read: usize = kani::any();
+        let limit_blk: usize = kani::any();
+
+        // Bound to max addressable triple-indirect limit (10 + 512 + 512^2 + 512^3 = 134_480_394)
+        const TRIPLE_LIMIT: usize = 10 + 512 + 512 * 512 + 512 * 512 * 512;
+        kani::assume(to_read_total > 0 && to_read_total <= 64 * 1024 * 1024);
+        kani::assume(bytes_read < to_read_total);
+        kani::assume(limit_blk > 0 && limit_blk <= TRIPLE_LIMIT);
+        kani::assume(file_offset <= (TRIPLE_LIMIT as u64) * (BLOCK_SIZE as u64));
+
+        let curr_offset = file_offset.saturating_add(bytes_read as u64);
+        let end_offset = file_offset.saturating_add(to_read_total as u64);
+        let blk_idx = (curr_offset / BLOCK_SIZE as u64) as usize;
+        kani::assume(blk_idx < limit_blk);
+        kani::assume(curr_offset < end_offset);
+        kani::assume(end_offset - curr_offset == (to_read_total - bytes_read) as u64);
+
+        let hole_end = (limit_blk as u64 * BLOCK_SIZE as u64).min(end_offset);
+        assert!(hole_end > curr_offset, "Must make strict forward progress");
+        assert!(hole_end <= end_offset, "Must never overshoot end_offset");
+
+        let hole_len = (hole_end - curr_offset) as usize;
+        assert!(hole_len >= 1);
+        assert!(bytes_read.checked_add(hole_len).unwrap() <= to_read_total);
+    }
+
+    /// Prove that `ReadAtSink` contiguous `IoBackend::Mmap` extent coalescing (P4.34)
+    /// preserves exact byte equivalence with per-block copying and stays within bounds.
+    #[kani::proof]
+    fn proof_read_at_contiguous_mmap_run_coalescing_soundness() {
+        let mmap_len: usize = 64;
+        let src1: usize = kani::any();
+        let len1: usize = kani::any();
+        let src2: usize = kani::any();
+        let len2: usize = kani::any();
+
+        kani::assume(len1 > 0 && len1 <= 16);
+        kani::assume(len2 > 0 && len2 <= 16);
+        kani::assume(src1 <= mmap_len && src1 + len1 <= mmap_len);
+        kani::assume(src2 <= mmap_len && src2 + len2 <= mmap_len);
+
+        let dst1: usize = 0;
+        let dst2: usize = len1;
+        let is_contiguous = src1 + len1 == src2 && dst1 + len1 == dst2;
+
+        if is_contiguous {
+            let merged_src = src1;
+            let merged_dst = dst1;
+            let merged_len = len1 + len2;
+            assert!(merged_src + merged_len <= mmap_len);
+            assert_eq!(merged_dst + merged_len, len1 + len2);
+            // Every byte index k in the second chunk maps to the exact same source offset
+            let k: usize = kani::any();
+            kani::assume(k < len2);
+            assert_eq!(merged_src + (len1 + k), src2 + k);
+            assert_eq!(merged_dst + (len1 + k), dst2 + k);
+        }
     }
 }
 

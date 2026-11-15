@@ -268,7 +268,7 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ### P4.19: `FxHashMap` for `dir_cache` & Encrypted Negative-Lookup Fast Path [RESOLVED]
 * **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`dir_cache`, `DirIndex`, `dir_lookup`, `list_dir`)
-* **Status**: **Completed & Verified** (see §6.22 — **7.3x** faster encrypted negative lookups, **2.8–3.4x** faster 10k `create_file`; outer lock sharding deferred as single `RwLock<FxHashMap>` read-only path suffices)
+* **Status**: **Completed & Verified** (see §6.22 — **7.3x** faster encrypted negative lookups, **2.8–3.4x** faster 10k `create_file`; outer 32-shard lock striping completed in `P4.35`)
 * **Bottleneck Analysis**:
   1. **Global `RwLock<std::collections::HashMap>`**: Unlike `inode_cache` (32-shard `FxHashMap`), `dir_cache` uses a single global `RwLock` and standard SipHash `HashMap` for both outer `u64` keys and inner `stored`/`plain` string maps.
   2. **Encrypted Negative Lookups Acquire Write Lock & Re-Run Cipher**: In `dir_lookup` ([`src/disk.rs:1711`](file:///Users/ych/oifs/src/disk.rs#L1711)), `if ix.complete && !encrypted { return Ok(None); }` skips the early return on encrypted images. Every negative lookup on an encrypted directory (including the existence check in every `create_file` call) therefore reads the parent inode, computes `encrypt_filename` (BLAKE2b + XChaCha20-Poly1305), re-acquires `dir_cache.read()`, and then unconditionally acquires `dir_cache.write()` at line 1757 even when `ix.complete` is already `true` and `found.is_none()`.
@@ -452,6 +452,29 @@ This document consolidates deep codebase investigations and findings recovered f
 * **Implementation**:
   - Buffered dirty `(offset, len)` intervals inside `PendingAsyncRanges` with inline neighbor merging and `async_drain_ready: AtomicBool` signaling.
   - Drained coalesced dirty batches outside `inner.write()` under `sync_mutex` + `inner.read()` (enforcing WAL-first `msync(MS_ASYNC)` before metadata + payload ranges), and drained/cleared deterministically on `set_durability_mode`, `flush`, `flush_async`, and `Drop`.
+
+---
+
+### P4.34: Batch Indirect Leaf Resolution & Contiguous Mmap Copy in `read_at_with_inode` & `read_data_internal` [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`read_at_with_inode`, `walk_payload_blocks`, `read_data_internal`)
+* **Status**: **Completed & Verified** (**2.52x** faster 1,000 × 1 MiB double-indirect `read_at`: `43.18 ms` / `22.62 GB/s` $\rightarrow$ `17.14 ms` / **`56.97–68.86 GB/s`**; 10,000 × 64 KiB `read_at`: `10.17 ms` / **`982,865 ops/s`**)
+* **Bottleneck Analysis**:
+  1. **Per-4KB Indirect Root Traversal in `read_at_with_inode`**: Unlike `walk_payload_blocks`, `read_at_with_inode` invoked `resolve_logical_block_id` from the root on every 4 KB step, performing 2–3 dependent pointer loads and `get_block_from_map` bounds checks per block on double/triple-indirect files and stepping 4 KB at a time across missing indirect subtrees.
+  2. **Per-4KB `copy_from_slice` on Contiguous `IoBackend::Mmap` Runs**: Both `read_at_with_inode` and `read_data_internal`'s `walk_payload_blocks` callback copied 4 KB at a time even when physical blocks were contiguous in `mmap`.
+* **Implementation**:
+  - Added hierarchical batch indirect slice resolution (`Single`, `Double`, and `Triple` indirect tiers) and subtree hole skipping in `read_at_with_inode` and `walk_payload_blocks`.
+  - Coalesced contiguous physical `mmap` block runs in `ReadAtSink` and `read_data_internal` into a single `copy_from_slice` per contiguous extent.
+
+---
+
+### P4.35: 32-Shard Lock-Striped `ShardedDirCache` & Out-of-Lock Index Promotion [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`ShardedDirCache`, `dir_lookup`, `find_dir_insert_slot`, `list_dir`, `create_entry_journaled`, `create_entry_internal`, `delete_file_journaled`, `delete_file`)
+* **Status**: **Completed & Verified** (16 threads × 4,000 concurrent lookups across 32 directories: `6.68–7.38 ms` / **`8.67–9.58 M ops/s`**, zero cross-directory lock contention)
+* **Bottleneck Analysis**:
+  - While `inode_cache` was sharded into 32 `RwLock` shards (`BoundedInodeCache`), `dir_cache` remained a single global `RwLock<FxHashMap<u64, DirIndex>>`, and `dir_lookup` step 4 called `build_dir_index` while holding the global write lock. Cold directory indexing or file creation/deletion in one directory stalled concurrent `lookup`, `resolve_path`, and `list_dir` operations on all other directories.
+* **Implementation**:
+  - Replaced `RwLock<FxHashMap<u64, DirIndex>>` with 32-shard `ShardedDirCache` using a 64-bit Fibonacci hashing bijection (`0x517cc1b727220a95`) and poison-resilient `read_unpoisoned`/`write_unpoisoned` shard guards.
+  - Moved `build_dir_index` in `dir_lookup` step 4 outside the shard write lock and separated parent/target shard lock acquisitions in `delete_file` / `delete_file_journaled` to prevent multi-shard lock ordering hazards.
 
 ---
 

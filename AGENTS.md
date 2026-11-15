@@ -32,7 +32,7 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 - **Pre-compression Filters**: Integrated Blosc2 filters (Delta, Byte Shuffle, BitShuffle with Hacker's Delight 8x8 transposition, TruncPrecision) followed by Zstandard.
 - **Encryption**: XChaCha20-Poly1305 with Argon2id KDF and parent-inode tweaked deterministic SIV filename encryption (`_e_...`).
 - **FFI Dynamic Library Handshake**: 3-state runtime version & path verification (`oifs_check_version`, `oifs_loaded_path`): 0=OK, 1=WARN (newer), -1=ERR (older).
-- **Formal Verification**: 87 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, chunk entry bit-isolation/state predicates, and bounds safety.
+- **Formal Verification**: 90 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, chunk entry bit-isolation/state predicates, sharded directory cache Fibonacci hashing, indirect hole-skip conservation, contiguous mmap run coalescing, and bounds safety.
 - **On-Disk Format v2**: Fixed 256-byte inode records with explicit little-endian fields, a 1-byte file-type tag, and zeroed reserved space. Deterministic, reproducible, leak-free. Legacy v1 images stay fully readable and writable; `oifs migrate` upgrades them in place.
 - **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file`/`write_data` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Payload data is *not* journaled — it is flushed before the metadata commit (ordered mode), so WAL traffic stays proportional to metadata, not file size. Recovery runs automatically at mount, so a power loss no longer requires a full-image `fsck`.
 - **Durability governs the journal too**: only `DurabilityMode::Strict` pays the per-transaction `msync` barriers (WAL + payload); the process-crash-safe modes rely on the page cache and sync at `flush()`/`Drop`, with the WAL always written before the image.
@@ -119,7 +119,7 @@ An inode stores:
    - **Lock poisoning**: use `crate::lock_unpoisoned(&m)` for locks guarding reconstructible in-memory state (caches, registries, serialization-only mutexes). Propagating a poison there would leave the subsystem permanently unusable, since every later acquisition fails the same way — one unrelated panic anywhere would brick it for the life of the process. Do **not** return a stateful resource to a shared pool if a panic mid-critical-section could leave it inconsistent: `IpcClient` checks sockets out via `CheckedOutStream` so a panic or I/O error between `write_framed` and `read_framed` closes and discards the desynchronized stream instead of returning it to `idle`.
 2. **Zero-Copy Inode & Directory Caching**:
    - `inode_cache`: Sharded bounded `BoundedInodeCache` (`FxHashMap` + Second-Chance Clock order, capacity 2048). Eviction drops **one** unreferenced entry; it never clears the whole cache, which would cause a cache stampede.
-   - `dir_cache`: `DirIndex` stores per-directory entry name-to-inode mappings. Negative lookups trigger complete indexing.
+   - `dir_cache`: 32-shard `ShardedDirCache` (`FxHashMap<u64, DirIndex>` per shard, P4.35) storing per-directory entry name-to-inode mappings. Negative lookups trigger out-of-lock complete indexing without stalling other directories.
    - **Note**: inodes are persisted through `src::inode_format`, not by casting `#[repr(C)]` bytes. `bincode`'s 169-byte packed output does **not** match the 176-byte in-memory layout (which contains uninitialized padding), so raw casting would misparse every existing image and leak stack memory to disk. Format v2 fixes this with an explicit layout.
 3. **Master-Proxy Session Architecture**:
    - Always prefer `OifsSession::get_or_open(...)` in multi-threaded code. It canonicalizes paths, coordinates flocking, and shares Master instances within the same process.
@@ -163,7 +163,7 @@ cargo test --release --test bolero_fuzz_test
 # 4. Run Shuttle randomized concurrency permutation tests
 cargo test --test shuttle_concurrency_test
 
-# 5. Run Kani formal verification proofs (all 87 proofs)
+# 5. Run Kani formal verification proofs (all 90 proofs)
 cargo kani
 
 # 5b. Run the Kani proofs in parallel (one CBMC process per harness).

@@ -402,3 +402,72 @@ fn journal_coalesce_and_frame_preserve_semantics() {
         assert!(a == c, "frame roundtrip changed semantics");
     });
 }
+
+#[test]
+fn read_at_batch_indirect_and_sparse_matches_reference() {
+    use oifs::IoBackend;
+    use oifs::disk::{CompressionMode, DiskManager};
+    use tempfile::tempdir;
+
+    // Build a single test image once outside `for_each` with populated blocks across:
+    // - Direct blocks (0, 2, 9)
+    // - Single-Indirect blocks (10, 11, 20, 521)
+    // - Double-Indirect blocks (522, 523, 525, 1034 [second SIB in DIB])
+    // with sparse holes between them, then fuzz arbitrary (offset, len, backend) read_at queries!
+    let dir = tempdir().unwrap();
+    let img_path = dir.path().join("bolero_read_at.img");
+    let dm = DiskManager::open(&img_path, 8 * 1024 * 1024).unwrap();
+    let root = dm.superblock().root_inode;
+    let fid = dm.create_file(root, "sparse_tiers.bin").unwrap();
+
+    let populated_blocks: &[(usize, u8)] = &[
+        (0, 0x11),
+        (2, 0x22),
+        (9, 0x33),
+        (10, 0x44),
+        (11, 0x55),
+        (20, 0x66),
+        (521, 0x77),
+        (522, 0x88),
+        (523, 0x99),
+        (525, 0xAA),
+        (1034, 0xBB),
+    ];
+    let total_blocks = 1035usize;
+    let file_size = total_blocks * BLOCK_SIZE;
+    let mut reference = vec![0u8; file_size];
+    for &(blk, byte) in populated_blocks {
+        let start = blk * BLOCK_SIZE;
+        reference[start..start + BLOCK_SIZE].fill(byte);
+        dm.write_data(
+            fid,
+            start as u64,
+            &[byte; BLOCK_SIZE],
+            CompressionMode::Never,
+        )
+        .unwrap();
+    }
+
+    check!()
+        .with_type::<(u32, u16, bool)>()
+        .for_each(|&(raw_off, raw_len, use_pread)| {
+            let offset = (raw_off as usize) % (file_size + 8192);
+            let req_len = (raw_len as usize) % (8 * BLOCK_SIZE + 513);
+            dm.set_io_backend(if use_pread {
+                IoBackend::Pread
+            } else {
+                IoBackend::Mmap
+            });
+
+            let mut buf = vec![0xEEu8; req_len];
+            let n = dm.read_at(fid, offset as u64, &mut buf).unwrap();
+            let expected_end = (offset + req_len).min(file_size);
+            let expected_n = expected_end.saturating_sub(offset);
+            assert_eq!(n, expected_n);
+            if n > 0 {
+                assert_eq!(&buf[..n], &reference[offset..offset + n]);
+            }
+            // Tail of caller buffer past `n` must remain untouched
+            assert!(buf[n..].iter().all(|&b| b == 0xEE));
+        });
+}

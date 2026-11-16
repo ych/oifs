@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+type Result<T, E = Box<dyn std::error::Error + Send + Sync>> = std::result::Result<T, E>;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -49,7 +49,7 @@ impl OifsMcpServer {
     fn list_entries_inner(dm: &DiskManager, dir_inode_id: u64) -> Result<Vec<EntryInfo>> {
         let inode = dm.read_inode(dir_inode_id)?;
         if inode.mode != FileType::Directory {
-            anyhow::bail!("inode {} is not a directory", dir_inode_id);
+            return Err(format!("inode {} is not a directory", dir_inode_id).into());
         }
 
         let dir_entries = dm.list_dir(dir_inode_id)?;
@@ -187,7 +187,7 @@ impl OifsMcpServer {
         let result = (|| -> Result<String> {
             let inode_id = dm.resolve_path(&params.path)?;
             let data = dm.read_data(inode_id)?;
-            String::from_utf8(data).map_err(|_| anyhow::anyhow!("File contains non-UTF-8 data"))
+            String::from_utf8(data).map_err(|_| "File contains non-UTF-8 data".into())
         })();
         match result {
             Ok(content) => content,
@@ -376,25 +376,23 @@ async fn main() -> Result<()> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--size" => {
-                let v = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--size requires a value (MB)"))?;
+                let v = args.next().ok_or("--size requires a value (MB)")?;
                 size_mb = v
                     .parse()
-                    .map_err(|e| anyhow::anyhow!("--size value '{}' invalid: {}", v, e))?;
+                    .map_err(|e| format!("--size value '{}' invalid: {}", v, e))?;
             }
             "-h" | "--help" => {
                 print_usage();
                 return Ok(());
             }
             other if other.starts_with("--") => {
-                anyhow::bail!("Unknown option: {}", other);
+                return Err(format!("Unknown option: {}", other).into());
             }
             other if image_path.is_none() => {
                 image_path = Some(PathBuf::from(other));
             }
             other => {
-                anyhow::bail!("Unexpected positional argument: {}", other);
+                return Err(format!("Unexpected positional argument: {}", other).into());
             }
         }
     }
@@ -405,7 +403,7 @@ async fn main() -> Result<()> {
     let size_bytes = size_mb
         .checked_mul(1024)
         .and_then(|mb| mb.checked_mul(1024))
-        .ok_or_else(|| anyhow::anyhow!("--size value is too large: {} MB", size_mb))?;
+        .ok_or_else(|| format!("--size value is too large: {} MB", size_mb))?;
     let password = std::env::var("OIFS_PASSWORD").ok();
 
     eprintln!(

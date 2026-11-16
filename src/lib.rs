@@ -64,3 +64,87 @@ pub(crate) fn read_unpoisoned<T>(r: &std::sync::RwLock<T>) -> std::sync::RwLockR
 pub(crate) fn write_unpoisoned<T>(r: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
     r.write().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+
+/// Fast non-cryptographic Fibonacci hasher (`0x517cc1b727220a95`) for integer-keyed
+/// and internal in-memory hash tables (`FxHashMap` / `FxHashSet`).
+pub mod fx_hash {
+    use std::collections::{HashMap, HashSet};
+    use std::hash::{BuildHasherDefault, Hasher};
+
+    #[derive(Default, Clone)]
+    pub struct FxHasher {
+        hash: usize,
+    }
+
+    const K: usize = 0x517cc1b727220a95usize;
+
+    impl FxHasher {
+        #[inline]
+        fn add(&mut self, i: usize) {
+            self.hash = (self.hash.rotate_left(5) ^ i).wrapping_mul(K);
+        }
+    }
+
+    impl Hasher for FxHasher {
+        #[inline]
+        fn write(&mut self, mut bytes: &[u8]) {
+            while bytes.len() >= 8 {
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&bytes[..8]);
+                self.add(u64::from_ne_bytes(buf) as usize);
+                bytes = &bytes[8..];
+            }
+            if bytes.len() >= 4 {
+                let mut buf = [0u8; 4];
+                buf.copy_from_slice(&bytes[..4]);
+                self.add(u32::from_ne_bytes(buf) as usize);
+                bytes = &bytes[4..];
+            }
+            if bytes.len() >= 2 {
+                let mut buf = [0u8; 2];
+                buf.copy_from_slice(&bytes[..2]);
+                self.add(u16::from_ne_bytes(buf) as usize);
+                bytes = &bytes[2..];
+            }
+            if let Some(&b) = bytes.first() {
+                self.add(b as usize);
+            }
+        }
+
+        #[inline]
+        fn write_u8(&mut self, i: u8) {
+            self.add(i as usize);
+        }
+
+        #[inline]
+        fn write_u16(&mut self, i: u16) {
+            self.add(i as usize);
+        }
+
+        #[inline]
+        fn write_u32(&mut self, i: u32) {
+            self.add(i as usize);
+        }
+
+        #[inline]
+        fn write_u64(&mut self, i: u64) {
+            self.add(i as usize);
+        }
+
+        #[inline]
+        fn write_usize(&mut self, i: usize) {
+            self.add(i);
+        }
+
+        #[inline]
+        fn finish(&self) -> u64 {
+            self.hash as u64
+        }
+    }
+
+    pub type FxBuildHasher = BuildHasherDefault<FxHasher>;
+    pub type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
+    pub type FxHashSet<T> = HashSet<T, FxBuildHasher>;
+}
+
+pub use fx_hash::{FxHashMap, FxHashSet};

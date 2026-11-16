@@ -178,6 +178,7 @@ fn test_composite_filter_pipeline() {
     );
 }
 
+#[cfg(feature = "blosc2")]
 #[test]
 fn test_native_blosc2_integration() {
     use oifs::filters::{blosc2_compress, blosc2_decompress};

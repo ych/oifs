@@ -276,11 +276,7 @@ impl DiskManager {
             .write(true)
             .open(source_path)?;
 
-        let mut lock = unsafe { std::mem::zeroed::<libc::flock>() };
-        lock.l_type = libc::F_WRLCK as _;
-        lock.l_whence = libc::SEEK_SET as _;
-        use nix::fcntl::{FcntlArg, fcntl};
-        fcntl(&file, FcntlArg::F_SETLK(&lock)).map_err(DiskManagerError::Locking)?;
+        Self::try_lock_whole_file(&file)?;
 
         let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
         let superblock: SuperBlock = bincode::deserialize(&mmap[0..BLOCK_SIZE])?;

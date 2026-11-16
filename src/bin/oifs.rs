@@ -1,4 +1,3 @@
-use chrono::{DateTime, Local, TimeZone};
 use clap::{Parser, Subcommand};
 use oifs::auto_defrag::AutoDefragConfig;
 use oifs::disk::{CompressionMode, DefragMode};
@@ -8,6 +7,94 @@ use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, Zeroizing};
+
+/// Formats a Unix timestamp (seconds) as `YYYY-MM-DD HH:MM:SS` in the local time zone.
+fn format_local_timestamp(secs: u64) -> String {
+    let t = libc::time_t::try_from(secs).unwrap_or(libc::time_t::MAX);
+    // SAFETY: `tm` is a plain C struct (all-zero is valid) and `localtime_r` is the
+    // thread-safe variant that only writes into the caller-provided buffer.
+    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        return secs.to_string();
+    }
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        tm.tm_year as i64 + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
+
+/// Write end of the self-pipe used to forward SIGINT/SIGTERM to the handler thread.
+static INTERRUPT_PIPE_WR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+extern "C" fn on_interrupt_signal(_sig: libc::c_int) {
+    let fd = INTERRUPT_PIPE_WR.load(std::sync::atomic::Ordering::Relaxed);
+    if fd >= 0 {
+        let byte = 1u8;
+        // SAFETY: `write(2)` is async-signal-safe; the result is intentionally ignored.
+        unsafe {
+            libc::write(fd, (&byte as *const u8).cast(), 1);
+        }
+    }
+}
+
+/// Runs `handler` on a dedicated thread when the process receives SIGINT or SIGTERM.
+///
+/// The signal handler itself only writes one byte into a self-pipe (async-signal-safe);
+/// the cleanup closure (which may take locks and `msync`) runs on a normal thread.
+fn set_interrupt_handler<F>(handler: F) -> std::io::Result<()>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let mut fds = [0 as libc::c_int; 2];
+    // SAFETY: `fds` is a valid two-element buffer for `pipe(2)`.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let (rd, wr) = (fds[0], fds[1]);
+    for fd in [rd, wr] {
+        // SAFETY: `fd` was just returned by `pipe(2)`.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    INTERRUPT_PIPE_WR.store(wr, std::sync::atomic::Ordering::Relaxed);
+
+    std::thread::Builder::new()
+        .name("oifs-signal".into())
+        .spawn(move || {
+            let mut byte = 0u8;
+            loop {
+                // SAFETY: reads at most one byte into a valid stack buffer.
+                let n = unsafe { libc::read(rd, (&mut byte as *mut u8).cast(), 1) };
+                if n == 1 {
+                    handler();
+                    return;
+                }
+                if n == 0
+                    || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+                {
+                    return;
+                }
+            }
+        })?;
+
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        // SAFETY: installs a handler that only performs an async-signal-safe `write(2)`.
+        unsafe {
+            let mut action = std::mem::zeroed::<libc::sigaction>();
+            action.sa_sigaction = on_interrupt_signal as *const () as usize;
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut action.sa_mask);
+            if libc::sigaction(sig, &action, std::ptr::null_mut()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -565,7 +652,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             )?;
 
             let dm_clone = dm.clone();
-            ctrlc::set_handler(move || {
+            set_interrupt_handler(move || {
                 let _ = dm_clone.flush();
                 std::process::exit(1);
             })?;
@@ -625,7 +712,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             )?;
 
             let dm_clone = dm.clone();
-            ctrlc::set_handler(move || {
+            set_interrupt_handler(move || {
                 let _ = dm_clone.flush();
                 std::process::exit(1);
             })?;
@@ -836,9 +923,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let mut results = Vec::new();
 
             if target_inode.mode != FileType::Directory {
-                let dt: DateTime<Local> = Local
-                    .timestamp_opt(target_inode.modified_at as i64, 0)
-                    .unwrap();
+                let modified = format_local_timestamp(target_inode.modified_at);
                 let comp_size = if target_inode.compressed_size > 0 {
                     Some(target_inode.compressed_size)
                 } else {
@@ -849,7 +934,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     kind: "f".to_string(),
                     size: target_inode.size,
                     comp_size,
-                    modified: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    modified,
                 });
             } else {
                 fn collect_ls(
@@ -873,9 +958,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             format!("{}/{}", current_path, dir_entry.name)
                         };
 
-                        let dt: DateTime<Local> = Local
-                            .timestamp_opt(entry_inode.modified_at as i64, 0)
-                            .unwrap();
+                        let modified = format_local_timestamp(entry_inode.modified_at);
                         let kind = if entry_inode.mode == FileType::Directory {
                             "d"
                         } else {
@@ -892,7 +975,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             kind: kind.to_string(),
                             size: entry_inode.size,
                             comp_size,
-                            modified: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+                            modified,
                         });
 
                         if recursive && entry_inode.mode == FileType::Directory {

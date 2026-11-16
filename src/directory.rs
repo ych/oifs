@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Cursor, Read, Write};
-use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DirectoryEntry {
@@ -9,16 +8,37 @@ pub struct DirectoryEntry {
     pub name: String,
 }
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum DirectoryError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Encoding error")]
-    Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("Entry too large")]
+    Io(std::io::Error),
+    Utf8Error(std::string::FromUtf8Error),
     EntryTooLarge,
-    #[error("Invalid filename: {0}")]
     InvalidFilename(String),
+}
+
+impl std::fmt::Display for DirectoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "IO error: {e}"),
+            Self::Utf8Error(_) => write!(f, "Encoding error"),
+            Self::EntryTooLarge => write!(f, "Entry too large"),
+            Self::InvalidFilename(s) => write!(f, "Invalid filename: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for DirectoryError {}
+
+impl From<std::io::Error> for DirectoryError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<std::string::FromUtf8Error> for DirectoryError {
+    fn from(e: std::string::FromUtf8Error) -> Self {
+        Self::Utf8Error(e)
+    }
 }
 
 /// Validates that a directory entry filename conforms to OIFS filesystem security rules (SEC-14).

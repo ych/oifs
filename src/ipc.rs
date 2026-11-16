@@ -706,7 +706,10 @@ fn hex_decode(text: &str) -> Option<[u8; AUTH_SECRET_LEN]> {
 /// Generates a fresh random session secret.
 fn generate_auth_secret() -> [u8; AUTH_SECRET_LEN] {
     let mut secret = [0u8; AUTH_SECRET_LEN];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut secret);
+    chacha20poly1305::aead::rand_core::RngCore::fill_bytes(
+        &mut chacha20poly1305::aead::OsRng,
+        &mut secret,
+    );
     secret
 }
 
@@ -1143,7 +1146,10 @@ impl IpcServer {
                             )
                         } else {
                             let mut server_nonce = [0u8; AUTH_NONCE_LEN];
-                            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut server_nonce);
+                            chacha20poly1305::aead::rand_core::RngCore::fill_bytes(
+                                &mut chacha20poly1305::aead::OsRng,
+                                &mut server_nonce,
+                            );
                             challenge = Some((client_nonce, server_nonce));
                             IpcResponse::Success(IpcResponseData::AuthChallenge {
                                 server_nonce,
@@ -1556,7 +1562,10 @@ impl IpcClient {
     fn open_and_auth_secondary(&self, auth: &ClientAuthCache) -> Result<IpcStream, io::Error> {
         let mut stream = self.open_secondary_stream()?;
         let mut client_nonce = [0u8; AUTH_NONCE_LEN];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut client_nonce);
+        chacha20poly1305::aead::rand_core::RngCore::fill_bytes(
+            &mut chacha20poly1305::aead::OsRng,
+            &mut client_nonce,
+        );
 
         let challenge_resp = Self::rpc_on_stream(
             &mut stream,
@@ -1665,7 +1674,10 @@ impl IpcClient {
         let mut checked = self.checkout_stream()?;
 
         let mut client_nonce = [0u8; AUTH_NONCE_LEN];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut client_nonce);
+        chacha20poly1305::aead::rand_core::RngCore::fill_bytes(
+            &mut chacha20poly1305::aead::OsRng,
+            &mut client_nonce,
+        );
         let has_password = matches!(credential, AuthCredential::Password(_));
 
         let challenge_resp = Self::rpc_on_stream(
@@ -1707,7 +1719,7 @@ impl IpcClient {
                 }
                 let derived = crate::encryption::derive_key(password, &salt)
                     .map_err(|e| io::Error::other(e.to_string()))?;
-                zeroize::Zeroizing::new(*derived.as_bytes())
+                zeroize::Zeroizing::new(*derived.ipc_auth_key())
             }
             AuthCredential::Secret(secret) => {
                 if encrypted {

@@ -222,7 +222,7 @@ fn old_simulate_fresh_allocations(block_count: usize) -> usize {
 }
 
 fn new_simulate_fresh_allocations(block_count: usize) -> usize {
-    let mut fresh_set = rustc_hash::FxHashSet::default();
+    let mut fresh_set = oifs::fx_hash::FxHashSet::default();
     let mut hits = 0;
     for blk in 0..block_count as u64 {
         if fresh_set.contains(&blk) {
@@ -252,7 +252,7 @@ fn new_write_used_blocks_check(existing_blocks: usize, written_blocks: usize) ->
     if existing_blocks == 0 {
         return written_blocks;
     }
-    let used_set: rustc_hash::FxHashSet<u64> = (0..existing_blocks as u64).collect();
+    let used_set: oifs::fx_hash::FxHashSet<u64> = (0..existing_blocks as u64).collect();
     let mut new_allocs = 0;
     for blk in 0..written_blocks as u64 {
         if !used_set.contains(&blk) {

@@ -34,16 +34,12 @@
 //!   first.
 
 use crate::superblock::SuperBlock;
-use thiserror::Error;
-
 /// Errors produced by the journal subsystem.
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum JournalError {
     /// The journal header block does not carry the expected magic word.
-    #[error("Journal header magic mismatch (not a journaled image)")]
     BadMagic,
     /// The journal region is too small for the requested layout.
-    #[error("Journal region too small: need {needed} bytes, have {available}")]
     RegionTooSmall {
         /// Bytes required.
         needed: u64,
@@ -51,7 +47,6 @@ pub enum JournalError {
         available: u64,
     },
     /// A single transaction does not fit in the ring buffer.
-    #[error("Transaction of {len} bytes exceeds the {ring} byte journal ring")]
     TransactionTooLarge {
         /// Encoded transaction size.
         len: usize,
@@ -59,18 +54,44 @@ pub enum JournalError {
         ring: u64,
     },
     /// A frame failed CRC32C / structural validation (torn write or corruption).
-    #[error("Journal frame failed validation at offset {offset}")]
     CorruptFrame {
         /// Ring-relative offset of the offending frame.
         offset: u64,
     },
     /// A metadata operation referenced a block outside the image.
-    #[error("Journal op targets out-of-range block {block_id}")]
     BlockOutOfRange {
         /// Offending block id.
         block_id: u64,
     },
 }
+
+impl std::fmt::Display for JournalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadMagic => write!(f, "Journal header magic mismatch (not a journaled image)"),
+            Self::RegionTooSmall { needed, available } => {
+                write!(
+                    f,
+                    "Journal region too small: need {needed} bytes, have {available}"
+                )
+            }
+            Self::TransactionTooLarge { len, ring } => {
+                write!(
+                    f,
+                    "Transaction of {len} bytes exceeds the {ring} byte journal ring"
+                )
+            }
+            Self::CorruptFrame { offset } => {
+                write!(f, "Journal frame failed validation at offset {offset}")
+            }
+            Self::BlockOutOfRange { block_id } => {
+                write!(f, "Journal op targets out-of-range block {block_id}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for JournalError {}
 
 // ---------------------------------------------------------------------------
 // Geometry constants
@@ -3353,11 +3374,11 @@ pub(crate) struct AllocSim {
     pub(crate) free_block_hint: u64,
     /// Blocks allocated during this simulation, in order.
     pub(crate) fresh_blocks: Vec<u64>,
-    fresh_set: rustc_hash::FxHashSet<u64>,
+    fresh_set: crate::fx_hash::FxHashSet<u64>,
     /// Fresh blocks whose unwritten slack bytes have not been zeroed yet (P4.15).
-    unzeroed_fresh: rustc_hash::FxHashSet<u64>,
+    unzeroed_fresh: crate::fx_hash::FxHashSet<u64>,
     /// Simulated pointer modifications: (parent_blk, entry_idx) -> child_blk
-    pub(crate) pointers: rustc_hash::FxHashMap<(u64, usize), u64>,
+    pub(crate) pointers: crate::fx_hash::FxHashMap<(u64, usize), u64>,
 }
 
 impl AllocSim {
@@ -3387,9 +3408,9 @@ impl AllocSim {
             free_inode_hint,
             free_block_hint,
             fresh_blocks: Vec::new(),
-            fresh_set: rustc_hash::FxHashSet::default(),
-            unzeroed_fresh: rustc_hash::FxHashSet::default(),
-            pointers: rustc_hash::FxHashMap::default(),
+            fresh_set: crate::fx_hash::FxHashSet::default(),
+            unzeroed_fresh: crate::fx_hash::FxHashSet::default(),
+            pointers: crate::fx_hash::FxHashMap::default(),
         })
     }
 
@@ -3421,9 +3442,9 @@ impl AllocSim {
             free_inode_hint,
             free_block_hint,
             fresh_blocks: Vec::new(),
-            fresh_set: rustc_hash::FxHashSet::default(),
-            unzeroed_fresh: rustc_hash::FxHashSet::default(),
-            pointers: rustc_hash::FxHashMap::default(),
+            fresh_set: crate::fx_hash::FxHashSet::default(),
+            unzeroed_fresh: crate::fx_hash::FxHashSet::default(),
+            pointers: crate::fx_hash::FxHashMap::default(),
         })
     }
 
@@ -3581,9 +3602,9 @@ impl AllocSim {
             free_inode_hint,
             free_block_hint,
             fresh_blocks: Vec::new(),
-            fresh_set: rustc_hash::FxHashSet::default(),
-            unzeroed_fresh: rustc_hash::FxHashSet::default(),
-            pointers: rustc_hash::FxHashMap::default(),
+            fresh_set: crate::fx_hash::FxHashSet::default(),
+            unzeroed_fresh: crate::fx_hash::FxHashSet::default(),
+            pointers: crate::fx_hash::FxHashMap::default(),
         }
     }
 
@@ -4067,7 +4088,11 @@ pub(crate) fn stage_payload_write(
     }
 
     let mut existing_set = if !used.is_empty() {
-        Some(used.iter().copied().collect::<rustc_hash::FxHashSet<u64>>())
+        Some(
+            used.iter()
+                .copied()
+                .collect::<crate::fx_hash::FxHashSet<u64>>(),
+        )
     } else {
         None
     };

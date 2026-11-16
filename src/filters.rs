@@ -1,4 +1,3 @@
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
@@ -90,6 +89,7 @@ impl FilterPipeline {
     }
 }
 
+#[cfg(feature = "blosc2")]
 /// Native C-Blosc2 compression wrapper for compressing a chunk with arbitrary C-Blosc2 filters and codecs
 pub fn blosc2_compress(
     data: &[u8],
@@ -108,6 +108,7 @@ pub fn blosc2_compress(
     Ok(chunk.as_bytes().to_vec())
 }
 
+#[cfg(feature = "blosc2")]
 /// Native C-Blosc2 decompression wrapper for decompressing a chunk
 pub fn blosc2_decompress(compressed: &[u8]) -> Result<Vec<u8>, blosc2::Error> {
     let mut decoder = blosc2::chunk::Decoder::new(blosc2::DParams::default())?;
@@ -1020,43 +1021,50 @@ pub fn recommend_filters(data: &[u8]) -> FilterRecommendation {
         ),
     ];
 
-    // P2.1 Optimization: Rayon parallel evaluation across CPU cores
-    let reports: Vec<FilterCandidateReport> = candidates_to_test
-        .par_iter()
-        .map(|(cfg, label)| {
-            let filtered = apply_filters(&eval_data, cfg);
-            let entropy = calculate_entropy(&filtered);
-            let eval_comp_size = zstd::stream::encode_all(std::io::Cursor::new(&filtered), 0)
-                .map(|v| v.len())
-                .unwrap_or(filtered.len());
+    // P2.1 Optimization: Parallel evaluation across CPU cores via std::thread::scope
+    let eval_slice = eval_data.as_ref();
+    let reports: Vec<FilterCandidateReport> = std::thread::scope(|s| {
+        let handles: Vec<_> = candidates_to_test
+            .iter()
+            .map(|(cfg, label)| {
+                s.spawn(move || {
+                    let filtered = apply_filters(eval_slice, cfg);
+                    let entropy = calculate_entropy(&filtered);
+                    let eval_comp_size =
+                        zstd::stream::encode_all(std::io::Cursor::new(&filtered), 0)
+                            .map(|v| v.len())
+                            .unwrap_or(filtered.len());
 
-            let comp_size = if is_sampled {
-                (eval_comp_size as f64 * scale_factor) as usize
-            } else {
-                eval_comp_size
-            };
+                    let comp_size = if is_sampled {
+                        (eval_comp_size as f64 * scale_factor) as usize
+                    } else {
+                        eval_comp_size
+                    };
 
-            let ratio = if eval_comp_size > 0 {
-                eval_data.len() as f64 / eval_comp_size as f64
-            } else {
-                1.0
-            };
-            let savings = if !eval_data.is_empty() {
-                (1.0 - (eval_comp_size as f64 / eval_data.len() as f64)) * 100.0
-            } else {
-                0.0
-            };
+                    let ratio = if eval_comp_size > 0 {
+                        eval_slice.len() as f64 / eval_comp_size as f64
+                    } else {
+                        1.0
+                    };
+                    let savings = if !eval_slice.is_empty() {
+                        (1.0 - (eval_comp_size as f64 / eval_slice.len() as f64)) * 100.0
+                    } else {
+                        0.0
+                    };
 
-            FilterCandidateReport {
-                config: *cfg,
-                label: label.clone(),
-                entropy,
-                compressed_size: comp_size,
-                compression_ratio: ratio,
-                space_savings_percent: savings,
-            }
-        })
-        .collect();
+                    FilterCandidateReport {
+                        config: *cfg,
+                        label: label.clone(),
+                        entropy,
+                        compressed_size: comp_size,
+                        compression_ratio: ratio,
+                        space_savings_percent: savings,
+                    }
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
 
     let mut best_idx = 0;
     let mut min_size = baseline_comp;

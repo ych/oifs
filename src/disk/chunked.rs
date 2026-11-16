@@ -536,14 +536,40 @@ impl DiskManager {
         let mut out = vec![0u8; total_size];
 
         // P4.17: decode multi-chunk seekable files directly into disjoint `out` slices
-        // across Rayon worker threads with zero per-chunk heap allocations.
+        // across scoped worker threads with zero per-chunk heap allocations.
         if total_chunks > 2 {
-            use rayon::prelude::*;
-            out.par_chunks_mut(crate::inode::CHUNK_SIZE_64K)
-                .enumerate()
-                .try_for_each(|(chunk_idx, dst)| {
-                    Self::read_single_chunk_into(guard, inode_id, inode, chunk_idx, dst.len(), dst)
-                })?;
+            let workers = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .min(total_chunks);
+            let chunks_per_worker = total_chunks.div_ceil(workers);
+            let bytes_per_worker = chunks_per_worker * crate::inode::CHUNK_SIZE_64K;
+            std::thread::scope(|s| -> Result<(), DiskManagerError> {
+                let mut handles = Vec::with_capacity(workers);
+                for (w_idx, worker_slice) in out.chunks_mut(bytes_per_worker).enumerate() {
+                    let base_chunk = w_idx * chunks_per_worker;
+                    handles.push(s.spawn(move || -> Result<(), DiskManagerError> {
+                        for (rel_idx, dst) in worker_slice
+                            .chunks_mut(crate::inode::CHUNK_SIZE_64K)
+                            .enumerate()
+                        {
+                            Self::read_single_chunk_into(
+                                guard,
+                                inode_id,
+                                inode,
+                                base_chunk + rel_idx,
+                                dst.len(),
+                                dst,
+                            )?;
+                        }
+                        Ok(())
+                    }));
+                }
+                for h in handles {
+                    h.join().unwrap()?;
+                }
+                Ok(())
+            })?;
         } else {
             for (chunk_idx, dst) in out.chunks_mut(crate::inode::CHUNK_SIZE_64K).enumerate() {
                 Self::read_single_chunk_into(guard, inode_id, inode, chunk_idx, dst.len(), dst)?;
@@ -571,36 +597,57 @@ impl DiskManager {
             && to_read_total >= 3 * crate::inode::CHUNK_SIZE_64K
         {
             let base_chunk = (file_offset as usize) / crate::inode::CHUNK_SIZE_64K;
-            use rayon::prelude::*;
-            buf[..to_read_total]
-                .par_chunks_mut(crate::inode::CHUNK_SIZE_64K)
-                .enumerate()
-                .try_for_each(|(rel_idx, dst)| {
-                    let chunk_idx = base_chunk + rel_idx;
-                    let chunk_start = (chunk_idx * crate::inode::CHUNK_SIZE_64K) as u64;
-                    let chunk_valid_len =
-                        ((inode.size - chunk_start) as usize).min(crate::inode::CHUNK_SIZE_64K);
-                    if dst.len() == chunk_valid_len {
-                        Self::read_single_chunk_into(
-                            guard,
-                            inode_id,
-                            inode,
-                            chunk_idx,
-                            chunk_valid_len,
-                            dst,
-                        )
-                    } else {
-                        let tmp = Self::read_single_chunk_decompressed(
-                            guard,
-                            inode_id,
-                            inode,
-                            chunk_idx,
-                            chunk_valid_len,
-                        )?;
-                        dst.copy_from_slice(&tmp[..dst.len()]);
+            let total_chunks = to_read_total.div_ceil(crate::inode::CHUNK_SIZE_64K);
+            let workers = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .min(total_chunks);
+            let chunks_per_worker = total_chunks.div_ceil(workers);
+            let bytes_per_worker = chunks_per_worker * crate::inode::CHUNK_SIZE_64K;
+            std::thread::scope(|s| -> Result<(), DiskManagerError> {
+                let mut handles = Vec::with_capacity(workers);
+                for (w_idx, worker_slice) in buf[..to_read_total]
+                    .chunks_mut(bytes_per_worker)
+                    .enumerate()
+                {
+                    let worker_base = base_chunk + w_idx * chunks_per_worker;
+                    handles.push(s.spawn(move || -> Result<(), DiskManagerError> {
+                        for (rel_idx, dst) in worker_slice
+                            .chunks_mut(crate::inode::CHUNK_SIZE_64K)
+                            .enumerate()
+                        {
+                            let chunk_idx = worker_base + rel_idx;
+                            let chunk_start = (chunk_idx * crate::inode::CHUNK_SIZE_64K) as u64;
+                            let chunk_valid_len = ((inode.size - chunk_start) as usize)
+                                .min(crate::inode::CHUNK_SIZE_64K);
+                            if dst.len() == chunk_valid_len {
+                                Self::read_single_chunk_into(
+                                    guard,
+                                    inode_id,
+                                    inode,
+                                    chunk_idx,
+                                    chunk_valid_len,
+                                    dst,
+                                )?;
+                            } else {
+                                let tmp = Self::read_single_chunk_decompressed(
+                                    guard,
+                                    inode_id,
+                                    inode,
+                                    chunk_idx,
+                                    chunk_valid_len,
+                                )?;
+                                dst.copy_from_slice(&tmp[..dst.len()]);
+                            }
+                        }
                         Ok(())
-                    }
-                })?;
+                    }));
+                }
+                for h in handles {
+                    h.join().unwrap()?;
+                }
+                Ok(())
+            })?;
             return Ok(to_read_total);
         }
 
@@ -866,31 +913,51 @@ impl DiskManager {
 
         // --- STAGE 2: CPU-Bound Processing (ZERO filesystem locks held) ---
         let prepared_chunks: Vec<PreparedChunkPayload> = if uncompressed_chunks.len() > 1 {
-            use rayon::prelude::*;
-            uncompressed_chunks
-                .into_par_iter()
-                .map(|(chunk_idx, chunk_buf, chunk_valid_len)| {
-                    let (payload, flag, comp_len, blocks_needed) = Self::prepare_chunk_payload(
-                        chunk_buf.as_ref(),
-                        chunk_valid_len,
-                        level,
-                        compress,
-                        encryption_key.as_ref(),
-                        ChunkAadContext {
-                            inode_id,
-                            chunk_idx: chunk_idx as u64,
-                            scheme,
+            let total_chunks = uncompressed_chunks.len();
+            let workers = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .min(total_chunks);
+            let chunks_per_worker = total_chunks.div_ceil(workers);
+            let enc_key_ref = encryption_key.as_ref();
+            std::thread::scope(|s| -> Result<Vec<PreparedChunkPayload>, DiskManagerError> {
+                let mut handles = Vec::with_capacity(workers);
+                for batch in uncompressed_chunks.chunks(chunks_per_worker) {
+                    handles.push(s.spawn(
+                        move || -> Result<Vec<PreparedChunkPayload>, DiskManagerError> {
+                            let mut out = Vec::with_capacity(batch.len());
+                            for (chunk_idx, chunk_buf, chunk_valid_len) in batch {
+                                let (payload, flag, comp_len, blocks_needed) =
+                                    Self::prepare_chunk_payload(
+                                        chunk_buf.as_ref(),
+                                        *chunk_valid_len,
+                                        level,
+                                        compress,
+                                        enc_key_ref,
+                                        ChunkAadContext {
+                                            inode_id,
+                                            chunk_idx: *chunk_idx as u64,
+                                            scheme,
+                                        },
+                                    )?;
+                                out.push(PreparedChunkPayload {
+                                    chunk_idx: *chunk_idx,
+                                    payload,
+                                    flag,
+                                    comp_len,
+                                    blocks_needed,
+                                });
+                            }
+                            Ok(out)
                         },
-                    )?;
-                    Ok(PreparedChunkPayload {
-                        chunk_idx,
-                        payload,
-                        flag,
-                        comp_len,
-                        blocks_needed,
-                    })
-                })
-                .collect::<Result<Vec<_>, DiskManagerError>>()?
+                    ));
+                }
+                let mut all = Vec::with_capacity(total_chunks);
+                for h in handles {
+                    all.extend(h.join().unwrap()?);
+                }
+                Ok(all)
+            })?
         } else {
             let (chunk_idx, chunk_buf, chunk_valid_len) =
                 uncompressed_chunks.into_iter().next().unwrap();

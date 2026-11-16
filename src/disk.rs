@@ -14,51 +14,97 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
-use thiserror::Error;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::fx_hash::{FxHashMap, FxHashSet};
 
 use serde::{Deserialize, Serialize};
 
 /// Errors that can occur during disk manager operations
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum DiskManagerError {
     /// I/O error occurred
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::Error),
     /// Serialization/deserialization error
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] bincode::Error),
+    Serialization(bincode::Error),
     /// Invalid file system magic number
-    #[error("Invalid magic number")]
     InvalidMagic,
     /// File system image is too small
-    #[error("File too small")]
     FileTooSmall,
     /// Block allocation error
-    #[error("Allocator error: {0}")]
-    Allocator(#[from] AllocatorError),
+    Allocator(AllocatorError),
     /// File locking error
-    #[error("Locking error: {0}")]
-    Locking(#[from] nix::errno::Errno),
+    Locking(std::io::Error),
     /// Encryption error
-    #[error("Encryption error: {0}")]
-    Encryption(#[from] crate::encryption::EncryptionError),
+    Encryption(crate::encryption::EncryptionError),
     /// Metadata WAL / journal error
-    #[error("Journal error: {0}")]
-    Journal(#[from] crate::journal::JournalError),
+    Journal(crate::journal::JournalError),
     /// On-disk inode record could not be encoded or decoded
-    #[error("Inode format error: {0}")]
-    InodeFormat(#[from] crate::inode_format::InodeFormatError),
+    InodeFormat(crate::inode_format::InodeFormatError),
     /// Password required for encrypted filesystem
-    #[error("Password required to access encrypted filesystem")]
     PasswordRequired,
     /// Decryption failed - wrong password or corrupted data
-    #[error("Decryption failed - check password")]
     DecryptionFailed,
     /// Superblock bounds or layout geometry invalid
-    #[error("Corrupted superblock layout or invalid bounds: {0}")]
     CorruptedSuperblock(&'static str),
+}
+
+impl std::fmt::Display for DiskManagerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "IO error: {e}"),
+            Self::Serialization(e) => write!(f, "Serialization error: {e}"),
+            Self::InvalidMagic => write!(f, "Invalid magic number"),
+            Self::FileTooSmall => write!(f, "File too small"),
+            Self::Allocator(e) => write!(f, "Allocator error: {e}"),
+            Self::Locking(e) => write!(f, "Locking error: {e}"),
+            Self::Encryption(e) => write!(f, "Encryption error: {e}"),
+            Self::Journal(e) => write!(f, "Journal error: {e}"),
+            Self::InodeFormat(e) => write!(f, "Inode format error: {e}"),
+            Self::PasswordRequired => write!(f, "Password required to access encrypted filesystem"),
+            Self::DecryptionFailed => write!(f, "Decryption failed - check password"),
+            Self::CorruptedSuperblock(msg) => {
+                write!(f, "Corrupted superblock layout or invalid bounds: {msg}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DiskManagerError {}
+
+impl From<std::io::Error> for DiskManagerError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<bincode::Error> for DiskManagerError {
+    fn from(e: bincode::Error) -> Self {
+        Self::Serialization(e)
+    }
+}
+
+impl From<AllocatorError> for DiskManagerError {
+    fn from(e: AllocatorError) -> Self {
+        Self::Allocator(e)
+    }
+}
+
+impl From<crate::encryption::EncryptionError> for DiskManagerError {
+    fn from(e: crate::encryption::EncryptionError) -> Self {
+        Self::Encryption(e)
+    }
+}
+
+impl From<crate::journal::JournalError> for DiskManagerError {
+    fn from(e: crate::journal::JournalError) -> Self {
+        Self::Journal(e)
+    }
+}
+
+impl From<crate::inode_format::InodeFormatError> for DiskManagerError {
+    fn from(e: crate::inode_format::InodeFormatError) -> Self {
+        Self::InodeFormat(e)
+    }
 }
 
 /// Compression mode for write operations
@@ -1091,14 +1137,7 @@ impl DiskManager {
             .open(path)?;
 
         // Acquire Lock using F_SETLK
-        let mut lock = unsafe { std::mem::zeroed::<libc::flock>() };
-        lock.l_type = libc::F_WRLCK as _;
-        lock.l_whence = libc::SEEK_SET as _;
-        lock.l_start = 0;
-        lock.l_len = 0; // Whole file
-
-        use nix::fcntl::{FcntlArg, fcntl};
-        fcntl(&file, FcntlArg::F_SETLK(&lock)).map_err(DiskManagerError::Locking)?;
+        Self::try_lock_whole_file(&file)?;
 
         let is_new = !exists || create_encrypted;
         if is_new {
@@ -1240,6 +1279,25 @@ impl DiskManager {
         Ok(dm)
     }
 
+    /// Take a non-blocking exclusive `fcntl(F_SETLK)` write lock on the whole file.
+    ///
+    /// Fails with [`DiskManagerError::Locking`] when another process holds the lock.
+    pub(crate) fn try_lock_whole_file(file: &File) -> Result<(), DiskManagerError> {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: `flock` is a plain C struct; all-zero is a valid initial value.
+        let mut lock = unsafe { std::mem::zeroed::<libc::flock>() };
+        lock.l_type = libc::F_WRLCK as _;
+        lock.l_whence = libc::SEEK_SET as _;
+        lock.l_start = 0;
+        lock.l_len = 0; // Whole file
+        // SAFETY: the descriptor is owned by `file` and `lock` outlives the call.
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) };
+        if rc == -1 {
+            return Err(DiskManagerError::Locking(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
     /// Record a clean-shutdown marker in the journal header.
     fn mark_journal_clean(mmap: &mut MmapMut, sb: &SuperBlock) -> Result<(), DiskManagerError> {
         if !sb.has_journal_layout() {
@@ -1285,7 +1343,7 @@ impl DiskManager {
         self.inner.read().unwrap().superblock.encryption_salt
     }
 
-    /// The raw filesystem key, used to authenticate IPC clients.
+    /// The domain-separated IPC authentication subkey, used to authenticate IPC clients.
     ///
     /// `None` for an unencrypted image, which authenticates its peers with a
     /// published session secret instead.
@@ -1295,7 +1353,7 @@ impl DiskManager {
             .unwrap()
             .encryption_key
             .as_ref()
-            .map(|k| k.as_bytes().to_vec())
+            .map(|k| k.ipc_auth_key().to_vec())
     }
 
     pub fn authenticate(&self, password: Option<&str>) -> Result<(), DiskManagerError> {

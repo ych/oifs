@@ -3,17 +3,37 @@
 //! This module provides a bitmap-based block allocator that tracks
 //! which blocks are free and which are in use.
 
-use thiserror::Error;
-
 /// Errors that can occur during block allocation operations
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum AllocatorError {
     /// No free blocks available
-    #[error("No space left")]
     NoSpace,
     /// I/O error occurred
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for AllocatorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSpace => write!(f, "No space left"),
+            Self::Io(e) => write!(f, "IO error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for AllocatorError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::NoSpace => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for AllocatorError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
 }
 
 /// Trait for block allocation and deallocation

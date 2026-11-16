@@ -67,8 +67,6 @@
 //! or every previously written record becomes unreadable.
 
 use crate::inode::{FileType, Inode};
-use thiserror::Error;
-
 /// Size of one inode slot in the inode table.
 pub const INODE_SLOT_SIZE: usize = 256;
 
@@ -97,24 +95,38 @@ pub const INODE_V2_RESERVED_START: usize = INODE_V2_FLAGS_OFFSET + 4;
 pub const INODE_FORMAT_V2: u32 = 2;
 
 /// Errors raised while decoding an inode record.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum InodeFormatError {
     /// The slot was shorter than [`INODE_SLOT_SIZE`].
-    #[error("Inode slot is truncated: {got} bytes, need {INODE_SLOT_SIZE}")]
     Truncated {
         /// Bytes actually available.
         got: usize,
     },
     /// The 1-byte file-type tag was not a known variant.
-    #[error("Unknown inode file-type tag: {tag}")]
     UnknownFileType {
         /// Offending tag byte.
         tag: u8,
     },
     /// A format v1 (`bincode`) record could not be decoded.
-    #[error("Legacy (v1) inode record is malformed: {0}")]
     Legacy(String),
 }
+
+impl std::fmt::Display for InodeFormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated { got } => {
+                write!(
+                    f,
+                    "Inode slot is truncated: {got} bytes, need {INODE_SLOT_SIZE}"
+                )
+            }
+            Self::UnknownFileType { tag } => write!(f, "Unknown inode file-type tag: {tag}"),
+            Self::Legacy(msg) => write!(f, "Legacy (v1) inode record is malformed: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for InodeFormatError {}
 
 // ---------------------------------------------------------------------------
 // Little-endian primitive helpers

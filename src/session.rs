@@ -10,13 +10,6 @@
 //! - `SessionMode::Network`: Opt-in via `open_network`/`--network`, uses Rendezvous `.image.master` file in the image directory
 //!   + TCP transport + Clock-Free Active Ping Probe for NFS/Lustre/multi-node clusters.
 
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, sync_channel};
-use std::sync::{Arc, Mutex, OnceLock};
-use thiserror::Error;
-
 use crate::directory::DirectoryEntry;
 use crate::disk::{
     CompressionMode, DefragMode, DefragStats, DiskManager, DiskManagerError, FragmentationStats,
@@ -28,22 +21,48 @@ use crate::ipc::{
     SessionEvent, SessionMode, bind_or_connect,
 };
 use crate::superblock::SuperBlock;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Errors that can occur during session operations
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum SessionError {
     /// Local DiskManager error
-    #[error("DiskManager error: {0}")]
-    DiskManager(#[from] DiskManagerError),
+    DiskManager(DiskManagerError),
     /// Standard I/O error
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::Error),
     /// Remote error from Master
-    #[error("Remote error: {0}")]
     Remote(String),
     /// Unexpected response payload from Master
-    #[error("Unexpected IPC response payload")]
     UnexpectedResponse,
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DiskManager(e) => write!(f, "DiskManager error: {e}"),
+            Self::Io(e) => write!(f, "IO error: {e}"),
+            Self::Remote(msg) => write!(f, "Remote error: {msg}"),
+            Self::UnexpectedResponse => write!(f, "Unexpected IPC response payload"),
+        }
+    }
+}
+
+impl std::error::Error for SessionError {}
+
+impl From<DiskManagerError> for SessionError {
+    fn from(e: DiskManagerError) -> Self {
+        Self::DiskManager(e)
+    }
+}
+
+impl From<std::io::Error> for SessionError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
 }
 
 /// Unified session handle for accessing an OIFS file system

@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-21
+
 ### Added
-- **Background Auto-Defragmentation Coordinator (Blueprint item 7)**:
+- **Modular Storage Engine**: Split `src/disk.rs` into focused submodules (`src/disk/caches.rs`, `src/disk/chunked.rs`, `src/disk/maintenance.rs`).
+- **Hardened Cryptography**: Upgraded Argon2id KDF to OWASP / RFC 9106 parameters (`64 MiB`, `t=3`, `p=4`), added BLAKE2b-512 domain-separated subkeys (`payload_key`, `filename_siv_key`, `filename_cipher_key`, `ipc_auth_key`), and upgraded deterministic filename encryption to full 24-byte (192-bit) `XChaCha20-Poly1305` SIV with `parent_inode` bound in Poly1305 AAD.
+- **Dependency Reduction**: Removed 9 external dependencies (`chrono`, `ctrlc`, `nix`, `rayon`, `rustc-hash`, `thiserror`, `anyhow`, moved `rand` to dev-dependencies, made `blosc2` optional), cutting total normal crates from 149 to 111 (64 with `--no-default-features`).
+- **Background Auto-Defragmentation Coordinator**:
   - Added `src/auto_defrag.rs` with `AutoDefragConfig` / `AutoDefragStats` and a daemon worker thread that periodically measures data-area fragmentation and runs an in-place defragmentation pass once the configured threshold is exceeded.
   - Added `DiskManager::set_auto_defrag` / `auto_defrag_config` / `auto_defrag_stats` / `stop_auto_defrag` and `OifsSession::set_auto_defrag` / `auto_defrag_stats`.
   - Added CLI flags `--auto-defrag[=THRESHOLD]` and `--defrag-interval` (opt-in, default disabled).
@@ -26,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Every proof that constrains its input with `kani::assume` now carries `kani::cover!` assertions, so no harness can pass vacuously.
 
 ### Security
+- **Encrypted Image Integrity & Anti-Downgrade Hardening**:
+  - Rejected unencrypted regular files (`!inode.encrypted`) on encrypted images across `read_data`, `read_at`, and seekable 64K reads, and removed plaintext filename fallbacks in `lookup`, `create`, `list_dir`, and `delete_file`.
+  - Added `DiskManagerError::NotEncrypted` to refuse opening an unencrypted or downgraded image when a password or encryption key is provided.
+  - Updated `open_with_password` / `open_with_key` on a new path to create an encrypted image instead of silently creating a plaintext image.
+  - Added `MAX_READ_DATA_BYTES` (2 GiB), `MAX_DECOMPRESSED_STREAM_BYTES` (256 MiB), physical data-area bounds on `compressed_size`, and fallible `try_reserve_exact` allocations to prevent OOM aborts and Zstd decompression bombs from crafted `inode.size` values.
+  - Enforced `SuperBlock::validate` allow-lists for `format_version`, `encryption_version`, `migration_cursor`, and `encrypted` flag consistency.
+  - Created new `.img` files with owner-only `0600` permissions on Unix and `O_NOFOLLOW` on `create_encrypted` to prevent symlink truncation.
+  - Added cycle detection and depth limits to recursive CLI `ls -r` and `rm -r` (also fixing `rm -r` for directories nested deeper than 2 levels).
 - **Encryption Bypass on Non-Zero-Offset Writes (SEC-16, Critical)**: Fixed the write planner so that a compressed, filtered or encrypted payload is always rebuilt as a whole instead of being patched in place. Previously a write at `file_offset > 0` on an encrypted image could store **plaintext** on disk, overwrite the XChaCha20-Poly1305 ciphertext of an existing file (destroying its Poly1305 tag), and a shrinking overwrite kept a stale file size that broke AEAD authentication. The inode's filter metadata now also describes the filter pipeline that was actually applied.
 - **IPC Deserialization Allocation Bomb (SEC-17, High)**: The framing layer now deserializes with a hard byte limit (the size of the frame), so a tiny frame announcing a huge `Vec`/`String` length can no longer make the receiver allocate gigabytes. The wire format is unchanged.
 - **IPC Transport Hardening (SEC-18, High)**:
@@ -47,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Multi-Block Bitmaps (P4.25)**: The inode and data bitmaps were hardcoded to a single 4 KiB block, capping the data area at 32,768 blocks (128 MiB) and the inode count at 32,768. The new v3 layout sizes the bitmaps with the image; the spans are derived from the recorded offsets, so the `bincode`-encoded superblock needs no new field and every existing image keeps its layout.
 
 ### Performance
+- **JBD2-Style Deferred Metadata Checkpointing & Durability-Aware COW Defragmentation**: Coalesced non-wrapping WAL header + frame `msync(MS_SYNC)` into a single syscall, deferred in-place metadata `msync` under `DurabilityMode::Strict` on journaled images to the 50% WAL watermark (`2.31x` higher `Strict` write throughput), and upgraded in-place COW defragmentation to compact word-level bitmaps, WAL op coalescing, and durability-aware barriers (`3.25x–4.53x` faster).
+- **Incremental $O(\Delta \text{chunks})$ Seekable Truncate & Indirect Table Pruning**: Eliminated full-file chunk rescans during `truncate_chunked_64k` and pruned unused Single/Double/Triple indirect pointer tables on truncation (verified with Kani proof `proof_seekable_truncate_incremental_compressed_size_conservation`, 92 Kani proofs total).
+- **Batch Indirect Reads & 32-Shard Directory Cache**: Coalesced contiguous `Mmap` extents and skipped sparse indirect subtrees in `read_at`, and sharded `ShardedDirCache` across 32 shards with out-of-lock index promotion.
 - **Pooled Zstd Contexts and Single-Pass Decompression (P4.26)**: Added a thread-local pool of Zstd contexts, so a frame (or a 64 KiB chunk) no longer allocates and initialises a fresh `CCtx`/`DCtx`. Seekable chunks are decompressed in one pass into a caller-provided buffer, the whole-file read path allocates the expected size once, and a stream of small appended frames is rewritten as a single frame once the frame overhead exceeds a quarter.
 - **IPC Payload Copies and Pooled Buffer Retention (P4.28)**: The pooled frame buffers are released again when they grew beyond 1 MiB (a single 128 MiB frame used to pin its buffer per worker thread), `IpcClient::send` takes the request by reference so the retry loop no longer clones the whole payload, and the per-request event name is only materialized when a listener exists.
 

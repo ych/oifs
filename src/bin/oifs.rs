@@ -871,22 +871,47 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             if is_dir {
-                // Depth-first removal so children exist to be deleted.
-                for entry in dm.list_dir(target)? {
-                    let child_path = format!("{path}/{}", entry.name);
-                    let child = dm.lookup(target, &entry.name)?;
-                    let child_is_dir =
-                        dm.read_inode(child)?.mode == oifs::inode::FileType::Directory;
-                    if child_is_dir {
-                        for sub in dm.list_dir(child)? {
-                            let sub_path = format!("{child_path}/{}", sub.name);
-                            dm.delete_file(child, &sub.name)
-                                .map_err(|e| format!("Failed to delete '{sub_path}': {e}"))?;
-                        }
+                const MAX_CLI_TRAVERSAL_DEPTH: usize = 256;
+                fn remove_dir_contents_recursive(
+                    dm: &OifsSession,
+                    dir_inode: u64,
+                    dir_path: &str,
+                    depth: usize,
+                    visited: &mut oifs::FxHashSet<u64>,
+                ) -> Result<(), Box<dyn std::error::Error>> {
+                    if depth >= MAX_CLI_TRAVERSAL_DEPTH {
+                        return Err(format!(
+                            "Directory nesting limit ({MAX_CLI_TRAVERSAL_DEPTH}) exceeded at '{dir_path}'"
+                        )
+                        .into());
                     }
-                    dm.delete_file(target, &entry.name)
-                        .map_err(|e| format!("Failed to delete '{child_path}': {e}"))?;
+                    if !visited.insert(dir_inode) {
+                        return Err(format!(
+                            "Directory cycle detected at '{dir_path}' (inode {dir_inode})"
+                        )
+                        .into());
+                    }
+                    for entry in dm.list_dir(dir_inode)? {
+                        let child_path = format!("{dir_path}/{}", entry.name);
+                        let child_inode = dm.read_inode(entry.inode)?;
+                        if child_inode.mode == oifs::inode::FileType::Directory {
+                            remove_dir_contents_recursive(
+                                dm,
+                                entry.inode,
+                                &child_path,
+                                depth + 1,
+                                visited,
+                            )?;
+                        }
+                        dm.delete_file(dir_inode, &entry.name)
+                            .map_err(|e| format!("Failed to delete '{child_path}': {e}"))?;
+                    }
+                    visited.remove(&dir_inode);
+                    Ok(())
                 }
+
+                let mut visited = oifs::FxHashSet::default();
+                remove_dir_contents_recursive(&dm, target, path, 0, &mut visited)?;
             }
 
             dm.delete_file(parent_id, &filename)?;
@@ -937,13 +962,20 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     modified,
                 });
             } else {
+                const MAX_CLI_TRAVERSAL_DEPTH: usize = 256;
                 fn collect_ls(
                     dm: &OifsSession,
                     inode_id: u64,
                     current_path: &str,
                     recursive: bool,
+                    depth: usize,
+                    visited: &mut oifs::FxHashSet<u64>,
                     results: &mut Vec<LsEntry>,
                 ) -> Result<(), Box<dyn std::error::Error>> {
+                    if depth >= MAX_CLI_TRAVERSAL_DEPTH || !visited.insert(inode_id) {
+                        return Ok(());
+                    }
+
                     let inode = dm.read_inode(inode_id)?;
                     if inode.mode != FileType::Directory {
                         return Ok(());
@@ -979,13 +1011,30 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         });
 
                         if recursive && entry_inode.mode == FileType::Directory {
-                            collect_ls(dm, dir_entry.inode, &full_path, true, results)?;
+                            collect_ls(
+                                dm,
+                                dir_entry.inode,
+                                &full_path,
+                                true,
+                                depth + 1,
+                                visited,
+                                results,
+                            )?;
                         }
                     }
                     Ok(())
                 }
                 let base_path = path.as_deref().unwrap_or("");
-                collect_ls(&dm, target_inode_id, base_path, *recursive, &mut results)?;
+                let mut visited = oifs::FxHashSet::default();
+                collect_ls(
+                    &dm,
+                    target_inode_id,
+                    base_path,
+                    *recursive,
+                    0,
+                    &mut visited,
+                    &mut results,
+                )?;
             }
 
             if cli.json {

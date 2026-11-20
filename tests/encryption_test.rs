@@ -478,9 +478,19 @@ fn test_password_rejected_when_superblock_encrypted_flag_downgraded() {
         let _dm = DiskManager::create_encrypted(&image_path, size, password).unwrap();
     }
 
-    // Flip superblock `encrypted` bool (byte 64 in bincode layout) to 0.
+    // 1. Flipping only `encrypted` (byte 64) leaves `encryption_version == 2` inconsistent,
+    //    which SuperBlock::validate rejects immediately as CorruptedSuperblock.
     patch_image_bytes(&image_path, 64, &[0]);
+    let res = DiskManager::open_with_password(&image_path, 0, Some(password));
+    assert!(
+        matches!(res, Err(oifs::DiskManagerError::CorruptedSuperblock(_))),
+        "inconsistent encrypted=false with non-zero encryption_version must fail validation"
+    );
 
+    // 2. Even if an attacker also zeroes `encryption_version` (byte 81) to make the
+    //    superblock look like a clean unencrypted image, open_with_password must refuse
+    //    with NotEncrypted instead of silently writing plaintext.
+    patch_image_bytes(&image_path, 81, &[0]);
     let res = DiskManager::open_with_password(&image_path, 0, Some(password));
     assert!(
         matches!(res, Err(oifs::DiskManagerError::NotEncrypted)),
@@ -522,4 +532,41 @@ fn test_open_with_password_on_new_path_creates_encrypted_image() {
     let dm = DiskManager::open_with_password(&image_path, 0, Some(password)).unwrap();
     let ino = dm.lookup(0, "secret_file.txt").unwrap();
     assert_eq!(dm.read_data(ino).unwrap(), b"TOP_SECRET_PAYLOAD_12345");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_new_image_has_owner_only_permissions_and_create_encrypted_refuses_symlink() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let temp_dir = TempDir::new().unwrap();
+    let plain_img = temp_dir.path().join("plain_0600.img");
+    let enc_img = temp_dir.path().join("enc_0600.img");
+
+    {
+        let _dm = DiskManager::open(&plain_img, 4 * 1024 * 1024).unwrap();
+        let _edm = DiskManager::create_encrypted(&enc_img, 4 * 1024 * 1024, "pw").unwrap();
+    }
+
+    let plain_mode = fs::metadata(&plain_img).unwrap().permissions().mode() & 0o777;
+    let enc_mode = fs::metadata(&enc_img).unwrap().permissions().mode() & 0o777;
+    assert_eq!(plain_mode, 0o600, "plain image must be created 0600");
+    assert_eq!(enc_mode, 0o600, "encrypted image must be created 0600");
+
+    // create_encrypted uses truncate(true) and must refuse to follow a symlink.
+    let victim = temp_dir.path().join("victim.txt");
+    fs::write(&victim, b"do not truncate me").unwrap();
+    let link = temp_dir.path().join("evil_link.img");
+    symlink(&victim, &link).unwrap();
+
+    let res = DiskManager::create_encrypted(&link, 4 * 1024 * 1024, "pw");
+    assert!(
+        res.is_err(),
+        "create_encrypted must refuse to follow symlinks (O_NOFOLLOW)"
+    );
+    assert_eq!(
+        fs::read(&victim).unwrap(),
+        b"do not truncate me",
+        "symlink target must remain untouched"
+    );
 }

@@ -1150,12 +1150,21 @@ impl DiskManager {
         let path = path.as_ref();
         let exists = path.exists();
 
-        let file = OpenOptions::new()
+        let mut open_opts = OpenOptions::new();
+        open_opts
             .read(true)
             .write(true)
             .create(true)
-            .truncate(create_encrypted)
-            .open(path)?;
+            .truncate(create_encrypted);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            open_opts.mode(0o600);
+            if create_encrypted {
+                open_opts.custom_flags(libc::O_NOFOLLOW);
+            }
+        }
+        let file = open_opts.open(path)?;
 
         // Acquire Lock using F_SETLK
         Self::try_lock_whole_file(&file)?;

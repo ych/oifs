@@ -451,6 +451,21 @@ impl SuperBlock {
         if self.root_inode >= usable {
             return Err("Root inode ID exceeds the usable inode count");
         }
+        if self.format_version > Self::FORMAT_VERSION_V3_LAYOUT {
+            return Err("Unsupported filesystem format version");
+        }
+        if self.migration_cursor > usable {
+            return Err("Migration cursor exceeds usable inode count");
+        }
+        if self.encrypted {
+            if self.encryption_version != crate::encryption::ENCRYPTION_SCHEME_LEGACY
+                && self.encryption_version != crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND
+            {
+                return Err("Unsupported encryption scheme version");
+            }
+        } else if self.encryption_version != 0 {
+            return Err("Unencrypted filesystem has non-zero encryption version");
+        }
         // The v3 layout records the bitmap spans implicitly: the regions must
         // fit exactly into the recorded offsets.
         if self.is_v3_layout() {
@@ -862,5 +877,56 @@ mod tests {
             v1_len + 4 + 8,
             "the only difference must be the appended format_version + migration_cursor"
         );
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_versions_and_inconsistent_encryption_flags() {
+        let total_blocks = 2560u64;
+        let mmap_len = (total_blocks as usize) * crate::BLOCK_SIZE;
+
+        // Baseline valid unencrypted v3 superblock passes.
+        let base = SuperBlock::new(total_blocks);
+        assert!(base.validate(mmap_len).is_ok());
+
+        // Unknown future format_version must be rejected.
+        let mut bad_fmt = base;
+        bad_fmt.format_version = 999;
+        assert!(bad_fmt.validate(mmap_len).is_err());
+
+        // Out-of-bounds migration_cursor must be rejected.
+        let mut bad_cursor = base;
+        bad_cursor.migration_cursor = base.usable_inode_count() + 1;
+        assert!(bad_cursor.validate(mmap_len).is_err());
+
+        // Unencrypted image with non-zero encryption_version must be rejected.
+        let mut bad_plain_enc = base;
+        bad_plain_enc.encrypted = false;
+        bad_plain_enc.encryption_version = crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
+        assert!(bad_plain_enc.validate(mmap_len).is_err());
+
+        // Encrypted image with unknown encryption_version (0 or 200) must be rejected.
+        for bad_ver in [0u8, 3u8, 200u8] {
+            let mut bad_enc = base;
+            bad_enc.encrypted = true;
+            bad_enc.encryption_version = bad_ver;
+            assert!(
+                bad_enc.validate(mmap_len).is_err(),
+                "encryption_version={bad_ver} must be rejected"
+            );
+        }
+
+        // Encrypted image with legacy (1) or context-bound (2) passes.
+        for good_ver in [
+            crate::encryption::ENCRYPTION_SCHEME_LEGACY,
+            crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND,
+        ] {
+            let mut good_enc = base;
+            good_enc.encrypted = true;
+            good_enc.encryption_version = good_ver;
+            assert!(
+                good_enc.validate(mmap_len).is_ok(),
+                "encryption_version={good_ver} must be accepted"
+            );
+        }
     }
 }

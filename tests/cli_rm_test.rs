@@ -269,3 +269,50 @@ fn test_cli_rm_leaves_image_usable() {
     }
     let _ = fs::remove_file(image);
 }
+
+#[test]
+fn test_cli_rm_recursive_deep_nesting_and_ls_recursive_resists_cycle() {
+    let _guard = serial();
+    let image = "test_cli_deep_and_cycle.img";
+    setup(image, false);
+
+    // Create a 4-level deep hierarchy: d1/d2/d3/d4/leaf.txt
+    for d in ["d1", "d1/d2", "d1/d2/d3", "d1/d2/d3/d4"] {
+        let out = run(&["--image", image, "mkdir", d]);
+        assert!(out.status.success(), "mkdir {d} failed: {out:?}");
+    }
+    seed_file(image, "d1/d2/d3/d4/leaf.txt");
+
+    // `rm -r d1` must recursively delete arbitrary depth (>2 levels) cleanly.
+    let out = run(&["--image", image, "rm", "-r", "d1"]);
+    assert!(out.status.success(), "deep rm -r failed: {out:?}");
+    assert!(!ls_names(image).iter().any(|n| n == "d1"));
+
+    // Create a cyclic directory (loop/self -> loop) on disk and verify `ls -r`
+    // terminates cleanly instead of overflowing the stack.
+    let (loop_id, loop_blk);
+    {
+        let dm = oifs::DiskManager::open(image, 0).unwrap();
+        loop_id = dm.create_directory(0, "loop").unwrap();
+        let _ = dm.create_file(loop_id, "self").unwrap();
+        loop_blk = dm.read_inode(loop_id).unwrap().blocks[0];
+        dm.flush().unwrap();
+    }
+    {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(image)
+            .unwrap();
+        f.seek(SeekFrom::Start(loop_blk * 4096)).unwrap();
+        f.write_all(&loop_id.to_le_bytes()).unwrap();
+    }
+
+    let out = run(&["--image", image, "ls", "-r"]);
+    assert!(
+        out.status.success(),
+        "ls -r on a cyclic directory must terminate cleanly: {out:?}"
+    );
+    let _ = fs::remove_file(image);
+}

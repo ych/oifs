@@ -239,3 +239,85 @@ fn test_read_at_chunked_and_truncate_never_touch_metadata_blocks() {
     let dm = DiskManager::open(&img.path, 0).expect("reopen dm after checks");
     assert_eq!(dm.superblock().magic, SuperBlock::MAGIC);
 }
+
+#[test]
+fn test_forged_huge_inode_size_and_zstd_bomb_rejected_without_oom() {
+    let img = TestImage::new("forged_size_oom");
+    let dm = DiskManager::open(&img.path, 8 * 1024 * 1024).expect("create dm");
+    let root = dm.superblock().root_inode;
+
+    // 1. Raw file with forged 64 TiB size must return an error, never abort with OOM.
+    let raw_id = dm.create_file(root, "huge_raw.bin").unwrap();
+    dm.write_data(raw_id, 0, b"hello", CompressionMode::Never)
+        .unwrap();
+    let mut raw_inode = dm.read_inode(raw_id).unwrap();
+    raw_inode.size = 1u64 << 46;
+    dm.write_inode(raw_id, &raw_inode).unwrap();
+    assert!(
+        dm.read_data(raw_id).is_err(),
+        "64 TiB raw inode.size must be rejected cleanly"
+    );
+
+    // 2. Raw file with forged u64::MAX size must return an error, never panic.
+    raw_inode.size = u64::MAX;
+    dm.write_inode(raw_id, &raw_inode).unwrap();
+    assert!(
+        dm.read_data(raw_id).is_err(),
+        "u64::MAX raw inode.size must be rejected cleanly"
+    );
+
+    // 3. Seekable 64K file with forged 16 TiB size must return an error, never OOM.
+    let seek_id = dm.create_file(root, "huge_seekable.bin").unwrap();
+    dm.write_data(
+        seek_id,
+        0,
+        b"seekable",
+        CompressionMode::Seekable {
+            chunk_size: 65536,
+            level: 1,
+        },
+    )
+    .unwrap();
+    let mut seek_inode = dm.read_inode(seek_id).unwrap();
+    seek_inode.size = 1u64 << 44;
+    dm.write_inode(seek_id, &seek_inode).unwrap();
+    assert!(
+        dm.read_data(seek_id).is_err(),
+        "16 TiB seekable inode.size must be rejected cleanly"
+    );
+
+    // 4. Compressed file with forged compressed_size exceeding data area must be rejected.
+    let comp_id = dm.create_file(root, "forged_comp.bin").unwrap();
+    dm.write_data(comp_id, 0, &vec![0u8; 64 * 1024], CompressionMode::Always)
+        .unwrap();
+    let mut comp_inode = dm.read_inode(comp_id).unwrap();
+    comp_inode.compressed_size = 100 * 1024 * 1024;
+    dm.write_inode(comp_id, &comp_inode).unwrap();
+    assert!(
+        dm.read_data(comp_id).is_err(),
+        "compressed_size larger than filesystem data area must be rejected"
+    );
+
+    // 5. Zstd decompression bomb (512 MiB of zeros compressed to ~16 KB) with forged size
+    //    must be rejected cleanly without expanding past MAX_READ_DATA_BYTES.
+    let bomb = zstd::bulk::compress(&vec![0u8; 300 * 1024 * 1024], 1).unwrap();
+    let bomb_id = dm.create_file(root, "zstd_bomb.bin").unwrap();
+    dm.write_data(bomb_id, 0, &bomb, CompressionMode::Never)
+        .unwrap();
+    let mut bomb_inode = dm.read_inode(bomb_id).unwrap();
+    bomb_inode.compressed_size = bomb.len() as u64;
+    // Case A: forged logical size > MAX_READ_DATA_BYTES
+    bomb_inode.size = 300 * 1024 * 1024;
+    dm.write_inode(bomb_id, &bomb_inode).unwrap();
+    assert!(
+        dm.read_data(bomb_id).is_err(),
+        "Zstd bomb with forged logical size > MAX_READ_DATA_BYTES must be rejected"
+    );
+    // Case B: forged small logical size (1 KiB) masking a 300 MiB Zstd stream
+    bomb_inode.size = 1024;
+    dm.write_inode(bomb_id, &bomb_inode).unwrap();
+    assert!(
+        dm.read_data(bomb_id).is_err(),
+        "Zstd bomb exceeding expected_size + slack must be rejected"
+    );
+}

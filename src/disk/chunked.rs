@@ -310,6 +310,11 @@ impl DiskManager {
         }
 
         debug_assert_eq!(dst.len(), chunk_valid_len);
+        // On an encrypted filesystem, reject any seekable file whose inode is not
+        // marked encrypted to prevent unauthenticated plaintext injection.
+        if guard.superblock.encrypted && !inode.encrypted {
+            return Err(DiskManagerError::DecryptionFailed);
+        }
         let entry = Self::resolve_logical_chunk_entry(&guard.mmap, inode, chunk_idx);
         if entry.is_empty() {
             dst.fill(0);
@@ -531,9 +536,12 @@ impl DiskManager {
         if inode.size == 0 {
             return Ok(Vec::new());
         }
-        let total_size = inode.size as usize;
+        if guard.superblock.encrypted && !inode.encrypted {
+            return Err(DiskManagerError::DecryptionFailed);
+        }
+        let total_size = Self::checked_read_alloc_len(inode.size, Self::MAX_READ_DATA_BYTES)?;
         let total_chunks = total_size.div_ceil(crate::inode::CHUNK_SIZE_64K);
-        let mut out = vec![0u8; total_size];
+        let mut out = Self::try_alloc_zeroed_vec(total_size)?;
 
         // Decode multi-chunk seekable files directly into disjoint `out` slices
         // across scoped worker threads with zero per-chunk heap allocations.

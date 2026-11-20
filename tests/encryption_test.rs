@@ -318,3 +318,208 @@ fn test_encrypted_compressed_append() {
         b"Part 1: Encrypted initial\nPart 2: Encrypted appended\n"
     );
 }
+
+fn patch_image_bytes(path: &std::path::Path, offset: u64, bytes: &[u8]) {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut f = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    f.seek(SeekFrom::Start(offset)).unwrap();
+    f.write_all(bytes).unwrap();
+}
+
+#[test]
+fn test_encrypted_image_rejects_unencrypted_inode_injection() {
+    let temp_dir = TempDir::new().unwrap();
+    let image_path = temp_dir.path().join("inject_inode.img");
+    let size = 8 * 1024 * 1024;
+    let password = "strong_password";
+
+    let (itb, raw_ino, raw_blk, seek_ino);
+    {
+        let dm = DiskManager::create_encrypted(&image_path, size, password).unwrap();
+        let root = dm.superblock().root_inode;
+
+        raw_ino = dm.create_file(root, "genuine.txt").unwrap();
+        dm.write_data(raw_ino, 0, b"genuine secret", CompressionMode::Never)
+            .unwrap();
+
+        seek_ino = dm.create_file(root, "seekable.bin").unwrap();
+        dm.write_data(
+            seek_ino,
+            0,
+            &vec![0x5Au8; 128 * 1024],
+            CompressionMode::Seekable {
+                chunk_size: 65536,
+                level: 1,
+            },
+        )
+        .unwrap();
+
+        itb = dm.superblock().inode_table_block;
+        raw_blk = dm.read_inode(raw_ino).unwrap().blocks[0];
+        dm.flush().unwrap();
+    }
+
+    // Tamper raw file inode: clear `encrypted` byte (offset 129) and write plaintext into its block.
+    let raw_slot = itb * 4096 + raw_ino * 256;
+    let payload = b"ATTACKER CONTROLLED";
+    patch_image_bytes(&image_path, raw_blk * 4096, payload);
+    patch_image_bytes(
+        &image_path,
+        raw_slot + 1,
+        &(payload.len() as u64).to_le_bytes(),
+    );
+    patch_image_bytes(&image_path, raw_slot + 9, &0u64.to_le_bytes());
+    patch_image_bytes(&image_path, raw_slot + 129, &[0]);
+
+    // Tamper seekable file inode: clear `encrypted` byte (offset 129).
+    let seek_slot = itb * 4096 + seek_ino * 256;
+    patch_image_bytes(&image_path, seek_slot + 129, &[0]);
+
+    let dm = DiskManager::open_with_password(&image_path, 0, Some(password)).unwrap();
+
+    // Both full read and positional read must reject the unencrypted inode.
+    assert!(
+        matches!(
+            dm.read_data(raw_ino),
+            Err(oifs::DiskManagerError::DecryptionFailed)
+        ),
+        "read_data must reject unencrypted file on an encrypted image"
+    );
+    let mut buf = [0u8; 32];
+    assert!(
+        matches!(
+            dm.read_at(raw_ino, 0, &mut buf),
+            Err(oifs::DiskManagerError::DecryptionFailed)
+        ),
+        "read_at must reject unencrypted file on an encrypted image"
+    );
+
+    // Seekable read_data and read_at must also reject the unencrypted inode.
+    assert!(
+        matches!(
+            dm.read_data(seek_ino),
+            Err(oifs::DiskManagerError::DecryptionFailed)
+        ),
+        "seekable read_data must reject unencrypted file on an encrypted image"
+    );
+    assert!(
+        matches!(
+            dm.read_at(seek_ino, 0, &mut buf),
+            Err(oifs::DiskManagerError::DecryptionFailed)
+        ),
+        "seekable read_at must reject unencrypted file on an encrypted image"
+    );
+}
+
+#[test]
+fn test_encrypted_image_rejects_plaintext_directory_entry_injection() {
+    let temp_dir = TempDir::new().unwrap();
+    let image_path = temp_dir.path().join("inject_dir.img");
+    let size = 8 * 1024 * 1024;
+    let password = "strong_password";
+
+    let (dir_blk, genuine_ino);
+    {
+        let dm = DiskManager::create_encrypted(&image_path, size, password).unwrap();
+        let root = dm.superblock().root_inode;
+        genuine_ino = dm.create_file(root, "real.txt").unwrap();
+        dm.write_data(genuine_ino, 0, b"real", CompressionMode::Never)
+            .unwrap();
+        dir_blk = dm.read_inode(root).unwrap().blocks[0];
+        dm.flush().unwrap();
+    }
+
+    // Append an unauthenticated plaintext directory entry "injected.txt" directly into root's dir block.
+    let img = fs::read(&image_path).unwrap();
+    let blk_off = (dir_blk * 4096) as usize;
+    let insert_off = oifs::directory::find_insert_offset_in_block(&img[blk_off..blk_off + 4096]);
+    let injected = oifs::directory::DirectoryEntry {
+        inode: genuine_ino,
+        hash: oifs::directory::hash_filename("injected.txt"),
+        name: "injected.txt".to_string(),
+    };
+    let mut encoded = Vec::new();
+    injected.serialize_into(&mut encoded).unwrap();
+    patch_image_bytes(&image_path, (blk_off + insert_off) as u64, &encoded);
+
+    let dm = DiskManager::open_with_password(&image_path, 0, Some(password)).unwrap();
+    let root = dm.superblock().root_inode;
+
+    // Plaintext entry must not be found by lookup, delete_file, or list_dir.
+    assert!(
+        dm.lookup(root, "injected.txt").is_err(),
+        "lookup must reject plaintext directory entry on encrypted image"
+    );
+    assert!(
+        dm.delete_file(root, "injected.txt").is_err(),
+        "delete_file must reject plaintext directory entry on encrypted image"
+    );
+    let listed: Vec<String> = dm
+        .list_dir(root)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(listed, vec!["real.txt".to_string()]);
+}
+
+#[test]
+fn test_password_rejected_when_superblock_encrypted_flag_downgraded() {
+    let temp_dir = TempDir::new().unwrap();
+    let image_path = temp_dir.path().join("downgrade.img");
+    let size = 8 * 1024 * 1024;
+    let password = "strong_password";
+
+    {
+        let _dm = DiskManager::create_encrypted(&image_path, size, password).unwrap();
+    }
+
+    // Flip superblock `encrypted` bool (byte 64 in bincode layout) to 0.
+    patch_image_bytes(&image_path, 64, &[0]);
+
+    let res = DiskManager::open_with_password(&image_path, 0, Some(password));
+    assert!(
+        matches!(res, Err(oifs::DiskManagerError::NotEncrypted)),
+        "open_with_password must refuse to open a downgraded/unencrypted image with a password"
+    );
+}
+
+#[test]
+fn test_open_with_password_on_new_path_creates_encrypted_image() {
+    let temp_dir = TempDir::new().unwrap();
+    let image_path = temp_dir.path().join("new_with_password.img");
+    let size = 8 * 1024 * 1024;
+    let password = "brand_new_password";
+
+    {
+        let dm = DiskManager::open_with_password(&image_path, size, Some(password)).unwrap();
+        assert!(
+            dm.is_encrypted(),
+            "open_with_password on a new path must create an encrypted image"
+        );
+        let root = dm.superblock().root_inode;
+        let ino = dm.create_file(root, "secret_file.txt").unwrap();
+        dm.write_data(ino, 0, b"TOP_SECRET_PAYLOAD_12345", CompressionMode::Never)
+            .unwrap();
+        dm.flush().unwrap();
+    }
+
+    let raw = fs::read(&image_path).unwrap();
+    assert!(
+        !raw.windows(24).any(|w| w == b"TOP_SECRET_PAYLOAD_12345"),
+        "Payload must not appear in plaintext on disk"
+    );
+    assert!(
+        !raw.windows(15).any(|w| w == b"secret_file.txt"),
+        "Filename must not appear in plaintext on disk"
+    );
+
+    // Reopening with the same password succeeds and returns the original data.
+    let dm = DiskManager::open_with_password(&image_path, 0, Some(password)).unwrap();
+    let ino = dm.lookup(0, "secret_file.txt").unwrap();
+    assert_eq!(dm.read_data(ino).unwrap(), b"TOP_SECRET_PAYLOAD_12345");
+}

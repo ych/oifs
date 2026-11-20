@@ -42,6 +42,8 @@ pub enum DiskManagerError {
     InodeFormat(crate::inode_format::InodeFormatError),
     /// Password required for encrypted filesystem
     PasswordRequired,
+    /// Password or key provided for an unencrypted filesystem
+    NotEncrypted,
     /// Decryption failed - wrong password or corrupted data
     DecryptionFailed,
     /// Superblock bounds or layout geometry invalid
@@ -61,6 +63,12 @@ impl std::fmt::Display for DiskManagerError {
             Self::Journal(e) => write!(f, "Journal error: {e}"),
             Self::InodeFormat(e) => write!(f, "Inode format error: {e}"),
             Self::PasswordRequired => write!(f, "Password required to access encrypted filesystem"),
+            Self::NotEncrypted => {
+                write!(
+                    f,
+                    "Password or encryption key provided for an unencrypted filesystem"
+                )
+            }
             Self::DecryptionFailed => write!(f, "Decryption failed - check password"),
             Self::CorruptedSuperblock(msg) => {
                 write!(f, "Corrupted superblock layout or invalid bounds: {msg}")
@@ -1168,7 +1176,8 @@ impl DiskManager {
             } else {
                 SuperBlock::new(block_count)
             };
-            if create_encrypted {
+            let should_encrypt = create_encrypted || password.is_some() || existing_key.is_some();
+            if should_encrypt {
                 if let Some(key) = existing_key {
                     sb.encrypted = true;
                     sb.encryption_salt = crate::encryption::generate_salt();
@@ -1211,6 +1220,9 @@ impl DiskManager {
                     encryption_key = Some(key);
                 }
             } else {
+                if password.is_some() || existing_key.is_some() {
+                    return Err(DiskManagerError::NotEncrypted);
+                }
                 encryption_key = None;
             }
         }
@@ -1372,6 +1384,9 @@ impl DiskManager {
     pub fn authenticate(&self, password: Option<&str>) -> Result<(), DiskManagerError> {
         let guard = self.inner.read().unwrap();
         if !guard.superblock.encrypted {
+            if password.is_some() {
+                return Err(DiskManagerError::NotEncrypted);
+            }
             return Ok(());
         }
         let master_key = match &guard.encryption_key {
@@ -1733,6 +1748,24 @@ impl DiskManager {
     /// Order: cached hit -> authoritative miss from a complete index -> targeted on-disk scan.
     /// A negative scan (already a full pass) or repeated cold scans promote the directory to a
     /// complete index so later hits, misses and create-time existence checks are O(1).
+    /// Resolves the on-disk directory entry name for `name` under `parent_inode_id`.
+    ///
+    /// On an encrypted filesystem, only the authenticated `_e_` ciphertext name is
+    /// accepted (never falling back to plaintext), preventing unauthenticated
+    /// plaintext directory-entry injection.
+    fn stored_filename<'a>(
+        guard: &DiskManagerInner,
+        parent_inode_id: u64,
+        name: &'a str,
+    ) -> Result<std::borrow::Cow<'a, str>, DiskManagerError> {
+        if let Some(key) = &guard.encryption_key {
+            let enc = crate::encryption::encrypt_filename(key, parent_inode_id, name)?;
+            Ok(std::borrow::Cow::Owned(enc))
+        } else {
+            Ok(std::borrow::Cow::Borrowed(name))
+        }
+    }
+
     fn dir_lookup(
         guard: &DiskManagerInner,
         parent_id: u64,
@@ -1760,13 +1793,9 @@ impl DiskManager {
             return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
         }
 
-        // Stored-name candidates in priority order: ciphertext name first, then the legacy
-        // plaintext name (entries written before encryption-aware naming).
-        let enc_name = guard.encryption_key.as_ref().map(|key| {
-            crate::encryption::encrypt_filename(key, parent_id, name)
-                .unwrap_or_else(|_| name.to_string())
-        });
-        let candidates = [enc_name.as_deref(), Some(name)];
+        // On an encrypted filesystem, only match the authenticated `_e_` ciphertext name.
+        let target_name = Self::stored_filename(guard, parent_id, name)?;
+        let candidates = [Some(target_name.as_ref())];
 
         // 2. Complete index (reachable here on encrypted filesystems when `plain_complete` is false).
         let (indexed, has_entry_yet, cold_scans_so_far) = {
@@ -2700,12 +2729,7 @@ impl DiskManager {
                 )));
             }
 
-            let stored_name = if let Some(key) = &guard.encryption_key {
-                crate::encryption::encrypt_filename(key, parent_inode_id, name)
-                    .unwrap_or_else(|_| name.to_string())
-            } else {
-                name.to_string()
-            };
+            let stored_name = Self::stored_filename(&guard, parent_inode_id, name)?.into_owned();
             let stored_hash = crate::directory::hash_filename(&stored_name);
             (stored_name, stored_hash)
         }; // Shared read-guard is dropped immediately here!
@@ -3201,17 +3225,61 @@ impl DiskManager {
         }
     }
 
+    /// Hard cap (2 GiB) on single-call whole-file materialization (`read_data` and
+    /// seekable full-file reads) to prevent OOM aborts from crafted/corrupted on-disk
+    /// `inode.size` values (e.g. 64 TiB or `u64::MAX`).
+    /// Larger files remain readable via bounded positional `read_at` calls.
+    pub const MAX_READ_DATA_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
+    /// Hard cap (256 MiB) on single-call Zstd stream decompression to prevent
+    /// decompression bombs (e.g. a 32 KiB compressed stream expanding to GiB).
+    pub const MAX_DECOMPRESSED_STREAM_BYTES: usize = 256 * 1024 * 1024;
+
+    pub(crate) fn checked_read_alloc_len(
+        size: u64,
+        limit: usize,
+    ) -> Result<usize, DiskManagerError> {
+        if size > limit as u64 {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "File size {size} bytes exceeds maximum single-read limit ({limit} bytes); use read_at for streaming reads"
+                ),
+            )));
+        }
+        usize::try_from(size).map_err(|_| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("File size {size} bytes overflows platform address space"),
+            ))
+        })
+    }
+
+    pub(crate) fn try_alloc_zeroed_vec(len: usize) -> Result<Vec<u8>, DiskManagerError> {
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(len).map_err(|_| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                format!("Failed to allocate {len} bytes"),
+            ))
+        })?;
+        buf.resize(len, 0);
+        Ok(buf)
+    }
+
     fn decompress_stream_payload(
         zstd_src: &[u8],
         expected_size: u64,
     ) -> Result<Vec<u8>, DiskManagerError> {
+        let expected_len =
+            Self::checked_read_alloc_len(expected_size, Self::MAX_DECOMPRESSED_STREAM_BYTES)?;
+
         // Single-pass pooled `DCtx` fast path (handles both single-frame and
         // concatenated multi-frame Zstd streams in one C call with zero `DCtx` allocs).
-        if expected_size <= 64 * 1024 * 1024 {
-            let target_len = expected_size as usize;
-            let mut decoded = vec![0u8; target_len];
+        if expected_len <= 64 * 1024 * 1024 {
+            let mut decoded = Self::try_alloc_zeroed_vec(expected_len)?;
             if let Ok(written) = crate::zstd_pool::decompress_frame_into(zstd_src, &mut decoded)
-                && written == target_len
+                && written == expected_len
             {
                 return Ok(decoded);
             }
@@ -3219,16 +3287,32 @@ impl DiskManager {
 
         // Fallback to bounded streaming decoder (large files > 64 MiB or forged/corrupted sizes).
         use std::io::Read;
-        let max_decompressed_bytes = expected_size.saturating_add(65536).max(1024 * 1024);
+        let max_decompressed_bytes = expected_size
+            .saturating_add(65536)
+            .min(Self::MAX_DECOMPRESSED_STREAM_BYTES as u64);
         let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(zstd_src))
             .map_err(DiskManagerError::Io)?;
-        let init_cap = (expected_size as usize).min(16 * 1024 * 1024);
-        let mut decoded = Vec::with_capacity(init_cap);
+        let init_cap = expected_len.min(16 * 1024 * 1024);
+        let mut decoded = Vec::new();
+        decoded.try_reserve(init_cap).map_err(|_| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                format!("Failed to allocate {init_cap} bytes for decompression"),
+            ))
+        })?;
         decoder
             .by_ref()
-            .take(max_decompressed_bytes)
+            .take(max_decompressed_bytes.saturating_add(1))
             .read_to_end(&mut decoded)
             .map_err(DiskManagerError::Io)?;
+        if decoded.len() as u64 > max_decompressed_bytes {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Decompressed payload exceeds maximum allowed size ({max_decompressed_bytes} bytes)"
+                ),
+            )));
+        }
         Ok(decoded)
     }
 
@@ -3251,6 +3335,37 @@ impl DiskManager {
             return Ok(Vec::new());
         }
 
+        // On an encrypted filesystem, reject any non-empty regular file whose
+        // inode is not marked encrypted to prevent unauthenticated plaintext injection.
+        if guard.superblock.encrypted
+            && inode.mode == crate::inode::FileType::File
+            && !inode.encrypted
+        {
+            return Err(DiskManagerError::DecryptionFailed);
+        }
+
+        // Compressed payloads are never sparse, so their physical size cannot exceed
+        // the filesystem's data area. Also bound logical decompressed size upfront.
+        if inode.compressed_size > 0 {
+            let data_area_bytes = guard
+                .superblock
+                .block_count
+                .saturating_sub(guard.superblock.data_block_start)
+                .saturating_mul(BLOCK_SIZE as u64);
+            if inode.compressed_size > data_area_bytes {
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Compressed size ({}) exceeds filesystem data area ({data_area_bytes} bytes)",
+                        inode.compressed_size
+                    ),
+                )));
+            }
+            Self::checked_read_alloc_len(inode.size, Self::MAX_DECOMPRESSED_STREAM_BYTES)?;
+        }
+
+        let phys_len = Self::checked_read_alloc_len(physical_size, Self::MAX_READ_DATA_BYTES)?;
+
         let filter_config = crate::filters::FilterConfig {
             typesize: inode.filter_typesize,
             delta: inode.filter_delta,
@@ -3265,7 +3380,6 @@ impl DiskManager {
             && inode.compressed_size > 0
             && guard.io_engine.effective() == IoBackend::Mmap
         {
-            let phys_len = physical_size as usize;
             let data_start = guard.superblock.data_block_start;
             let data_end = guard.superblock.block_count;
             let mut contiguous_start_blk: Option<u64> = None;
@@ -3317,7 +3431,7 @@ impl DiskManager {
             }
         }
 
-        let mut raw_data = vec![0u8; physical_size as usize];
+        let mut raw_data = Self::try_alloc_zeroed_vec(phys_len)?;
         if guard.io_engine.effective() == IoBackend::Mmap {
             // Zero-copy path: coalesce physically contiguous runs and memcpy from the mapping.
             let data_start = guard.superblock.data_block_start;
@@ -3489,9 +3603,9 @@ impl DiskManager {
         if file_offset >= inode.size || max_len == 0 {
             return Ok(Vec::new());
         }
-        let available = (inode.size - file_offset) as usize;
+        let available = usize::try_from(inode.size - file_offset).unwrap_or(usize::MAX);
         let alloc_len = max_len.min(available);
-        let mut buf = vec![0u8; alloc_len];
+        let mut buf = Self::try_alloc_zeroed_vec(alloc_len)?;
         let n = if guard.io_engine.effective() == IoBackend::Mmap {
             Self::read_at_with_inode(&guard, inode_id, &inode, file_offset, &mut buf, None)?
         } else {
@@ -3610,6 +3724,12 @@ impl DiskManager {
 
         if file_offset >= inode.size || buf.is_empty() {
             return Ok(0);
+        }
+
+        // On an encrypted filesystem, reject any non-empty regular file whose
+        // inode is not marked encrypted to prevent unauthenticated plaintext injection.
+        if guard.superblock.encrypted && !inode.encrypted {
+            return Err(DiskManagerError::DecryptionFailed);
         }
 
         let available = (inode.size - file_offset) as usize;
@@ -5128,7 +5248,13 @@ impl DiskManager {
         }
 
         if let Some(key) = &guard.encryption_key {
-            for entry in &mut entries {
+            entries.retain_mut(|entry| {
+                if !entry
+                    .name
+                    .starts_with(crate::encryption::FILENAME_ENC_PREFIX)
+                {
+                    return false;
+                }
                 if let Ok(decrypted) =
                     crate::encryption::decrypt_filename(key, dir_inode_id, &entry.name)
                     && crate::directory::validate_filename(&decrypted).is_ok()
@@ -5136,7 +5262,8 @@ impl DiskManager {
                     entry.hash = crate::directory::hash_filename(&decrypted);
                     entry.name = decrypted;
                 }
-            }
+                true
+            });
         }
 
         // 3. Promote scanned directory to complete index in cache for future O(1) lookups and listings
@@ -5364,18 +5491,10 @@ impl DiskManager {
             }) {
             (matched_name.to_string(), id, phys_blk, initial_hash)
         } else {
-            let enc_name = guard.encryption_key.as_ref().and_then(|key| {
-                crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
-            });
-            let candidates = [enc_name.as_deref(), Some(name)];
-            candidates
-                .iter()
-                .flatten()
-                .find_map(|c| {
-                    let h = crate::directory::hash_filename(c);
-                    Self::locate_entry_in_dir(&guard.mmap, &parent_inode, c, h)
-                        .map(|(id, blk)| ((*c).to_string(), id, blk, h))
-                })
+            let target_name = Self::stored_filename(guard, parent_inode_id, name)?;
+            let h = crate::directory::hash_filename(target_name.as_ref());
+            Self::locate_entry_in_dir(&guard.mmap, &parent_inode, target_name.as_ref(), h)
+                .map(|(id, blk)| (target_name.into_owned(), id, blk, h))
                 .ok_or_else(|| {
                     DiskManagerError::Io(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
@@ -5504,12 +5623,8 @@ impl DiskManager {
                 )));
             }
 
-            let enc_name = if let Some(key) = &guard.encryption_key {
-                crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
-            } else {
-                None
-            };
-            let candidates = [enc_name.as_deref(), Some(name)];
+            let target_name = Self::stored_filename(&guard, parent_inode_id, name)?;
+            let candidates = [Some(target_name.as_ref())];
 
             // Fast path: check `dir_cache` for O(1) `(inode_id, phys_blk)` resolution.
             let cached_loc = {
@@ -5588,18 +5703,10 @@ impl DiskManager {
             }) {
             (matched_name, id, phys_blk, initial_hash)
         } else {
-            let enc_name = guard.encryption_key.as_ref().and_then(|key| {
-                crate::encryption::encrypt_filename(key, parent_inode_id, name).ok()
-            });
-            let candidates = [enc_name.as_deref(), Some(name)];
-            candidates
-                .iter()
-                .flatten()
-                .find_map(|c| {
-                    let h = crate::directory::hash_filename(c);
-                    Self::locate_entry_in_dir(&guard.mmap, &parent_inode, c, h)
-                        .map(|(id, blk)| ((*c).to_string(), id, blk, h))
-                })
+            let target_name = Self::stored_filename(&guard, parent_inode_id, name)?;
+            let h = crate::directory::hash_filename(target_name.as_ref());
+            Self::locate_entry_in_dir(&guard.mmap, &parent_inode, target_name.as_ref(), h)
+                .map(|(id, blk)| (target_name.into_owned(), id, blk, h))
                 .ok_or_else(|| {
                     DiskManagerError::Io(std::io::Error::new(
                         std::io::ErrorKind::NotFound,

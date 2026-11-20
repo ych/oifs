@@ -285,6 +285,9 @@ impl OifsSession {
         let mut guard = crate::lock_unpoisoned(registry);
 
         if let Some(session) = guard.get(&canon_key) {
+            if password.is_some() && !session.superblock()?.encrypted {
+                return Err(DiskManagerError::NotEncrypted.into());
+            }
             return Ok(session.clone());
         }
 
@@ -626,6 +629,8 @@ impl OifsSession {
                     let msg = e.to_string();
                     if msg.contains("Password required") {
                         return Err(DiskManagerError::PasswordRequired.into());
+                    } else if msg.contains("unencrypted filesystem") {
+                        return Err(DiskManagerError::NotEncrypted.into());
                     } else if msg.contains("check password") || msg.contains("Decryption failed") {
                         return Err(DiskManagerError::DecryptionFailed.into());
                     } else if (Self::is_connection_error(&e)

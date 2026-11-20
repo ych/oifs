@@ -435,8 +435,8 @@ fn test_shuttle_concurrent_same_filename_creation() {
     );
 }
 
-/// Test 8: Concurrent multi-directory `ShardedDirCache` promotion (P4.35) and
-/// indirect `read_at` (P4.34) under Shuttle's randomized scheduler.
+/// Test 8: Concurrent multi-directory `ShardedDirCache` promotion and
+/// indirect `read_at` under Shuttle's randomized scheduler.
 /// Verifies that out-of-lock directory index promotion across multiple directories,
 /// concurrent negative/positive `lookup` calls, `delete_file` across parent/target
 /// shards, and concurrent indirect-tier `read_at` calls never deadlock or return stale data.
@@ -445,7 +445,7 @@ fn test_shuttle_sharded_dir_cache_multi_dir_and_read_at() {
     shuttle::check_random(
         || {
             let dir = tempdir().unwrap();
-            let img_path = dir.path().join("shuttle_p4_34_35.img");
+            let img_path = dir.path().join("shuttle_sharded_dir_and_read_at.img");
 
             let dm = DiskManager::open(&img_path, 4 * 1024 * 1024).expect("create image");
             let root = dm.resolve_path(".").unwrap();

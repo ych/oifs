@@ -1,10 +1,10 @@
-//! Regression and benchmark suite for P4.17–P4.32 performance optimizations.
+//! Regression and benchmark suite for cache coherence, directory indexing, and SIMD filter pipelines.
 //!
 //! Run regression tests:
-//!   cargo test --release --test p4_perf_optimizations_test
+//!   cargo test --release --test cache_coherence_and_simd_filter_test
 //!
 //! Run before/after performance benchmark comparison:
-//!   cargo test --release --test p4_perf_optimizations_test bench_p4_wave_after -- --ignored --nocapture
+//!   cargo test --release --test cache_coherence_and_simd_filter_test bench_cache_coherence_and_simd_filters -- --ignored --nocapture
 
 use oifs::DiskManager;
 use oifs::disk::{CompressionMode, DefragMode};
@@ -65,11 +65,15 @@ fn patterned_bytes(n: usize, seed: u8) -> Vec<u8> {
 }
 
 #[test]
-fn test_p424_decoded_blob_cache_coherence_on_same_second_overwrite_and_truncate() {
+fn test_decoded_blob_cache_coherence_on_same_second_overwrite_and_truncate() {
     for encrypted in [false, true] {
-        let img = TempImg::new(if encrypted { "p424_enc" } else { "p424_plain" });
+        let img = TempImg::new(if encrypted {
+            "blob_cache_enc"
+        } else {
+            "blob_cache_plain"
+        });
         let dm = if encrypted {
-            DiskManager::create_encrypted_journaled(&img.0, 64 * MB, "pw-p424").unwrap()
+            DiskManager::create_encrypted_journaled(&img.0, 64 * MB, "pw-blob-cache").unwrap()
         } else {
             DiskManager::open_journaled(&img.0, 64 * MB).unwrap()
         };
@@ -117,11 +121,15 @@ fn test_p424_decoded_blob_cache_coherence_on_same_second_overwrite_and_truncate(
 }
 
 #[test]
-fn test_p417_seekable_parallel_read_and_subchunk_cache_coherence() {
+fn test_seekable_parallel_read_and_subchunk_cache_coherence() {
     for encrypted in [false, true] {
-        let img = TempImg::new(if encrypted { "p417_enc" } else { "p417_plain" });
+        let img = TempImg::new(if encrypted {
+            "seekable_cache_enc"
+        } else {
+            "seekable_cache_plain"
+        });
         let dm = if encrypted {
-            DiskManager::create_encrypted_journaled(&img.0, 64 * MB, "pw-p417").unwrap()
+            DiskManager::create_encrypted_journaled(&img.0, 64 * MB, "pw-seekable-cache").unwrap()
         } else {
             DiskManager::open_journaled(&img.0, 64 * MB).unwrap()
         };
@@ -179,13 +187,17 @@ fn test_p417_seekable_parallel_read_and_subchunk_cache_coherence() {
 }
 
 #[test]
-fn test_p423_encrypted_nonzero_offset_auto_upgrades_to_seekable_64k() {
+fn test_encrypted_nonzero_offset_auto_upgrades_to_seekable_64k() {
     for journaled in [false, true] {
-        let img = TempImg::new(if journaled { "p423_wal" } else { "p423_leg" });
-        let dm = if journaled {
-            DiskManager::create_encrypted_journaled(&img.0, 64 * MB, "pw-p423").unwrap()
+        let img = TempImg::new(if journaled {
+            "enc_upgrade_wal"
         } else {
-            DiskManager::create_encrypted(&img.0, 64 * MB, "pw-p423").unwrap()
+            "enc_upgrade_leg"
+        });
+        let dm = if journaled {
+            DiskManager::create_encrypted_journaled(&img.0, 64 * MB, "pw-enc-upgrade").unwrap()
+        } else {
+            DiskManager::create_encrypted(&img.0, 64 * MB, "pw-enc-upgrade").unwrap()
         };
 
         // Case A: Sequential 64 KB appends under both Never and Auto modes.
@@ -247,15 +259,16 @@ fn test_p423_encrypted_nonzero_offset_auto_upgrades_to_seekable_64k() {
 
         // Drop and reopen to verify WAL recovery / on-disk persistence.
         drop(dm);
-        let dm_reopen = DiskManager::open_with_password(&img.0, 64 * MB, Some("pw-p423")).unwrap();
+        let dm_reopen =
+            DiskManager::open_with_password(&img.0, 64 * MB, Some("pw-enc-upgrade")).unwrap();
         assert_eq!(dm_reopen.read_data(id_splice).unwrap(), expected);
         assert!(dm_reopen.verify_integrity().unwrap().is_clean);
     }
 }
 
 #[test]
-fn test_p420_inplace_defrag_short_circuit_and_front_hole_compaction() {
-    let img = TempImg::new("p420_defrag");
+fn test_inplace_defrag_short_circuit_and_front_hole_compaction() {
+    let img = TempImg::new("short_circuit_defrag");
     let dm = DiskManager::open(&img.0, 64 * MB).unwrap();
     let src_path = img.0.to_str().unwrap().to_string();
 
@@ -301,11 +314,15 @@ fn test_p420_inplace_defrag_short_circuit_and_front_hole_compaction() {
 }
 
 #[test]
-fn test_p430_p419_p427_directory_bulk_delete_encrypted_neg_lookup_and_bitset_fsck() {
+fn test_directory_bulk_delete_encrypted_neg_lookup_and_bitset_fsck() {
     for encrypted in [false, true] {
-        let img = TempImg::new(if encrypted { "p430_enc" } else { "p430_plain" });
+        let img = TempImg::new(if encrypted {
+            "bulk_delete_enc"
+        } else {
+            "bulk_delete_plain"
+        });
         let dm = if encrypted {
-            DiskManager::create_encrypted_journaled(&img.0, 64 * MB, "pw-p430").unwrap()
+            DiskManager::create_encrypted_journaled(&img.0, 64 * MB, "pw-bulk-delete").unwrap()
         } else {
             DiskManager::open_journaled(&img.0, 64 * MB).unwrap()
         };
@@ -328,14 +345,14 @@ fn test_p430_p419_p427_directory_bulk_delete_encrypted_neg_lookup_and_bitset_fsc
         }
         assert_eq!(dm.list_dir(dir_id).unwrap().len(), count);
 
-        // SEC-29: non-empty directory deletion must fail cleanly.
+        // Non-empty directory deletion must fail cleanly.
         assert!(dm.delete_file(0, "work").is_err());
 
-        // P4.27 bitset fsck must report clean image.
+        // bitset fsck must report clean image.
         let fsck_mid = dm.verify_integrity().unwrap();
         assert!(fsck_mid.is_clean, "fsck_mid failed: {fsck_mid:?}");
 
-        // P4.30 O(1) phys_blk + zero-alloc raw-byte entry compaction on half delete.
+        // O(1) phys_blk + zero-alloc raw-byte entry compaction on half delete.
         for i in (0..count).step_by(2) {
             dm.delete_file(dir_id, &format!("entry_{i:05}.txt"))
                 .unwrap();
@@ -363,7 +380,7 @@ fn test_p430_p419_p427_directory_bulk_delete_encrypted_neg_lookup_and_bitset_fsc
 
         drop(dm);
         let dm2 = if encrypted {
-            DiskManager::open_with_password(&img.0, 64 * MB, Some("pw-p430")).unwrap()
+            DiskManager::open_with_password(&img.0, 64 * MB, Some("pw-bulk-delete")).unwrap()
         } else {
             DiskManager::open_journaled(&img.0, 64 * MB).unwrap()
         };
@@ -372,7 +389,7 @@ fn test_p430_p419_p427_directory_bulk_delete_encrypted_neg_lookup_and_bitset_fsc
 }
 
 #[test]
-fn test_p432_simd_delta_decode_and_inplace_bitshuffle_roundtrip() {
+fn test_simd_delta_decode_and_inplace_bitshuffle_roundtrip() {
     let lengths = [
         0usize, 1, 2, 3, 4, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 511, 4099,
         65_539,
@@ -418,7 +435,7 @@ fn elapsed_ms(t: Instant) -> f64 {
 
 #[test]
 #[ignore]
-fn bench_p4_wave_after() {
+fn bench_cache_coherence_and_simd_filters() {
     println!("\n=== [1] read_at paths (sequential 4 KiB reads over the file) ===");
     for (label, mode, size) in [
         ("raw 32MB", CompressionMode::Never, 32 * MB as usize),

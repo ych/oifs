@@ -157,7 +157,7 @@ fn bench_flush_exclusive_vs_shared() {
     // Warmup / pause
     thread::sleep(Duration::from_millis(200));
 
-    // Run Shared (New P4.5)
+    // Run Shared (Sync Mutex + Shared Read Lock)
     let new_impl = run_flush_read_benchmark(false, duration_ms);
 
     println!("\n[Legacy: Exclusive Write Lock (inner.write())]");
@@ -177,7 +177,7 @@ fn bench_flush_exclusive_vs_shared() {
         legacy.max_read_latency_us
     );
 
-    println!("\n[New P4.5: Sync Mutex + Shared Read Lock (inner.read())]");
+    println!("\n[Sync Mutex + Shared Read Lock (inner.read())]");
     println!("  - Total flushes executed:   {}", new_impl.flush_count);
     println!("  - Total reads completed:    {}", new_impl.total_reads);
     println!(

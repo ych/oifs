@@ -36,7 +36,7 @@ impl OIFSHandle {
 ///
 /// The dereference happens at the call site, which is always inside a
 /// `catch_unwind` closure, so a fault while converting the string cannot
-/// unwind across the `extern "C"` boundary (SEC-21).
+/// unwind across the `extern "C"` boundary.
 unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, &'static str> {
     if ptr.is_null() {
         return Err("Null argument provided");
@@ -511,7 +511,7 @@ pub extern "C" fn oifs_write_file(
                 Ok(existing_id) => existing_id,
                 Err(_) => dm.create_file(parent_id, &name)?,
             };
-            // SEC-21: a null buffer with a non-zero size is a caller error and
+            // A null buffer with a non-zero size is a caller error and
             // must not be silently treated as an empty write.
             let data = if buf.is_null() {
                 if buf_size > 0 {
@@ -647,7 +647,7 @@ pub extern "C" fn oifs_mkdir(handle: *mut OIFSHandle, path: *const c_char) -> i3
     }
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // SEC-21: the C string is only dereferenced inside the panic-protected
+        // The C string is only dereferenced inside the panic-protected
         // closure.
         let path_str = match unsafe { cstr_to_str(path) } {
             Ok(s) => s,
@@ -731,7 +731,7 @@ pub extern "C" fn oifs_set_io_backend(handle: *mut OIFSHandle, backend: u8) -> i
         &(*handle)
     };
     let b = IoBackend::from_u8(backend);
-    // SEC-11: never let a panic unwind across the `extern "C"` boundary.
+    // Never let a panic unwind across the `extern "C"` boundary.
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let effective = handle_ref.dm.set_io_backend(b);
         effective as i32
@@ -753,7 +753,7 @@ pub extern "C" fn oifs_get_io_backend(handle: *mut OIFSHandle) -> i32 {
         }
         &(*handle)
     };
-    // SEC-11: never let a panic unwind across the `extern "C"` boundary.
+    // Never let a panic unwind across the `extern "C"` boundary.
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         handle_ref.dm.io_backend() as i32
     }));
@@ -852,7 +852,7 @@ pub extern "C" fn oifs_loaded_path(buf: *mut c_char, buf_size: usize) -> i32 {
     if buf.is_null() || buf_size == 0 {
         return -1;
     }
-    // SEC-11: never let a panic unwind across the `extern "C"` boundary.
+    // Never let a panic unwind across the `extern "C"` boundary.
     let res = std::panic::catch_unwind(|| unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
         let ret = libc::dladdr(oifs_version_code as *const c_void, &mut info);

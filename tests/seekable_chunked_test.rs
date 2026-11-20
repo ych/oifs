@@ -544,3 +544,88 @@ fn test_seekable_chunked_journaled_crash_recovery_and_atomicity() {
         report
     );
 }
+
+#[test]
+fn test_seekable_indirect_truncate_prunes_tables_without_leaked_blocks() {
+    for journaled in [false, true] {
+        let (_dir, img_path) = unique_image_path();
+        let dm = if journaled {
+            DiskManager::open_journaled(&img_path, 32 * 1024 * 1024).unwrap()
+        } else {
+            DiskManager::open(&img_path, 32 * 1024 * 1024).unwrap()
+        };
+        let root_id = dm.superblock().root_inode;
+        let inode_id = dm.create_file(root_id, "multi_tier_seekable.bin").unwrap();
+        let stats_empty_file = dm.analyze_fragmentation().unwrap();
+
+        // 1. Write 16 chunks (1 MiB -> chunks 0..9 in direct, chunks 10..15 in Single Indirect blocks[10])
+        let payload = vec![0x42u8; 16 * CHUNK_SIZE_64K];
+        dm.write_chunked_64k(inode_id, 0, &payload, 1).unwrap();
+        // Also write a sparse chunk at chunk index 530 (inside Double Indirect blocks[11]!)
+        dm.write_chunked_64k(
+            inode_id,
+            (530 * CHUNK_SIZE_64K) as u64,
+            &[0x77u8; CHUNK_SIZE_64K],
+            1,
+        )
+        .unwrap();
+
+        let ino_before = dm.read_inode(inode_id).unwrap();
+        assert_ne!(
+            ino_before.blocks[10], 0,
+            "Single indirect must be allocated"
+        );
+        assert_ne!(
+            ino_before.blocks[11], 0,
+            "Double indirect must be allocated"
+        );
+        let comp_17_chunks = ino_before.compressed_size;
+        assert!(comp_17_chunks > 0);
+
+        // 2. Truncate down to 12 chunks (prunes Double Indirect blocks[11] and its child SIB, keeps blocks[10])
+        dm.truncate(inode_id, (12 * CHUNK_SIZE_64K) as u64).unwrap();
+        let ino_12 = dm.read_inode(inode_id).unwrap();
+        assert_ne!(ino_12.blocks[10], 0);
+        assert_eq!(
+            ino_12.blocks[11], 0,
+            "Double indirect pointer must be pruned"
+        );
+        assert!(ino_12.compressed_size < comp_17_chunks);
+        assert!(dm.verify_integrity().unwrap().is_clean);
+
+        // 3. Truncate down to 4 chunks + 1000 bytes (prunes Single Indirect blocks[10] + re-packs chunk 4)
+        dm.truncate(inode_id, (4 * CHUNK_SIZE_64K + 1000) as u64)
+            .unwrap();
+        let ino_4 = dm.read_inode(inode_id).unwrap();
+        assert_eq!(
+            ino_4.blocks[10], 0,
+            "Single indirect pointer must be pruned when new_chunks <= 10"
+        );
+        assert_eq!(
+            dm.read_data(inode_id).unwrap(),
+            vec![0x42u8; 4 * CHUNK_SIZE_64K + 1000]
+        );
+        assert!(dm.verify_integrity().unwrap().is_clean);
+
+        // 4. Write back to 16 chunks (re-allocating Single Indirect), then truncate directly to 0
+        dm.write_chunked_64k(inode_id, 0, &payload, 1).unwrap();
+        assert_ne!(dm.read_inode(inode_id).unwrap().blocks[10], 0);
+        dm.truncate(inode_id, 0).unwrap();
+
+        let ino_zero = dm.read_inode(inode_id).unwrap();
+        assert_eq!(ino_zero.size, 0);
+        assert_eq!(ino_zero.compressed_size, 0);
+        assert_eq!(ino_zero.blocks, [0; 12]);
+
+        let stats_after_zero = dm.analyze_fragmentation().unwrap();
+        assert_eq!(
+            stats_empty_file.free_blocks, stats_after_zero.free_blocks,
+            "Truncating multi-tier seekable file to 0 must reclaim every payload AND indirect block"
+        );
+        let report = dm.verify_integrity().unwrap();
+        assert!(
+            report.is_clean,
+            "fsck after seekable indirect truncate (journaled={journaled}): {report:?}"
+        );
+    }
+}

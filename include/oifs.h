@@ -148,7 +148,7 @@ int32_t oifs_truncate_file(OIFSHandle *handle, const char *filename, uint64_t ne
 int32_t oifs_last_error(OIFSHandle *handle, char *buf, uint32_t buf_size);
 
 /*
- * I/O Engine Backend Configuration (P3.2)
+ * I/O Engine Backend Configuration
  *
  * Backend constants:
  * 0 = Mmap (default)

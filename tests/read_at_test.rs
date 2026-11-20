@@ -255,7 +255,7 @@ fn test_ffi_read_at_and_read_file() {
 }
 
 #[test]
-fn test_read_at_corrupted_size_larger_than_data_panic02() {
+fn test_read_at_corrupted_size_larger_than_data_clamps_safely() {
     let img_path = "test_read_at_corrupted_size.img";
     let _guard = CleanupGuard(img_path);
     if Path::new(img_path).exists() {

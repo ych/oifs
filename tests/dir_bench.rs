@@ -45,12 +45,12 @@ fn bench_dir_scaling() {
     let _ = std::fs::remove_file(path);
 }
 
-/// Benchmark proving P4.6:
+/// Benchmark for directory cache and path resolution:
 /// 1. `list_dir` warm cache speedup vs cold disk scan.
 /// 2. `resolve_parent` & `resolve_path` zero-allocation throughput.
 #[test]
 #[ignore]
-fn bench_p4_6_dir_cache_and_path_resolution() {
+fn bench_dir_cache_and_path_resolution() {
     let path = "bench_p4_6.img";
     let _ = std::fs::remove_file(path);
     let n = 5_000;
@@ -79,7 +79,7 @@ fn bench_p4_6_dir_cache_and_path_resolution() {
             1.0 / dur_cold.as_secs_f64()
         );
 
-        // 2. Second list_dir: warm pass (P4.6 cache hit, memory-only)
+        // 2. Second list_dir: warm pass (Cache hit, memory-only)
         let t_warm = Instant::now();
         let iterations = 100;
         for _ in 0..iterations {
@@ -94,7 +94,7 @@ fn bench_p4_6_dir_cache_and_path_resolution() {
             dur_warm_avg,
             1.0 / dur_warm_avg.as_secs_f64()
         );
-        println!("==> list_dir P4.6 Cache Speedup: {:.2}x faster", speedup);
+        println!("==> list_dir Cache Speedup: {:.2}x faster", speedup);
 
         // 3. Path resolution & resolve_parent throughput benchmark (zero heap allocation)
         let sub = dm.create_directory(d, "nested_sub").unwrap();

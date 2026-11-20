@@ -320,7 +320,7 @@ pub enum MetadataOp {
         /// `true` to mark allocated, `false` to mark free.
         allocated: bool,
     },
-    /// Set or clear a contiguous run of bits in the data bitmap (P4.11).
+    /// Set or clear a contiguous run of bits in the data bitmap.
     SetDataBitmapRange {
         /// Starting data block id.
         start_block: u64,
@@ -513,7 +513,7 @@ impl MetadataOp {
     }
 }
 
-/// Coalesce contiguous operations into compact single operations (P4.11).
+/// Coalesce contiguous operations into compact single operations.
 ///
 /// Merges adjacent `SetDataBitmap` allocations into `SetDataBitmapRange` and
 /// contiguous `WriteBlockSlice` updates into single slice writes, shrinking
@@ -703,7 +703,7 @@ pub fn encode_ops(ops: &[MetadataOp]) -> Vec<u8> {
 }
 
 /// Push a data-bitmap allocation/free span onto `ops`, coalescing adjacent spans
-/// of the same polarity into `SetDataBitmapRange` in O(1) on the fly (P4.18).
+/// of the same polarity into `SetDataBitmapRange` in O(1) on the fly.
 #[inline]
 pub(crate) fn push_data_bitmap_op(
     ops: &mut Vec<MetadataOp>,
@@ -771,7 +771,7 @@ pub(crate) fn push_data_bitmap_op(
 
 /// Push a block-slice write onto `ops`, extending or overwriting the tail
 /// `WriteBlockSlice` in place when it targets the same block and is contiguous
-/// or contained within it (P4.18).
+/// or contained within it.
 #[inline]
 pub(crate) fn push_block_slice_op(
     ops: &mut Vec<MetadataOp>,
@@ -808,7 +808,7 @@ pub(crate) fn push_block_slice_op(
 
 /// Fast O(N) zero-allocation check for whether `ops` is already in canonical
 /// coalesced form, avoiding `ops.to_vec()` and temporary `BTreeMap` allocations
-/// when encoding WAL frames (P4.18).
+/// when encoding WAL frames.
 #[inline]
 pub(crate) fn is_already_coalesced(ops: &[MetadataOp]) -> bool {
     if ops.len() <= 1 {
@@ -1000,7 +1000,7 @@ fn block_range_mut(image: &mut [u8], block_size: u64, block_id: u64) -> Option<&
 /// Returns the byte range of a whole bitmap span.
 ///
 /// The bitmap blocks are consecutive in the image, so a bitmap that spans
-/// several blocks (P4.25) is one contiguous slice of the mapping and its bits
+/// several blocks is one contiguous slice of the mapping and its bits
 /// are addressed by a plain bit index.
 fn bitmap_span_range(
     image: &[u8],
@@ -1045,7 +1045,7 @@ pub fn apply_op_in_place(
             inode_id,
             allocated,
         } => {
-            // SEC-20: an inode id outside the inode table would flip a bit in
+            // An inode id outside the inode table would flip a bit in
             // the wrong place; the bitmap is only meaningful for real inodes.
             if *inode_id >= sb.inode_count {
                 return Err(JournalError::BlockOutOfRange {
@@ -1055,7 +1055,7 @@ pub fn apply_op_in_place(
             let bit = usize::try_from(*inode_id).map_err(|_| JournalError::BlockOutOfRange {
                 block_id: *inode_id,
             })?;
-            // P4.25: the inode bitmap may span several blocks; the whole span
+            // The inode bitmap may span several blocks; the whole span
             // is one contiguous slice.
             let (start, end) =
                 bitmap_span_range(image, bs, sb.inode_bitmap_block, sb.inode_bitmap_blocks())?;
@@ -1078,7 +1078,7 @@ pub fn apply_op_in_place(
             block_id,
             allocated,
         } => {
-            // SEC-20: the data bitmap only describes the data area; a block
+            // The data bitmap only describes the data area; a block
             // id below `data_block_start` would address metadata.
             if *block_id < sb.data_block_start || *block_id >= sb.block_count {
                 return Err(JournalError::BlockOutOfRange {
@@ -1087,7 +1087,7 @@ pub fn apply_op_in_place(
             }
             // Mirrors SimpleBlockAllocator: bit index is relative to data_block_start.
             let bit = block_id.saturating_sub(sb.data_block_start);
-            // P4.25: the data bitmap may span several blocks; the whole span
+            // The data bitmap may span several blocks; the whole span
             // is one contiguous slice.
             let (start, end) =
                 bitmap_span_range(image, bs, sb.data_bitmap_block, sb.data_bitmap_blocks())?;
@@ -1111,7 +1111,7 @@ pub fn apply_op_in_place(
             count,
             allocated,
         } => {
-            // SEC-20: the range must stay inside the data area.
+            // The range must stay inside the data area.
             let end_block =
                 start_block
                     .checked_add(*count as u64)
@@ -1123,7 +1123,7 @@ pub fn apply_op_in_place(
                     block_id: *start_block,
                 });
             }
-            // P4.25: the range may span several bitmap blocks; the whole
+            // The range may span several bitmap blocks; the whole
             // span is one contiguous slice, so the range is set in one go.
             let (start, end) =
                 bitmap_span_range(image, bs, sb.data_bitmap_block, sb.data_bitmap_blocks())?;
@@ -1159,7 +1159,7 @@ pub fn apply_op_in_place(
             inode_id,
             inode_bytes,
         } => {
-            // SEC-20: an inode id outside the inode table would write over
+            // An inode id outside the inode table would write over
             // another structure (or over the data area).
             if *inode_id >= sb.inode_count {
                 return Err(JournalError::BlockOutOfRange {
@@ -1199,7 +1199,7 @@ pub fn apply_op_in_place(
             offset,
             data,
         } => {
-            // SEC-20: a payload slice may only touch the data area. Without
+            // A payload slice may only touch the data area. Without
             // this check a crafted WAL could overwrite the superblock, the
             // bitmaps or the inode table.
             if *block_id < sb.data_block_start || *block_id >= sb.block_count {
@@ -1988,7 +1988,7 @@ mod kani_proofs {
         let mut sb = SuperBlock::new(100);
         sb.block_size = 16;
         // The data area starts at zero here, so the assumed block ids are
-        // valid: without this the operation would always be rejected (SEC-20)
+        // valid: without this the operation would always be rejected
         // and the proof would pass vacuously.
         sb.data_block_start = 0;
 
@@ -3355,7 +3355,7 @@ use memmap2::MmapMut;
 pub(crate) struct AllocSim {
     #[cfg(test)]
     inode_bitmap: Vec<u8>,
-    /// Lazily materialized data-bitmap copy (P4.18): stays `None` on pure in-place
+    /// Lazily materialized data-bitmap copy: stays `None` on pure in-place
     /// overwrites so `write_data_journaled` pays zero heap allocations or 4-64 KB
     /// `memcpy`s when no blocks are allocated or freed through `AllocSim`.
     data_bitmap: Option<Vec<u8>>,
@@ -3363,7 +3363,7 @@ pub(crate) struct AllocSim {
     data_start: u64,
     /// Total number of blocks in the image.
     ///
-    /// SEC-25: the data bitmap is a fixed 4 KiB block, so on a small image it
+    /// The data bitmap is a fixed 4 KiB block, so on a small image it
     /// can track blocks beyond the end of the image. The simulator must not
     /// hand those out.
     block_count: u64,
@@ -3375,7 +3375,7 @@ pub(crate) struct AllocSim {
     /// Blocks allocated during this simulation, in order.
     pub(crate) fresh_blocks: Vec<u64>,
     fresh_set: crate::fx_hash::FxHashSet<u64>,
-    /// Fresh blocks whose unwritten slack bytes have not been zeroed yet (P4.15).
+    /// Fresh blocks whose unwritten slack bytes have not been zeroed yet.
     unzeroed_fresh: crate::fx_hash::FxHashSet<u64>,
     /// Simulated pointer modifications: (parent_blk, entry_idx) -> child_blk
     pub(crate) pointers: crate::fx_hash::FxHashMap<(u64, usize), u64>,
@@ -3389,7 +3389,7 @@ impl AllocSim {
         free_block_hint: u64,
     ) -> Result<Self, DiskManagerError> {
         let sb = guard.superblock;
-        // P4.25: use the full multi-block bitmap spans.
+        // Use the full multi-block bitmap spans.
         let ib = guard
             .inode_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("inode bitmap not found")))?;
@@ -3417,15 +3417,15 @@ impl AllocSim {
     /// Construct an allocation simulator for data-only transactions (`write_data`,
     /// `commit_prepared_chunked_write`, `truncate_chunked_64k`, `create_entry_journaled`)
     /// that never allocate inodes through `AllocSim`, avoiding the `inode_bitmap` copy
-    /// and deferring the `data_bitmap` copy until the first block allocation/free (P4.18).
+    /// and deferring the `data_bitmap` copy until the first block allocation/free.
     pub(crate) fn new_data_only(
         guard: &DiskManagerInner,
         free_inode_hint: u64,
         free_block_hint: u64,
     ) -> Result<Self, DiskManagerError> {
         let sb = guard.superblock;
-        // Validate that the multi-block data bitmap span lies inside the image (P4.25),
-        // without copying its bytes unless an allocation or free actually happens (P4.18).
+        // Validate that the multi-block data bitmap span lies inside the image,
+        // without copying its bytes unless an allocation or free actually happens.
         let _ = guard
             .data_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("data bitmap not found")))?;
@@ -3466,7 +3466,7 @@ impl AllocSim {
         let id = a
             .allocate_with_hint(Some(self.free_inode_hint))
             .map_err(DiskManagerError::Allocator)?;
-        // SEC-25: an id beyond the inode table would be written into the data
+        // An id beyond the inode table would be written into the data
         // area; release it again and report "no space".
         if id >= self.usable_inodes {
             let _ = a.free(id);
@@ -3487,7 +3487,7 @@ impl AllocSim {
         let blk = a
             .allocate_with_hint(Some(hint))
             .map_err(DiskManagerError::Allocator)?;
-        // SEC-25: never hand out a block outside the image.
+        // Never hand out a block outside the image.
         if blk >= block_count {
             let _ = a.free(blk);
             return Err(DiskManagerError::Allocator(
@@ -3517,7 +3517,7 @@ impl AllocSim {
         let blk = a
             .allocate_contiguous(count, Some(hint))
             .map_err(DiskManagerError::Allocator)?;
-        // SEC-25: the run must stay inside the image.
+        // The run must stay inside the image.
         if blk.saturating_add(count as u64) > block_count {
             let _ = a.free_contiguous(blk, count);
             return Err(DiskManagerError::Allocator(
@@ -3572,7 +3572,7 @@ impl AllocSim {
     }
 
     /// Returns `true` the first time a freshly allocated block is prepared for
-    /// a payload write (P4.15).
+    /// a payload write.
     #[inline]
     pub(crate) fn take_unzeroed_fresh(&mut self, block_id: u64) -> bool {
         if self.unzeroed_fresh.is_empty() {
@@ -3647,7 +3647,7 @@ fn sim_ensure_root(
         }
         *slot = blk;
     }
-    // SEC-28: an indirect root must live in the data area.
+    // An indirect root must live in the data area.
     if *slot != 0 && !sim.is_data_block(*slot) {
         return Err(DiskManagerError::Io(std::io::Error::other(format!(
             "Indirect root {} is outside the data area",
@@ -4125,7 +4125,7 @@ pub(crate) fn stage_payload_write(
             }
         }
         if let Some(slice) = DiskManager::get_block_mut_from_map(&mut guard.mmap, phys) {
-            // SEC-27 / P4.15: a freshly allocated block may still hold the
+            // A freshly allocated block may still hold the
             // plaintext of a deleted or truncated file. Zero only the
             // untouched prefix and suffix so full-block writes do not write
             // every 4 KiB page twice.
@@ -4979,7 +4979,7 @@ mod alloc_sim_and_staging_tests {
         let b0_slice2 = DiskManager::get_block_from_map(&guard.mmap, blk0).unwrap();
         assert_eq!(&b0_slice2[4050..4070], &[0xFF; 20]);
 
-        // P4.18: a fresh `AllocSim::new_data_only` on an already-allocated file
+        // A fresh `AllocSim::new_data_only` on an already-allocated file
         // must NOT materialize a copy of `data_bitmap` during an in-place overwrite!
         let mut sim_overwrite =
             AllocSim::new_data_only(&guard, guard.free_inode_hint, guard.free_block_hint).unwrap();

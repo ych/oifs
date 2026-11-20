@@ -1,4 +1,4 @@
-//! Pluggable data-block read engine (P3.2).
+//! Pluggable data-block read engine.
 //!
 //! OIFS keeps all metadata (superblock, bitmaps, inodes, indirect pointer blocks,
 //! directories) on the shared memory map: it is small, hot and benefits from
@@ -33,11 +33,11 @@ use std::io;
 /// Accepts `mmap`, `pread`, or `io_uring` (aliases: `uring`, `iouring`), case-insensitive.
 pub const IO_BACKEND_ENV: &str = "OIFS_IO_BACKEND";
 
-/// Backend used to read file payload blocks (P3.2).
+/// Backend used to read file payload blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[repr(u8)]
 pub enum IoBackend {
-    /// Copy payload bytes straight out of the shared memory map (pre-P3.2 behavior).
+    /// Copy payload bytes straight out of the shared memory map (pre-behavior).
     /// Fastest when data is resident in the page cache; cold pages block on faults.
     #[default]
     Mmap = 0,

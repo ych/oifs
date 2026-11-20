@@ -1,4 +1,4 @@
-//! Tests for P4.26: pooled Zstd contexts, single-pass chunk decompression and
+//! Tests for pooled Zstd contexts, single-pass chunk decompression and
 //! the compaction of a stream of small appended frames.
 
 use oifs::disk::{CompressionMode, DiskManager};

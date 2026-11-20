@@ -1,5 +1,5 @@
 //! Tests for IPC frame framing: pooled buffers, chunked payload streaming and
-//! bounded frame size enforcement (P4.8).
+//! bounded frame size enforcement.
 
 use oifs::disk::CompressionMode;
 use oifs::filters::FilterConfig;
@@ -95,7 +95,7 @@ fn test_truncated_frame_is_an_error() {
 
 #[test]
 fn test_crafted_length_prefix_cannot_trigger_huge_allocation() {
-    // SEC-17: a tiny frame whose `Vec<u8>` length prefix claims `u64::MAX`
+    // A tiny frame whose `Vec<u8>` length prefix claims `u64::MAX`
     // must be rejected by the deserializer's allocation limit instead of
     // making the process allocate gigabytes.
     //

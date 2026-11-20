@@ -108,7 +108,7 @@ impl DiskManager {
                     });
                 }
             }
-            // SEC-28: reject forged indirect root pointers outside the data area.
+            // Reject forged indirect root pointers outside the data area.
             if !guard.is_data_block(*slot) {
                 return Err(DiskManagerError::Io(std::io::Error::other(format!(
                     "Indirect root {} is outside the data area",
@@ -216,10 +216,10 @@ impl DiskManager {
     ) -> Result<(Vec<u8>, u8, u16, usize), DiskManagerError> {
         let compressed_opt = if compress {
             let level = if zstd_level <= 0 { 1 } else { zstd_level };
-            // P4.26: the pooled compressor avoids a per-chunk `CCtx` allocation.
+            // The pooled compressor avoids a per-chunk `CCtx` allocation.
             let compressed = crate::zstd_pool::compress_frame(&chunk_buf[..chunk_valid_len], level)
                 .map_err(DiskManagerError::Io)?;
-            // P4.17: check final post-AEAD size BEFORE encrypting so incompressible
+            // Check final post-AEAD size BEFORE encrypting so incompressible
             // encrypted chunks never waste an AEAD pass + nonce generation.
             let fits = if encryption_key.is_some() {
                 let total_enc_len = 24 + compressed.len() + 16;
@@ -235,7 +235,7 @@ impl DiskManager {
         if let Some(key) = encryption_key {
             let nonce = crate::encryption::generate_nonce();
             if let Some(compressed) = compressed_opt {
-                // SEC-19 / P4.17: stack-staged AAD + single-alloc `[nonce | ct | tag]`.
+                // Stack-staged AAD + single-alloc `[nonce | ct | tag]`.
                 let (aad_buf, aad_len) = crate::encryption::chunk_aad_for_scheme_stack(
                     aad_ctx.inode_id,
                     aad_ctx.chunk_idx,
@@ -295,7 +295,7 @@ impl DiskManager {
     }
 
     /// Decodes a single 64 KiB seekable chunk directly into `dst` (`dst.len() == chunk_valid_len`)
-    /// with zero per-chunk heap allocations on steady-state worker threads (P4.17).
+    /// with zero per-chunk heap allocations on steady-state worker threads.
     pub(super) fn read_single_chunk_into(
         guard: &DiskManagerInner,
         inode_id: u64,
@@ -321,7 +321,7 @@ impl DiskManager {
         let is_encrypted = inode.encrypted;
         let total_blk_bytes = blk_cnt.saturating_mul(BLOCK_SIZE);
 
-        // SEC-28: a chunk's block run must lie entirely within the data area.
+        // A chunk's block run must lie entirely within the data area.
         if !guard.is_data_block(start_blk) {
             return Err(DiskManagerError::Io(std::io::Error::other(format!(
                 "Chunk start block {} is outside the data area",
@@ -535,7 +535,7 @@ impl DiskManager {
         let total_chunks = total_size.div_ceil(crate::inode::CHUNK_SIZE_64K);
         let mut out = vec![0u8; total_size];
 
-        // P4.17: decode multi-chunk seekable files directly into disjoint `out` slices
+        // Decode multi-chunk seekable files directly into disjoint `out` slices
         // across scoped worker threads with zero per-chunk heap allocations.
         if total_chunks > 2 {
             let workers = std::thread::available_parallelism()
@@ -592,7 +592,7 @@ impl DiskManager {
 
         let to_read_total = (buf.len()).min((inode.size - file_offset) as usize);
 
-        // P4.17: parallel multi-chunk fast path for large chunk-aligned `read_at` calls (e.g. >= 192 KiB).
+        // Parallel multi-chunk fast path for large chunk-aligned `read_at` calls (e.g. >= 192 KiB).
         if (file_offset as usize).is_multiple_of(crate::inode::CHUNK_SIZE_64K)
             && to_read_total >= 3 * crate::inode::CHUNK_SIZE_64K
         {
@@ -682,7 +682,7 @@ impl DiskManager {
                 continue;
             }
 
-            // Sub-chunk slice: serve from bounded 8-slot `ChunkReadCache` (P4.17).
+            // Sub-chunk slice: serve from bounded 8-slot `ChunkReadCache`.
             let raw_entry = Self::resolve_logical_chunk_entry(&guard.mmap, inode, chunk_idx).0;
             if raw_entry == 0 {
                 buf[bytes_read..bytes_read + chunk_to_copy].fill(0);
@@ -747,7 +747,7 @@ impl DiskManager {
         self.write_chunked_64k_pipeline_with_mode(inode_id, file_offset, data, level, true)
     }
 
-    /// 3-Stage Out-of-Lock Parallel Pipeline for Seekable 64K Chunked writes (H2 / P4.1 / P4.17 / P4.23).
+    /// 3-Stage Out-of-Lock Parallel Pipeline for Seekable 64K Chunked writes.
     ///
     /// 1. Stage 1 (Read lock): Inspects inode, borrows full-chunk slices directly (`Cow::Borrowed`),
     ///    and prepares uncompressed 64KB chunk buffers only for RMW or format-upgraded chunks.
@@ -834,7 +834,7 @@ impl DiskManager {
                 let scheme = guard.superblock.encryption_version;
                 (inode, new_file_size, chunks, key, scheme)
             } else {
-                // One-time transparent upgrade from whole-file blob to 64 KiB seekable chunks (P4.23).
+                // One-time transparent upgrade from whole-file blob to 64 KiB seekable chunks.
                 let old_data = Self::read_data_internal(&guard, inode_id, &inode)?;
                 let old_logical_size = old_data.len() as u64;
                 let new_file_size = old_logical_size.max(file_offset + data.len() as u64);
@@ -1339,7 +1339,7 @@ impl DiskManager {
                 }
             }
 
-            // Reclaim legacy non-seekable blocks when upgrading a non-empty file to chunked format (P4.23).
+            // Reclaim legacy non-seekable blocks when upgrading a non-empty file to chunked format.
             for blk in old_non_seekable_blocks {
                 sim.free_contiguous(&guard.mmap, blk, 1)?;
                 crate::journal::push_data_bitmap_op(&mut journal_ops, blk, 1, false);
@@ -1386,14 +1386,12 @@ impl DiskManager {
             guard.free_block_hint = sim.free_block_hint;
             guard.inode_cache.insert(inode_id, inode);
 
-            if guard.durability_mode().is_range_based() {
+            if guard.durability_mode() == DurabilityMode::RangeAsync {
                 let mut ranges = vec![
                     guard.data_bitmap_byte_range(),
                     guard.inode_byte_range(inode_id),
                 ];
-                if guard.durability_mode() != DurabilityMode::Strict {
-                    ranges.extend(payload_ranges);
-                }
+                ranges.extend(payload_ranges);
                 for op in &journal_ops {
                     if let crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } = op {
                         ranges.push(guard.block_byte_range(*block_id));
@@ -1462,7 +1460,7 @@ impl DiskManager {
                 }
             }
 
-            // Reclaim legacy non-seekable blocks when upgrading a non-empty file to chunked format (P4.23).
+            // Reclaim legacy non-seekable blocks when upgrading a non-empty file to chunked format.
             for blk in old_non_seekable_blocks {
                 Self::free_contiguous_blocks_internal(guard, blk, 1)?;
             }
@@ -1544,6 +1542,7 @@ impl DiskManager {
             )?;
             let mut journal_ops: Vec<crate::journal::MetadataOp> = Vec::new();
             let mut payload_ranges: Vec<(usize, usize)> = Vec::new();
+            let mut compressed_size_delta: i64 = 0;
 
             // 1. Free all chunks beyond new_chunks
             for c_idx in new_chunks..old_chunks {
@@ -1554,6 +1553,7 @@ impl DiskManager {
                     &sim,
                 );
                 if !entry.is_empty() {
+                    compressed_size_delta -= entry.compressed_len() as i64;
                     let start = entry.start_block() as u64;
                     let count = entry.block_count() as usize;
                     sim.free_contiguous(&guard.mmap, start, count)?;
@@ -1572,6 +1572,23 @@ impl DiskManager {
                         &mut journal_ops,
                     )?;
                 }
+            }
+
+            // 1b. Prune and free any indirect pointer blocks beyond new_chunks
+            let mut freed_indirect_blocks = Vec::new();
+            {
+                let mut ops_opt = Some(&mut journal_ops);
+                Self::prune_unused_indirect_blocks(
+                    guard,
+                    &mut inode,
+                    new_chunks,
+                    &mut freed_indirect_blocks,
+                    &mut ops_opt,
+                );
+            }
+            for blk in freed_indirect_blocks {
+                sim.free_contiguous(&guard.mmap, blk, 1)?;
+                crate::journal::push_data_bitmap_op(&mut journal_ops, blk, 1, false);
             }
 
             // 2. If new_size == 0, clear all pointers
@@ -1614,6 +1631,8 @@ impl DiskManager {
                                 scheme: guard.superblock.encryption_version,
                             },
                         )?;
+                        compressed_size_delta +=
+                            comp_len as i64 - old_entry.compressed_len() as i64;
 
                         let new_start_blk = sim.alloc_contiguous(&guard.mmap, blocks_needed)?;
                         crate::journal::push_data_bitmap_op(
@@ -1672,20 +1691,9 @@ impl DiskManager {
                     }
                 }
 
-                // Recalculate compressed size
-                let mut total_physical_bytes = 0u64;
-                for c_idx in 0..new_chunks {
-                    let e = crate::journal::sim_resolve_logical_chunk_entry(
-                        &guard.mmap,
-                        &inode,
-                        c_idx,
-                        &sim,
-                    );
-                    if !e.is_empty() {
-                        total_physical_bytes += e.compressed_len() as u64;
-                    }
-                }
-                inode.compressed_size = total_physical_bytes;
+                // O(1) incremental compressed_size update instead of O(new_chunks) tree walk
+                inode.compressed_size =
+                    (inode.compressed_size as i64 + compressed_size_delta).max(0) as u64;
                 inode.size = new_size;
                 inode.modified_at = now;
             }
@@ -1717,14 +1725,12 @@ impl DiskManager {
             guard.free_block_hint = sim.free_block_hint;
             guard.inode_cache.insert(inode_id, inode);
 
-            if guard.durability_mode().is_range_based() {
+            if guard.durability_mode() == DurabilityMode::RangeAsync {
                 let mut ranges = vec![
                     guard.data_bitmap_byte_range(),
                     guard.inode_byte_range(inode_id),
                 ];
-                if guard.durability_mode() != DurabilityMode::Strict {
-                    ranges.extend(payload_ranges);
-                }
+                ranges.extend(payload_ranges);
                 for op in &journal_ops {
                     if let crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } = op {
                         ranges.push(guard.block_byte_range(*block_id));
@@ -1738,10 +1744,12 @@ impl DiskManager {
         }
 
         // Legacy non-journaled path
+        let mut compressed_size_delta: i64 = 0;
         // 1. Free all chunks beyond new_chunks
         for c_idx in new_chunks..old_chunks {
             let entry = Self::resolve_logical_chunk_entry(&guard.mmap, &inode, c_idx);
             if !entry.is_empty() {
+                compressed_size_delta -= entry.compressed_len() as i64;
                 let start = entry.start_block() as u64;
                 let count = entry.block_count() as usize;
                 Self::free_contiguous_blocks_internal(guard, start, count)?;
@@ -1753,6 +1761,22 @@ impl DiskManager {
                     None,
                 )?;
             }
+        }
+
+        // 1b. Prune and free any indirect pointer blocks beyond new_chunks
+        let mut freed_indirect_blocks = Vec::new();
+        {
+            let mut ops_opt = None;
+            Self::prune_unused_indirect_blocks(
+                guard,
+                &mut inode,
+                new_chunks,
+                &mut freed_indirect_blocks,
+                &mut ops_opt,
+            );
+        }
+        for blk in freed_indirect_blocks {
+            Self::free_contiguous_blocks_internal(guard, blk, 1)?;
         }
 
         // 2. If new_size == 0, clear all pointers
@@ -1791,6 +1815,7 @@ impl DiskManager {
                             scheme: guard.superblock.encryption_version,
                         },
                     )?;
+                    compressed_size_delta += comp_len as i64 - old_entry.compressed_len() as i64;
 
                     let new_start_blk =
                         Self::allocate_contiguous_blocks_internal(guard, blocks_needed)?;
@@ -1823,15 +1848,9 @@ impl DiskManager {
                 }
             }
 
-            // Recalculate compressed size
-            let mut total_physical_bytes = 0u64;
-            for c_idx in 0..new_chunks {
-                let e = Self::resolve_logical_chunk_entry(&guard.mmap, &inode, c_idx);
-                if !e.is_empty() {
-                    total_physical_bytes += e.compressed_len() as u64;
-                }
-            }
-            inode.compressed_size = total_physical_bytes;
+            // O(1) incremental compressed_size update instead of O(new_chunks) tree walk
+            inode.compressed_size =
+                (inode.compressed_size as i64 + compressed_size_delta).max(0) as u64;
             inode.size = new_size;
             inode.modified_at = now;
         }

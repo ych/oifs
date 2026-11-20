@@ -242,7 +242,7 @@ fn test_concurrent_flush_and_readers() {
 }
 
 #[test]
-fn test_p4_1_out_of_lock_compression_and_encryption_concurrency() {
+fn test_out_of_lock_compression_and_encryption_concurrency() {
     let img_path = "test_p4_1_concurrency.img";
     let _guard = CleanupGuard(img_path);
     if Path::new(img_path).exists() {
@@ -250,9 +250,12 @@ fn test_p4_1_out_of_lock_compression_and_encryption_concurrency() {
     }
 
     // Open an encrypted disk image to exercise both Zstd compression and ChaCha20 encryption
-    let dm =
-        DiskManager::open_with_password(img_path, 40 * 1024 * 1024, Some("P41_Secure_Passwd!"))
-            .expect("Failed to open encrypted disk image");
+    let dm = DiskManager::open_with_password(
+        img_path,
+        40 * 1024 * 1024,
+        Some("Concurrent_Secure_Passwd!"),
+    )
+    .expect("Failed to open encrypted disk image");
     let root_id = dm.superblock().root_inode;
 
     // 1. Create a reference file for readers to read concurrently
@@ -343,7 +346,7 @@ fn test_p4_1_out_of_lock_compression_and_encryption_concurrency() {
     }
 
     println!(
-        "P4.1 Concurrency Proof: Reader threads performed {} reads concurrently during heavy compression/encryption writes!",
+        "Concurrency Proof: Reader threads performed {} reads concurrently during heavy compression/encryption writes!",
         total_reads
     );
     assert!(
@@ -354,16 +357,19 @@ fn test_p4_1_out_of_lock_compression_and_encryption_concurrency() {
 }
 
 #[test]
-fn test_p4_1_reader_latency_under_heavy_writes() {
+fn test_reader_latency_under_heavy_writes() {
     let img_path = "test_p4_1_latency.img";
     let _guard = CleanupGuard(img_path);
     if Path::new(img_path).exists() {
         let _ = fs::remove_file(img_path);
     }
 
-    let dm =
-        DiskManager::open_with_password(img_path, 40 * 1024 * 1024, Some("P41_Latency_Passwd!"))
-            .expect("Failed to open encrypted disk image");
+    let dm = DiskManager::open_with_password(
+        img_path,
+        40 * 1024 * 1024,
+        Some("Concurrent_Latency_Passwd!"),
+    )
+    .expect("Failed to open encrypted disk image");
     let root_id = dm.superblock().root_inode;
 
     let target_file = dm
@@ -440,7 +446,7 @@ fn test_p4_1_reader_latency_under_heavy_writes() {
     let max_observed = max_reader_latency_micros.load(Ordering::Relaxed);
 
     println!(
-        "P4.1 Latency Proof: Total reads: {}, p50: {} µs, p99: {} µs, max: {} µs",
+        "Latency Proof: Total reads: {}, p50: {} µs, p99: {} µs, max: {} µs",
         total_reads, p50, p99, max_observed
     );
     assert!(total_reads > 1000, "Reader should maintain high throughput");

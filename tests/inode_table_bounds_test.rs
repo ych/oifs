@@ -1,4 +1,4 @@
-//! Regression tests for SEC-25: the inode table and the data bitmap must
+//! Regression tests verifying that the inode table and the data bitmap must
 //! never be accessed outside their own region.
 
 use oifs::disk::{CompressionMode, DiskManager, DiskManagerError};

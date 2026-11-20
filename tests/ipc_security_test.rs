@@ -1,4 +1,4 @@
-//! Tests for the IPC transport hardening (SEC-18):
+//! Tests for the IPC transport hardening:
 //! challenge-response authentication, socket/secret permissions and the
 //! bounds on unauthenticated peers.
 
@@ -199,7 +199,7 @@ fn test_master_and_client_agree_on_the_session_secret() {
 
 #[test]
 fn test_non_loopback_bind_requires_an_explicit_opt_in() {
-    // SEC-10: the plain-TCP IPC master must not be exposed to other machines
+    // The plain-TCP IPC master must not be exposed to other machines
     // by accident.
     assert!(oifs::ipc::is_loopback_bind("127.0.0.1:9050"));
     assert!(oifs::ipc::is_loopback_bind("127.0.0.1:0"));
@@ -234,7 +234,7 @@ fn test_non_loopback_bind_requires_an_explicit_opt_in() {
 }
 
 #[test]
-fn test_sec30_session_event_channel_is_bounded() {
+fn test_session_event_channel_is_bounded() {
     let img = TestImage::new("test_sec30_bounded_events");
     let master = OifsSession::open_ipc(&img.path, 10 * 1024 * 1024).expect("open ipc master");
     let client = OifsSession::open_ipc(&img.path, 0).expect("open ipc client");

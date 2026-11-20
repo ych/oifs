@@ -129,7 +129,7 @@ struct EntryInfo {
 
 // ── JSON helpers ───────────────────────────────────────────────────────
 //
-// SEC-22: the responses used to be assembled with `format!`, which does not
+// The responses used to be assembled with `format!`, which does not
 // escape quotes, backslashes or control characters. A file name or an error
 // message could therefore inject arbitrary JSON into the response. Every
 // response is now built with `serde_json`, which escapes correctly.
@@ -398,7 +398,7 @@ async fn main() -> Result<()> {
     }
 
     let image_path = image_path.unwrap_or_else(|| PathBuf::from(DEFAULT_IMAGE));
-    // SEC-22: the multiplication used to overflow silently (a huge `--size`
+    // The multiplication used to overflow silently (a huge `--size`
     // wrapped around and produced a tiny image).
     let size_bytes = size_mb
         .checked_mul(1024)

@@ -114,7 +114,7 @@ fn test_cli_get_traversal_prevention_and_panic_free() {
         .unwrap();
     }
 
-    // 1. Calling get with '..' must not panic (SEC-14 fix)
+    // 1. Calling get with '..' must not panic (Fix)
     let out_dotdot = Command::new(env!("CARGO_BIN_EXE_oifs"))
         .args(["--image", path_str, "get", ".."])
         .output()

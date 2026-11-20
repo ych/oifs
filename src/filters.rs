@@ -905,7 +905,7 @@ pub struct FilterRecommendation {
 
 /// Analyze data against various filter configurations and recommend the optimal one.
 ///
-/// P2.1 Optimization: Uses representative multi-window stride sampling for large files (> 256 KB)
+/// Uses representative multi-window stride sampling for large files (> 256 KB)
 /// and Rayon data parallelism across candidate simulations for sub-millisecond recommendation.
 pub fn recommend_filters(data: &[u8]) -> FilterRecommendation {
     const SAMPLE_THRESHOLD: usize = 256 * 1024; // 256 KB
@@ -932,7 +932,7 @@ pub fn recommend_filters(data: &[u8]) -> FilterRecommendation {
         };
     }
 
-    // P2.1 Optimization: Multi-window sampling for files > 256 KB
+    // Multi-window sampling for files > 256 KB
     let (eval_data, is_sampled): (Cow<[u8]>, bool) = if original_size <= SAMPLE_THRESHOLD {
         (Cow::Borrowed(data), false)
     } else {
@@ -1021,7 +1021,7 @@ pub fn recommend_filters(data: &[u8]) -> FilterRecommendation {
         ),
     ];
 
-    // P2.1 Optimization: Parallel evaluation across CPU cores via std::thread::scope
+    // Parallel evaluation across CPU cores via std::thread::scope
     let eval_slice = eval_data.as_ref();
     let reports: Vec<FilterCandidateReport> = std::thread::scope(|s| {
         let handles: Vec<_> = candidates_to_test

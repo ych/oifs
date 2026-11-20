@@ -313,7 +313,7 @@ fn test_dir_cache_not_stale_after_inode_reuse() {
     assert_eq!(dm.lookup(old_dir, "x").expect("lookup x"), child); // warms old_dir's index
 
     // Remove the directory itself while "x" is still cached under it.
-    // SEC-29: a non-empty directory is no longer removed silently (that would
+    // A non-empty directory is no longer removed silently (that would
     // orphan its children), so the child is deleted first.
     dm.delete_file(old_dir, "x").expect("rm x");
     dm.delete_file(root, "old").expect("rmdir old");
@@ -362,7 +362,7 @@ fn test_dir_index_consistency_across_mutations_and_reopen() {
 }
 
 #[test]
-fn test_list_dir_cache_acceleration_p4_6() {
+fn test_list_dir_cache_acceleration() {
     let ctx = TestContext::new("test_list_dir_cache_p4_6");
     let dm = DiskManager::open(&ctx.image_path, 20 * 1024 * 1024).expect("open dm");
     let root = dm.superblock().root_inode;
@@ -401,7 +401,7 @@ fn test_list_dir_cache_acceleration_p4_6() {
 
     // Also test encrypted directory cache listing
     let enc_path = format!("{}.enc.img", ctx.image_path);
-    let dm_enc = DiskManager::create_encrypted(&enc_path, 20 * 1024 * 1024, "P4_6_SecretPass!")
+    let dm_enc = DiskManager::create_encrypted(&enc_path, 20 * 1024 * 1024, "DirCache_SecretPass!")
         .expect("create enc dm");
     let enc_root = dm_enc.superblock().root_inode;
     let enc_dir = dm_enc.create_directory(enc_root, "enc_dir").expect("mkdir");
@@ -425,7 +425,7 @@ fn test_list_dir_cache_acceleration_p4_6() {
 }
 
 #[test]
-fn test_zero_allocation_path_resolution_p4_6() {
+fn test_zero_allocation_path_resolution() {
     let ctx = TestContext::new("test_zero_alloc_paths_p4_6");
     let dm = DiskManager::open(&ctx.image_path, 20 * 1024 * 1024).expect("open dm");
     let root = dm.superblock().root_inode;
@@ -486,7 +486,7 @@ fn test_zero_allocation_path_resolution_p4_6() {
 }
 
 #[test]
-fn test_sec_14_path_traversal_and_directory_escape_mitigation() {
+fn test_path_traversal_and_directory_escape_mitigation() {
     let ctx = TestContext::new("test_sec_14_mitigation");
     let dm = DiskManager::open(&ctx.image_path, 10 * 1024 * 1024).expect("open dm");
     let root = dm.superblock().root_inode;

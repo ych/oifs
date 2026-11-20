@@ -1,4 +1,4 @@
-//! Regression test for SEC-19: the AEAD must bind the ciphertext to its
+//! Regression test for AEAD context binding: the AEAD must bind the ciphertext to its
 //! file, so a chunk (or a whole file) cannot be moved to another file
 //! without being detected.
 
@@ -30,7 +30,7 @@ impl Drop for TestImage {
 
 #[test]
 fn test_swapping_two_encrypted_files_is_detected() {
-    let img = TestImage::new("test_sec19_swap");
+    let img = TestImage::new("test_aead_aad_swap");
     let dm = DiskManager::create_encrypted(&img.path, 10 * 1024 * 1024, "pw123456")
         .expect("create encrypted image");
     let root = dm.superblock().root_inode;
@@ -77,7 +77,7 @@ fn test_swapping_two_encrypted_files_is_detected() {
 
 #[test]
 fn test_encrypted_content_is_not_plaintext_on_disk() {
-    let img = TestImage::new("test_sec19_plaintext");
+    let img = TestImage::new("test_aead_aad_plaintext");
     let dm = DiskManager::create_encrypted(&img.path, 10 * 1024 * 1024, "pw123456")
         .expect("create encrypted image");
     let root = dm.superblock().root_inode;

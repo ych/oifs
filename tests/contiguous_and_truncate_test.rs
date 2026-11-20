@@ -100,9 +100,9 @@ fn test_truncate_uncompressed_raw_file_shrink_and_expand() {
 }
 
 #[test]
-fn test_write_data_truncated_fixes_corr01() {
+fn test_write_data_truncated_shrinks_file_and_frees_blocks() {
     let dir = tempdir().unwrap();
-    let img_path = dir.path().join("corr01.img");
+    let img_path = dir.path().join("truncate_shrink.img");
     let path = img_path.to_str().unwrap();
 
     let dm = DiskManager::open(path, 10 * 1024 * 1024).unwrap();
@@ -119,7 +119,7 @@ fn test_write_data_truncated_fixes_corr01() {
     dm.write_data_truncated(file_id, small_data, CompressionMode::Never)
         .unwrap();
 
-    // File MUST be truncated to exactly small_data.len() (CORR-01 fixed!)
+    // File MUST be truncated to exactly small_data.len() (fixed!)
     let inode = dm.read_inode(file_id).unwrap();
     assert_eq!(
         inode.size,

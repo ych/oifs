@@ -1,4 +1,4 @@
-//! Reproduction tests for SEC-16: encryption bypass / AEAD corruption on
+//! Regression tests for preventing encryption bypass / AEAD corruption on
 //! non-zero-offset writes to encrypted images.
 
 use oifs::disk::{CompressionMode, DiskManager};
@@ -49,8 +49,8 @@ fn repro_scenario_a_new_file_at_nonzero_offset() {
     let raw = fs::read(&img.path).unwrap();
     let leaked = raw.windows(secret.len()).any(|w| w == secret.as_slice());
     println!("plaintext on disk: {leaked}");
-    assert!(!leaked, "SEC-16 A: plaintext leaked to an encrypted image");
-    assert!(inode.encrypted, "SEC-16 A: inode must be marked encrypted");
+    assert!(!leaked, "A: plaintext leaked to an encrypted image");
+    assert!(inode.encrypted, "A: inode must be marked encrypted");
 }
 
 /// Scenario B: appending / partially overwriting an already encrypted
@@ -77,7 +77,7 @@ fn repro_scenario_b_partial_write_into_encrypted_file() {
     assert_eq!(
         read_back.unwrap(),
         expected,
-        "SEC-16 B: partial write corrupted the encrypted file"
+        "B: partial write corrupted the encrypted file"
     );
 }
 
@@ -104,6 +104,6 @@ fn repro_scenario_c_shrinking_overwrite() {
     assert_eq!(
         read_back.unwrap(),
         second,
-        "SEC-16 C: shrinking overwrite corrupted the encrypted file"
+        "C: shrinking overwrite corrupted the encrypted file"
     );
 }

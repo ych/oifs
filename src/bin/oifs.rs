@@ -116,7 +116,7 @@ struct Cli {
 
     /// Custom bind address for network mode (e.g. 0.0.0.0:9050 or 127.0.0.1:0).
     ///
-    /// The IPC transport is plain TCP without TLS (SEC-10), so a non-loopback
+    /// The IPC transport is plain TCP without TLS, so a non-loopback
     /// address has to be requested explicitly with `--allow-remote-ipsc`.
     #[arg(long = "bind", global = true)]
     bind: Option<String>,
@@ -287,7 +287,7 @@ fn read_password(prompt: &str) -> Result<Zeroizing<String>, Box<dyn std::error::
     }
 
     read_result?;
-    // SEC-12: keep the plaintext password in a zeroizing buffer; the raw
+    // Keep the plaintext password in a zeroizing buffer; the raw
     // `read_line` scratch string is wiped before the trimmed copy is returned.
     let trimmed = password.trim().to_string();
     password.zeroize();
@@ -384,7 +384,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         AutoDefragConfig::new(threshold)
             .with_check_interval(std::time::Duration::from_secs(cli.defrag_interval.max(1)))
     });
-    // SEC-10: refuse to expose the plain-TCP IPC master to other machines
+    // Refuse to expose the plain-TCP IPC master to other machines
     // unless the operator asks for it explicitly.
     if let Some(bind) = cli.bind.as_deref()
         && !oifs::ipc::is_loopback_bind(bind)

@@ -1,10 +1,10 @@
-//! Background automatic defragmentation coordinator (Blueprint item 7).
+//! Background automatic defragmentation coordinator.
 //!
 //! The coordinator periodically measures the fragmentation of the data area
 //! and, when it exceeds a configured threshold, runs an in-place defragmentation
 //! pass. Its purpose is to keep large contiguous free runs available so that
-//! the contiguous block allocator (`P4.4`) and the seekable 64 KiB chunked
-//! compressor (`P4.2`) stop falling back to fragmented allocations.
+//! the contiguous block allocator and the seekable 64 KiB chunked
+//! compressor stop falling back to fragmented allocations.
 //!
 //! Design notes:
 //!

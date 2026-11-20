@@ -7,11 +7,11 @@ use std::thread;
 use std::time::Instant;
 
 // =========================================================================
-// P2.1 Core & Benchmark Tests
+// Core & Benchmark Tests
 // =========================================================================
 
 #[test]
-fn test_p2_1_recommend_filters_large_file_performance_and_accuracy() {
+fn test_recommend_filters_large_file_performance_and_accuracy() {
     // Generate 10MB of 32-bit floating point data (e.g. sensor / time-series data)
     let count = 2_500_000usize; // 2.5M * 4 bytes = 10MB
     let mut data = Vec::with_capacity(count * 4);
@@ -22,13 +22,13 @@ fn test_p2_1_recommend_filters_large_file_performance_and_accuracy() {
     assert_eq!(data.len(), 10_000_000);
 
     let raw_entropy = calculate_entropy(&data[..65536]);
-    println!("Testing P2.1 recommend_filters on 10MB structured payload...");
+    println!("Testing recommend_filters on 10MB structured payload...");
 
     let start = Instant::now();
     let rec = recommend_filters(&data);
     let elapsed = start.elapsed();
 
-    println!("P2.1 Execution Time: {:?}", elapsed);
+    println!("Execution Time: {:?}", elapsed);
     println!("  Original Size: {} bytes", rec.original_size);
     println!(
         "  Baseline Compressed: {} bytes (Entropy: {:.3})",
@@ -47,7 +47,7 @@ fn test_p2_1_recommend_filters_large_file_performance_and_accuracy() {
     // whereas non-optimized sequential 14-trial 10MB zstd encoding would take 3-5+ seconds.
     assert!(
         elapsed.as_millis() < 500,
-        "P2.1 recommendation must execute in sub-second (actual: {:?})",
+        "recommendation must execute in sub-second (actual: {:?})",
         elapsed
     );
 
@@ -76,7 +76,7 @@ fn test_p2_1_recommend_filters_large_file_performance_and_accuracy() {
 }
 
 #[test]
-fn test_p2_1_sampling_boundary_and_corner_cases() {
+fn test_recommend_filters_sampling_boundary_and_corner_cases() {
     // 1. Empty buffer
     let rec_empty = recommend_filters(&[]);
     assert_eq!(rec_empty.original_size, 0);
@@ -109,7 +109,7 @@ fn test_p2_1_sampling_boundary_and_corner_cases() {
 }
 
 #[test]
-fn test_p2_1_high_entropy_random_noise_prefers_none() {
+fn test_recommend_filters_high_entropy_random_noise_prefers_none() {
     // Deterministic XORShift64 PRNG to generate 512KB of high-entropy white noise
     let mut rng_state: u64 = 0x853c49e6748fea9b;
     let size = 512 * 1024;
@@ -137,7 +137,7 @@ fn test_p2_1_high_entropy_random_noise_prefers_none() {
 }
 
 #[test]
-fn test_p2_1_bitshuffle_sparse_bitfield_selection() {
+fn test_recommend_filters_bitshuffle_sparse_bitfield_selection() {
     // Generate 512KB of sparse bitfields (e.g. 64-bit words where only bit 0 or bit 1 is set)
     let size = 512 * 1024;
     let mut bitfield_data = Vec::with_capacity(size);
@@ -170,11 +170,11 @@ fn test_p2_1_bitshuffle_sparse_bitfield_selection() {
 }
 
 // =========================================================================
-// P2.2 Core & Cache Stress Tests
+// Core & Cache Stress Tests
 // =========================================================================
 
 #[test]
-fn test_p2_2_inode_cache_consistency_and_performance() {
+fn test_inode_cache_consistency_and_performance() {
     let img_path = "p2_cache.img";
     if Path::new(img_path).exists() {
         let _ = fs::remove_file(img_path);
@@ -189,7 +189,7 @@ fn test_p2_2_inode_cache_consistency_and_performance() {
     let dir_b = session.create_directory(dir_a, "dir_b").unwrap();
     let file_id = session.create_file(dir_b, "data.bin").unwrap();
 
-    let initial_data = b"Hello OIFS Inode Cache (P2.2)!";
+    let initial_data = b"Hello OIFS Inode Cache!";
     session
         .write_data(file_id, 0, initial_data, oifs::disk::CompressionMode::Never)
         .unwrap();
@@ -248,7 +248,7 @@ fn test_p2_2_inode_cache_consistency_and_performance() {
 }
 
 #[test]
-fn test_p2_2_inode_cache_eviction_threshold_stress() {
+fn test_inode_cache_eviction_threshold_stress() {
     let img_path = "p2_evict.img";
     if Path::new(img_path).exists() {
         let _ = fs::remove_file(img_path);
@@ -321,7 +321,7 @@ fn test_p2_2_inode_cache_eviction_threshold_stress() {
 }
 
 #[test]
-fn test_p2_2_multithreaded_concurrent_cache_access() {
+fn test_inode_cache_multithreaded_concurrent_access() {
     let img_path = "p2_conc.img";
     if Path::new(img_path).exists() {
         let _ = fs::remove_file(img_path);
@@ -391,7 +391,7 @@ fn test_p2_2_multithreaded_concurrent_cache_access() {
 }
 
 #[test]
-fn test_p2_2_encrypted_filesystem_with_inode_cache() {
+fn test_encrypted_filesystem_with_inode_cache() {
     let img_path = "p2_enc.img";
     if Path::new(img_path).exists() {
         let _ = fs::remove_file(img_path);
@@ -440,7 +440,7 @@ fn test_p2_2_encrypted_filesystem_with_inode_cache() {
 }
 
 #[test]
-fn test_p2_1_f64_timeseries_and_u16_sensor_data_recommendation() {
+fn test_recommend_filters_f64_timeseries_and_u16_sensor_data() {
     // 1. 8-byte floating point timeseries (1MB = 131,072 f64 values)
     let count_f64 = 131_072;
     let mut f64_data = Vec::with_capacity(count_f64 * 8);
@@ -483,7 +483,7 @@ fn test_p2_1_f64_timeseries_and_u16_sensor_data_recommendation() {
 }
 
 #[test]
-fn test_p2_1_concurrent_recommend_filters_stress() {
+fn test_concurrent_recommend_filters_stress() {
     let mut handles = Vec::new();
     for thread_idx in 0..8 {
         handles.push(thread::spawn(move || {
@@ -505,7 +505,7 @@ fn test_p2_1_concurrent_recommend_filters_stress() {
 }
 
 #[test]
-fn test_p2_2_cache_invalidation_on_file_deletion_and_resize() {
+fn test_inode_cache_invalidation_on_file_deletion_and_resize() {
     let img_path = "p2_resize.img";
     if Path::new(img_path).exists() {
         let _ = fs::remove_file(img_path);
@@ -561,7 +561,7 @@ fn test_p2_2_cache_invalidation_on_file_deletion_and_resize() {
 }
 
 #[test]
-fn test_p2_2_deep_directory_hierarchy_and_fsck_consistency() {
+fn test_inode_cache_deep_directory_hierarchy_and_fsck_consistency() {
     let img_path = "p2_deep.img";
     if Path::new(img_path).exists() {
         let _ = fs::remove_file(img_path);

@@ -1,4 +1,4 @@
-//! Regression tests for SEC-27: a data block must never expose the content of
+//! Regression tests for zeroed data block reuse: a data block must never expose the content of
 //! a deleted or truncated file.
 
 use oifs::disk::{CompressionMode, DiskManager};

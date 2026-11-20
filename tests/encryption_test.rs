@@ -20,7 +20,7 @@ fn test_create_encrypted_filesystem() {
     assert_eq!(
         sb.encryption_version,
         oifs::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND,
-        "New images use the context-bound encryption scheme (SEC-19)"
+        "New images use the context-bound encryption scheme"
     );
 }
 
@@ -79,7 +79,7 @@ fn test_wrong_password_fails() {
     // Try to open with wrong password - should succeed in opening disk manager
     let dm = DiskManager::open_with_password(&image_path, 0, Some(wrong_password)).unwrap();
 
-    // With filename encryption (Option 2), lookup with wrong password cannot match the encrypted filename
+    // With filename encryption , lookup with wrong password cannot match the encrypted filename
     let lookup_result = dm.lookup(0, "file.txt");
     assert!(
         lookup_result.is_err(),

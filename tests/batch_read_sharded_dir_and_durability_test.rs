@@ -8,10 +8,10 @@ const MB: u64 = 1024 * 1024;
 
 #[test]
 #[ignore]
-fn bench_p4_wave2() {
+fn bench_range_async_journal_coalesce_and_ipc_pool() {
     let dir = tempdir().unwrap();
 
-    // 1. P4.33: RangeAsync small-file create + write (500 files x 512B) and medium writes (100 x 64KB)
+    // 1. RangeAsync small-file create + write (500 files x 512B) and medium writes (100 x 64KB)
     {
         let p_small = dir.path().join("rasync_small.img");
         let dm = DiskManager::open_journaled(&p_small, 128 * MB)
@@ -45,7 +45,7 @@ fn bench_p4_wave2() {
         let dt_med = t1.elapsed();
 
         println!(
-            "[P4.33 RangeAsync] 500x512B (+flush): {:?} ({:.0} files/s) | 100x64KB (+flush): {:?} ({:.1} MB/s)",
+            "[RangeAsync] 500x512B (+flush): {:?} ({:.0} files/s) | 100x64KB (+flush): {:?} ({:.1} MB/s)",
             dt_small,
             500.0 / dt_small.as_secs_f64(),
             dt_med,
@@ -53,9 +53,9 @@ fn bench_p4_wave2() {
         );
     }
 
-    // 2. P4.18: Journaled in-place 4KB overwrites on a 256MB v3 image + 16MB journaled delete
+    // 2. Journaled in-place 4KB overwrites on a 256MB v3 image + 16MB journaled delete
     {
-        let p_j = dir.path().join("p4_18.img");
+        let p_j = dir.path().join("journal_coalesce.img");
         let dm = DiskManager::open_journaled(&p_j, 256 * MB).unwrap();
         let root = dm.superblock().root_inode;
         let f = dm.create_file(root, "hot.bin").unwrap();
@@ -87,16 +87,16 @@ fn bench_p4_wave2() {
         let dt_del = t1.elapsed();
 
         println!(
-            "[P4.18 Journal] 5000x4KB in-place overwrite (256MB img): {:?} ({:.0} ops/s) | 8x16MB delete: {:?}",
+            "[Journal Coalesce] 5000x4KB in-place overwrite (256MB img): {:?} ({:.0} ops/s) | 8x16MB delete: {:?}",
             dt_ow,
             5000.0 / dt_ow.as_secs_f64(),
             dt_del
         );
     }
 
-    // 3. P4.28: Multi-threaded OifsSession Remote Proxy (8 threads x 300 ReadAt RPCs of 32KB)
+    // 3. Multi-threaded OifsSession Remote Proxy (8 threads x 300 ReadAt RPCs of 32KB)
     {
-        let p_ipc = dir.path().join("p4_28_ipc.img");
+        let p_ipc = dir.path().join("ipc_pool_bench.img");
         let master = OifsSession::open_ipc(&p_ipc, 64 * MB).unwrap();
         let root = master.resolve_path(".").unwrap();
         let fid = master.create_file(root, "shared.bin").unwrap();
@@ -132,7 +132,7 @@ fn bench_p4_wave2() {
         }
         let dt_ipc = t0.elapsed();
         println!(
-            "[P4.28 IPC Proxy] 8 threads x 300 x 32KB read_at (2400 RPCs): {:?} ({:.0} RPC/s, {:.1} MB/s)",
+            "[IPC Proxy Pool] 8 threads x 300 x 32KB read_at (2400 RPCs): {:?} ({:.0} RPC/s, {:.1} MB/s)",
             dt_ipc,
             2400.0 / dt_ipc.as_secs_f64(),
             (2400.0 * 32.0 / 1024.0) / dt_ipc.as_secs_f64()
@@ -141,9 +141,9 @@ fn bench_p4_wave2() {
 }
 
 #[test]
-fn test_p4_33_range_async_batching_mode_transition_and_recovery() {
+fn test_range_async_batching_mode_transition_and_recovery() {
     let dir = tempdir().unwrap();
-    let img_path = dir.path().join("p4_33_regression.img");
+    let img_path = dir.path().join("range_async_batch_regression.img");
 
     let dm = DiskManager::open_journaled(&img_path, 64 * MB)
         .unwrap()
@@ -197,9 +197,9 @@ fn test_p4_33_range_async_batching_mode_transition_and_recovery() {
 }
 
 #[test]
-fn test_p4_18_journaled_coalesced_large_write_truncate_and_delete() {
+fn test_journaled_coalesced_large_write_truncate_and_delete() {
     let dir = tempdir().unwrap();
-    let img_path = dir.path().join("p4_18_regression.img");
+    let img_path = dir.path().join("journal_coalesce_regression.img");
 
     let dm = DiskManager::open_journaled(&img_path, 128 * MB).unwrap();
     let root = dm.superblock().root_inode;
@@ -250,7 +250,7 @@ fn test_p4_18_journaled_coalesced_large_write_truncate_and_delete() {
     let report = dm.verify_integrity().unwrap();
     assert!(
         report.is_clean,
-        "fsck must be clean after P4.18 ops: {report:?}"
+        "fsck must be clean after coalesced journal ops: {report:?}"
     );
     drop(dm);
 
@@ -260,12 +260,12 @@ fn test_p4_18_journaled_coalesced_large_write_truncate_and_delete() {
 }
 
 #[test]
-fn test_p4_28_ipc_pooled_concurrent_uds_and_tcp_encrypted() {
+fn test_ipc_pooled_concurrent_uds_and_tcp_encrypted() {
     let dir = tempdir().unwrap();
 
     // 1. Local UDS IPC with >64KB frames (`read_framed` direct streaming) + 8 concurrent proxy threads
     {
-        let uds_img = dir.path().join("p4_28_uds.img");
+        let uds_img = dir.path().join("ipc_pool_uds.img");
         let master = OifsSession::open_ipc(&uds_img, 64 * MB).unwrap();
         let root = master.resolve_path(".").unwrap();
         let fid = master.create_file(root, "large_frame.bin").unwrap();
@@ -302,7 +302,7 @@ fn test_p4_28_ipc_pooled_concurrent_uds_and_tcp_encrypted() {
 
     // 2. Encrypted Network TCP IPC with concurrent pooled secondary authentication (cached KDF key)
     {
-        let tcp_img = dir.path().join("p4_28_tcp_enc.img");
+        let tcp_img = dir.path().join("ipc_pool_tcp_enc.img");
         let pw = "Wave2PoolSecret#2026";
         let master = OifsSession::create_encrypted_network(&tcp_img, 64 * MB, None, pw).unwrap();
         let root = master.resolve_path(".").unwrap();
@@ -343,9 +343,9 @@ fn test_p4_28_ipc_pooled_concurrent_uds_and_tcp_encrypted() {
 }
 
 #[test]
-fn test_p4_22_hot_directory_survives_cold_inode_scan_flood() {
+fn test_hot_directory_survives_cold_inode_scan_flood() {
     let dir = tempdir().unwrap();
-    let img_path = dir.path().join("p4_22_clock.img");
+    let img_path = dir.path().join("inode_clock_eviction.img");
     let dm = DiskManager::open(&img_path, 64 * MB).unwrap();
     let root = dm.superblock().root_inode;
 
@@ -370,12 +370,12 @@ fn test_p4_22_hot_directory_survives_cold_inode_scan_flood() {
 }
 
 #[test]
-fn test_p4_34_read_at_batch_indirect_and_sparse_parity() {
+fn test_read_at_batch_indirect_and_sparse_parity() {
     use oifs::IoBackend;
     use oifs::ReadRequest;
 
     let dir = tempdir().unwrap();
-    let img_path = dir.path().join("p4_34_read_at.img");
+    let img_path = dir.path().join("batch_indirect_read_at.img");
     let dm = DiskManager::open(&img_path, 32 * MB).unwrap();
     let root = dm.superblock().root_inode;
 
@@ -460,9 +460,9 @@ fn test_p4_34_read_at_batch_indirect_and_sparse_parity() {
 }
 
 #[test]
-fn test_p4_35_sharded_dir_cache_concurrent_multi_directory_ops() {
+fn test_sharded_dir_cache_concurrent_multi_directory_ops() {
     let dir = tempdir().unwrap();
-    let img_path = dir.path().join("p4_35_sharded_dir.img");
+    let img_path = dir.path().join("sharded_dir_cache.img");
 
     let mut dir_ids = Vec::new();
     {
@@ -520,11 +520,11 @@ fn test_p4_35_sharded_dir_cache_concurrent_multi_directory_ops() {
 }
 
 #[test]
-fn test_p4_34_triple_indirect_fragmented_and_forged_metadata_ptr_rejection() {
+fn test_triple_indirect_fragmented_and_forged_metadata_ptr_rejection() {
     use oifs::IoBackend;
 
     let dir = tempdir().unwrap();
-    let img_path = dir.path().join("p4_34_triple_and_sec28.img");
+    let img_path = dir.path().join("triple_indirect_bounds.img");
     let dm = DiskManager::open(&img_path, 32 * MB).unwrap();
     let root = dm.superblock().root_inode;
 
@@ -578,7 +578,7 @@ fn test_p4_34_triple_indirect_fragmented_and_forged_metadata_ptr_rejection() {
         );
     }
 
-    // 2. Non-contiguous (interleaved/fragmented) block order + SEC-28 forged metadata pointer rejection
+    // 2. Non-contiguous (interleaved/fragmented) block order + forged metadata pointer rejection
     let f1 = dm.create_file(root, "frag_a.bin").unwrap();
     let f2 = dm.create_file(root, "frag_b.bin").unwrap();
     for blk in 0..16u64 {
@@ -616,7 +616,7 @@ fn test_p4_34_triple_indirect_fragmented_and_forged_metadata_ptr_rejection() {
         for blk in 0..16usize {
             let slice = &buf[blk * 4096..(blk + 1) * 4096];
             if blk == 2 {
-                // SEC-28: forged metadata block pointer MUST be zero-filled, never leaking bitmap bytes!
+                // Forged metadata block pointer MUST be zero-filled, never leaking bitmap bytes!
                 assert_eq!(slice, &[0u8; 4096]);
             } else {
                 assert_eq!(slice, &[0x41 + blk as u8; 4096]);
@@ -630,11 +630,11 @@ fn test_p4_34_triple_indirect_fragmented_and_forged_metadata_ptr_rejection() {
 }
 
 #[test]
-fn test_p4_35_sharded_dir_cache_encrypted_cold_scan_promotion_and_defrag() {
+fn test_sharded_dir_cache_encrypted_cold_scan_promotion_and_defrag() {
     use oifs::disk::DefragMode;
 
     let dir = tempdir().unwrap();
-    let img_path = dir.path().join("p4_35_enc_defrag.img");
+    let img_path = dir.path().join("sharded_dir_enc_defrag.img");
     let pw = "ShardedDirSecret!2026";
 
     let mut subdirs = Vec::new();
@@ -711,12 +711,12 @@ fn test_p4_35_sharded_dir_cache_encrypted_cold_scan_promotion_and_defrag() {
 
 #[test]
 #[ignore]
-fn bench_p4_34_and_p4_35() {
+fn bench_batch_indirect_read_at_and_sharded_dir_cache() {
     let dir = tempdir().unwrap();
 
-    // 1. P4.34: Double-indirect 16 MiB file positional `read_at` (1000 x 1 MiB + 10000 x 64 KiB)
+    // 1. Double-indirect 16 MiB file positional `read_at` (1000 x 1 MiB + 10000 x 64 KiB)
     {
-        let p_read = dir.path().join("p4_34_bench.img");
+        let p_read = dir.path().join("batch_read_at_bench.img");
         let dm = DiskManager::open(&p_read, 64 * MB).unwrap();
         let root = dm.superblock().root_inode;
         let fid = dm.create_file(root, "large_16mb.bin").unwrap();
@@ -724,7 +724,7 @@ fn bench_p4_34_and_p4_35() {
         dm.write_data(fid, 0, &data, CompressionMode::Never)
             .unwrap();
 
-        // Simulate pre-P4.34 per-4KB block resolution & 4KB copy using `get_block_copy` / 4KB `read_at` steps
+        // Simulate unbatched per-4KB block resolution & 4KB copy using `get_block_copy` / 4KB `read_at` steps
         let mut buf_1mb = vec![0u8; 1024 * 1024];
         let t_leg_1mb = Instant::now();
         for i in 0..1000usize {
@@ -789,7 +789,7 @@ fn bench_p4_34_and_p4_35() {
         let dt_opt_sparse = t_opt_sparse.elapsed();
 
         println!(
-            "[P4.34 read_at] 1000x1MB (dense double-indirect): 4KB-step {:?} ({:.2} GB/s) -> P4.34 batch+extent {:?} ({:.2} GB/s, {:.2}x) | 10000x64KB: {:?} ({:.0} ops/s, {:.2} GB/s)",
+            "[read_at] 1000x1MB (dense double-indirect): 4KB-step {:?} ({:.2} GB/s) -> batch+extent {:?} ({:.2} GB/s, {:.2}x) | 10000x64KB: {:?} ({:.0} ops/s, {:.2} GB/s)",
             dt_leg_1mb,
             (1000.0 / 1024.0) / dt_leg_1mb.as_secs_f64(),
             dt_1mb,
@@ -800,7 +800,7 @@ fn bench_p4_34_and_p4_35() {
             (10_000.0 * 64.0 / (1024.0 * 1024.0)) / dt_64k.as_secs_f64()
         );
         println!(
-            "[P4.34 sparse hole] 200x4MB (unallocated SIB subtrees): 4KB-step {:?} ({:.2} GB/s) -> P4.34 subtree-skip {:?} ({:.2} GB/s, {:.2}x)",
+            "[sparse hole] 200x4MB (unallocated SIB subtrees): 4KB-step {:?} ({:.2} GB/s) -> subtree-skip {:?} ({:.2} GB/s, {:.2}x)",
             dt_leg_sparse,
             (200.0 * 4.0 / 1024.0) / dt_leg_sparse.as_secs_f64(),
             dt_opt_sparse,
@@ -809,9 +809,9 @@ fn bench_p4_34_and_p4_35() {
         );
     }
 
-    // 2. P4.35: 16 threads x 4000 concurrent directory lookups + cold promotion across 32 directories
+    // 2. 16 threads x 4000 concurrent directory lookups + cold promotion across 32 directories
     {
-        let p_dir = dir.path().join("p4_35_bench.img");
+        let p_dir = dir.path().join("sharded_dir_bench.img");
         let mut dirs = Vec::new();
         {
             let dm = DiskManager::open(&p_dir, 64 * MB).unwrap();
@@ -848,13 +848,13 @@ fn bench_p4_34_and_p4_35() {
         let dt_dir = t0.elapsed();
         let total_ops = 16.0 * 4000.0;
         println!(
-            "[P4.35 ShardedDirCache] 16 threads x 4000 lookups (64k ops across 32 dirs, cold start): {:?} ({:.2} M ops/s)",
+            "[ShardedDirCache] 16 threads x 4000 lookups (64k ops across 32 dirs, cold start): {:?} ({:.2} M ops/s)",
             dt_dir,
             (total_ops / 1_000_000.0) / dt_dir.as_secs_f64()
         );
 
         // 2b. Direct lock-architecture microbenchmark (16 threads x 10,000 ops, 5% cold index promotion / mutation + 95% lookup):
-        //     Pre-P4.35 (Single RwLock held across index build/mutation) vs P4.35 (32-shard Fibonacci RwLock + out-of-lock build)
+        //     Single RwLock (global lock held across index build/mutation) vs 32-shard ( Fibonacci RwLock + out-of-lock build)
         use std::collections::HashMap;
         use std::sync::RwLock;
         type SimDirMap = HashMap<u64, HashMap<u64, u64>>;
@@ -877,7 +877,7 @@ fn bench_p4_34_and_p4_35() {
                 for i in 0..10_000usize {
                     let did = dirs_c[(t * 2 + i) & 31];
                     if (i & 31) == 0 {
-                        // Pre-P4.35: global write lock held while rebuilding / mutating one directory's index
+                        // Global lock baseline: global write lock held while rebuilding / mutating one directory's index
                         let mut g = sc.write().unwrap();
                         let mut rebuilt = HashMap::with_capacity(128);
                         for f in 0..128u64 {
@@ -921,7 +921,7 @@ fn bench_p4_34_and_p4_35() {
                     let did = dirs_c[(t * 2 + i) & 31];
                     let shard_idx = (did.wrapping_mul(0x517cc1b727220a95) as usize) & 31;
                     if (i & 31) == 0 {
-                        // P4.35: build new DirIndex OUTSIDE shard write lock, then swap into target shard only!
+                        // Build new DirIndex OUTSIDE shard write lock, then swap into target shard only!
                         let mut rebuilt = HashMap::with_capacity(128);
                         for f in 0..128u64 {
                             rebuilt.insert(f, did * 1000 + f);
@@ -944,7 +944,7 @@ fn bench_p4_34_and_p4_35() {
         let dt_sharded = t_sharded.elapsed();
 
         println!(
-            "[P4.35 Lock Contention A/B] 16 threads x 10k ops (97% lookup + 3% index build): Single RwLock {:?} -> 32-Shard + Out-of-Lock Build {:?} ({:.2}x faster)",
+            "[DirCache Lock Contention A/B] 16 threads x 10k ops (97% lookup + 3% index build): Single RwLock {:?} -> 32-Shard + Out-of-Lock Build {:?} ({:.2}x faster)",
             dt_single,
             dt_sharded,
             dt_single.as_secs_f64() / dt_sharded.as_secs_f64()

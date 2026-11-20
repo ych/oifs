@@ -1,5 +1,5 @@
 //! Tests for the background automatic defragmentation coordinator
-//! (Blueprint item 7).
+//!.
 
 use oifs::auto_defrag::{AutoDefragConfig, DEFAULT_FRAGMENTATION_THRESHOLD, MIN_CHECK_INTERVAL};
 use oifs::disk::{CompressionMode, DiskManager};

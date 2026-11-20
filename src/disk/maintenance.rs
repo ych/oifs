@@ -152,7 +152,7 @@ impl DiskManager {
     ) -> Result<FragmentationStats, DiskManagerError> {
         let sb = &guard.superblock;
 
-        // The data bitmap may span several blocks (P4.25).
+        // The data bitmap may span several blocks.
         let bitmap_slice = guard
             .data_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("Bitmap not found")))?;
@@ -304,7 +304,7 @@ impl DiskManager {
         let mut payload_blocks = Vec::new();
         let mut indirect_blocks = Vec::new();
 
-        // SEC-26: a seekable 64K file does not store raw block ids in its
+        // A seekable 64K file does not store raw block ids in its
         // pointer slots but packed `ChunkEntry` values, whose payload is a
         // *run* of contiguous blocks. Treating the packed value as a block id
         // would relocate the wrong blocks (or none at all) and destroy the
@@ -520,7 +520,7 @@ impl DiskManager {
                     let dir_blks = Self::collect_inode_blocks(&guard.mmap, &inode);
                     directory_blocks.extend(dir_blks);
                 } else if inode.mode == crate::inode::FileType::File && inode.size > 0 {
-                    // SEC-26: a seekable 64K file has `compressed_size == 0`
+                    // A seekable 64K file has `compressed_size == 0`
                     // but its payload *is* chunk-compressed. Copying it as a
                     // plain file would leave the seekable flag in place and
                     // make the reader interpret raw bytes as chunk entries.
@@ -654,7 +654,7 @@ impl DiskManager {
         let mut guard = inner.write().unwrap();
         let stats_before = Self::analyze_fragmentation_internal(&guard)?;
 
-        // P4.20: exact zero-fragmentation short-circuit when all allocated blocks occupy
+        // Exact zero-fragmentation short-circuit when all allocated blocks occupy
         // `[0..used_blocks)` and all free blocks occupy `[used_blocks..total_blocks)`.
         let already_compacted = stats_before.used_blocks == 0
             || stats_before.used_blocks == stats_before.total_blocks
@@ -692,7 +692,7 @@ impl DiskManager {
         }
 
         // 1. Collect and decode all active allocated inodes in a single pass without
-        //    thrashing `inode_cache` (P4.20).
+        //    thrashing `inode_cache`.
         let mut allocated_ids = Vec::new();
         if let Some(bitmap_slice) = guard.inode_bitmap_slice() {
             let bitmap = crate::bitmap::BitmapRef::new(bitmap_slice);
@@ -778,7 +778,7 @@ impl DiskManager {
             }
         }
 
-        // Place regular file blocks next (SEC-26: seekable 64K ChunkEntry runs)
+        // Place regular file blocks next (including seekable 64K ChunkEntry runs)
         let mut chunk_entries: Vec<(u64, crate::inode::ChunkEntry)> = Vec::new();
         for (_, inode) in &file_inodes {
             let (payloads, indirects) = Self::collect_inode_block_layout(&guard.mmap, inode);
@@ -944,7 +944,7 @@ impl DiskManager {
             }
         }
 
-        // 7. Update data bitmap via word-aligned `set_range` (P4.20)
+        // 7. Update data bitmap via word-aligned `set_range`
         let total_used = (next_target - guard.superblock.data_block_start) as usize;
         if let Some(bitmap_slice) = guard.data_bitmap_slice_mut() {
             bitmap_slice.fill(0);
@@ -952,10 +952,18 @@ impl DiskManager {
             bitmap.set_range(0, total_used);
         }
 
-        // 8. Update hints & remap cached directory block IDs in place (P4.20)
+        // 8. Update hints & remap cached directory block IDs in place
         guard.free_block_hint = next_target;
         Self::remap_dir_cache_and_clear_payloads(guard, &old_to_new);
-        guard.mmap.flush()?;
+        match guard.durability_mode() {
+            DurabilityMode::Lazy => {}
+            DurabilityMode::Strict => {
+                guard.mmap.flush()?;
+            }
+            DurabilityMode::RangeAsync | DurabilityMode::LegacyWholeMmapAsync => {
+                let _ = guard.mmap.flush_async();
+            }
+        }
         Ok(bytes_moved)
     }
 
@@ -1204,32 +1212,36 @@ impl DiskManager {
             return Ok(0);
         }
 
-        // Initialize in-memory mirror of data bitmap allocation state.
-        let mut alloc_map = vec![false; total_data];
-        if let Some(bitmap_slice) = guard.data_bitmap_slice() {
-            let bm = crate::bitmap::BitmapRef::new(bitmap_slice);
-            for (i, slot) in alloc_map.iter_mut().enumerate() {
-                *slot = bm.get(i);
-            }
-        }
+        // Initialize compact in-memory mirror of data bitmap allocation state.
+        let mut alloc_bm_bytes = guard
+            .data_bitmap_slice()
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|| vec![0u8; total_data.div_ceil(8)]);
 
-        let is_range_free = |map: &[bool], start: u64, count: u64| -> bool {
+        let is_range_free = |bm_bytes: &[u8], start: u64, count: u64| -> bool {
             let Some(rel) = start.checked_sub(db_start).map(|r| r as usize) else {
                 return false;
             };
             let cnt = count as usize;
-            rel.checked_add(cnt).is_some_and(|end| end <= map.len())
-                && map[rel..rel + cnt].iter().all(|&b| !b)
+            let Some(end) = rel.checked_add(cnt) else {
+                return false;
+            };
+            if end > total_data {
+                return false;
+            }
+            let bm = crate::bitmap::BitmapRef::new(bm_bytes);
+            (rel..end).all(|i| !bm.get(i))
         };
 
-        let find_free_run_high_to_low = |map: &[bool], count: u64| -> Option<u64> {
+        let find_free_run_high_to_low = |bm_bytes: &[u8], count: u64| -> Option<u64> {
             let cnt = count as usize;
-            if cnt == 0 || cnt > map.len() {
+            if cnt == 0 || cnt > total_data {
                 return None;
             }
+            let bm = crate::bitmap::BitmapRef::new(bm_bytes);
             let mut run = 0usize;
-            for idx in (0..map.len()).rev() {
-                if !map[idx] {
+            for idx in (0..total_data).rev() {
+                if !bm.get(idx) {
                     run += 1;
                     if run == cnt {
                         return Some(db_start + idx as u64);
@@ -1249,6 +1261,8 @@ impl DiskManager {
         let max_payload_per_tx = (ring_bytes.saturating_sub(128)) / 2;
 
         let mut bytes_moved = 0u64;
+        let is_range_based = guard.durability_mode().is_range_based();
+        let is_strict = guard.durability_mode() == DurabilityMode::Strict;
 
         while !pending.is_empty() {
             // Step A: Select a COW batch whose targets are currently free and whose
@@ -1259,7 +1273,7 @@ impl DiskManager {
 
             for &u_idx in &pending {
                 let u = &units[u_idx];
-                if !is_range_free(&alloc_map, u.target_start, u.block_count) {
+                if !is_range_free(&alloc_bm_bytes, u.target_start, u.block_count) {
                     continue;
                 }
                 let mut delta = 28usize; // alloc + free SetDataBitmapRange
@@ -1301,27 +1315,36 @@ impl DiskManager {
                     .min_by_key(|&idx| units[idx].block_count)
                     .unwrap();
                 let count = units[u_idx].block_count;
-                let scratch_start = find_free_run_high_to_low(&alloc_map, count).ok_or_else(|| {
-                    DiskManagerError::Io(std::io::Error::other(
-                        "Insufficient contiguous free blocks for WAL-atomic in-place defragmentation",
-                    ))
-                })?;
+                let scratch_start =
+                    find_free_run_high_to_low(&alloc_bm_bytes, count).ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::other(
+                            "Insufficient contiguous free blocks for WAL-atomic in-place defragmentation",
+                        ))
+                    })?;
                 round_moves.push((u_idx, scratch_start));
             }
 
-            // Step B: Copy payload blocks to free destinations and flush them before WAL commit.
-            let mut dst_ranges: Vec<(usize, usize)> = Vec::with_capacity(round_moves.len());
+            // Step B: Copy payload blocks to free destinations and flush them before WAL commit (Strict mode).
+            let mut dst_ranges: Vec<(usize, usize)> = if is_range_based {
+                Vec::with_capacity(round_moves.len())
+            } else {
+                Vec::new()
+            };
             for &(u_idx, dst_start) in &round_moves {
                 let u = &units[u_idx];
                 let src_off = u.curr_start as usize * BLOCK_SIZE;
                 let dst_off = dst_start as usize * BLOCK_SIZE;
                 let len = u.block_count as usize * BLOCK_SIZE;
                 guard.mmap.copy_within(src_off..src_off + len, dst_off);
-                dst_ranges.push((dst_off, len));
+                if is_range_based {
+                    dst_ranges.push((dst_off, len));
+                }
                 bytes_moved += len as u64;
             }
-            for (off, len) in DiskManagerInner::coalesce_ranges(&dst_ranges, guard.mmap.len()) {
-                guard.mmap.flush_range(off, len)?;
+            if is_strict {
+                for (off, len) in DiskManagerInner::coalesce_ranges(&dst_ranges, guard.mmap.len()) {
+                    guard.mmap.flush_range(off, len)?;
+                }
             }
 
             // Step C: Stage WAL metadata ops without modifying live metadata yet.
@@ -1383,24 +1406,27 @@ impl DiskManager {
                             .get(&parent_ind_idx)
                             .copied()
                             .unwrap_or(indirect_blocks[parent_ind_idx]);
-                        wal_ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                            block_id: target_ind_blk,
-                            offset: (slot_idx * 8) as u32,
-                            data: new_slot_val.to_le_bytes().to_vec(),
-                        });
+                        crate::journal::push_block_slice_op(
+                            &mut wal_ops,
+                            target_ind_blk,
+                            (slot_idx * 8) as u32,
+                            &new_slot_val.to_le_bytes(),
+                        );
                     }
                 }
 
-                wal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
-                    start_block: dst_start,
-                    count: u.block_count as u32,
-                    allocated: true,
-                });
-                wal_ops.push(crate::journal::MetadataOp::SetDataBitmapRange {
-                    start_block: u.curr_start,
-                    count: u.block_count as u32,
-                    allocated: false,
-                });
+                crate::journal::push_data_bitmap_op(
+                    &mut wal_ops,
+                    dst_start,
+                    u.block_count as u32,
+                    true,
+                );
+                crate::journal::push_data_bitmap_op(
+                    &mut wal_ops,
+                    u.curr_start,
+                    u.block_count as u32,
+                    false,
+                );
             }
 
             for (&inode_idx, inode) in &touched_inodes {
@@ -1412,68 +1438,72 @@ impl DiskManager {
                 });
             }
 
-            let wal_ops = crate::journal::coalesce_ops(wal_ops);
+            let wal_ops = if crate::journal::is_already_coalesced(&wal_ops) {
+                wal_ops
+            } else {
+                crate::journal::coalesce_ops(wal_ops)
+            };
 
-            // Step D: Commit single bounded WAL transaction and sync WAL region.
-            {
-                let region = Self::journal_region(&mut guard.mmap, &sb)?;
-                let mut ring = crate::journal::JournalRing::open(region, bs)?;
-                let _ = ring.append(&wal_ops)?;
-                ring.persist();
-            }
-            Self::sync_journal_region(guard)?;
+            // Step D: Commit single bounded WAL transaction governed by DurabilityMode.
+            Self::commit_journal_tx(guard, &wal_ops)?;
 
             // Step E: Apply metadata updates in-place via the exact same WAL op applier.
             Self::apply_journal_ops(guard, &wal_ops)?;
 
-            let mut meta_ranges: Vec<(usize, usize)> = vec![guard.data_bitmap_byte_range()];
             for (&inode_idx, new_inode) in &touched_inodes {
                 let inode_id = inodes[inode_idx].0;
                 inodes[inode_idx].1 = *new_inode;
-                guard.inode_cache.remove(inode_id);
-                meta_ranges.push(guard.inode_byte_range(inode_id));
-            }
-            for op in &wal_ops {
-                if let crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } = op {
-                    meta_ranges.push(guard.block_byte_range(*block_id));
-                }
+                guard.inode_cache.insert(inode_id, *new_inode);
             }
 
-            for &(u_idx, dst_start) in &round_moves {
-                let u = &mut units[u_idx];
-                let old_rel = (u.curr_start - db_start) as usize;
-                let new_rel = (dst_start - db_start) as usize;
-                let cnt = u.block_count as usize;
-                alloc_map[old_rel..old_rel + cnt].fill(false);
-                alloc_map[new_rel..new_rel + cnt].fill(true);
+            {
+                let mut bm = crate::bitmap::Bitmap::new(&mut alloc_bm_bytes);
+                for &(u_idx, dst_start) in &round_moves {
+                    let u = &mut units[u_idx];
+                    let old_rel = (u.curr_start - db_start) as usize;
+                    let new_rel = (dst_start - db_start) as usize;
+                    let cnt = u.block_count as usize;
+                    bm.clear_range(old_rel, cnt);
+                    bm.set_range(new_rel, cnt);
 
-                u.curr_start = dst_start;
-                if let Some(entry) = u.chunk_entry {
-                    u.chunk_entry = Some(crate::inode::ChunkEntry::new(
-                        dst_start as u32,
-                        entry.block_count(),
-                        entry.flags(),
-                        entry.compressed_len(),
-                    ));
-                }
-                if let Some(ind_idx) = u.self_ind_idx {
-                    indirect_blocks[ind_idx] = dst_start;
+                    u.curr_start = dst_start;
+                    if let Some(entry) = u.chunk_entry {
+                        u.chunk_entry = Some(crate::inode::ChunkEntry::new(
+                            dst_start as u32,
+                            entry.block_count(),
+                            entry.flags(),
+                            entry.compressed_len(),
+                        ));
+                    }
+                    if let Some(ind_idx) = u.self_ind_idx {
+                        indirect_blocks[ind_idx] = dst_start;
+                    }
                 }
             }
 
             pending.retain(|&idx| units[idx].curr_start != units[idx].target_start);
 
-            // Step F: Flush in-place metadata and checkpoint WAL before next round.
-            for (off, len) in DiskManagerInner::coalesce_ranges(&meta_ranges, guard.mmap.len()) {
-                guard.mmap.flush_range(off, len)?;
+            // Step F: Sync metadata ranges according to DurabilityMode and retire WAL ring before next round.
+            if is_range_based {
+                let mut meta_ranges: Vec<(usize, usize)> = vec![guard.data_bitmap_byte_range()];
+                if !is_strict {
+                    meta_ranges.extend(dst_ranges);
+                }
+                for &inode_idx in touched_inodes.keys() {
+                    meta_ranges.push(guard.inode_byte_range(inodes[inode_idx].0));
+                }
+                for op in &wal_ops {
+                    if let crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } = op {
+                        meta_ranges.push(guard.block_byte_range(*block_id));
+                    }
+                }
+                guard.sync_mutation_ranges(&meta_ranges)?;
             }
             {
                 let region = Self::journal_region(&mut guard.mmap, &sb)?;
                 let mut ring = crate::journal::JournalRing::open(region, bs)?;
                 ring.checkpoint();
-                ring.persist();
             }
-            Self::sync_journal_region(guard)?;
         }
 
         guard.free_block_hint = next_target;
@@ -1505,7 +1535,7 @@ impl DiskManager {
         Self::verify_integrity_on(&self.inner)
     }
 
-    /// Structural consistency check driven by an `Arc<RwLock<DiskManagerInner>>` (P4.27).
+    /// Structural consistency check driven by an `Arc<RwLock<DiskManagerInner>>`.
     ///
     /// Performs a single-pass directory & block-tree traversal using compact `u64` bitsets,
     /// `read_inode_uncached` (zero `inode_cache` pollution), and zero-allocation directory

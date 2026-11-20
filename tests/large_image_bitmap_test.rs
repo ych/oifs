@@ -1,4 +1,4 @@
-//! Tests for P4.25: the data bitmap may span several blocks, so the data
+//! Tests for multi-block data bitmaps: the data bitmap may span several blocks, so the data
 //! area is no longer capped at the 32,768 blocks a single bitmap block can
 //! track (128 MiB).
 
@@ -111,7 +111,7 @@ fn test_multi_block_image_stays_consistent() {
 }
 
 #[test]
-fn test_p425_allocate_and_free_beyond_first_bitmap_block() {
+fn test_allocate_and_free_beyond_first_bitmap_block() {
     let img = TestImage::new("test_p425_beyond_32k");
     let dm = DiskManager::open(&img.path, 200 * 1024 * 1024).expect("open 200 MiB dm");
     let sb = dm.superblock();

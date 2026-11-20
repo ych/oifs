@@ -161,7 +161,7 @@ pub enum SessionEvent {
 ///
 /// The socket lives in a per-user private directory (mode `0700`) instead of
 /// the world-writable `/tmp`, and the socket itself is created with mode
-/// `0600`. Both restrict access to the owner's own processes (SEC-18).
+/// `0600`. Both restrict access to the owner's own processes.
 pub fn get_socket_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -231,7 +231,7 @@ pub fn get_master_info_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
 
 /// Returns `true` when every address of `bind_addr` is a loopback address.
 ///
-/// SEC-10: the network transport is plain TCP without TLS, so it must not be
+/// The network transport is plain TCP without TLS, so it must not be
 /// exposed to other machines by accident. A non-loopback bind therefore has to
 /// be requested explicitly.
 pub fn is_loopback_bind(bind_addr: &str) -> bool {
@@ -290,14 +290,14 @@ const AUTH_DOMAIN: &[u8] = b"oifs-ipc-auth-v1";
 /// Maximum number of peers that may be connected to a master at the same time.
 ///
 /// Bounds the resource usage of a hostile client that opens connections and
-/// never authenticates (SEC-18).
+/// never authenticates.
 pub const MAX_CONCURRENT_PEERS: usize = 256;
 
 /// Time budget for the authentication handshake of a single connection.
 ///
 /// A peer that connects but never authenticates is dropped after this
 /// timeout, so a Slowloris-style client cannot hold a worker thread
-/// indefinitely (SEC-18).
+/// indefinitely.
 pub const AUTH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Computes the authentication MAC over a transcript with a pre-shared key.
@@ -364,7 +364,7 @@ pub enum IpcRequest {
     /// The client sends a random nonce and *never* a secret: the cleartext
     /// password used to travel over the wire before, which let anyone who
     /// could redirect a client (for example by tampering with the rendezvous
-    /// file) harvest it (SEC-18).
+    /// file) harvest it.
     AuthChallenge {
         client_nonce: [u8; AUTH_NONCE_LEN],
         /// Whether the client holds the filesystem password.
@@ -531,7 +531,7 @@ pub const fn frame_len_is_valid(len: u32) -> bool {
 /// wire format exactly (fixint encoding, trailing bytes allowed) but adds a
 /// hard byte limit. Without the limit, a small frame can announce a `Vec` or
 /// `String` length of `u64::MAX` and make the receiver allocate gigabytes
-/// before reading a single payload byte (SEC-17).
+/// before reading a single payload byte.
 fn frame_codec(limit: u64) -> impl bincode::Options {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
@@ -544,7 +544,7 @@ fn frame_codec(limit: u64) -> impl bincode::Options {
 /// A frame may be up to `MAX_FRAME_BYTES` (128 MiB) large. Without a cap, one
 /// such frame pins its buffer for the lifetime of the worker thread, and with
 /// `MAX_CONCURRENT_PEERS` workers the resident memory can stay in the
-/// multi-gigabyte range (P4.28).
+/// multi-gigabyte range.
 const FRAME_BUF_SHRINK_THRESHOLD: usize = 1024 * 1024;
 
 thread_local! {
@@ -591,7 +591,7 @@ pub fn write_framed<W: Write, T: Serialize>(writer: &mut W, val: &T) -> io::Resu
         buf[..4].copy_from_slice(&len.to_le_bytes());
         writer.write_all(&buf)?;
         writer.flush()?;
-        // P4.28: a large frame must not pin its buffer for the lifetime of
+        // A large frame must not pin its buffer for the lifetime of
         // the worker thread.
         shrink_frame_buf(&mut buf);
         Ok(())
@@ -619,7 +619,7 @@ pub fn read_framed<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T
         let mut buf = cell.borrow_mut();
         buf.clear();
         if len > 0 {
-            // Stream directly into `FRAME_READ_BUF` in bounded 64 KiB chunks (P4.28):
+            // Stream directly into `FRAME_READ_BUF` in bounded 64 KiB chunks:
             // never allocate an unverified announced size up front, and avoid staging
             // through a separate chunk buffer.
             let mut offset = 0usize;
@@ -636,11 +636,11 @@ pub fn read_framed<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T
         }
         // The limit is the size of the frame itself: a payload can never claim
         // more bytes than the frame carries, so a crafted length prefix cannot
-        // trigger a huge allocation (SEC-17).
+        // trigger a huge allocation.
         let result = frame_codec(buf.len() as u64)
             .deserialize(buf.as_slice())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
-        // P4.28: release the capacity of a large frame again.
+        // Release the capacity of a large frame again.
         shrink_frame_buf(&mut buf);
         result
     })
@@ -674,7 +674,7 @@ fn is_addr_in_use(err: &io::Error) -> bool {
 ///
 /// The socket is created inside a `0700` private directory and the socket
 /// itself is restricted to `0600`, so only processes of the same user can
-/// reach it (SEC-18).
+/// reach it.
 fn bind_unix_listener(socket_path: &Path) -> io::Result<UnixListener> {
     let listener = UnixListener::bind(socket_path)?;
     restrict_permissions(socket_path, 0o600);
@@ -744,7 +744,7 @@ fn read_token_file_once(token_path: &Path) -> Option<[u8; AUTH_SECRET_LEN]> {
 
 /// Writes the session secret of a local (UDS) master with owner-only access.
 ///
-/// SEC-30: written to a temporary file and atomically renamed into place so a
+/// Written to a temporary file and atomically renamed into place so a
 /// concurrent client can never observe a truncated or partially written token.
 fn write_token_file(token_path: &Path, secret: &[u8; AUTH_SECRET_LEN]) -> io::Result<()> {
     use std::io::Write as _;
@@ -887,7 +887,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                 Ok(mut file) => {
                     let bind_target = bind_addr.as_deref().unwrap_or("127.0.0.1:0");
                     if !is_loopback_bind(bind_target) {
-                        // SEC-10: the transport is plain TCP. Warn loudly
+                        // The transport is plain TCP. Warn loudly
                         // instead of exposing the filesystem silently.
                         eprintln!(
                             "⚠️  OIFS is binding the IPC master to {bind_target}, which is reachable \
@@ -909,7 +909,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                     file.write_all(json.as_bytes())?;
                     file.flush()?;
                     // The rendezvous file carries the session secret: it must
-                    // not be readable by other users (SEC-18).
+                    // not be readable by other users.
                     restrict_permissions(&master_path, 0o600);
 
                     Ok(MasterOrClient::Master(IpcListener::Tcp {
@@ -965,7 +965,7 @@ pub struct IpcServer {
     server_thread: Option<JoinHandle<()>>,
 }
 
-/// Maximum number of buffered `SessionEvent`s held by a Master session (SEC-30).
+/// Maximum number of buffered `SessionEvent`s held by a Master session.
 ///
 /// Bounds memory growth when a Direct session never calls `take_event_receiver()`.
 pub const MAX_PENDING_SESSION_EVENTS: usize = 1024;
@@ -1092,7 +1092,7 @@ impl IpcServer {
     ) {
         // Bound the number of concurrent peers: a client that opens
         // connections without authenticating must not be able to exhaust the
-        // process' threads (SEC-18).
+        // process' threads.
         if active_peers.load(Ordering::SeqCst) >= MAX_CONCURRENT_PEERS {
             let _ = stream.shutdown(std::net::Shutdown::Both);
             return;
@@ -1130,7 +1130,7 @@ impl IpcServer {
             let mut challenge: Option<([u8; AUTH_NONCE_LEN], [u8; AUTH_NONCE_LEN])> = None;
 
             while let Ok(req) = read_framed::<_, IpcRequest>(&mut stream) {
-                // P4.28: the name is only materialized when there is an
+                // The name is only materialized when there is an
                 // event listener; `req.name()` is a `&'static str`.
                 let short_name = req.name();
 
@@ -1284,7 +1284,7 @@ impl IpcServer {
                 file_offset,
                 len,
             } => {
-                // P4.28: single shared-lock acquisition and single inode lookup via
+                // Single shared-lock acquisition and single inode lookup via
                 // `read_at_vec` (which clamps allocation to `inode.size - file_offset`).
                 let buf = dm.read_at_vec(inode_id, file_offset, len.min(MAX_FRAME_BYTES))?;
                 Ok(IpcResponseData::Data(buf))
@@ -1388,7 +1388,7 @@ impl Drop for IpcServer {
     }
 }
 
-/// Maximum number of concurrent authenticated streams pooled by a single [`IpcClient`] (P4.28).
+/// Maximum number of concurrent authenticated streams pooled by a single [`IpcClient`].
 ///
 /// Additional streams are opened lazily only when multiple caller threads contend
 /// simultaneously; single-threaded clients maintain a single socket.
@@ -1489,7 +1489,7 @@ impl Drop for PendingStreamSlot<'_> {
 }
 
 /// Client IPC proxy for communicating with the Master process (with bounded
-/// concurrent connection pooling, P4.28).
+/// concurrent connection pooling).
 pub struct IpcClient {
     pool: Mutex<ClientPoolState>,
     pool_cv: Condvar,
@@ -1669,7 +1669,7 @@ impl IpcClient {
     /// knows it by answering a fresh challenge with a keyed MAC, and the
     /// master proves the same in return. A client that was redirected to a
     /// fake master therefore neither leaks its password nor talks to the
-    /// impostor (SEC-18).
+    /// impostor.
     pub fn authenticate(&self, credential: &AuthCredential) -> Result<(), io::Error> {
         let mut checked = self.checkout_stream()?;
 
@@ -1777,7 +1777,7 @@ impl IpcClient {
 
     /// Sends an IPC request to the Master and waits for response.
     ///
-    /// The request is taken by reference (P4.28): a `WriteData` payload would
+    /// The request is taken by reference: a `WriteData` payload would
     /// otherwise be copied in full on every attempt of the retry loop.
     pub fn send(&self, req: &IpcRequest) -> Result<IpcResponseData, io::Error> {
         let mut checked = self.checkout_stream()?;
@@ -1796,7 +1796,7 @@ impl IpcClient {
 mod kani_proofs {
     use super::*;
 
-    /// Prove the frame-length validation invariant (P4.8).
+    /// Prove the frame-length validation invariant.
     ///
     /// A frame is acceptable if and only if its announced payload length does
     /// not exceed `MAX_FRAME_BYTES`; the zero-length frame stays valid so that

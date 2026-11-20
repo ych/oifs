@@ -478,6 +478,31 @@ This document consolidates deep codebase investigations and findings recovered f
 
 ---
 
+### P4.36: `DurabilityMode::Strict` JBD2-Style Deferred In-Place Metadata Checkpointing & Durability-Aware `defragment_inplace_journaled_cow` [RESOLVED]
+* **File & Lines**: [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`commit_journal_tx`, `maybe_checkpoint`, `sync_mutation_ranges`), [`src/disk/maintenance.rs`](file:///Users/ych/oifs/src/disk/maintenance.rs) (`defragment_inplace_journaled_cow`, `defragment_inplace_legacy`)
+* **Status**: **Completed & Verified** (**2.31x** faster `DurabilityMode::Strict` journaled writes: `4,941 ops/s` $\rightarrow$ **`11,434 ops/s`**; **3.25x–4.53x** faster journaled in-place defragmentation: `14.50 ms` $\rightarrow$ **`3.28 ms`**)
+* **Bottleneck Analysis**:
+  1. **Redundant In-Place Metadata & Dual WAL `msync(MS_SYNC)` Barriers in `Strict` Mode**: Every journaled `Strict` transaction flushed the WAL frame and WAL header in two separate `msync` calls, and then immediately called `sync_mutation_ranges` to synchronously `msync` 2–3 disjoint in-place metadata ranges (`inode_bitmap`, `data_bitmap`, `inode_table`, `dir_block`) even though the transaction was already durably committed in the WAL on disk.
+  2. **Unconditional `msync(MS_SYNC)` & `Vec<bool>` Allocation Table in `defragment_inplace_journaled_cow`**: Executed 4 synchronous `msync(MS_SYNC)` barriers per round regardless of `DurabilityMode`, mirrored the data bitmap into a `Vec<bool>` byte array, and evicted touched inodes from `BoundedInodeCache`.
+* **Implementation**:
+  - Coalesced WAL header + frame `flush_range` into a single `msync(MS_SYNC)` syscall in `commit_journal_tx` for all non-wrapping frames.
+  - Deferred in-place metadata `msync(MS_SYNC)` on journaled `Strict` images to the 50% WAL ring watermark (`maybe_checkpoint`), `flush()`, or `Drop` (JBD2 ordered-journal semantics).
+  - Governed `defragment_inplace_journaled_cow` and `defragment_inplace_legacy` barriers by `guard.durability_mode()`, replaced `Vec<bool>` with a compact `Bitmap` word mirror (`set_range`/`clear_range`), used on-the-fly `push_block_slice_op`/`push_data_bitmap_op`, and updated `inode_cache.insert` in place.
+
+---
+
+### P4.37: $O(\Delta \text{chunks})$ Incremental `compressed_size` Accounting & Indirect Block Pruning in `truncate_chunked_64k` (`SEC-34`) [RESOLVED]
+* **File & Lines**: [`src/disk/chunked.rs`](file:///Users/ych/oifs/src/disk/chunked.rs) (`truncate_chunked_64k`), [`src/disk.rs`](file:///Users/ych/oifs/src/disk.rs) (`prune_unused_indirect_blocks`)
+* **Status**: **Completed & Verified** (`test_sec34_and_p4_37_seekable_indirect_truncate_no_leaked_blocks`, `proof_seekable_truncate_incremental_compressed_size_conservation`)
+* **Bottleneck & Bug Analysis**:
+  1. **Indirect Block Leak on Seekable Truncation (`SEC-34`)**: Truncating a seekable 64K file with `> 10` chunks (`> 640 KiB`) down to fewer indirect tiers or `new_size == 0` zeroed `inode.blocks = [0; 12]` and `inode.triple_indirect = 0` without calling `prune_unused_indirect_blocks` or freeing the indirect pointer blocks (`sib`, `dib`, `tib`) in the data bitmap.
+  2. **$O(\text{new\_chunks})$ Full-File Chunk Scan**: Both journaled and legacy paths of `truncate_chunked_64k` walked `0..new_chunks` across the entire file to sum `e.compressed_len()`.
+* **Implementation**:
+  - Integrated `prune_unused_indirect_blocks` (extended to cover partial subtree pruning inside `triple_indirect`) into both journaled and legacy branches of `truncate_chunked_64k`.
+  - Replaced the `0..new_chunks` loop with $O(\Delta \text{chunks})$ incremental `compressed_size_delta` tracking across freed tail chunks and the re-packed boundary chunk.
+
+---
+
 ## 3. Critical Arithmetic & Safety Vulnerabilities Discovered
 
 The following safety and correctness issues were uncovered during the subagent code audits:
@@ -1324,7 +1349,7 @@ written by an older version keeps its layout and stays readable.
 | Seekable 64 MB initial `write_data` (`P4.17`) | `12.38 ms` | **`8.30 ms`** | **1.49x** |
 | `1,000 × 16 KB` stream `read_data` (`P4.31`) | `8.14 ms` (`1,918.8 MB/s`) | **`6.05 ms`** (`2,584.0 MB/s`) | **1.35x** |
 
-**Verification**: `tests/p4_perf_optimizations_test.rs`, `tests/large_image_bitmap_test.rs::test_journal_does_not_overlap_a_multi_block_data_bitmap`.
+**Verification**: `tests/cache_coherence_and_simd_filter_test.rs`, `tests/large_image_bitmap_test.rs::test_journal_does_not_overlap_a_multi_block_data_bitmap`.
 
 ### 6.23 P4.18 / P4.22 / P4.28 / P4.33 — `RangeAsync` Deferred Batching, Zero-Copy Journal Staging, Pooled IPC Proxy & Clock Inode Cache (Wave 2)
 
@@ -1358,4 +1383,4 @@ written by an older version keeps its layout and stays readable.
 | `8 MB` journaled raw overwrite (`P4.18`) | `282.46 µs` (`28.3 GB/s`) | **`178.17 µs`** (`44.9 GB/s`) | **1.59x** |
 | `32 MB` journaled initial write (`P4.18`) | `5.07 ms` (`6.31 GB/s`) | **`3.27 ms`** (`9.80 GB/s`) | **1.55x** |
 
-**Verification**: `tests/p4_perf_wave2_test.rs`, `tests/journal_bench.rs`.
+**Verification**: `tests/batch_read_sharded_dir_and_durability_test.rs`, `tests/journal_bench.rs`.

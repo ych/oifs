@@ -150,7 +150,7 @@ impl SuperBlock {
     /// ```
     ///
     /// `N` and `M` grow with the image, so the data area is no longer capped at
-    /// the 32,768 blocks a single bitmap block can track (P4.25).
+    /// the 32,768 blocks a single bitmap block can track.
     pub fn new_v3(total_blocks: u64, journaled: bool) -> Self {
         let journal_blocks = if journaled {
             crate::journal::JOURNAL_RESERVED_BLOCKS
@@ -334,7 +334,7 @@ impl SuperBlock {
     /// records, so `inode_count` can be *twice* the number of 256-byte slots
     /// that fit between `inode_table_block` and `data_block_start`. Ids beyond
     /// the real capacity would address the data area, so they must never be
-    /// used (SEC-25).
+    /// used.
     pub fn inode_table_capacity(&self) -> u64 {
         let table_blocks = self.data_block_start.saturating_sub(self.inode_table_block);
         table_blocks.saturating_mul(Self::INODE_SLOTS_PER_BLOCK)
@@ -344,7 +344,7 @@ impl SuperBlock {
     ///
     /// The v1/v2 layouts always use a single bitmap block, which caps the
     /// data area at 32,768 blocks (128 MiB) and the inode count at 32,768
-    /// (P4.25). The v3 layout sizes the bitmaps with the image.
+    ///. The v3 layout sizes the bitmaps with the image.
     pub const FORMAT_VERSION_V3_LAYOUT: u32 = 3;
 
     /// The number of bits a single bitmap block tracks.
@@ -441,7 +441,7 @@ impl SuperBlock {
             return Err("Inode count exceeds the capacity of the inode bitmap");
         }
         // The usable inode ids must fit in the inode table: an id beyond the
-        // table would address the data area (SEC-25).
+        // table would address the data area.
         let usable = self.usable_inode_count();
         let table_blocks = usable.div_ceil(Self::INODE_SLOTS_PER_BLOCK);
         let table_end = self.inode_table_block.checked_add(table_blocks);
@@ -512,7 +512,7 @@ mod kani_proofs {
     /// inodes that actually fit into it.
     ///
     /// The records are 256 bytes wide, so 1024 table blocks hold 16,384
-    /// inodes; the historical count of 32,768 did not fit (SEC-25).
+    /// inodes; the historical count of 32,768 did not fit.
     #[kani::proof]
     fn proof_superblock_large_fs_full_inodes() {
         let total_blocks: u64 = kani::any();
@@ -553,7 +553,7 @@ mod kani_proofs {
 
     /// Prove that the usable inode ids always fit in the inode table.
     ///
-    /// SEC-25: an inode id beyond the table would address the data area, so
+    /// An inode id beyond the table would address the data area, so
     /// the usable count must never exceed the table capacity (and the inode
     /// bitmap capacity).
     #[kani::proof]
@@ -594,7 +594,7 @@ mod kani_proofs {
         let total_blocks: u64 = kani::any();
         kani::assume(total_blocks >= 5 && total_blocks <= 1_000_000);
 
-        // The v3 layout (P4.25) keeps the legacy geometry: the table still
+        // The v3 layout keeps the legacy geometry: the table still
         // starts right after the bitmaps and the data area still follows the
         // table. Only the reported inode count changes, because the records are
         // 256 bytes wide.

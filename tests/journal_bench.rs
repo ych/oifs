@@ -273,9 +273,7 @@ fn bench_range_async_scales_with_block_count() {
             size, blocks, rates[0], rates[1]
         );
     }
-    println!(
-        "  (P4.33 deferred dirty-range batching amortizes RangeAsync msync(MS_ASYNC) overhead)"
-    );
+    println!("  (Deferred dirty-range batching amortizes RangeAsync msync(MS_ASYNC) overhead)");
 }
 
 /// Read-heavy workloads should be unaffected by the journal; this guards against a
@@ -319,11 +317,11 @@ fn bench_read_path_unaffected() {
 }
 
 /// Benchmarks multi-megabyte writes and overwrites on a journaled image to demonstrate
-/// the P0-2 O(N^2) elimination (AllocSim fresh set and used blocks FxHashSet).
+/// the O(N^2) elimination (AllocSim fresh set and used blocks FxHashSet).
 #[test]
 #[ignore]
 fn bench_large_file_journaled_write_and_append() {
-    println!("\n=== Large File Journaled Write & Overwrite (P0-2 Optimization Benchmark) ===");
+    println!("\n=== Large File Journaled Write & Overwrite (Large File Throughput Benchmark) ===");
     for size_mb in [1, 2, 4, 8, 16, 32] {
         let size = (size_mb * MB) as usize;
         let img = Img::new(&format!("large_{size_mb}mb"));

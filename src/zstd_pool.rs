@@ -1,4 +1,4 @@
-//! Thread-local pooling of the Zstd contexts (P4.26).
+//! Thread-local pooling of the Zstd contexts.
 //!
 //! Every `zstd::stream::encode_all` / `zstd::stream::Decoder::new` allocates
 //! and initialises a fresh `CCtx` / `DCtx`, which costs hundreds of kilobytes

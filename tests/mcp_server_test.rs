@@ -103,7 +103,7 @@ fn test_mcp_stdio_initialize_and_tools_list() {
     );
 }
 
-/// SEC-22: the tool responses must be valid JSON even when a file name or an
+/// The tool responses must be valid JSON even when a file name or an
 /// error message contains quotes, backslashes or control characters.
 #[test]
 fn test_mcp_tool_response_escapes_hostile_names() {

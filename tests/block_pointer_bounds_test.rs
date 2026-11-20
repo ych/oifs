@@ -1,4 +1,4 @@
-//! Tests for SEC-20: block pointers and WAL replay must never reach outside
+//! Tests that block pointers and WAL replay must never reach outside
 //! the data area.
 
 use oifs::disk::{CompressionMode, DiskManager};
@@ -177,7 +177,7 @@ fn test_wal_replay_refuses_blocks_outside_the_data_area() {
 }
 
 #[test]
-fn test_sec28_read_at_chunked_and_truncate_never_touch_metadata_blocks() {
+fn test_read_at_chunked_and_truncate_never_touch_metadata_blocks() {
     let img = TestImage::new("test_sec28_bounds");
     let dm = DiskManager::open(&img.path, 10 * 1024 * 1024).expect("open dm");
     let root = dm.superblock().root_inode;
@@ -236,6 +236,6 @@ fn test_sec28_read_at_chunked_and_truncate_never_touch_metadata_blocks() {
     drop(dm);
 
     // SuperBlock on disk must remain completely intact after reopen.
-    let dm = DiskManager::open(&img.path, 0).expect("reopen dm after SEC-28 checks");
+    let dm = DiskManager::open(&img.path, 0).expect("reopen dm after checks");
     assert_eq!(dm.superblock().magic, SuperBlock::MAGIC);
 }

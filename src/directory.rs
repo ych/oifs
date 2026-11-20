@@ -41,7 +41,7 @@ impl From<std::string::FromUtf8Error> for DirectoryError {
     }
 }
 
-/// Validates that a directory entry filename conforms to OIFS filesystem security rules (SEC-14).
+/// Validates that a directory entry filename conforms to OIFS filesystem security rules.
 ///
 /// Rejects:
 /// - Empty filenames
@@ -298,7 +298,7 @@ pub fn find_insert_offset_in_block(slice: &[u8]) -> usize {
 }
 
 /// Removes all entries matching `(target_name, target_hash)` from a directory block in place
-/// with **zero heap allocations** (P4.30), compacting remaining entries forward and zeroing
+/// with **zero heap allocations**, compacting remaining entries forward and zeroing
 /// the trailing tail identically to a full block rewrite.
 ///
 /// Returns `Some(inode_id)` of the first matched entry, or `None` if not present.
@@ -373,7 +373,7 @@ pub fn has_valid_entry_in_block(slice: &[u8]) -> bool {
     false
 }
 
-/// Zero-allocation visitor over valid entry inode IDs in a directory block (P4.27 `fsck`).
+/// Zero-allocation visitor over valid entry inode IDs in a directory block (`fsck`).
 #[inline]
 pub fn for_each_valid_inode_in_block(slice: &[u8], mut f: impl FnMut(u64)) {
     let mut offset = 0usize;
@@ -405,7 +405,7 @@ pub const MAX_DIR_BLOCKS: usize = 65536;
 
 /// Number of directory data blocks implied by a directory inode's `size` and first block pointer.
 ///
-/// Legacy (v1 / pre-P3.1) directories always used exactly `blocks[0]` and stored `size == 0`,
+/// Legacy (v1) single-block directories always used exactly `blocks[0]` and stored `size == 0`,
 /// so `size == 0 && first_block != 0` means one block.
 #[inline]
 pub fn dir_block_count(size: u64, first_block: u64, block_size: u64) -> usize {

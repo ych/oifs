@@ -91,11 +91,11 @@ pub enum OifsSession {
         mode: SessionMode,
         /// The password kept for the automatic reconnection.
         ///
-        /// SEC-24: it lives in a zeroizing buffer, so it is wiped when the
+        /// It lives in a zeroizing buffer, so it is wiped when the
         /// session is dropped instead of lingering in plain heap memory.
         password: Option<zeroize::Zeroizing<String>>,
         dm_fallback: Arc<Mutex<Option<Arc<DiskManager>>>>,
-        /// Lock-free fast-path flag set once `dm_fallback` has been populated (P4.28).
+        /// Lock-free fast-path flag set once `dm_fallback` has been populated.
         has_fallback: Arc<std::sync::atomic::AtomicBool>,
     },
 }
@@ -592,7 +592,7 @@ impl OifsSession {
                 };
 
                 let dm_arc = Arc::new(dm);
-                // SEC-30: bound the event queue so a Master session whose caller
+                // Bound the event queue so a Master session whose caller
                 // never drains `take_event_receiver()` does not accumulate events
                 // without bound.
                 let (tx, rx) = sync_channel(crate::ipc::MAX_PENDING_SESSION_EVENTS);
@@ -762,7 +762,7 @@ impl OifsSession {
                 dm_fallback,
                 has_fallback,
             } => {
-                // 1. Lock-free check on steady-state Remote RPCs (P4.28): only acquire
+                // 1. Lock-free check on steady-state Remote RPCs: only acquire
                 // `dm_fallback` if this session previously failed over to a local Master.
                 if has_fallback.load(std::sync::atomic::Ordering::Acquire) {
                     let local_dm = crate::lock_unpoisoned(dm_fallback).clone();
@@ -775,7 +775,7 @@ impl OifsSession {
                 // 2. Retry loop for high-concurrency master handovers
                 let mut current_client = client.clone();
                 for attempt in 0..5 {
-                    // P4.28: the request is borrowed, so a `WriteData`
+                    // The request is borrowed, so a `WriteData`
                     // payload is not cloned for every attempt.
                     match current_client.send(&req) {
                         Ok(data) => return Ok(data),

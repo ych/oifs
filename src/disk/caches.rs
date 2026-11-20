@@ -1,12 +1,12 @@
 //! In-memory caching structures for `DiskManager`:
-//! - [`ChunkReadCache`]: Bounded sub-chunk decompression cache for seekable 64K files (P4.17)
-//! - [`DecodedBlobCache`]: Bounded decoded-payload cache for whole-file compressed/encrypted blobs (P4.24)
-//! - [`DirIndex`] & [`ShardedDirCache`]: 32-shard lock-striped directory name index (P3.1 / P4.19 / P4.35)
-//! - [`BoundedInodeCache`]: 32-shard Second-Chance (Clock) bounded inode cache (P2.2 / P4.3 / P4.22)
+//! - [`ChunkReadCache`]: Bounded sub-chunk decompression cache for seekable 64K files
+//! - [`DecodedBlobCache`]: Bounded decoded-payload cache for whole-file compressed/encrypted blobs
+//! - [`DirIndex`] & [`ShardedDirCache`]: 32-shard lock-striped directory name index
+//! - [`BoundedInodeCache`]: 32-shard Second-Chance (Clock) bounded inode cache
 
 use super::*;
 
-/// Bounded sub-chunk decompression cache for seekable 64K files (P4.17).
+/// Bounded sub-chunk decompression cache for seekable 64K files.
 ///
 /// Small positional reads (`read_at` with `< 64 KiB` buffers) otherwise decompress
 /// and decrypt the same 64 KiB chunk repeatedly (e.g. 16x per chunk for 4 KiB reads).
@@ -66,7 +66,7 @@ impl ChunkReadCache {
 }
 
 /// Bounded decoded-payload cache for positional `read_at` on non-seekable
-/// compressed/encrypted files (P4.24).
+/// compressed/encrypted files.
 ///
 /// Eliminates the $O(\text{calls} \times \text{file\_size})$ full-file decode cliff when
 /// callers issue sequential or random sub-file `read_at` calls on stream-compressed or
@@ -157,12 +157,12 @@ impl DecodedBlobCache {
 #[derive(Default)]
 pub(crate) struct DirIndex {
     pub(crate) complete: bool,
-    /// True once every on-disk entry is also present in `plain` (P4.19).
+    /// True once every on-disk entry is also present in `plain`.
     pub(crate) plain_complete: bool,
     pub(crate) cold_scans: u32,
-    /// True if earlier blocks (`0..num_blocks - 1`) may have free space from deletions (P4.16).
+    /// True if earlier blocks (`0..num_blocks - 1`) may have free space from deletions.
     pub(crate) may_have_holes: bool,
-    /// Cached `(physical_block_id, next_insert_offset)` for the directory's tail block (P4.16).
+    /// Cached `(physical_block_id, next_insert_offset)` for the directory's tail block.
     pub(crate) tail_offset: Option<(u64, u16)>,
     /// On-disk stored name (ciphertext on encrypted filesystems) -> `(inode_id, physical_block_id, stored_hash)`.
     pub(crate) stored: FxHashMap<String, (u64, u64, u64)>,
@@ -173,10 +173,10 @@ pub(crate) struct DirIndex {
 /// Cold targeted scans tolerated on a directory before building its full index.
 pub(crate) const DIR_INDEX_BUILD_AFTER_SCANS: u32 = 8;
 
-/// Number of concurrent shards in the directory index cache (P4.35).
+/// Number of concurrent shards in the directory index cache.
 pub(crate) const NUM_DIR_CACHE_SHARDS: usize = 32;
 
-/// Sharded, thread-safe directory index cache (P4.35).
+/// Sharded, thread-safe directory index cache.
 ///
 /// Divides `dir_inode_id -> DirIndex` across 32 independent `RwLock` shards using a
 /// 64-bit Fibonacci hashing bijection, so cold indexing (`build_dir_index`), `list_dir`
@@ -255,13 +255,13 @@ const NUM_INODE_CACHE_SHARDS: usize = 32;
 
 struct CachedInodeEntry {
     inode: Inode,
-    /// Second-chance (Clock) reference bit (P4.22): set with `Relaxed` atomics under
+    /// Second-chance (Clock) reference bit: set with `Relaxed` atomics under
     /// the shard's shared `.read()` lock so hot directory/file inodes survive cold
     /// sequential scans without requiring a write lock on cache hits.
     referenced: std::sync::atomic::AtomicBool,
 }
 
-/// A single shard of the bounded inode cache with Second-Chance (Clock) eviction (P4.22).
+/// A single shard of the bounded inode cache with Second-Chance (Clock) eviction.
 struct InodeCacheShard {
     map: FxHashMap<u64, CachedInodeEntry>,
     order: VecDeque<u64>,
@@ -336,7 +336,7 @@ impl InodeCacheShard {
     }
 }
 
-/// Sharded, thread-safe bounded inode cache (P4.3 / lock contention reduction).
+/// Sharded, thread-safe bounded inode cache.
 ///
 /// Divides the inode cache into 32 independent shards, each with its own `RwLock`.
 /// Concurrent readers and writers on different inodes access completely separate shards
@@ -536,7 +536,7 @@ mod inode_cache_tests {
         shard.insert(101, ino(crate::inode::FileType::File));
         shard.insert(102, ino(crate::inode::FileType::File));
 
-        // Touch 100 via `get()` (shared-read-lock Clock reference bit set, P4.22).
+        // Touch 100 via `get()` (shared-read-lock Clock reference bit set).
         assert!(shard.get(100).is_some());
 
         // Inserting 103 must spare 100 (clearing its reference bit) and evict 101 instead.

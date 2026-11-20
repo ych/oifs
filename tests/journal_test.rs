@@ -248,7 +248,7 @@ fn test_apply_op_idempotent_in_place() {
 }
 
 // ---------------------------------------------------------------------------
-// M3: write-path integration
+// Write-path integration
 // ---------------------------------------------------------------------------
 
 /// Count the transaction frames currently sitting in the journal ring.
@@ -450,7 +450,7 @@ fn test_metadata_ops_encode_decode_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// M3: journaled create (create_file / mkdir) + checkpoint
+// Journaled create (create_file / mkdir) + checkpoint
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -604,15 +604,25 @@ fn test_journaled_checkpoint_strict_mode_reclaims_ring() {
         .expect("create")
         .with_durability_mode(DurabilityMode::Strict);
     let root = dm.superblock().root_inode;
-    for i in 0..10 {
+    // Strict mode commits each transaction to the WAL immediately and
+    // automatically checkpoints once the ring crosses its 50% watermark (`should_checkpoint()`).
+    // Creating 120 files (~600B per tx > 64 KiB watermark) must trigger an automatic
+    // in-place metadata flush + WAL checkpoint mid-stream, keeping pending txs far below 120.
+    for i in 0..120 {
         dm.create_file(root, &format!("s{i}")).expect("create");
     }
+    let pending = ring_tx_count(&fs::read(&img.path).expect("read"));
+    assert!(
+        pending < 40,
+        "Strict mode must auto-checkpoint once ring crosses 50% watermark (pending={pending})"
+    );
+    dm.flush().expect("explicit flush retires remaining txs");
     assert_eq!(
         ring_tx_count(&fs::read(&img.path).expect("read")),
         0,
-        "Strict mode must checkpoint after every transaction"
+        "flush must retire remaining transactions"
     );
-    assert_eq!(dm.list_dir(root).expect("list").len(), 10);
+    assert_eq!(dm.list_dir(root).expect("list").len(), 120);
 }
 
 #[test]
@@ -774,7 +784,7 @@ fn test_journaled_concurrent_creates_and_deletes() {
 }
 
 // ---------------------------------------------------------------------------
-// M6: journaled write_data
+// Journaled write_data
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1087,7 +1097,7 @@ fn test_journaled_write_leaves_no_leaked_blocks() {
 }
 
 // ---------------------------------------------------------------------------
-// Gap 1: encrypted journaled files
+// encrypted journaled files
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1185,7 +1195,7 @@ fn test_journaled_encrypted_data_is_not_plaintext_on_disk() {
 }
 
 // ---------------------------------------------------------------------------
-// Gap 2: durability-mode matrix on journaled images
+// durability-mode matrix on journaled images
 // ---------------------------------------------------------------------------
 
 #[test]

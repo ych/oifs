@@ -1,4 +1,4 @@
-//! P3.2: payload-read engine tests.
+//! Payload-read engine tests.
 //!
 //! Every available backend (`Mmap`, `Pread`, and `IoUring` where the kernel supports it)
 //! must return byte-identical results for every file shape and API.

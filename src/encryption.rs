@@ -232,7 +232,7 @@ pub fn decrypt_data(
         .map_err(|_| EncryptionError::DecryptionFailed)
 }
 
-/// Encrypt data in-place using XChaCha20-Poly1305 AEAD cipher (P4.21),
+/// Encrypt data in-place using XChaCha20-Poly1305 AEAD cipher,
 /// appending the 16-byte authentication tag directly to `buffer` without
 /// allocating a second full-payload buffer.
 pub fn encrypt_data_in_place(
@@ -250,7 +250,7 @@ pub fn encrypt_data_in_place(
 }
 
 /// Encrypt `plaintext` into a single `[24-byte nonce | ciphertext | 16-byte tag]`
-/// allocation (P4.17), avoiding an intermediate ciphertext `Vec` copy.
+/// allocation, avoiding an intermediate ciphertext `Vec` copy.
 pub fn encrypt_with_nonce_prefix(
     plaintext: &[u8],
     key: &EncryptionKey,
@@ -272,7 +272,7 @@ pub fn encrypt_with_nonce_prefix(
 }
 
 /// Decrypt `ciphertext_with_tag` into a caller-provided slice `dst` (which must
-/// have length `ciphertext_with_tag.len() - 16`) without heap allocations (P4.17).
+/// have length `ciphertext_with_tag.len() - 16`) without heap allocations.
 pub fn decrypt_into_slice(
     ciphertext_with_tag: &[u8],
     dst: &mut [u8],
@@ -334,7 +334,7 @@ pub const FILENAME_ENC_PREFIX: &str = "_e_";
 /// The legacy encryption scheme: XChaCha20-Poly1305 without associated data.
 pub const ENCRYPTION_SCHEME_LEGACY: u8 = 1;
 
-/// The context-bound encryption scheme (SEC-19).
+/// The context-bound encryption scheme.
 ///
 /// The associated data binds the ciphertext to the file (and, for a seekable
 /// chunk, to the chunk index and its flags), so a chunk cannot be moved to
@@ -391,7 +391,7 @@ pub fn filename_aad_stack(parent_inode: u64) -> [u8; 20] {
 /// Without it, every file of an image shares the same master key and nothing
 /// but the nonce distinguishes them, so an attacker with write access to the
 /// image could swap two ciphertexts (or roll one back) without the AEAD
-/// noticing (SEC-19).
+/// noticing.
 pub fn file_aad(inode_id: u64) -> Vec<u8> {
     file_aad_stack(inode_id).to_vec()
 }
@@ -430,8 +430,7 @@ pub fn chunk_aad_for_scheme_stack(
 
 /// Returns the associated data of a whole-file ciphertext for the given scheme.
 ///
-/// The legacy scheme uses empty associated data, so images written before
-/// SEC-19 stay readable.
+/// The legacy scheme uses empty associated data, so older images stay readable.
 pub fn file_aad_for_scheme(inode_id: u64, scheme: u8) -> Vec<u8> {
     if scheme >= ENCRYPTION_SCHEME_CONTEXT_BOUND {
         file_aad(inode_id)
@@ -503,7 +502,7 @@ pub fn encrypt_filename(
         .map_err(|_| EncryptionError::InvalidKey)?;
 
     if name_bytes.len() <= 255 {
-        // Fast stack-allocated path (P4.29): 1 heap String allocation instead of 4.
+        // Fast stack-allocated path: 1 heap String allocation instead of 4.
         let total_raw = 24 + name_bytes.len() + 16;
         let mut raw = [0u8; 24 + 255 + 16];
         raw[..24].copy_from_slice(&nonce);

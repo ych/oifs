@@ -1,4 +1,4 @@
-//! Regression test for SEC-26: the defragmentation must handle seekable
+//! Regression tests verifying that defragmentation must handle seekable
 //! 64K chunked files, whose pointer slots hold packed `ChunkEntry` values
 //! instead of raw block ids.
 

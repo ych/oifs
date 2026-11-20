@@ -1,0 +1,5 @@
+[target.aarch64-apple-darwin]
+rustflags = ["--cfg", "chacha20_force_neon"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["--cfg", "chacha20_force_neon"]

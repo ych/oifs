@@ -984,6 +984,7 @@ dependencies = [
  "io-uring",
  "libc",
  "memmap2",
+ "poly1305",
  "rand 0.8.8",
  "rmcp",
  "schemars",

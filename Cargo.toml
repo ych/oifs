@@ -23,6 +23,7 @@ zstd = "0.13"
 
 # Encryption dependencies
 chacha20poly1305 = "0.10"  # XChaCha20-Poly1305 AEAD cipher
+poly1305 = "0.8"          # Direct Poly1305 MAC for short-message 1-block scalar XChaCha20 fast path
 argon2 = "0.5"             # Key derivation function
 zeroize = { version = "1.7", features = ["derive"] }  # Secure memory wiping
 blake2 = "0.10"            # Fast cryptographic hashing for Synthetic IV

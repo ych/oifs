@@ -20,18 +20,35 @@ pub(crate) struct ChunkReadCache {
 impl ChunkReadCache {
     const CAPACITY: usize = 8;
 
-    pub(crate) fn get(
+    #[inline]
+    pub(crate) fn has_chunk(&self, inode_id: u64, chunk_idx: usize) -> bool {
+        self.entries
+            .iter()
+            .rev()
+            .any(|((id, idx, _, _), _)| *id == inode_id && *idx == chunk_idx)
+    }
+
+    #[inline]
+    pub(crate) fn copy_slice_if_hit(
         &self,
         inode_id: u64,
         chunk_idx: usize,
         raw_entry: u64,
         valid_len: usize,
-    ) -> Option<Arc<[u8]>> {
+        in_chunk_offset: usize,
+        dst: &mut [u8],
+    ) -> Option<usize> {
         let key = (inode_id, chunk_idx, raw_entry, valid_len);
-        self.entries
+        let data = self
+            .entries
             .iter()
             .rev()
-            .find_map(|(k, v)| if *k == key { Some(Arc::clone(v)) } else { None })
+            .find_map(|(k, v)| if *k == key { Some(v) } else { None })?;
+        let available = data.len().saturating_sub(in_chunk_offset).min(dst.len());
+        if available > 0 {
+            dst[..available].copy_from_slice(&data[in_chunk_offset..in_chunk_offset + available]);
+        }
+        Some(available)
     }
 
     pub(crate) fn insert(

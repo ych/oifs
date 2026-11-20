@@ -303,7 +303,7 @@ pub(crate) struct DiskManagerInner {
     /// Sharded per-directory name index: dir_inode_id -> DirIndex
     pub dir_cache: ShardedDirCache,
     /// Bounded sub-chunk decompression cache for seekable 64K `read_at`
-    pub chunk_read_cache: Mutex<ChunkReadCache>,
+    pub chunk_read_cache: RwLock<ChunkReadCache>,
     /// Bounded decoded-payload cache for non-seekable `read_at`
     pub decoded_blob_cache: Mutex<DecodedBlobCache>,
     /// Durability policy governing mmap msync behavior on mutations
@@ -1259,7 +1259,7 @@ impl DiskManager {
             free_inode_hint: 0,
             inode_cache: BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY),
             dir_cache: ShardedDirCache::new(),
-            chunk_read_cache: Mutex::new(ChunkReadCache::default()),
+            chunk_read_cache: RwLock::new(ChunkReadCache::default()),
             decoded_blob_cache: Mutex::new(DecodedBlobCache::default()),
             durability_mode: std::sync::atomic::AtomicU8::new(DurabilityMode::Lazy as u8),
             pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
@@ -4438,8 +4438,22 @@ impl DiskManager {
         filter_config: crate::filters::FilterConfig,
     ) -> Result<(), DiskManagerError> {
         // --- STAGE 1: Single Shared Read-Lock Inspection ---
-        // Merges seekable routing + plan parameter inspection under ONE `inner.read()` lock.
-        let (initial_inode, existing_decompressed, encryption_key, encryption_scheme, seekable_opt) = {
+        // Merges seekable routing + Stage 1 preparation under ONE `inner.read()` lock.
+        enum Stage1Prep<'a> {
+            Seekable {
+                level: i32,
+                compress: bool,
+                stage1: chunked::ChunkedStage1<'a>,
+            },
+            Standard {
+                initial_inode: Inode,
+                existing_decompressed: Option<Vec<u8>>,
+                encryption_key: Option<crate::encryption::EncryptionKey>,
+                encryption_scheme: u8,
+            },
+        }
+
+        let stage1 = {
             let guard = self.inner.read().unwrap();
             let inode = Self::read_inode_internal(&guard, inode_id)?;
 
@@ -4464,13 +4478,22 @@ impl DiskManager {
                 && inode.filter_typesize == 0;
 
             if explicit_seekable || encrypted_partial_upgrade {
+                if data.is_empty() {
+                    return Ok(());
+                }
                 let compress = explicit_seekable || compression_mode != CompressionMode::Never;
                 let level = match compression_mode {
                     CompressionMode::Seekable { level, .. } => level,
                     CompressionMode::Stream { level } => level,
                     _ => 1,
                 };
-                (inode, None, None, 0, Some((level, compress)))
+                let prep =
+                    Self::prepare_chunked_64k_stage1(&guard, inode_id, inode, file_offset, data)?;
+                Stage1Prep::Seekable {
+                    level,
+                    compress,
+                    stage1: prep,
+                }
             } else {
                 let transformed =
                     payload_is_transformed(&inode, &filter_config, guard.encryption_key.as_ref());
@@ -4495,19 +4518,43 @@ impl DiskManager {
 
                 let key = guard.encryption_key.clone();
                 let scheme = guard.superblock.encryption_version;
-                (inode, existing, key, scheme, None)
+                Stage1Prep::Standard {
+                    initial_inode: inode,
+                    existing_decompressed: existing,
+                    encryption_key: key,
+                    encryption_scheme: scheme,
+                }
             }
         }; // Shared read-guard is dropped immediately here!
 
-        if let Some((level, compress)) = seekable_opt {
-            return self.write_chunked_64k_pipeline_with_mode(
-                inode_id,
-                file_offset,
-                data,
+        let (initial_inode, existing_decompressed, encryption_key, encryption_scheme) = match stage1
+        {
+            Stage1Prep::Seekable {
                 level,
                 compress,
-            );
-        }
+                stage1,
+            } => {
+                return self.finish_chunked_64k_pipeline(
+                    inode_id,
+                    file_offset,
+                    data,
+                    level,
+                    compress,
+                    stage1,
+                );
+            }
+            Stage1Prep::Standard {
+                initial_inode,
+                existing_decompressed,
+                encryption_key,
+                encryption_scheme,
+            } => (
+                initial_inode,
+                existing_decompressed,
+                encryption_key,
+                encryption_scheme,
+            ),
+        };
 
         // --- STAGE 2: CPU-Bound Processing (ZERO filesystem locks held) ---
         // Perform CPU-heavy filtering, Zstd compression, and XChaCha20 encryption

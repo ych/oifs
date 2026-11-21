@@ -23,12 +23,13 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 
 ## 1. What is OIFS?
 
-**OIFS** is a high-performance, single-file containerized Unix-like inode filesystem written in Rust (Edition 2024 / Rust 1.85+). It packs an entire filesystem—inodes, multi-block directories, raw/compressed data blocks, encryption, and pre-compression filter pipelines—into a single `.img` container file backed by memory mapping (`memmap2::MmapMut`).
+**OIFS** is a high-performance, single-file containerized Unix-like inode filesystem written in Rust (Edition 2024 / Rust 1.85+). It packs an entire filesystem—inodes, multi-block directories, raw/compressed data blocks, encryption, and pre-compression filter pipelines—into a single `.img` container file backed by either memory mapping (`StorageMode::Mmap`, default) or pure positional `pread`/`pwrite` file I/O (`StorageMode::FileIo`, zero `mmap`).
 
 ### Key Highlights
+- **Dual Image Storage Engine (`StorageMode::Mmap` & `StorageMode::FileIo`)**: Defaults to zero-copy `memmap2::MmapMut` (`48–51 GB/s` cached reads), with an opt-in 100% `mmap`-free positional `pread`/`pwrite` engine (`DiskManager::open_file_io*`, `DiskManager::open_with_storage_mode`, `--no-mmap`, `OIFS_STORAGE_MODE=pread`) backed by write-through bitmap/WAL mirrors, a 16-shard `Arc`-backed 4 MiB metadata block cache, and a configurable 64-shard 32 MiB Second-Chance Clock user-space data page cache (`OIFS_FILE_IO_CACHE_MB`, `DiskManager::set_file_io_cache_bytes`, capped at 4 GiB with `> 64 KiB` streaming scan bypass).
 - **Multi-Process Concurrency**: Master-Proxy architecture using OS-level file locking (`fcntl`). The first process is Master; concurrent secondary processes connect as Proxies over Unix Domain Sockets or Network TCP.
-- **Pluggable I/O Engine**: `Mmap` (zero-copy direct slice with contiguous extent coalescing), `Pread` (contiguous extent batching), and `IoUring` (Linux async submission rings with thread-safe pooling, optional `io-uring` feature).
-- **Configurable Durability**: `Lazy` (fastest, OS writeback / process crash safe), `RangeAsync` (batched dirty-range coalescing drained asynchronously outside write locks), `Strict` (synchronous `msync` with single-syscall WAL header+frame coalescing and JBD2-style deferred in-place metadata checkpointing), and `LegacyWholeMmapAsync`.
+- **Pluggable I/O Engine & Shared Read Sessions**: `Mmap` (zero-copy direct slice with contiguous extent coalescing), `Pread` (contiguous extent batching), and `IoUring` (Linux async submission rings with thread-safe pooling, optional `io-uring` feature). `DiskManager::begin_read` returns a `ReadSession` (and `ReadSession::open_file` returns a pinned `FileReadHandle`) to amortize outer `RwLock` and `BoundedInodeCache` lookups across high-frequency or multi-threaded `read_at` batches.
+- **Configurable Durability & Single-Transaction File Creation**: `Lazy` (fastest, OS writeback / process crash safe), `RangeAsync` (batched dirty-range coalescing drained asynchronously outside write locks), `Strict` (synchronous `msync`/`sync_data` with single-syscall WAL header+frame coalescing and JBD2-style deferred in-place metadata checkpointing), and `LegacyWholeMmapAsync`. `DiskManager::create_file_with_data` (and `create_file_with_data_with_filters`) combines file creation and initial payload write into a single lock acquisition and single WAL transaction, data-journaling small payloads (`<= 8 KiB`) directly inside the WAL commit under `Strict` mode (1 sync barrier instead of 3).
 - **Pre-compression Filters**: Built-in SIMD-accelerated Delta, Byte Shuffle, BitShuffle (delta-swap ILP 8x8 transposition), and TruncPrecision followed by Zstandard (with optional `blosc2` feature).
 - **Encryption**: XChaCha20-Poly1305 with OWASP / RFC 9106 hardened Argon2id KDF (`64 MiB`, `t=3`, `p=4`), BLAKE2b-512 domain-separated subkeys (`payload_key`, `filename_siv_key`, `filename_cipher_key`, `ipc_auth_key`), and 24-byte (192-bit) `XChaCha20-Poly1305` deterministic SIV filename encryption (`_e_...`) with `parent_inode` bound in Poly1305 AAD. Payloads leverage AArch64 NEON (via `.cargo/config.toml`) and x86_64 AVX2 SIMD, while short filenames (`<= 192 B`) use an RFC 8439-identical 1-block scalar fast path to avoid multi-block SIMD overhead.
 - **Encrypted Image Integrity & Anti-Downgrade**: Encrypted images reject unencrypted regular files (`!inode.encrypted`) on all read paths (`read_data`, `read_at`, seekable 64K) and reject plaintext directory entries in `lookup`, `create`, `list_dir`, and `delete_file`. Providing a password or key for an unencrypted/downgraded image returns `DiskManagerError::NotEncrypted`; `open_with_password` / `open_with_key` on a new path creates an encrypted image.
@@ -78,10 +79,11 @@ An inode stores:
 | Path | Purpose & Key Types |
 | :--- | :--- |
 | `src/lib.rs` | Public re-exports, module tree, custom `FxHashMap`/`FxHashSet`, and `BLOCK_SIZE = 4096`. |
+| `src/storage.rs` | Pluggable image storage engine (`ImageBacking`, `StorageMode::Mmap` & `StorageMode::FileIo`, `FileBacking`, `BitmapSliceMut`, `JournalRegionMut`, 16-shard `MetadataBlockCache`, 64-shard `DataPageCache`). |
 | `src/superblock.rs` | `SuperBlock` definition, v3 layout geometry calculation, strict `validate`, Kani proofs. |
 | `src/inode.rs` | `Inode` (256B `#[repr(C)]`), `FileType`, `ChunkEntry`, `BlockPath` tier resolver. |
 | `src/inode_format.rs` | On-disk inode encoding: fixed 256B v2 record, legacy `bincode` v1 decoder, version dispatch. |
-| `src/disk.rs` | Core storage engine: `DiskManager`, `DiskManagerInner`, `DurabilityMode`, open/mount/WAL recovery, directory & standard file read/write/truncate paths. |
+| `src/disk.rs` | Core storage engine: `DiskManager`, `DiskManagerInner`, `DurabilityMode`, `ReadSession`, `FileReadHandle`, `create_file_with_data`, open/mount/WAL recovery, directory & standard file read/write/truncate paths. |
 | `src/disk/caches.rs` | In-memory caches: `RwLock`-backed `ChunkReadCache`, `DecodedBlobCache`, 32-shard `ShardedDirCache`, and 32-shard Second-Chance `BoundedInodeCache`. |
 | `src/disk/chunked.rs` | Seekable 64K chunked compression/encryption engine (`write_chunked_64k`, `read_at_chunked_64k` with 4-chunk parallel read-ahead, non-journaled in-place reuse, `truncate_chunked_64k`). |
 | `src/disk/maintenance.rs` | Online maintenance: `migrate`, `analyze_fragmentation`, `defragment` (`Safe` / `InPlace` / `Journaled COW`), and `verify_integrity` (`fsck`). |
@@ -97,9 +99,9 @@ An inode stores:
 | `src/session.rs` | `OifsSession`: Process-level session registry (`get_or_open`), Master/Proxy dispatch. |
 | `src/ipc.rs` | `IpcServer`, `IpcClient`, length-prefixed binary framing, challenge-response auth, connection pooling. |
 | `src/ffi.rs` | C-compatible dynamic library bindings (`include/oifs.h`). |
-| `src/bin/oifs.rs` | CLI application entry point (`clap`-based), cycle-safe recursive `ls -r` / `rm -r`. |
+| `src/bin/oifs.rs` | CLI application entry point (`clap`-based), `--no-mmap` flag, cycle-safe recursive `ls -r` / `rm -r`. |
 | `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling (optional `mcp` feature). |
-| `tests/` | 63 integration test files (68 total test targets): Bolero property/fuzz suites, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer & size/bomb bounds, inode-bounds, defrag-seekable, zeroed-block, zstd-pool, encrypted-context-binding, large-image-bitmap, and CLI suites. |
+| `tests/` | 65 integration test files (70 total test targets): Bolero property/fuzz suites, stress, crash-safety, concurrency, journal, auto-defrag, `FileIo` storage & data page cache, `ReadSession` / `create_file_with_data`, IPC-security, block-pointer & size/bomb bounds, inode-bounds, defrag-seekable, zeroed-block, zstd-pool, encrypted-context-binding, large-image-bitmap, and CLI suites. |
 | `docs/optimization_roadmap.md` | Detailed optimization changelog and benchmarks. |
 | `docs/metadata_wal_design.md` | Metadata WAL specification, durability modes, and recovery guarantees. |
 | `docs/performance_and_verification_research.md` | Audit of performance bottlenecks, safety properties, and formal verification blueprints. |
@@ -142,8 +144,11 @@ An inode stores:
 cargo build
 cargo build --release
 
-# 2. Run all standard unit and integration tests (68 test targets)
+# 2. Run all standard unit and integration tests (70 test targets)
 cargo test --release
+
+# 2b. Run integration suites under pure pread/pwrite StorageMode::FileIo (no mmap)
+OIFS_STORAGE_MODE=pread cargo test --release --test file_io_storage_test --test session_and_cache_test --test journal_test --test integration_test
 
 # 3. Run multi-block directory performance benchmark
 cargo test --release --test dir_bench -- --ignored --nocapture

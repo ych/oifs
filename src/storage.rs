@@ -30,6 +30,9 @@ pub const FILE_IO_CACHE_MB_ENV: &str = "OIFS_FILE_IO_CACHE_MB";
 /// Default user-space data page cache capacity for [`StorageMode::FileIo`] (32 MiB).
 pub const DEFAULT_FILE_IO_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
+/// Maximum user-space data page cache capacity for [`StorageMode::FileIo`] (4 GiB).
+pub const MAX_FILE_IO_CACHE_BYTES: usize = 4 * 1024 * 1024 * 1024;
+
 /// Maximum read target size eligible for caching in [`DataPageCache`]. Larger streaming
 /// reads bypass the cache to preserve sequential throughput and prevent scan pollution.
 pub(crate) const MAX_CACHED_EXTENT: usize = 64 * 1024;
@@ -288,16 +291,17 @@ impl DataPageCache {
         if let Ok(val) = std::env::var(FILE_IO_CACHE_MB_ENV)
             && let Ok(mb) = val.trim().parse::<usize>()
         {
-            return mb.saturating_mul(1024 * 1024);
+            return mb.saturating_mul(1024 * 1024).min(MAX_FILE_IO_CACHE_BYTES);
         }
         DEFAULT_FILE_IO_CACHE_BYTES
     }
 
     fn blocks_per_shard_for_bytes(bytes: usize) -> usize {
-        if bytes == 0 {
+        let clamped = bytes.min(MAX_FILE_IO_CACHE_BYTES);
+        if clamped == 0 {
             return 0;
         }
-        let total_blocks = bytes / BLOCK_SIZE;
+        let total_blocks = clamped / BLOCK_SIZE;
         if total_blocks == 0 {
             0
         } else {
@@ -568,37 +572,91 @@ impl FileBacking {
 
     /// Loads bitmap spans and the optional journal region from disk into write-through mirrors.
     pub(crate) fn configure_regions(&mut self, sb: &SuperBlock) -> io::Result<()> {
-        let ib_off = sb.inode_bitmap_block * BLOCK_SIZE as u64;
-        let ib_len = (sb.inode_bitmap_blocks() as usize) * BLOCK_SIZE;
-        let mut ib = vec![0u8; ib_len];
-        if (ib_off as usize).saturating_add(ib_len) <= self.len {
-            file_read_exact_at(&self.file, ib_off, &mut ib)?;
+        let ib_off = sb
+            .inode_bitmap_block
+            .checked_mul(BLOCK_SIZE as u64)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "inode bitmap offset overflow")
+            })?;
+        let ib_len = (sb.inode_bitmap_blocks() as usize)
+            .checked_mul(BLOCK_SIZE)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "inode bitmap length overflow")
+            })?;
+        let ib_end = usize::try_from(ib_off)
+            .ok()
+            .and_then(|o| o.checked_add(ib_len))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "inode bitmap range overflow")
+            })?;
+        if ib_end > self.len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "inode bitmap region exceeds image size",
+            ));
         }
+        let mut ib = vec![0u8; ib_len];
+        file_read_exact_at(&self.file, ib_off, &mut ib)?;
+
+        let db_off = sb
+            .data_bitmap_block
+            .checked_mul(BLOCK_SIZE as u64)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "data bitmap offset overflow")
+            })?;
+        let db_len = (sb.data_bitmap_blocks() as usize)
+            .checked_mul(BLOCK_SIZE)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "data bitmap length overflow")
+            })?;
+        let db_end = usize::try_from(db_off)
+            .ok()
+            .and_then(|o| o.checked_add(db_len))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "data bitmap range overflow")
+            })?;
+        if db_end > self.len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "data bitmap region exceeds image size",
+            ));
+        }
+        let mut db = vec![0u8; db_len];
+        file_read_exact_at(&self.file, db_off, &mut db)?;
+
+        let (j_off, jb) = if sb.has_journal_layout() {
+            let off = sb
+                .journal_header_block()
+                .checked_mul(BLOCK_SIZE as u64)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "journal offset overflow")
+                })?;
+            let len = (crate::journal::JOURNAL_RESERVED_BLOCKS as usize) * BLOCK_SIZE;
+            let end = usize::try_from(off)
+                .ok()
+                .and_then(|o| o.checked_add(len))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "journal range overflow")
+                })?;
+            if end > self.len {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "journal region exceeds image size",
+                ));
+            }
+            let mut buf = vec![0u8; len];
+            file_read_exact_at(&self.file, off, &mut buf)?;
+            (off, buf)
+        } else {
+            (0, Vec::new())
+        };
+
         self.inode_bitmap_off = ib_off;
         self.inode_bitmap = ib;
-
-        let db_off = sb.data_bitmap_block * BLOCK_SIZE as u64;
-        let db_len = (sb.data_bitmap_blocks() as usize) * BLOCK_SIZE;
-        let mut db = vec![0u8; db_len];
-        if (db_off as usize).saturating_add(db_len) <= self.len {
-            file_read_exact_at(&self.file, db_off, &mut db)?;
-        }
         self.data_bitmap_off = db_off;
         self.data_bitmap = db;
-
-        if sb.has_journal_layout() {
-            let j_off = sb.journal_header_block() * BLOCK_SIZE as u64;
-            let j_len = (crate::journal::JOURNAL_RESERVED_BLOCKS as usize) * BLOCK_SIZE;
-            let mut jb = vec![0u8; j_len];
-            if (j_off as usize).saturating_add(j_len) <= self.len {
-                file_read_exact_at(&self.file, j_off, &mut jb)?;
-            }
-            self.journal_off = j_off;
-            self.journal_buf = jb;
-        } else {
-            self.journal_off = 0;
-            self.journal_buf.clear();
-        }
+        self.journal_off = j_off;
+        self.journal_buf = jb;
         self.block_cache.clear();
         self.data_cache.clear();
         Ok(())
@@ -685,6 +743,24 @@ impl BitmapSliceMut<'_> {
         let byte_end = start_bit.saturating_add(bit_count).div_ceil(8);
         self.set_dirty_range(byte_start, byte_end);
     }
+
+    /// Explicitly flushes the dirty bitmap bytes to disk under [`StorageMode::FileIo`] and
+    /// marks the guard clean so `Drop` will not write a second time.
+    pub(crate) fn flush_writeback(&mut self) -> io::Result<()> {
+        if let Some((file, offset)) = self.file_writeback {
+            let res = match self.dirty_range {
+                Some((s, e)) if s < e && e <= self.slice.len() => {
+                    file_write_all_at(file, offset + s as u64, &self.slice[s..e])
+                }
+                Some(_) => Ok(()),
+                None => file_write_all_at(file, offset, self.slice),
+            };
+            self.dirty_range = Some((0, 0));
+            res
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Deref for BitmapSliceMut<'_> {
@@ -705,17 +781,7 @@ impl DerefMut for BitmapSliceMut<'_> {
 
 impl Drop for BitmapSliceMut<'_> {
     fn drop(&mut self) {
-        if let Some((file, offset)) = self.file_writeback {
-            match self.dirty_range {
-                Some((s, e)) if s < e && e <= self.slice.len() => {
-                    let _ = file_write_all_at(file, offset + s as u64, &self.slice[s..e]);
-                }
-                Some(_) => {}
-                None => {
-                    let _ = file_write_all_at(file, offset, self.slice);
-                }
-            }
-        }
+        let _ = self.flush_writeback();
     }
 }
 
@@ -778,6 +844,55 @@ impl JournalRegionMut<'_> {
             wrap_pad_start: wrap_pad_start.map(|p| p as usize),
         };
     }
+
+    /// Explicitly writes any pending WAL bytes through to disk under [`StorageMode::FileIo`]
+    /// and marks the guard clean so `Drop` is a no-op.
+    pub(crate) fn flush_writeback(&mut self) -> io::Result<()> {
+        let wb = std::mem::replace(&mut self.writeback, JournalWriteback::None);
+        let Some((file, offset)) = self.file_writeback else {
+            return Ok(());
+        };
+        let total_len = self.slice.len();
+        let hdr_len = crate::journal::JOURNAL_HEADER_LEN.min(total_len);
+        match wb {
+            JournalWriteback::None => Ok(()),
+            JournalWriteback::Full => file_write_all_at(file, offset, self.slice),
+            JournalWriteback::HeaderOnly => {
+                if hdr_len > 0 {
+                    file_write_all_at(file, offset, &self.slice[..hdr_len])
+                } else {
+                    Ok(())
+                }
+            }
+            JournalWriteback::Append {
+                block_size,
+                frame_start,
+                frame_end,
+                wrap_pad_start,
+            } => {
+                // 1. Write zeroed wrap tail (if wrap occurred) before advancing head.
+                if let Some(pad) = wrap_pad_start {
+                    let abs_s = block_size.saturating_add(pad);
+                    if abs_s < total_len {
+                        file_write_all_at(file, offset + abs_s as u64, &self.slice[abs_s..])?;
+                    }
+                }
+                // 2. Write the appended frame payload before advancing head.
+                if frame_end > frame_start {
+                    let abs_s = block_size.saturating_add(frame_start);
+                    let abs_e = block_size.saturating_add(frame_end).min(total_len);
+                    if abs_s < abs_e {
+                        file_write_all_at(file, offset + abs_s as u64, &self.slice[abs_s..abs_e])?;
+                    }
+                }
+                // 3. Write the 64-byte journal header committing the new `head` cursor.
+                if hdr_len > 0 {
+                    file_write_all_at(file, offset, &self.slice[..hdr_len])?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 impl Deref for JournalRegionMut<'_> {
@@ -798,53 +913,7 @@ impl DerefMut for JournalRegionMut<'_> {
 
 impl Drop for JournalRegionMut<'_> {
     fn drop(&mut self) {
-        let Some((file, offset)) = self.file_writeback else {
-            return;
-        };
-        let total_len = self.slice.len();
-        let hdr_len = crate::journal::JOURNAL_HEADER_LEN.min(total_len);
-        match self.writeback {
-            JournalWriteback::None => {}
-            JournalWriteback::Full => {
-                let _ = file_write_all_at(file, offset, self.slice);
-            }
-            JournalWriteback::HeaderOnly => {
-                if hdr_len > 0 {
-                    let _ = file_write_all_at(file, offset, &self.slice[..hdr_len]);
-                }
-            }
-            JournalWriteback::Append {
-                block_size,
-                frame_start,
-                frame_end,
-                wrap_pad_start,
-            } => {
-                // 1. Write zeroed wrap tail (if wrap occurred) before advancing head.
-                if let Some(pad) = wrap_pad_start {
-                    let abs_s = block_size.saturating_add(pad);
-                    if abs_s < total_len {
-                        let _ =
-                            file_write_all_at(file, offset + abs_s as u64, &self.slice[abs_s..]);
-                    }
-                }
-                // 2. Write the appended frame payload before advancing head.
-                if frame_end > frame_start {
-                    let abs_s = block_size.saturating_add(frame_start);
-                    let abs_e = block_size.saturating_add(frame_end).min(total_len);
-                    if abs_s < abs_e {
-                        let _ = file_write_all_at(
-                            file,
-                            offset + abs_s as u64,
-                            &self.slice[abs_s..abs_e],
-                        );
-                    }
-                }
-                // 3. Write the 64-byte journal header committing the new `head` cursor.
-                if hdr_len > 0 {
-                    let _ = file_write_all_at(file, offset, &self.slice[..hdr_len]);
-                }
-            }
-        }
+        let _ = self.flush_writeback();
     }
 }
 
@@ -1469,9 +1538,9 @@ impl ImageBacking {
         &mut self,
         sb: &SuperBlock,
         op: &crate::journal::MetadataOp,
-    ) -> Result<(), crate::journal::JournalError> {
+    ) -> Result<(), crate::disk::DiskManagerError> {
         match self {
-            Self::Mmap(m) => crate::journal::apply_op_in_place(m, sb, op),
+            Self::Mmap(m) => Ok(crate::journal::apply_op_in_place(m, sb, op)?),
             Self::File(fb) => {
                 use crate::journal::{JournalError, MetadataOp};
                 let bs = sb.block_size as u64;
@@ -1483,7 +1552,8 @@ impl ImageBacking {
                         if *inode_id >= sb.inode_count {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *inode_id,
-                            });
+                            }
+                            .into());
                         }
                         let bit = usize::try_from(*inode_id).map_err(|_| {
                             JournalError::BlockOutOfRange {
@@ -1494,19 +1564,21 @@ impl ImageBacking {
                         if byte_idx >= fb.inode_bitmap.len() {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *inode_id,
-                            });
+                            }
+                            .into());
                         }
                         let mask = 1u8 << (bit % 8);
-                        if *allocated {
-                            fb.inode_bitmap[byte_idx] |= mask;
+                        let new_byte = if *allocated {
+                            fb.inode_bitmap[byte_idx] | mask
                         } else {
-                            fb.inode_bitmap[byte_idx] &= !mask;
-                        }
-                        let _ = file_write_all_at(
+                            fb.inode_bitmap[byte_idx] & !mask
+                        };
+                        file_write_all_at(
                             &fb.file,
                             fb.inode_bitmap_off + byte_idx as u64,
-                            &fb.inode_bitmap[byte_idx..byte_idx + 1],
-                        );
+                            &[new_byte],
+                        )?;
+                        fb.inode_bitmap[byte_idx] = new_byte;
                         Ok(())
                     }
                     MetadataOp::SetDataBitmap {
@@ -1516,26 +1588,29 @@ impl ImageBacking {
                         if *block_id < sb.data_block_start || *block_id >= sb.block_count {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *block_id,
-                            });
+                            }
+                            .into());
                         }
                         let bit = block_id.saturating_sub(sb.data_block_start);
                         let byte_idx = (bit / 8) as usize;
                         if byte_idx >= fb.data_bitmap.len() {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *block_id,
-                            });
+                            }
+                            .into());
                         }
                         let mask = 1u8 << (bit % 8);
-                        if *allocated {
-                            fb.data_bitmap[byte_idx] |= mask;
+                        let new_byte = if *allocated {
+                            fb.data_bitmap[byte_idx] | mask
                         } else {
-                            fb.data_bitmap[byte_idx] &= !mask;
-                        }
-                        let _ = file_write_all_at(
+                            fb.data_bitmap[byte_idx] & !mask
+                        };
+                        file_write_all_at(
                             &fb.file,
                             fb.data_bitmap_off + byte_idx as u64,
-                            &fb.data_bitmap[byte_idx..byte_idx + 1],
-                        );
+                            &[new_byte],
+                        )?;
+                        fb.data_bitmap[byte_idx] = new_byte;
                         Ok(())
                     }
                     MetadataOp::SetDataBitmapRange {
@@ -1551,7 +1626,8 @@ impl ImageBacking {
                         if *start_block < sb.data_block_start || end_block > sb.block_count {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *start_block,
-                            });
+                            }
+                            .into());
                         }
                         let start_bit =
                             usize::try_from(start_block.saturating_sub(sb.data_block_start))
@@ -1570,11 +1646,15 @@ impl ImageBacking {
                         if end_bit > fb.data_bitmap.len().saturating_mul(8) {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *start_block,
-                            });
+                            }
+                            .into());
                         }
                         if count_usize == 0 {
                             return Ok(());
                         }
+                        let byte_start = start_bit / 8;
+                        let byte_end = end_bit.div_ceil(8);
+                        let prev = fb.data_bitmap[byte_start..byte_end].to_vec();
                         {
                             let mut bm = crate::bitmap::Bitmap::new(&mut fb.data_bitmap);
                             if *allocated {
@@ -1583,13 +1663,14 @@ impl ImageBacking {
                                 bm.clear_range(start_bit, count_usize);
                             }
                         }
-                        let byte_start = start_bit / 8;
-                        let byte_end = end_bit.div_ceil(8);
-                        let _ = file_write_all_at(
+                        if let Err(e) = file_write_all_at(
                             &fb.file,
                             fb.data_bitmap_off + byte_start as u64,
                             &fb.data_bitmap[byte_start..byte_end],
-                        );
+                        ) {
+                            fb.data_bitmap[byte_start..byte_end].copy_from_slice(&prev);
+                            return Err(e.into());
+                        }
                         Ok(())
                     }
                     MetadataOp::WriteInode {
@@ -1599,7 +1680,8 @@ impl ImageBacking {
                         if *inode_id >= sb.usable_inode_count() {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *inode_id,
-                            });
+                            }
+                            .into());
                         }
                         let table_start = sb.inode_table_block.checked_mul(bs).ok_or(
                             JournalError::BlockOutOfRange {
@@ -1625,9 +1707,10 @@ impl ImageBacking {
                         if end > fb.len {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *inode_id,
-                            });
+                            }
+                            .into());
                         }
-                        let _ = file_write_all_at(&fb.file, off as u64, &inode_bytes[..]);
+                        file_write_all_at(&fb.file, off as u64, &inode_bytes[..])?;
                         fb.sync_mirrors_on_write(off as u64, &inode_bytes[..]);
                         Ok(())
                     }
@@ -1639,7 +1722,8 @@ impl ImageBacking {
                         if *block_id < sb.data_block_start || *block_id >= sb.block_count {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *block_id,
-                            });
+                            }
+                            .into());
                         }
                         let slice_off = usize::try_from(*offset).map_err(|_| {
                             JournalError::BlockOutOfRange {
@@ -1654,7 +1738,8 @@ impl ImageBacking {
                         if slice_end > bs as usize {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *block_id,
-                            });
+                            }
+                            .into());
                         }
                         let blk_start = block_id
                             .checked_mul(bs)
@@ -1675,9 +1760,10 @@ impl ImageBacking {
                         if abs_end > fb.len {
                             return Err(JournalError::BlockOutOfRange {
                                 block_id: *block_id,
-                            });
+                            }
+                            .into());
                         }
-                        let _ = file_write_all_at(&fb.file, abs_start as u64, data);
+                        file_write_all_at(&fb.file, abs_start as u64, data)?;
                         fb.block_cache.update_if_present(*block_id, slice_off, data);
                         fb.data_cache.update_if_present(*block_id, slice_off, data);
                         Ok(())
@@ -1720,6 +1806,13 @@ impl ImageBacking {
         match self {
             Self::Mmap(m) => m.flush_async_range(offset, len),
             Self::File(_) => Ok(()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_file_for_test(&mut self, file: File) {
+        if let Self::File(fb) = self {
+            fb.file = file;
         }
     }
 }

@@ -1642,9 +1642,7 @@ impl DiskManager {
 
         // Phase 2: redo the ops directly against the image.
         for op in &ops {
-            backing
-                .apply_journal_op(sb, op)
-                .map_err(DiskManagerError::Journal)?;
+            backing.apply_journal_op(sb, op)?;
         }
 
         // Phase 3: reset the ring and record a clean shutdown.
@@ -1660,6 +1658,7 @@ impl DiskManager {
         let mut region = backing.journal_region_mut(sb)?;
         region.mark_header_only();
         region[..header_len].copy_from_slice(&state.encode()[..header_len]);
+        region.flush_writeback()?;
 
         Ok(tx_count)
     }
@@ -2290,12 +2289,19 @@ impl DiskManager {
         let bs = sb.block_size as u64;
         let written = {
             let mut region = guard.backing.journal_region_mut(&sb)?;
+            let hdr_len = crate::journal::JOURNAL_HEADER_LEN.min(region.len());
+            let mut prev_hdr = [0u8; crate::journal::JOURNAL_HEADER_LEN];
+            prev_hdr[..hdr_len].copy_from_slice(&region[..hdr_len]);
             let (written, wrap_pad) = {
                 let mut ring = crate::journal::JournalRing::open(&mut region, bs)?;
                 ring.append(ops)?;
                 (ring.last_write(), ring.last_wrap_pad())
             };
             region.mark_append_written(bs as usize, written, wrap_pad);
+            if let Err(e) = region.flush_writeback() {
+                region[..hdr_len].copy_from_slice(&prev_hdr[..hdr_len]);
+                return Err(e.into());
+            }
             written
         };
 
@@ -4882,65 +4888,74 @@ impl DiskManager {
             Err(e) => return Err(e),
         };
 
-        // 1. Write the entire payload in one contiguous write + zero trailing slack.
-        let payload_off = start_blk.checked_mul(BLOCK_SIZE as u64).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::other("payload block offset overflow"))
-        })?;
-        guard.backing.write_all_at(payload_off, data)?;
-        let slack = total_blks * BLOCK_SIZE - data.len();
-        if slack > 0 {
-            const ZEROS: [u8; BLOCK_SIZE] = [0u8; BLOCK_SIZE];
-            guard
-                .backing
-                .write_all_at(payload_off + data.len() as u64, &ZEROS[..slack])?;
-        }
-
-        // 2. Populate direct pointers and write each indirect pointer block in one shot.
-        for i in 0..total_blks.min(DIRECT) {
-            inode.blocks[i] = start_blk + i as u64;
-        }
-        let mut next_meta = start_blk + total_blks as u64;
-
-        if need_sib {
-            let sib_blk = next_meta;
-            next_meta += 1;
-            let mut sib_buf = [0u8; BLOCK_SIZE];
-            let sib_end = total_blks.min(SINGLE_LIMIT);
-            for (slot, logical_idx) in (DIRECT..sib_end).enumerate() {
-                let phys = start_blk + logical_idx as u64;
-                sib_buf[slot * 8..slot * 8 + 8].copy_from_slice(&phys.to_le_bytes());
+        let write_res: Result<(), DiskManagerError> = (|| {
+            // 1. Write the entire payload in one contiguous write + zero trailing slack.
+            let payload_off = start_blk.checked_mul(BLOCK_SIZE as u64).ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::other("payload block offset overflow"))
+            })?;
+            guard.backing.write_all_at(payload_off, data)?;
+            let slack = total_blks * BLOCK_SIZE - data.len();
+            if slack > 0 {
+                const ZEROS: [u8; BLOCK_SIZE] = [0u8; BLOCK_SIZE];
+                guard
+                    .backing
+                    .write_all_at(payload_off + data.len() as u64, &ZEROS[..slack])?;
             }
-            guard
-                .backing
-                .write_all_at(sib_blk * BLOCK_SIZE as u64, &sib_buf)?;
-            inode.blocks[10] = sib_blk;
-        }
 
-        if need_dib {
-            let dib_blk = next_meta;
-            next_meta += 1;
-            let mut dib_buf = [0u8; BLOCK_SIZE];
-            for a in 0..num_dib_sibs {
-                let child_sib = next_meta;
+            // 2. Populate direct pointers and write each indirect pointer block in one shot.
+            for i in 0..total_blks.min(DIRECT) {
+                inode.blocks[i] = start_blk + i as u64;
+            }
+            let mut next_meta = start_blk + total_blks as u64;
+
+            if need_sib {
+                let sib_blk = next_meta;
                 next_meta += 1;
-                dib_buf[a * 8..a * 8 + 8].copy_from_slice(&child_sib.to_le_bytes());
                 let mut sib_buf = [0u8; BLOCK_SIZE];
-                let range_start = SINGLE_LIMIT + a * PTRS;
-                let range_end = total_blks.min(range_start + PTRS);
-                for (slot, logical_idx) in (range_start..range_end).enumerate() {
+                let sib_end = total_blks.min(SINGLE_LIMIT);
+                for (slot, logical_idx) in (DIRECT..sib_end).enumerate() {
                     let phys = start_blk + logical_idx as u64;
                     sib_buf[slot * 8..slot * 8 + 8].copy_from_slice(&phys.to_le_bytes());
                 }
                 guard
                     .backing
-                    .write_all_at(child_sib * BLOCK_SIZE as u64, &sib_buf)?;
+                    .write_all_at(sib_blk * BLOCK_SIZE as u64, &sib_buf)?;
+                inode.blocks[10] = sib_blk;
             }
-            guard
-                .backing
-                .write_all_at(dib_blk * BLOCK_SIZE as u64, &dib_buf)?;
-            inode.blocks[11] = dib_blk;
+
+            if need_dib {
+                let dib_blk = next_meta;
+                next_meta += 1;
+                let mut dib_buf = [0u8; BLOCK_SIZE];
+                for a in 0..num_dib_sibs {
+                    let child_sib = next_meta;
+                    next_meta += 1;
+                    dib_buf[a * 8..a * 8 + 8].copy_from_slice(&child_sib.to_le_bytes());
+                    let mut sib_buf = [0u8; BLOCK_SIZE];
+                    let range_start = SINGLE_LIMIT + a * PTRS;
+                    let range_end = total_blks.min(range_start + PTRS);
+                    for (slot, logical_idx) in (range_start..range_end).enumerate() {
+                        let phys = start_blk + logical_idx as u64;
+                        sib_buf[slot * 8..slot * 8 + 8].copy_from_slice(&phys.to_le_bytes());
+                    }
+                    guard
+                        .backing
+                        .write_all_at(child_sib * BLOCK_SIZE as u64, &sib_buf)?;
+                }
+                guard
+                    .backing
+                    .write_all_at(dib_blk * BLOCK_SIZE as u64, &dib_buf)?;
+                inode.blocks[11] = dib_blk;
+            }
+            debug_assert_eq!(next_meta, start_blk + total_alloc as u64);
+            Ok(())
+        })();
+
+        if let Err(e) = write_res {
+            inode.blocks = [0; 12];
+            let _ = Self::free_contiguous_blocks_internal(guard, start_blk, total_alloc);
+            return Err(e);
         }
-        debug_assert_eq!(next_meta, start_blk + total_alloc as u64);
 
         if let Some(ref mut tb) = touched_blocks {
             tb.reserve(total_alloc);
@@ -7584,7 +7599,12 @@ impl<'a> ReadSession<'a> {
                 "Cannot read non-file inode",
             )));
         }
-        if self.guard.superblock.encrypted && !inode.encrypted && inode.size > 0 {
+        if self.guard.superblock.encrypted
+            && !inode.encrypted
+            && (inode.size > 0
+                || inode.compressed_size > 0
+                || (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0))
+        {
             return Err(DiskManagerError::DecryptionFailed);
         }
         let is_raw_fast = inode.compressed_size == 0
@@ -8118,5 +8138,179 @@ mod encryption_scheme_tests {
             ENCRYPTION_SCHEME_CONTEXT_BOUND
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn repro_file_io_journal_pwrite_error_not_silently_ignored() {
+        let path = std::env::temp_dir().join(format!(
+            "oifs_repro_journal_pwrite_{}.img",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let dm = DiskManager::open_file_io_journaled(&path, 4 * 1024 * 1024).unwrap();
+        let root = dm.superblock().root_inode;
+
+        // Swap the backing's file descriptor with a read-only handle so every `pwrite`
+        // fails in the kernel while `pread` continues to succeed.
+        {
+            let ro = std::fs::OpenOptions::new().read(true).open(&path).unwrap();
+            let mut guard = dm.inner.write().unwrap();
+            guard.backing.replace_file_for_test(ro);
+        }
+
+        // Creating a file MUST return an I/O error rather than silently succeeding in memory.
+        let res = dm.create_file(root, "ghost.txt");
+        assert!(
+            res.is_err(),
+            "create_file under FileIo+WAL silently succeeded despite pwrite failure: {res:?}"
+        );
+        assert!(
+            dm.lookup(root, "ghost.txt").is_err(),
+            "failed journaled create_file must not leave ghost entry in memory"
+        );
+
+        // Direct apply_journal_op must also propagate pwrite errors and keep bitmaps rolled back.
+        {
+            let mut guard = dm.inner.write().unwrap();
+            let sb = guard.superblock;
+            let op = crate::journal::MetadataOp::SetDataBitmapRange {
+                start_block: sb.data_block_start + 10,
+                count: 4,
+                allocated: true,
+            };
+            assert!(guard.backing.apply_journal_op(&sb, &op).is_err());
+            let db = guard.data_bitmap_slice().unwrap();
+            let bm = crate::bitmap::BitmapRef::new(db);
+            for b in 10..14 {
+                assert!(
+                    !bm.get(b),
+                    "failed apply_journal_op mutated data_bitmap bit {b}"
+                );
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn repro_contiguous_fresh_write_io_error_does_not_leak_data_bitmap_blocks() {
+        let path =
+            std::env::temp_dir().join(format!("oifs_repro_contig_leak_{}.img", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let dm = DiskManager::open_file_io(&path, 4 * 1024 * 1024).unwrap();
+        let root = dm.superblock().root_inode;
+        let id = dm.create_file(root, "target.bin").unwrap();
+
+        let allocated_before: usize = {
+            let guard = dm.inner.read().unwrap();
+            guard
+                .data_bitmap_slice()
+                .unwrap()
+                .iter()
+                .map(|b| b.count_ones() as usize)
+                .sum()
+        };
+
+        // Swap the backing's file descriptor with a read-only handle so payload `write_all_at`
+        // inside `try_write_contiguous_fresh_file` fails right after allocating 4 data blocks.
+        {
+            let ro = std::fs::OpenOptions::new().read(true).open(&path).unwrap();
+            let mut guard = dm.inner.write().unwrap();
+            guard.backing.replace_file_for_test(ro);
+        }
+
+        let res = dm.write_data(id, 0, &vec![0xAB; 16 * 1024], CompressionMode::Never);
+        assert!(res.is_err(), "expected write_data to fail on read-only FD");
+
+        let allocated_after: usize = {
+            let guard = dm.inner.read().unwrap();
+            guard
+                .data_bitmap_slice()
+                .unwrap()
+                .iter()
+                .map(|b| b.count_ones() as usize)
+                .sum()
+        };
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            allocated_after,
+            allocated_before,
+            "try_write_contiguous_fresh_file leaked {} data bitmap blocks on write error",
+            allocated_after.saturating_sub(allocated_before)
+        );
+    }
+
+    #[test]
+    fn repro_file_io_cache_env_cap_and_configure_regions_bounds() {
+        let path =
+            std::env::temp_dir().join(format!("oifs_repro_cache_cap_{}.img", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        // 1. Huge OIFS_FILE_IO_CACHE_MB value must be clamped to a safe ceiling (<= 4 GiB).
+        // SAFETY: scoped to this unit test check.
+        unsafe {
+            std::env::set_var(crate::storage::FILE_IO_CACHE_MB_ENV, "99999999");
+        }
+        let dm = DiskManager::open_file_io(&path, 2 * 1024 * 1024).unwrap();
+        unsafe {
+            std::env::remove_var(crate::storage::FILE_IO_CACHE_MB_ENV);
+        }
+        let cap = dm.file_io_cache_bytes();
+
+        // 2. configure_regions on an out-of-bounds superblock must return UnexpectedEof.
+        let mut bogus_sb = dm.superblock();
+        bogus_sb.inode_bitmap_block = 999_999;
+        let cfg_res = {
+            let mut guard = dm.inner.write().unwrap();
+            guard.backing.configure_regions(&bogus_sb)
+        };
+        drop(dm);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            cap <= 4 * 1024 * 1024 * 1024,
+            "OIFS_FILE_IO_CACHE_MB was not clamped: cap = {cap} bytes"
+        );
+        assert!(
+            cfg_res.is_err(),
+            "configure_regions silently accepted out-of-bounds bitmap offset"
+        );
+    }
+
+    #[test]
+    fn repro_read_session_open_file_rejects_unencrypted_compressed_or_seekable_inode() {
+        let path = std::env::temp_dir().join(format!(
+            "oifs_repro_enc_open_file_{}.img",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let dm = DiskManager::create_encrypted(&path, 4 * 1024 * 1024, "pw123456").unwrap();
+        let root = dm.superblock().root_inode;
+        let id = dm
+            .create_file_with_data(root, "secret.bin", b"top-secret", CompressionMode::Never)
+            .unwrap();
+
+        // Forge an unencrypted inode with size == 0 but compressed_size > 0 on an encrypted image.
+        {
+            let mut guard = dm.inner.write().unwrap();
+            let mut forged = DiskManager::read_inode_internal(&guard, id).unwrap();
+            forged.encrypted = false;
+            forged.size = 0;
+            forged.compressed_size = 64;
+            DiskManager::write_inode_internal(&mut guard, id, &forged).unwrap();
+        }
+
+        let session = dm.begin_read();
+        let is_dec_failed = matches!(
+            session.open_file(id),
+            Err(DiskManagerError::DecryptionFailed)
+        );
+        drop(session);
+        drop(dm);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            is_dec_failed,
+            "ReadSession::open_file accepted unencrypted inode with compressed_size > 0 on encrypted image"
+        );
     }
 }

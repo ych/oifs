@@ -7,11 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Pluggable `StorageMode::FileIo` (`pread`/`pwrite`, Zero `mmap`)**:
+  - Added `src/storage.rs` implementing a unified `ImageBacking` abstraction over both `StorageMode::Mmap` (default) and `StorageMode::FileIo` (100% `mmap`-free positional `pread`/`pwrite` I/O in Safe Rust, eliminating `SIGBUS` truncation hazards).
+  - Added `DiskManager::open_file_io`, `open_file_io_journaled`, `open_file_io_with_password`, `open_with_storage_mode`, `storage_mode()`, process-wide `set_default_storage_mode` / `OIFS_STORAGE_MODE=pread`, and the `--no-mmap` global CLI flag.
+  - Added write-through in-memory bitmap and WAL ring mirrors plus a 16-shard `Arc`-backed 4 MiB `MetadataBlockCache` (deadlock-free across nested double/triple-indirect pointer traversals with a zero-`Arc`-clone `read_u64_le` fast path).
+- **64-Shard User-Space Data Page Cache (`DataPageCache`)**:
+  - Added a configurable 64-shard Second-Chance Clock user-space 4 KiB data page cache for `StorageMode::FileIo` (32 MiB default, configurable via `OIFS_FILE_IO_CACHE_MB` or `DiskManager::set_file_io_cache_bytes` up to 4 GiB, or `0` to disable).
+  - Automatically bypasses streaming reads exceeding 64 KiB to prevent scan pollution and stays strictly coherent across all writes, truncations, block zeroes/copies, and WAL replays.
+- **Single-Transaction File Creation (`create_file_with_data`)**:
+  - Added `DiskManager::create_file_with_data` and `DiskManager::create_file_with_data_with_filters` to combine inode allocation, directory entry insertion, and initial payload write into a single write-lock acquisition and a single WAL transaction, with automatic rollback on `NoSpace` or I/O errors.
+  - Under `DurabilityMode::Strict` on journaled images, small payloads (`<= 8 KiB` / 2 blocks) are zero-padded and data-journaled directly inside the WAL commit (`WriteBlockSlice`), cutting durable file creation from 3 sync barriers to 1 (`2.31x` higher `Strict` `FileIo+WAL` throughput).
+- **Shared Read Sessions & Pinned File Handles (`ReadSession` / `FileReadHandle`)**:
+  - Added `DiskManager::begin_read() -> ReadSession` and `ReadSession::open_file() -> FileReadHandle` to amortize outer `RwLock` acquisitions and `BoundedInodeCache` lookups across batches of lookups, metadata queries, and positional `read_at` calls (`2.3x` faster 4-thread random 4 KiB reads on `Mmap`, `6.3x` faster on `FileIo`).
+
 ### Performance
+- **Precision WAL & Bitmap Writeback + Contiguous Fresh-File Allocation (`FileIo` & `Mmap`)**:
+  - Narrowed `JournalRegionMut` writeback under `StorageMode::FileIo` from the full 132 KiB journal region to only the appended WAL frame (plus any wrap-around zeroed tail) and the 64-byte header, and narrowed `BitmapSliceMut` writeback to modified dirty byte ranges.
+  - Added `DiskManager::try_write_contiguous_fresh_file` in `write_buffer_at_offset` to allocate payload and indirect pointer blocks in one contiguous bitmap span and write each indirect pointer block in a single write (`7.7x–9.5x` faster 16 MiB non-journaled `FileIo` sequential writes, `10.2–12.7 GB/s`).
 - **Persistent Scoped Worker Pool & Global Zstd Context Recycling**: Added a zero-dependency persistent worker pool (`par_for_index`) and bounded global `CCtx`/`DCtx` recycling pool in `src/zstd_pool.rs`, keeping worker thread-local Zstd contexts warm across calls and eliminating per-call OS thread creation overhead (`2.70x` faster 1 MiB seekable `read_at`, `12.6 GB/s`).
 - **Sequential 4-Chunk Parallel Read-Ahead**: Upgraded `ChunkReadCache` to an `RwLock` with zero-`Arc`-clone slice copying (`copy_slice_if_hit`) and automatic 4-chunk parallel read-ahead on sequential sub-chunk `read_at` scans (`1.47x` faster sequential 4 KiB seekable `read_at`).
 - **Non-Journaled In-Place Chunk Reuse & Single-Lock Seekable Stage-1**: Reused existing contiguous chunk runs in place on non-journaled seekable overwrites when `blocks_needed <= old_cnt`, checked `ChunkReadCache` during partial-chunk RMW, and merged `write_data_with_filters` seekable routing into a single shared read lock.
 - **AArch64 NEON SIMD + Short-Message Scalar XChaCha20 Fast Path**: Enabled `chacha20_force_neon` for `aarch64` targets in `.cargo/config.toml` (`+21.7%` encrypted 64 KiB append throughput, `701 MB/s`) alongside an RFC 8439-identical 1-block scalar XChaCha20-Poly1305 fast path for short filenames (`<= 192 B`), avoiding 4-block/8-block SIMD waste on both AArch64 NEON and x86_64 AVX2.
+
+### Security
+- **`FileIo` Writeback & WAL Apply Error Propagation**: Propagated `pwrite` I/O errors explicitly from `JournalRegionMut::flush_writeback` (rolling back the in-memory journal header cursor on failure) and `ImageBacking::apply_journal_op` (writing disk before updating in-memory mirrors/caches), preventing memory-vs-disk split-brain and preserving WAL-before-metadata ordering on host I/O failures.
+- **Contiguous Fresh-File Allocation Rollback**: Ensured `try_write_contiguous_fresh_file` releases all newly allocated contiguous data bitmap blocks and resets `inode.blocks` if any mid-write `pwrite` fails.
+- **Bounded `FileIo` Cache Configuration & Region Validation**: Clamped `OIFS_FILE_IO_CACHE_MB` / `set_file_io_cache_bytes` to `MAX_FILE_IO_CACHE_BYTES` (4 GiB), rejected out-of-bounds metadata regions in `FileBacking::configure_regions` with `UnexpectedEof`, and extended `ReadSession::open_file` encrypted-image checks to reject unencrypted inodes with `compressed_size > 0` or `INODE_FLAG_SEEKABLE_64K`.
 
 ### Documentation & CI
 - Updated `README.md`, `README_zh.md`, and `AGENTS.md` with current v1.2.0+ architecture, security hardening, and verified release benchmarks.

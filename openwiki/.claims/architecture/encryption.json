@@ -1,14 +1,18 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:461ddebc40819b4b30be87170a8b653f6d8ce11b6da3c86b9e5d134e12e1b870",
+  "pageVersion": "sha256:6019be6d78bb4b0972bea81b60bdaf052bcefdb697fa73ad5a1517c5d7877433",
   "claims": [
     {
       "id": "claim_9973979c3dfb48d4a130186fe2d11d8f",
       "statement": "EncryptionKey derives ZeroizeOnDrop to erase 256-bit key material on drop and redacts key bytes in Debug formatting, while derive_key derives keys from passphrases and a 16-byte random salt using Argon2id.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L21-L71",
-          "version": "repo-lines-v1:sha256:db41a74c02b52e51ec05fddd03b3fafaaf12ba0b4e80ce732aa076779b10324a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmOGQ4OGYzMmVhNmI0ZmYzN2JmMzg0Y2FlZDZmNGFiZGNjZDczYzVkMTQ4YTUzYjA0Y2FmMTQ3MTg5MDNhMzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxYzdiZjVmNjIyOWFjOGUxNzc0ODU0MWI3OWM1NDI4ZDA3NGViZTk3Y2JlMWE0NDE4ZGQxNjkzYzU1ZmZjYTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM0YjFlMjU4MDhkZDVhNjEyZjNkODEyZmU2Yzk5NGZjNWY2MDQxYjI1NWZhMTc1OGEzNTRmOTZhZDBhN2NhMDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU5MWY1NjVhNWQ4OTJlM2UwYjBjNjczNTg0YjRmNjdkZjc5YzczODM4ZjU2NzU5NTY2N2ExNWUzNGVkOTYwN2MifQ"
+          "resource": "repo://src/encryption.rs#L121-L166",
+          "version": "repo-lines-v1:sha256:ea69c6fc43e546337895ba76726fb1bd94a2cfb737d52d91166fdc2c4531e974:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMWU4YjYyZTMzYmM0ODQxYzg2YTUyYmJmZDQyNGFlNDFlMGJiZWE4MjQyMmQxMGUwZDIwYjlmMzA1ZmI0MGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5YTFlNDI4N2NjMDc1MzBhNjY4ZTQ0NTE2MjdiNTJiY2U2MzVmZmIwNmI1MzMyZDYzZjM4YTYzYjRkZjRhMTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY2ZDg1NmVhZDRhNjM2YjI5ZTA1NzRmZDlmMmE2YTczZGM5NmQxY2M2ZTgzNmIwM2MwOGRiODcwZjdlODEyN2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxMzZhZDNjM2NiNjFmZjEyYzczOTI2ZWJkZTRmMDM2MjRiNDgzODQxNzYzMzY2OTkwY2MzODU2YjVhMzllMzYifQ"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L60-L117",
+          "version": "repo-lines-v1:sha256:3c500d0143fa86a014db1ddaa8fc148a8450f1f78146e7231f5110b746efd98d:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMWU4YjYyZTMzYmM0ODQxYzg2YTUyYmJmZDQyNGFlNDFlMGJiZWE4MjQyMmQxMGUwZDIwYjlmMzA1ZmI0MGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmMzcwMmQ1OTdjMzg5NmNlYWFhMzIxZDE1MjE1MjJkYjEyNGZmYzQzNzBkMjM1OGUzOTFkYjQyYzNlNGY3YWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY2ZDg1NmVhZDRhNjM2YjI5ZTA1NzRmZDlmMmE2YTczZGM5NmQxY2M2ZTgzNmIwM2MwOGRiODcwZjdlODEyN2UifQ"
         }
       ]
     },
@@ -17,18 +21,30 @@
       "statement": "File data encryption uses XChaCha20-Poly1305 AEAD with a unique 192-bit (24-byte) random nonce per file generated via OsRng and an appended 16-byte Poly1305 authentication tag.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L66-L149",
-          "version": "repo-lines-v1:sha256:53f8065d778885fac939f0858d0b07c6047b3403e113b0666ec885b79fdeaee4:eyJzZWxlY3RlZExpbmVDb3VudCI6ODQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NzJiMWM4ODE5ZDFlNWNiY2YxYmFkYWU4MjhmYWEwOTZiNTk4NDBjOGI3MmJiYWQ4YWZjNGY5N2ZiNDRmZTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlZTJiNDk1MTMzODY4MDRkNzdhM2ZmMTA1MDgzM2NmNGU4NWE5NDM4ZTAyYjYxMzhhZjU1OWZlNzlmYWFjNjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzMDU1ZjVkMjc4M2Q4MThlMzlkZDY0NDE4ODI5ZjRjNDMxYTVmNzg3MTA5ZWY5YTMyMWYzM2UwM2IyMzk5YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdhNTVmZDkzNTZkNGU4MDAxYzM5NDM5MWM5OGQxNjI5NTZjOTMzNmIwMDJhMWI3Nzk4ZjlhNjEyOGU4N2FiNGUifQ"
+          "resource": "repo://src/encryption.rs#L123-L148",
+          "version": "repo-lines-v1:sha256:4f17d417a1eda03d97e74176c22e6b25d4e28c9cad7de9586f5e1e2ab3d8bac9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5MWZjMGQyNzg5NjZlODg4NWRjMmFlYjAwZDhiNDY2ODc1ZTkxOWUyNjRmMTA1ZjYwZGMyYmI3OTM5YWZiMGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxMTFkYWFmNDBlN2NiNGQwYzVkMjY2NjNjM2E5ZDhkYTllOTI3NTFlNDc0ZGQzYTY0YWNhOTgwN2UzOTNlYTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRjNTQ5MDAxNDQ1YzgyZTFmYzg0YzRlZjFhMzhjNWMwMTIwYTdiYjRlZTdhMzRhMGI0OTM4MjljOTYxMzZmZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkxYTQwZDM5NDY3Y2MwYjliZmFkOTllMzczYjZiYTc2ZTdlNWYwZmUwYjhiYzFmNDkzZTUwZDYwYWZmNmFlNzAifQ"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L272-L278",
+          "version": "repo-lines-v1:sha256:6341e50d4bdff845ea199e59d0e23cb2702a5d1430eada3707735447a840dff0:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQyYTNiOWE5M2UyZmVlMmZhYzI1ZTAzZDUzYjdmM2IzYTdhNjg1M2ZjNzk0ODBjNzdhZDYwNWY5ODNlZjZmZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzc3ZTVmMmRlZTVlMGJkZDdiMjA4ZThjMTU4MWM5MTQzNTIyYjU3ZWNiZTg3M2JhMzVlNzhjOGQ1MmViMzhhOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjZhYTU1N2RjYTA2MTMyNzk5YTc0OTQxZDM4Mjg2YTI1YzdlYWExZmZiNzNjNGU3YzFhYWNkOTk5NWYyYTAzMCJ9"
         }
       ]
     },
     {
       "id": "claim_2b67dd35bb6b45ccbf03bd62461c8ccd",
-      "statement": "Deterministic filename encryption uses a Synthetic IV (SIV) construction combining a Blake2b-512 PRF tweaked with the parent inode ID, ChaCha20-Poly1305 authenticated encryption, and unpadded Base64URL formatting with an '_e_' prefix.",
+      "statement": "Deterministic filename encryption uses a Synthetic IV (SIV) construction combining a Blake2b-512 PRF (domain-separated OIFS_SIV_FILENAME_V2_XCHACHA20) tweaked with the parent inode ID and filename_siv_key, XChaCha20-Poly1305 authenticated encryption with filename_cipher_key and parent_inode bound in AEAD AAD, SIV verification by re-computing the nonce from decrypted plaintext, and unpadded Base64URL formatting with an '_e_' prefix. Legacy 12-byte ChaCha20Poly1305 format (OIFS_SIV_FILENAME_V1) is supported as a fallback.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L156-L252",
-          "version": "repo-lines-v1:sha256:417ee725036239b08d755d1645ce38b3d5e2ba844c2768977a8c445520de50e4:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2Njg1MjI2Nzc5YjQ2ZDZmNWZkZjYzY2FiMGE0ZjU1NjM3MzUwN2E5N2I4MTc1N2YzNTQwOGUxMmQ5ZDk2ZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc1N2IxYmM5YzhjY2Y0NjRiMzMzYjUzMTRjY2E3M2FjNGUzYTViNWM2MWVhODc3NzAzNjAxNzNkYzc2ZDQ2NWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhNjdhNjcyMmUyOTc5Y2MwN2UwYjcyODIyZjVlNGJkZmZjMjNmODQ3YTYwNmM2MjA1NDc4NzI4MTYxMjUxOTAifQ"
+          "resource": "repo://src/encryption.rs#L17-L27",
+          "version": "repo-lines-v1:sha256:ef7732570feab5f2ca8e35c82e6ea7b7b283e75494766050128012b79a4277f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3Mzc0MjdjNGMwMDExZGE4N2NkMzA5YjE4M2RlYWNjMmRiZjk2NDQ2MDk2NDViYjM4NWY2MTE0YzA3OGVkYzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkyMjkwZjQ5NmQ5OTQyMzg5MDFlMzJiZTliZTE4OTlmOTRhODY0OTY4MzBhMjVhNDNkNzY2MzFmNjQ3Nzk5MjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY0ZjFlODVhNGFlN2U1M2NjNzg0NWVhZDcwZWM2ODRhNzU2MzRiNmY2NzM3NjFkNmM2NjJjNzA0NzBhNmI3MGMifQ"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L651-L657",
+          "version": "repo-lines-v1:sha256:b80680789d218b05312ec62129041dcb55ff890cfd9b70ca9a30f3dcb209116a:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTk3MmE5N2RkZmY4ZTcwNGU1OTMxZmE5YWYwZmY5ODYwZjNlMDM4NjVjYjY4ZDFmZDk1OTVmOWQ5YzY3NDU2OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTZmNjNlODM5MzcwNjU0M2FiMTQyNDc4NGIzZWQzMjc1MmY3NzJlOTcxZmQyYjUzYjA2MzkxZDJiMTg3MWU3MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzQyYTc0OTE2OWRlN2VlNWI1NDdkYzQwMjY4NTBiNDFmOGI5NWNhZWY0ZjA2ZjQ0ZDYwYjdmZDY4N2NjNTkyMiJ9"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L688-L900",
+          "version": "repo-lines-v1:sha256:1a4387d2cf14490204e1629cf43d4ae087e43f40a49da75161247e816268bc8d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5M2IwNTk3ODk2MjFjNGIyYWE5NjU5N2RiZDU0NDFmNTIxMDZlNDlmNWJmYjdhYmY1ZTc3Yzg5YTQ0NDNlYzAwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4MjYzNTI0OTdkNmQ3MWVlMGNjMzZlNDM2OWJhYmY5YWUzMWVlMmMxNzdlNmQyZDljYmJjNTI5NzMyODBiNGRjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiODg5NGY4ODg0NGY0ZjE3YjM0MGNjNDQxMTMzMmQxMjk0YTM1ZWE5M2QwZmMwMjMxZDQxMzNmMWUwNjY0YjM0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwMmE2YTk0ODQ0ZThhMDE0ZDRhZGUxY2FmZGIzZmRkNjEwZmIxMzIzYzMzNWM4ZjExMTAwMTg0ZGM3ZDU3YjA1In0"
         }
       ]
     },
@@ -37,14 +53,74 @@
       "statement": "EncryptionError distinguishes key derivation failure, invalid keys, encryption failure, and authentication/decryption failure resulting from incorrect passwords or corrupted ciphertext.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L255-L268",
-          "version": "repo-lines-v1:sha256:5285a9acae00f8e7ce4b6f1b04105294d9f92b07a3f87a14398bdd3dd0fe70da:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1Nzg4ODZlOTFiMmI5NGNmZDhlOGU5YzVmYTQxMzUzNDcyMTRlNWM0ZWRmZDRmMjM1ZWMyMzc3NzJjNGM0MjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzODIxMjNmYmY2OTcyMjQxN2RhMjgwMGE0NWVjM2VlOWI5ZGFmOTFjYmU2M2M4ODEyOWNhYTk1MGIwMWI2ZTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
+          "resource": "repo://src/encryption.rs#L902-L921",
+          "version": "repo-lines-v1:sha256:afd2729575b76880afc913ed97f163c04946022f926ba7ec4e990c10a9d56d1d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlOTA0MGI5NGMxNjU4Y2FjOTc3NjVkOGI2YTljOWQ4MjI1NWRhZGIzMjViNTMxY2Q4ZDUzN2EzZThiNDdhYjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhMTJiZjFjNTBlOWJhNzZkNGE2ZWRlNDcyM2QyNTg1ZmVhYzZkZjk5MGM3OThmZjMwZGE4NjJmMDFmMDM4NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliNmZmMTQxNTM3MDNkYTJiNGQzNGEzZGU1MTBmMjIwY2U0MTJiNWRkMzJkMjk5Mzc0NWMzZDgzZjVjZTEyNDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cc550335a03048cdb9b4340abfc68158",
+      "statement": "EncryptionKey derives four domain-separated 256-bit subkeys (payload_key, filename_siv_key, filename_cipher_key, ipc_auth_key) from a single 256-bit master key using BLAKE2b-512 with distinct context labels (oifs.kdf.v2.payload.xchacha20poly1305, oifs.kdf.v2.filename.siv.blake2b, oifs.kdf.v2.filename.aead.xchacha20poly1305, oifs.kdf.v2.ipc.auth.blake2b). The master key is never used directly for any cryptographic operation.",
+      "evidence": [
+        {
+          "resource": "repo://src/encryption.rs#L17-L57",
+          "version": "repo-lines-v1:sha256:036c81c4e177427843d1f00bfb22542ebabc57bce33737d0ba47f328bf19db09:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3Mzc0MjdjNGMwMDExZGE4N2NkMzA5YjE4M2RlYWNjMmRiZjk2NDQ2MDk2NDViYjM4NWY2MTE0YzA3OGVkYzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlZGJjMWU2N2QwMTc2NmEyMjgzOWM0MTM3MDRmYmE1YmViMmZkNDQ4MTk0ODEyODYwYzUzYmQ3NzY3YThiNTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkyMjkwZjQ5NmQ5OTQyMzg5MDFlMzJiZTliZTE4OTlmOTRhODY0OTY4MzBhMjVhNDNkNzY2MzFmNjQ3Nzk5MjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhhNWZjNDExYjUyMzE3Y2Y5M2RlODUwN2QzMmY1NjkwMDMyZDNkYTU1NWQ0YjlmYzBkN2ZkODQzYTk3NDQzNWYifQ"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L60-L111",
+          "version": "repo-lines-v1:sha256:e1604b469988379a14d270b556358f07229855575d6edf7a30cf0a2eb630da19:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM3ZTFiMmFiN2RiYTNkYzJhMDM4OTAyODUyZmVlZDc4ZDJhZmIzMGFmYTQ5ZDYzOTAzYjNiODM0ZmUyNzJhZmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmMzcwMmQ1OTdjMzg5NmNlYWFhMzIxZDE1MjE1MjJkYjEyNGZmYzQzNzBkMjM1OGUzOTFkYjQyYzNlNGY3YWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_99a9e2d7bf484fa6a56166333cd93d60",
+      "statement": "Two encryption scheme versions exist: legacy (ENCRYPTION_SCHEME_LEGACY=1) uses empty associated data; context-bound (ENCRYPTION_SCHEME_CONTEXT_BOUND=2) uses structured AAD binding file inode_id (20 bytes), seekable chunk inode_id+chunk_idx+flags (29 bytes), or filename parent_inode (20 bytes) with domain separator 'OIFS-AAD-v1'. Stack-allocated helpers (file_aad_for_scheme_stack, chunk_aad_for_scheme_stack) avoid heap allocations on the hot path.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L1194-L1201",
+          "version": "repo-lines-v1:sha256:2e2536d37a30b945a5b6f0274fb0ec2bee3c889c0b5bb72d7358b529c2418f0c:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzZlNzg0YTM1ZTFjMjU4MGI4NjY5NDRlYjJmMzUzZjU4Zjc0MDg3OTJmODliNGVkODY1OGExMzYxZDVjNzFmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzZlNzg0YTM1ZTFjMjU4MGI4NjY5NDRlYjJmMzUzZjU4Zjc0MDg3OTJmODliNGVkODY1OGExMzYxZDVjNzFmMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDAzN2UyYTgwOGQzZWVkZTU1MTc0NGRlMDUzZTU5ODhhZmRkMDBiOWU2ODJlNjJmYzViNWU2OTZmZTgyNDAxMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTI4Njg0ODliNDlmNDA1Y2FmZWNlMDdmN2Q4OTIxNjc1MGNkYWJjZGYyYzFmN2NhOThhYzVhOWRmMmI5MDE3YyJ9"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L327-L445",
+          "version": "repo-lines-v1:sha256:ff68a22abb2e2d2638eff62311007a391e301c44d5180c6da63509a6c56a06ad:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ZmE2YzFhODdhYTc0NTU3ZTZhZmIwMGMyYzQ2MThkNzhmNzRmYzEwYTU2ODlmMDM5MGVhNjc1ZDg3ZWM0MTVkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4MzEwZjg4ZmUyZThkZjgzY2QzZWMwNjAyNWFiODYwM2Y2MGE1ZTcxMTk1MGY1YmJkMTUyMzE3OTg5NjJlMzc3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2ODJlODE3NjRkZWU2OTU5MjgzMjMxNDZmM2VmM2UyMTQ4OGM0ZDFjMmViMWIzYTk5NDUwMzQ4YWY5ZjVhNWQwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmYzJhODc4MWU1N2ZkNThhNWZhNDExY2JkMDM1NTkyNjQ3NjlmNWE4NGMxZDNiNzY2OTQ4MDk5NGI2ZmY4ZTI3In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_8a9ee41a18ab44e9b7b38aa0daa605ea",
+      "statement": "Short-message scalar fast path (≤192 bytes) implements exact RFC 8439 XChaCha20-Poly1305 with hchacha20 subkey derivation and per-block keystream generation, computing only the needed 64-byte ChaCha20 blocks. This avoids the NEON implementation's 256-byte block granularity waste on short filenames and small chunks while remaining byte-for-byte identical to the NEON path for larger payloads. All intermediate key material is zeroized after use.",
+      "evidence": [
+        {
+          "resource": "repo://src/encryption.rs#L507-L644",
+          "version": "repo-lines-v1:sha256:857a6fa8d963b58bf3806dc37b9e95389d142fdbfedb2b232297663bc243a3aa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNTA0YzAxMjJlNWM3NDA4NWNkZTllMGFmY2E5MWFjOTFkZmEwZjg0OTA4NjRhYzdmYTAzMTAzN2JmNWIwOWQwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4Njg5YjFhZDIxMTM1NzM0YzcyMDRhYmE1MGFkYTE4OGZmZjFhMWVkZThjMDQ5OTJmNGNjZDVlYzk3OWJiNTMzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1OGI2NjU3MzE2MmNlMWUxYTkzNDY5MGJlMTE0YThlMmQ2MDNlNjhhN2I0ZWViMTNjNzJjYzIwOWM0NjVmYTU4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1Njg1MDI0YTM3NGRjZDVkMjY4ODg2YjAwZjIxYTg1Yjk3ZjA1MDJjMTU1ZTkzZTJlNzRkNDkwNzQ4OTJiZTA2In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_f2a207f065024ae0bcbab7108c32996b",
+      "statement": "Seekable 64 KiB chunks (INODE_FLAG_SEEKABLE_64K) are encrypted independently with per-chunk 24-byte nonces and AAD binding inode_id, chunk_idx, and chunk flags (FLAG_EMPTY=0, FLAG_COMPRESSED=1, FLAG_RAW=2). Chunk ciphertext layout is [nonce | ciphertext | tag] stored in the chunk's block run. Decryption verifies AAD before returning plaintext, preventing chunk reordering, rollback, or cross-file injection.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk/chunked.rs#L247-L400",
+          "version": "repo-lines-v1:sha256:b04c91b7b0f198f84efbe05247c7b811809ed67eebe6c7ad1274f59e87aaf32c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmMjQwOTViNzdhZWQ1NTk1N2VjODI4ODYwZGFjZTVkNDFlODY5MTVjNmUxMTkwYWVlMDY3OTk3YTlkMWMxY2U5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmMzk5ZjQ2MGRlMjdlNjYxZWU3ZDI0NjBhM2M1MjczMDU3MGNiZmU1NTYxZWQzOWZlNmZhMGYwOGRmNDcwMzZkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3YzhkYzkxYzZlMTU1OTkzOTk3YzVmNDk5ZmU4MzJjN2VkYzMxM2UxMjU1MGIwYmU4MGFkYTcxMjMzM2E0MDMwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4ZmY1YWQ0ZmI2OTc3Y2FkY2I0ZjU0YWIzMmY4ZTA0MDk1YzQwYjZhYTI5ZjljOTE1ODhlZGVlYWM0NDE4NmM0In0"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L368-L385",
+          "version": "repo-lines-v1:sha256:802de7ff248fe4c22ec1058291f45e355b23a7a5892286e0f45b40f5b71d6189:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4OTE2ZGY3OWZkMTQ0YWJlNWM1MjNiMGQxMzA5NTU0MmRmMDRlMDVkMzNmZDg2ZDBiYmNhMjQzOWFlMDY1ZDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2ZDhkZTg5OGZiNmQzYmY4MGFjNjcxYTgwYzJlOTdmYWFjYjg1MzM1MmQyYmMxZWNjMDM0Y2VlYWRmZjMzMDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU4NjExMDE4MGY5NmNhODZkYmU5NDUwOGIxYmJlMjRmYTllNTgwZmM2MzhkNTcyMTI4N2QzNzQzNzZiZDhiOGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3MDM0MzhmNjA2ZTA0YmI5YzFkZmViNmI1YTdmMTg3N2M5NzdjZmU0ZjJlMTEyNzhmNzk2Y2VmNzdiMGNkMTcifQ"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L418-L425",
+          "version": "repo-lines-v1:sha256:256278fe0b4ac60d7316c4b5eb014b96e62b3b5ccd60ef732734563c44c79390:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzJhOWU0MDAzYTY4YTI4MjJjMjI5YzYwN2EwZjYzMzI0ZTc2YzYxZDk1NGM3YjFmZDk4YzhhMmE3NzlmM2YyMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTFmZmQyM2I2ODMyNjVmZDVhNzYxZDkxZmQ3NWJmMjUyODE1M2I5YzA4MzJhYTY5MmMwNjIwZTAxMzAwMjBjMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTlkMDllYmE0ZTA4OWZmNDZlMTJhNGQ2MDllOWE2NTE0YTExN2YyNjJiODgxNTNmYzk1YmIwNzg4MjFkY2Q0OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTZmNWVlZjQwM2YxMTNlNWQ3MmQ2YzE3ZGViNjY2MTAxM2Y0MjhhNTc5ZTQzZmM2ZTkxNDA2NDQ0NmYyMzdlYSJ9"
+        },
+        {
+          "resource": "repo://src/inode.rs#L55-L65",
+          "version": "repo-lines-v1:sha256:2b7653250587c950fda2daa681acc75baa73a17fa15272740a6e5418d6a8a466:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4ZDQ3NTRmMDVhNmEwZDI2MzI2ZmZjMjBiZTRjOGFhMTdjNGNjY2YxMWYwZGZhOTc1YzI3MzBjNGYwOWJmZjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YjBmNDgwOTZiOTBmMThkZmM3ZTQyNTIyY2EwMzRlYTQ1NWI4MTdmZDM4YzMxN2U5YjYyYTVkZDdlMTVkNjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlOTBmOWI0ZmYyZmRkZDU2YWZkOTQ4NjZlYjUyODYwYmQxMGNkMTZiOTY5YTM0NWY0YjA4ZjVlZDNhODNhYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwNzdlZGNmNjI1ZmZiZWMxZWE2ZmQ4ZDc0Y2JhNmE4ZGY3YTgyYTVhOGEzNjhlNDZjMDZiYzAyYWQ5MGZkODYifQ"
         }
       ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.6.1",
-    "at": "2026-10-18T12:30:37.113Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-20T22:07:36.625Z"
   }
 }

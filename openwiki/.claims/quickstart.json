@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:92deea512ade4e25d9db47b895edb27b7f96c0cc427ed42260a24b4e65c0ce1d",
+  "pageVersion": "sha256:fa3060688e12f85e2fcfeb7045bc1a0235d3b84b1e5ca7305009bbda1c45c735",
   "claims": [
     {
       "id": "claim_ca87b04153364f858e7d747421cc8f79",
       "statement": "The oifs CLI exposes a Commands enum (create, put, get, append, mkdir, list, analyze, defrag, fsck, filter-analyze) covering every operation the quickstart exercises end to end.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L36-L139",
+          "resource": "repo://src/bin/oifs.rs#L152-L255",
           "version": "repo-lines-v1:sha256:9aa12adc9d43a9934bb10a81738ca7307b0e11d878fd54b0c89398a67065c2af:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMDhiNTUzMTNmZDMwZDVmNjZkMWMzMmFlN2E0MGRiZDZlMzQ4Y2M0OWFmMmFiZGI4NTRhZjkzNTFjYTdlNjRlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyMzAzNGQzMTYwMjlkZmM5MjljNmU4NjU0NjkwZGJkOTkxYzRjMTg1YzRkMzkwNTIzMGIwOGE4MzkwM2Y1YTc3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYmQ3MjRkMzg0ZTMxOWFhZWY0NTNkMDU1ZmY0NTQ2ODdlY2NiMTBkNWQxMDBhMGExYWM5Njc5NGYwNDNjZjNjIn0"
         }
       ]
@@ -21,8 +21,8 @@
           "version": "repo-lines-v1:sha256:159af002c7ce0873a2e01c7f9cf087ba2953252ff114b3e6f0bf1f11af676e28:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg0MzVlZjU5NGYzMzcwNzMwN2MxZmU1OWIwMTdmMjExZTllZThhMTVjODJkZDVlYWIxOWI3NjdhNmY3NGJlOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjg1MTI2Nzc4YTgwODM0OTRmMWRmZDJjYjI5ZDc4NDM5MTQwOTViNjUyZjcwZGIxNDBjNDUxM2I0ZmQzNzFiMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQ3NmIxM2EwMjBmNjAyNDhhN2VjODFhOTNlZDA1NDJiZTgyMzQyNmQyYzAyNmFmYjg4YjY0M2RjMDEwYjMyYiJ9"
         },
         {
-          "resource": "repo://Cargo.toml#L53-L66",
-          "version": "repo-lines-v1:sha256:499d8550e23c3e404caf830cea7008cd66f60833ae096c6262bdcd236d7993b6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ZjZjMWM3M2U0Njg1YjZmNTU3OTJhZTUzOTI1NTNmZjc5ZDNjYzA2N2IwYjc0ZTA2ODY5OGY2YjJjNzZiODIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmMTFmZDQwMzQ1ZTM0NDZjMDMwYWI4ZmEwM2E2NjczOWRjYzg4ZjczY2RjZmNkZDg1ZTYwNDMwZTg0YTFlMDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIwY2Q3Y2UwOWIxMjA5MTJhNDQ5NDYwOGVmYWFiZWY2ZWI2OWU4ZWM0ZmFhZWUzOTIwNWI3ZjE5NjZkNTI0ZjkifQ"
+          "resource": "repo://Cargo.toml#L47-L61",
+          "version": "repo-lines-v1:sha256:075edcb4b44ad3aa76d1887bc4b37046fee79820a4b61bd8dbee1ec8cd9de4c9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ZjZjMWM3M2U0Njg1YjZmNTU3OTJhZTUzOTI1NTNmZjc5ZDNjYzA2N2IwYjc0ZTA2ODY5OGY2YjJjNzZiODIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmMTFmZDQwMzQ1ZTM0NDZjMDMwYWI4ZmEwM2E2NjczOWRjYzg4ZjczY2RjZmNkZDg1ZTYwNDMwZTg0YTFlMDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIwY2Q3Y2UwOWIxMjA5MTJhNDQ5NDYwOGVmYWFiZWY2ZWI2OWU4ZWM0ZmFhZWUzOTIwNWI3ZjE5NjZkNTI0ZjkifQ"
         }
       ]
     },
@@ -31,32 +31,102 @@
       "statement": "Encrypted images are created with the --encrypt flag and interactive password confirmation, then later accessed via a masked prompt or the OIFS_PASSWORD environment variable / --password argument.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L160-L197",
-          "version": "repo-lines-v1:sha256:0bf3bf1553ad1d2c42d3f0f3b57d0c6e84cc7f94df5bdb8da159ca5d9e31acaf:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0YjBlODY5NmUyN2Y5OWE1Yjg0YzVhMmQ5YzJhNWY1ZWNkOWEwM2VmNDc0M2MzNzZjMWYxMDc3NTA5MzQ3YWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI3ZTU5ODQxYmYxOGM0ZmM1MjQxMDcxNTA2NGRiNjc0YWU2NTFlNjZiOTkwZmJlYjA5MTg2MDliZTVkYWJlYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlMGRiZmQ4OGZiZmMyYmQ5MTA2ZDE4MTZmNThkYWMyYTFlNTIxNGE2MzUyMTQxMDY4NTE4Zjg3ZjFiOWM0N2MifQ"
+          "resource": "repo://src/bin/oifs.rs#L276-L318",
+          "version": "repo-lines-v1:sha256:e9134839e6af2738b95db04f606ecb7850f722103a119ce1eb2049b5afe4a89b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0YjBlODY5NmUyN2Y5OWE1Yjg0YzVhMmQ5YzJhNWY1ZWNkOWEwM2VmNDc0M2MzNzZjMWYxMDc3NTA5MzQ3YWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI3ZTU5ODQxYmYxOGM0ZmM1MjQxMDcxNTA2NGRiNjc0YWU2NTFlNjZiOTkwZmJlYjA5MTg2MDliZTVkYWJlYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlMGRiZmQ4OGZiZmMyYmQ5MTA2ZDE4MTZmNThkYWMyYTFlNTIxNGE2MzUyMTQxMDY4NTE4Zjg3ZjFiOWM0N2MifQ"
         },
         {
-          "resource": "repo://src/bin/oifs.rs#L363-L412",
-          "version": "repo-lines-v1:sha256:4a8a9cf258d4ab3b892c5e87f965cd807e3b77d2f82cfe059e0e74b33df9d84c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyOTI2MThjOTk1YTEzMTEwYzkzOTZjYzdlYTY1NDNmZGY3YTZmNzU1YTdiYTExOTBlNjJhMzg3NmFmZDEzNjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlYzA2YTY1OTg1NTdjZTIzYmRiMmZjY2U2ZDRlZDZlNjdiNDZjOTZmZTY4NGQzMjQ5ZWFiNzY0Njk3MTQ1MWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkZWZkMjJmYjE0ODVkMDAxOTdmZmFlNGUwMzdmYzM0MDI3MDI0MzlhOTJjZjczMTZmMDgxZGJjZmI0OTFlNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVhN2VlMDA5MDc0NjM3N2E3OWExNDRlMDQyNDIwNTAyMWUwMmMxMDQ0NmU0MDczYTg3YzdjZTllYzgyNWMxMTIifQ"
+          "resource": "repo://src/bin/oifs.rs#L514-L563",
+          "version": "repo-lines-v1:sha256:9eb61edd22bee7191e3bb0c57ad271b388b54ad0402ce450dff8739ca1aec985:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyOTI2MThjOTk1YTEzMTEwYzkzOTZjYzdlYTY1NDNmZGY3YTZmNzU1YTdiYTExOTBlNjJhMzg3NmFmZDEzNjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlYzA2YTY1OTg1NTdjZTIzYmRiMmZjY2U2ZDRlZDZlNjdiNDZjOTZmZTY4NGQzMjQ5ZWFiNzY0Njk3MTQ1MWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkZWZkMjJmYjE0ODVkMDAxOTdmZmFlNGUwMzdmYzM0MDI3MDI0MzlhOTJjZjczMTZmMDgxZGJjZmI0OTFlNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVhN2VlMDA5MDc0NjM3N2E3OWExNDRlMDQyNDIwNTAyMWUwMmMxMDQ0NmU0MDczYTg3YzdjZTllYzgyNWMxMTIifQ"
         }
       ]
     },
     {
-      "id": "claim_bebdabd1da0844a0b01484a30b128bc0",
-      "statement": "README.md documents the step-by-step build, image creation, file import/export, and encrypted workflows that the quickstart summarizes for new users.",
+      "id": "claim_4c8f946a5e914b48aa21e187717597fa",
+      "statement": "OIFS operates in three session modes: Standalone (default, direct mmap, zero IPC), Local IPC (--ipc flag, Unix Domain Socket in /tmp with Master/Proxy coordination and transparent failover), and Network (--network/--bind flags, TCP with rendezvous file .img.master and clock-free ping probe for NFS/multi-node clusters).",
       "evidence": [
         {
-          "resource": "repo://README.md#L83-L94",
-          "version": "repo-lines-v1:sha256:1fe5b33ef463e3d3a9efb4e3d3192bb611e2fa7d6828873ff96118d735dafe0e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4NDU4MmI5OTM5ZDY0ZGE2M2NmMDJmODczZjIwMTAyOWJmNTcxOWE4Y2RiNTY0ZWRhMTViNDE3YmJlNzNjYjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAwMWYyZWMxNzU5M2MxMDU0ZWI0NjM2N2Q4NDUzZWYyNGExNzNjZTk2YjcxMTdkOTFmOWE2OGQ0NGZlZjhiMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwMWYyZWMxNzU5M2MxMDU0ZWI0NjM2N2Q4NDUzZWYyNGExNzNjZTk2YjcxMTdkOTFmOWE2OGQ0NGZlZjhiMDEifQ"
+          "resource": "repo://src/bin/oifs.rs#L116-L135",
+          "version": "repo-lines-v1:sha256:392b2805a07e232f93094e94cb0d760414cea880dc9f2f664f2d94643fa13bd9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3MDg0OWMwYTM0Y2YyZWIzYzcyNzM3MTU3N2JhZmRiODBhZTc4MWJkYjg5ZTJkZDJhNmVjN2UwYTA4NTM4NDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczZmU0MDJmYWVlOWFjMjQ5MzJlYTJmMzIyOWRkY2I5YzZmODZlNTAyMTg3YTdkNDg4MmQ2OGZjZGZmOTE4ZmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA0YmE4MGY3ZWQzNGU5YjdkZTVjNDY2YWEzYTJlMzMxYmRmOTJkYzg3ZWUzYmM4NjllODRkMzViMDU1NWE1NjkifQ"
         },
         {
-          "resource": "repo://README.md#L98-L122",
-          "version": "repo-lines-v1:sha256:25fc6dc0e487b0579d3cac7ceea6066962538a247465c88bcb726426630795dd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlNDc4NTMyODVmYzE0ZjYwNGRjNzM0NjlhOGFmZTU1NDU2M2MwZGZlOGQ5MTgzNTQ4YjNhNTAwZmU3ZmU5NjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAwMWYyZWMxNzU5M2MxMDU0ZWI0NjM2N2Q4NDUzZWYyNGExNzNjZTk2YjcxMTdkOTFmOWE2OGQ0NGZlZjhiMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEzZDg4MDlhNWYzMDViZTlhZjgzYzVmMjM0MDEwZGQ4NGNlN2JkZGFlYWM3OWYxNTI1NDI2ZTg0MTBhOGNlYTcifQ"
+          "resource": "repo://src/bin/oifs.rs#L402-L410",
+          "version": "repo-lines-v1:sha256:7c9ebb174551e52a2214754687b4add9b9bd610fc4c1e48cbc5c234d777bb993:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWQ2NjgyMDhkYjAyNzA0ZmZkZThiNGQ5MjMwOTNkMDAxNDIxY2IyYjgxNjkxNzI4YzY3ZWExODQ4ZjdlZDg1YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODkwNGU5YTVkNzZkMTgwYTg2NjU0ZWE0YWY2YWIzYzFmMGJhY2M5YzNiYzc3N2MzMTgwZDdhNjY3NGM1Zjg3ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTgxZDdhMGEyODEwODVlZTgxMjlhNzFmNWQzNmM0ZGY0YTkyMjZiNGNhYzVkNTc5MDg5YmNiNzI5M2Y2ZDdmZCJ9"
+        },
+        {
+          "resource": "repo://src/ipc.rs#L34-L50",
+          "version": "repo-lines-v1:sha256:2bd47dbfc1914d30dbcfebc338a6e30dd45356d0948c3db2208b17faade0751b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlMDhjZDhjY2Q4NjAzMzVkN2U3NGUzZjVjMDRmNjc5NDcyYmZjOTVkZGFkY2UwYTMzNmQ5YTBlYmI3MGJkMTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0YzQ4NzliMmM1YmVjZWRjODZkZDE5ZjJlM2Q2YWQzOTUzYTIzMzU3NzY2YWZiNGRhOWQ1YzRlODMzYzQ4YzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ2ODRmOTU0NzczNjg1NTY5NTQ5YmJlN2JmZWVmMWU3YzI1OTYyNmRlZGJlZmE3YjFjMmU2Y2JhN2Q4ZGExNjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUifQ"
+        },
+        {
+          "resource": "repo://src/session.rs#L8-L10",
+          "version": "repo-lines-v1:sha256:a1620c2ee36d3f1cb0e6232447f00dd6683e7515ef9bdaebffe90696077744a9:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDA3YTAyNzc4OGM3NGIxMmY5MmZjM2FjN2ZiMTNmZWRlYzBiNjBkZTc0ZWU1OWZjZTA3MDA3MzU5NzlhZjkyNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmM3Y2I2MWM2YTgxZDVkMTBmYzkzYTJiMTlkMGFlM2Y4MGU5OGVmZjU5NDdhNzg2ZTkzMDI2NGUxNGRiYjU4MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTE1N2ZkZGVjOTlkYzNiMzA0NjYyZGYxMmJmNjc4NGVlYjA4MGY0MTk4YWU3ODMwYmIwNDBkMmNmZWMzMWFkNyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDY5NThlZjBhMzNhMmJmNzc4N2JlODc3ZjNhMjZhYTI1NDUxNDMzYjJkMzRiM2Q4MGIyNDY4MTEwNGVkZDFkMiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_877dacb3c12c47d5856ac7a026bd3a42",
+      "statement": "The quickstart demonstrates four minimal round-trip patterns: plain image (create → put → get), encrypted image (--encrypt with interactive password confirmation, password via --password / OIFS_PASSWORD / masked prompt), journaled image (--journal with 33-block WAL ring, auto-replay on mount), and encrypted+journaled combined.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs.rs#L160-L197",
+          "version": "repo-lines-v1:sha256:2cb98d9e7809af5ba40a97e032733c13083873610cad3292e474785bbbbfed7d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjOGRlYTVlNTA2NWE5MTJlZGVhMTkwMWE1ZGNkN2M2YjQzODcxNDY2ZjFjYTZjODNlODUyNmVlYjBiODNlMGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjZjFiODIzY2Q1YjYyZjk0ODE5ZDJhZmExNmUxMmQyOWQ4N2I1MzQxMGRjYjVkMGQyZWZmYTk4N2UxOWIwMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkOGExNDU3NjI3YTVkNDBlZGM4ZjE4YTNjZDY3ZDI5YzE5ZTY0ZjM3NjU5NjY1NGJkMmIwZTU1ZTg4NTc1OTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlMzFlZjFlZmQyZjMxYjI2ZWE1YjVkYjVhYjljODc0MjVkZDBhMzQxYjFkNDZlZmY1OWUwMGJiMjE4MzE0MWUifQ"
+        },
+        {
+          "resource": "repo://src/bin/oifs.rs#L363-L412",
+          "version": "repo-lines-v1:sha256:b8edac7529ccca51fe7d7d1c3508f6fc1b001b5eeeb9cedc990fa865ac43b625:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwNGZkOTI3NjYxOTE1OWNkMzMwOWQ1NDE5ZGFiYTAzODUyNmU5YWM4YTJmZDcxYjdlNzNiODc1NDJjZWFiMmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2ZDE2NDgwYmU5NTZhZjNkYTI3OWM0OWIwMDVlYTkzZmEzYTEzNDk3MDBkYmRjYzljM2U0ZGZmNjMzNjBhMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3NzhjNmU0NmI5MDE1NjQ0ZDE5MTI5Njc5YzQzMWUwMjQwZjI5Njc3YWM0ZmM2YWNiN2M4MDJhMDdmZjc3OWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmMDU2YmYzOTE2MmY5YmUyNjcyNTRjNmI3MTIxYzVjNWVmZDI2NWEwNjY5YTRkMWRjYjQxNDgzZjk3NzQyZTMifQ"
+        },
+        {
+          "resource": "repo://src/bin/oifs.rs#L519-L535",
+          "version": "repo-lines-v1:sha256:e11f1fd056bad149a4c37faaa5ee30611131f8d06fe00c5951ea39f2827a99a3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0ODY1N2YzNWMyMTJiZDk5MTg0ZmRkYjJhMjYxZmE1ZWRmYWUyNjlmOGI2NDY5NjhmOWVmZDQ1ODU1YTAwYjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0OGVmNzVhYTEwOTJjNjg1MTY5ZjVmZWQ3NDlmOWFjNDgyYjQ4YmM3ZTc0YjAyOTE1NDI0ZTZiYmE5ZTU3ZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQxZWM4MTMwMWMzNmFiZjFjYmNkY2M1ZDU2Mjk4YzIwMzkxMDY0MTcyYWVmODU5Y2JiOWE2YmVkZDRlMzJhMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmNGU4YTYwODk3ZTY4MmZiNDE0MDg3ZTg3ZjA5MDdkNjBiNzhjOTc1NjM2NWNkZWJhZGJlMGRmZjMyZWU3ZjEifQ"
+        },
+        {
+          "resource": "repo://src/superblock.rs#L1-L100",
+          "version": "repo-lines-v1:sha256:afe0abf08bbf25ce9bd2e54bf5e5b69510e5d012e51d1fc3b427b2d930a56ce2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2MjEyMTE5Y2Y0NDY3YjIyZjc2YmUyYzU4MTk3MGQ2NDI5NTQ5MDA2ZTUxZjI0Yzg3ZWIzY2I3NDVkMGY1NjRmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyNmY4ZTNlOTA1YTAwYmUwNzEwYzA0NTc1YzMzZDE4ZjJkMzA0MWI1NTRiOGQ2ODI5MDMzMjgwNDhjYjRmOTkzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyZTZjZWZkNDkyYzZkZmEyYTI0MGU0NmYyNDUwMGViYmYxYWZmYmQxMjk3ZTIzZmZlMmZjY2I5ZWVmNzA5ZjhlIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_123c56524c3441398c9f86a6e97db507",
+      "statement": "The test suite runs in five tiers: cargo test (unit/integration, 16 test files), cargo test --features io_uring (Linux io_uring backend), cargo test --test bolero_fuzz_test (16 property/fuzz harnesses, continuous fuzzing via cargo bolero test with libFuzzer/AFL/honggfuzz/Kani), cargo test --test shuttle_concurrency_test (DPOR concurrency model checking, 8 test scenarios), cargo kani (~80 formal proofs across 13 modules), and cargo test --features tsan (ThreadSanitizer data-race detection).",
+      "evidence": [
+        {
+          "resource": "repo://Cargo.toml#L70-L71",
+          "version": "repo-lines-v1:sha256:6ea12961e0cdb13545fb503f5a292dbe49aa883f533a736ea414718da466485d:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDhjODQ2NzNhNGFmMDRlYzFiMjI2ODcxZjI2Mzk3ODBlMGFiMWNkZmM0NjJiYWNkYmM1NjEwNTBkNjYxMTQyMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWM2NjYzMGNhN2IwMzgyMDkwODQ5MWJjOGUyNzA1NTE5YzliNTUxNTcxMmVmMzlkOTQxMzZjZjkzNzFkZDU4MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTgwOGRjNTU1MjJiODMyZmZmNWMyMDhmNjJmZDJmNWMzMDU5Nzc2NTI4M2ZiNTQwYzk5NTg1NTdiMzQ0NzRmOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzRjNmVjNGRhNTRhNzk4ZjIzNDcwNzBjMjc5ZTM5NTVjOWFlOWU0Nzg1MjMxZDk1ZjM0ODJjMzNlMjAzZTEwOCJ9"
+        },
+        {
+          "resource": "repo://scripts/release_check.sh#L189-L195",
+          "version": "repo-lines-v1:sha256:772b843443e5ddb3d56de82f79f5bcf47ad89928a97d501dd84793b0fdcb64e2:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjc4N2Y5ZTliZjg5NjJlZmJhZjYxZGM0ODQ4YTE0YjIyMGM1MzYyZGQ0Y2I4YjY1ZWFjMTJhZWYxODA4OGU5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDBiMWMyNDFhMTBmNjNmY2M5ZWQwMWI2YjdlMjFmMzFlY2RiNTlhYmM3NWMwMTA3MTZjMDU4NmQ3ZDhlMTQ1NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmIzODY1YTY2ZjY3Mjk0M2I3NzNkMTgwNTVhNGUwZmE5NDU2NzEwYzAxNGQyNDU3ZmQwNmUxY2MzY2I5Y2Q2MSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGY2MjhlYmQ3MDQyMmQ3YzgwZmNhMmMxZTllZTA4ZDRkMDk2OGE5ZGRmODNiNDM4MjExOWI3N2M3MDg3MDhkNCJ9"
+        },
+        {
+          "resource": "repo://src/lib.rs#L1-L20",
+          "version": "repo-lines-v1:sha256:184a21621d8f46d48213e8487fdcaf700d96e191ea3a358468f51beede76c759:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOGIwZTZkZjFjMDViNzMwMmFmNGUxNmU3MDhkMDA3OWVjOTRjNzliOWYzNTk5NjAzZDVhMjIyYTQ5YzZiZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkYjMzNGY4ZjVhZjA4ZjkzNWRjN2Q1NTY2NTgzYzJiNGMyMTliY2YyNzZlMmJmMDU2ZGI1ZTA2NTVhY2ZjMjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM2ZDBhN2EyYWJjZmZjMzRiMzgxNGE0N2VkMDdkNmQwYTBmY2Q1ZGUwYzg2MTU0OWUwZWRiY2QzN2M5YmYxYWIifQ"
+        },
+        {
+          "resource": "repo://tests/bolero_fuzz_test.rs#L1-L20",
+          "version": "repo-lines-v1:sha256:22030f388c0240afbacbd17cc2897160b9cdad9c59e7a8e35cdf39d4595ed61b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwNmM3NDFjODQ5ODA4ODNiMGQ0NmI3NjBlOTY3OGZlNDAzZWM2Y2U3MzMzY2YzZjg0ZmI0YzgzMzIwYjNiZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYzcyZjE5YTg5M2I3MmU3MjdkYmM5Nzg0ZTU1MTczOTM1YWU5NTZjZmNhOTZlNDUyYTBkZmMwZjU2NzYxYzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAzYmY2NjRiYWQ3YTY4MmUyZjRhNWFlMmVmNWY5ZGU0M2E1NDJmNWFkZWU3YmRhZmJhY2UzMTkzYTQ1ZTBjZWQifQ"
+        },
+        {
+          "resource": "repo://tests/shuttle_concurrency_test.rs#L1-L50",
+          "version": "repo-lines-v1:sha256:629070951740d3b24667db90e665966500883e8d4dc9d6caf685fe38ae1b6a4e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1ZGIzNWNmY2NlYjc4MjAyMmMxOTYzMTNhZjMwOWU3YzBiNjE3MmI2OGYzOTAwOGE5NGY5N2Q4MjVmY2M2YWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1MDc0ZjExM2YzMTBjN2FkN2IwODJkOTBjNjMzODMwNDgxODgzNTA2YTQ0MGI4MzIyYTNhYTYzZGU2MjMzNjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhhN2E2YmNkNzhiYWU2OGQyNDBhZGRmNzI4ZmVmODY3NmU2MWQxODk0NTcwNGU3YmM2YzU2MTFmN2EwODg2YWYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_12eafe6babed46fdb0cbe5647f62b8ba",
+      "statement": "Every common CLI task maps to a specific subcommand with global flags (--image, --password, --ipc, --network, --bind, --allow-remote-ipsc, --json, --auto-defrag, --defrag-interval) and subcommands (create, put, get, append, ls, mkdir, rm, analyze, defrag, fsck, migrate, truncate, filter-analyze) with arguments as defined in the clap derive structure.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs.rs#L100-L212",
+          "version": "repo-lines-v1:sha256:b69027eec601f6eb6b1f10129c80b75bd0de6c082a2cb28c6a430c4d2f78be75:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwYTBjNDUxYzE5MjA2ODZlZWUyZDJkY2YzMGNmMzYzMDdlNDQ1NGU0ZGIzZjllMDVkNTJhN2Y1Y2EyNTA0Yzk0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1ZTQ1YTEyMTNlMjkwM2U2NzUxNWY3NTdlMTNlN2Y2MzBmODhlNWQxNTcwNmZiYzM4NzU0OGQ0MGExN2FmMjk4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3MGRkNjEwOTM3ZWViMjg2YTE0MDVmNmRjZjg1MTc1ZTA1NjQ5NWUzMzUxMGZhMjA4ZDg5ZGFhODk2OTkwZTdmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiMDE1NmU3M2Q2M2IyZWM1MGU3ZWM5ZDIzYzUxYThmMTA0MzNlYjhhMTY4ODZlOTQ4OWQ1ZWE4YTRjMjA4YjAyIn0"
+        },
+        {
+          "resource": "repo://src/bin/oifs.rs#L402-L410",
+          "version": "repo-lines-v1:sha256:7c9ebb174551e52a2214754687b4add9b9bd610fc4c1e48cbc5c234d777bb993:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWQ2NjgyMDhkYjAyNzA0ZmZkZThiNGQ5MjMwOTNkMDAxNDIxY2IyYjgxNjkxNzI4YzY3ZWExODQ4ZjdlZDg1YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODkwNGU5YTVkNzZkMTgwYTg2NjU0ZWE0YWY2YWIzYzFmMGJhY2M5YzNiYzc3N2MzMTgwZDdhNjY3NGM1Zjg3ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTgxZDdhMGEyODEwODVlZTgxMjlhNzFmNWQzNmM0ZGY0YTkyMjZiNGNhYzVkNTc5MDg5YmNiNzI5M2Y2ZDdmZCJ9"
         }
       ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.6.1",
-    "at": "2026-10-13T15:40:56.857Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-20T22:07:36.625Z"
   }
 }

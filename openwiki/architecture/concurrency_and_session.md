@@ -1,71 +1,278 @@
 ---
 type: architecture
-title: Concurrency, Sessions, and IPC
-description: How OIFS allows multiple processes to share one image through a Master-Proxy design — a single Master holds the mmap with an RwLock and sync_mutex while Proxies forward framed requests over UDS or TCP — coordinated by the OifsSession registry with self-healing master-failover and POSIX OpenMode semantics.
-tags: [ipc, master-proxy, session, concurrency, uds, tcp, failover, rwlock, openmode, cow]
+title: Concurrency & Session Model
+description: The OifsSession abstraction with three modes — Standalone (direct mmap, zero IPC), Local (Unix Domain Sockets in per-user private directory), Network (TCP + rendezvous file with clock-free active Ping/Pong) — master election via bind_or_connect, transparent failover, session registry with canonical path dedup, poison-recovered locks for registries/caches, and length-prefixed Bincode IPC frame protocol with challenge-response authentication.
+tags: [ipc, master-proxy, session, concurrency, uds, tcp, failover, rwlock, openmode, cow, authentication]
 verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-15T13:11:08.406Z
+  - by: openwiki/0.9.0
+    at: 2026-11-20T22:07:36.625Z
 sources:
+  - id: openwiki-source-466dba2e8868026185b26560
+    resource: repo://src/auto_defrag.rs
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
   - id: openwiki-source-ef0afc6eaf5c925c9975314d
     resource: repo://src/ipc.rs
+  - id: openwiki-source-ed8bf05e307c6278442542c2
+    resource: repo://src/lib.rs
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-15T13:11:08.406Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
 ---
 
 ## Responsibility and ownership
 
-The session layer owns the process coordination contract while the IPC layer owns the transport. `OifsSession` (`src/session.rs#L60-L75`) decides whether a given process runs in **Direct (Master)** or **Remote (Proxy)** mode and forwards every operation to the right place. `ipc.rs` (`src/ipc.rs`) provides the `bind_or_connect` master election, the `IpcServer` request dispatcher, and the length-prefixed framing used on every hop. The actual mutation of the image happens inside a single Master's `DiskManager` (`Arc<RwLock<DiskManagerInner>>`), which provides shared parallel reader access and exclusive writer serialization with a dedicated `sync_mutex` for physical durability flushes.
+The session layer owns the process coordination contract while the IPC layer owns the transport. `OifsSession` (`src/session.rs#L60-L79`) decides whether a given process runs in **Direct (Master)** or **Remote (Proxy)** mode and forwards every operation to the right place. `src/ipc.rs` provides the `bind_or_connect` master election, the `IpcServer` request dispatcher, and the length-prefixed framing used on every hop. The actual mutation of the image happens inside a single Master's `DiskManager` (`Arc<RwLock<DiskManagerInner>>`), which provides shared parallel reader access and exclusive writer serialization with a dedicated `sync_mutex` for physical durability flushes.
 
-## Master-Proxy architecture
+## Session mode taxonomy
 
-Only one process may hold the mutable `mmap` and mutate the bitmap/inode tables. On open, one process wins master status and runs in `Direct` mode: it opens the `DiskManager` directly (zero IPC overhead for its own calls) and starts a background `IpcServer`. Every other process wins nothing and runs in `Remote` mode: each public method forwards the request through `send_request` to the Master.
+OIFS supports three **SessionMode** variants (`src/ipc.rs#L39-L52`):
 
-Master election is transport-dependent and implemented in `bind_or_connect` (`src/ipc.rs#L359-L485`):
+| Mode | Transport | IPC Overhead | Use Case |
+|------|-----------|--------------|----------|
+| `Standalone` (default) | None — direct `mmap` | Zero sockets, zero background threads | Single-process, CLI, embedded, testing |
+| `Local` | Unix Domain Socket in per-user private runtime directory (`$XDG_RUNTIME_DIR/oifs` or `/tmp/oifs-<uid>/oifs`) | One background `IpcServer` thread on the Master; clients forward over UDS | Multi-process on one machine, containers, CI |
+| `Network` | TCP + rendezvous `.image.master` file in image directory + **clock-free active Ping/Pong** probe | Master binds TCP; clients connect over TCP | NFS/Lustre, multi-node clusters, remote mounts |
 
-- **Local (UDS)** — `get_socket_path` (`src/ipc.rs#L123-L144`) derives a deterministic `/tmp/oifs_<name>_<hash>.sock` from the canonical image path. A process first tries to connect; if the socket is unreachable it atomically `bind`s as master, retrying and cleaning up stale sockets.
-- **Network (TCP)** — a `<image>.master` rendezvous file in the image directory holds a `MasterInfo { addr, pid }` (`src/ipc.rs#L150-L157`). The probe `is_tcp_master_alive` (`src/ipc.rs#L159-L179`) runs a clock-free active Ping/Pong to detect a dead master on NFS/Lustre. The winner atomically `create_new`s the rendezvous file and binds TCP; losers connect.
+**Standalone** is not a third variant of `OifsSession` — it is simply `SessionMode::Standalone` which produces a `Direct` session **without** starting an `IpcServer`. The `OifsSession` enum itself has only two variants (`src/session.rs#L60-L79`):
 
-## Process-level session registry
+```rust
+pub enum OifsSession {
+    Direct { dm: Arc<DiskManager>, server: Option<Arc<IpcServer>>, ... },
+    Remote { client: Arc<IpcClient>, dm_fallback: Arc<Mutex<Option<Arc<DiskManager>>>>, ... },
+}
+```
 
-`SESSION_REGISTRY` (`src/session.rs#L77-L81`) is a process-wide `Mutex<HashMap<PathBuf, OifsSession>>` keyed by the canonicalized absolute path. `get_or_open_with_mode` (`src/session.rs#L195-L215`) returns a `Clone` of the existing session if one is cached, otherwise opens one and inserts it. Because `OifsSession` is `Clone` built on `Arc` fields, multiple threads share one Master with no duplication and natural reference counting. `canonicalize_path` (`src/session.rs#L84-L131`) resolves symlinks (up to 32 hops) so links pointing at the same image deduplicate to the same registry key.
+- **Direct**: owns the `DiskManager` (and optionally a background `IpcServer`). Used by Master in Local/Network modes, and by **all** processes in Standalone mode.
+- **Remote**: holds an `IpcClient` connection pool to the Master, plus a `dm_fallback` slot used during transparent failover.
 
-## Transport: framed requests
+## Master election: `bind_or_connect`
 
-Every RPC is a length-prefixed Bincode frame (`src/ipc.rs#L306-L335`) with a 128 MB safety cap. `IpcRequest` / `IpcResponseData` (`src/ipc.rs#L282-L297`) enumerate all supported operations (create/read/write/delete/resolve/list/fsck/defrag/flush). `IpcServer::handle_request` (`src/ipc.rs#L699-L750`) is the single dispatcher that maps each request to a `DiskManager` call, so logic is never duplicated across the Direct and Remote arms.
+Master election is transport-specific and implemented in `bind_or_connect` (`src/ipc.rs#L887-L1010`). The function either binds as Master (returning `MasterOrClient::Master`) or connects as Client (returning `MasterOrClient::Client`).
 
-The server thread (`src/ipc.rs#L519-L606`) keeps the listener non-blocking and uses `libc::poll` on the listener fd; each accepted peer gets its own worker thread that loops reading requests and emitting `SessionEvent::PeerConnected`, `RequestHandled`, and `PeerDisconnected`. Drop performs a graceful shutdown and removes the socket or rendezvous file.
+### Local mode (UDS)
 
-## Self-healing master failover
+1. Deterministic socket path: `get_socket_path` (`src/ipc.rs#L123-L144`) derives `<private_runtime_dir>/oifs_<name>_<hash>.sock` from the canonical image path. The parent directory is created mode `0700`; the socket itself is created mode `0600`. A companion `.tok` file holds the session secret, also `0600`.
+2. Process first **tries to connect** to the existing socket (up to 10 attempts, 15 ms apart).
+3. If connection fails, it **removes any stale socket/token** and attempts to `bind`.
+4. If `bind` fails with `EADDRINUSE`, it retries connecting (up to 15 attempts), then removes the stale socket and retries `bind` once more.
+5. On success as Master: generates a fresh 32-byte session secret (`auth_secret`), writes it atomically to the `.tok` file, and starts the `IpcServer`.
 
-A Remote session must survive the Master dying (crash, power loss). In `send_request` (`src/session.rs#L672-L730`) a Remote call first checks a cached `dm_fallback` local DiskManager, then retries up to five times. On a connection error (broken pipe, reset, etc. per `is_connection_error`, `src/session.rs#L698`), it re-runs master election; if it turns out the retrying process is now the Master, it pins the local `DiskManager` as `dm_fallback` and serves the request locally. This makes a Proxy transparently promote itself after a master loss.
+### Network mode (TCP + rendezvous file)
+
+1. Rendezvous file path: `get_master_info_path` (`src/ipc.rs#L146-L158`) returns `<image_dir>/.<image_name>.master`.
+2. If the file exists, reads `MasterInfo { addr, pid, auth_token }` and runs **clock-free active Ping/Pong probe** (`is_tcp_master_alive`, `src/ipc.rs#L159-L179`): connects to `addr`, sends `IpcRequest::Ping`, expects `Pong` within 500 ms. If probe succeeds, connects as Client.
+3. If probe fails or file missing: attempts **atomic `create_new`** on the rendezvous file. Winner becomes Master:
+   - Binds TCP listener on `bind_addr` (default `127.0.0.1:0` — loopback only; non-loopback requires explicit opt-in `is_loopback_bind`, `src/ipc.rs#L160-L180`).
+   - Generates `auth_secret`, writes `MasterInfo` with hex-encoded token to rendezvous file (mode `0600`).
+   - Starts `IpcServer` on the TCP listener.
+4. Losers read the rendezvous file, connect to the published `addr`, and authenticate with the published `auth_token`.
+
+```mermaid
+sequenceDiagram
+    participant P1 as Process 1
+    participant P2 as Process 2
+    participant FS as Filesystem (rendezvous / socket)
+
+    Note over P1,P2: Local Mode (UDS)
+    P1->>FS: connect(socket) --> fails
+    P1->>FS: bind(socket) --> succeeds
+    P1->>FS: write .tok (auth_secret)
+    P1->>P1: start IpcServer
+
+    P2->>FS: connect(socket) --> succeeds
+    P2->>FS: read .tok --> auth_secret
+    P2->>P1: AuthChallenge/Response over UDS
+    P1->>P2: AuthVerify (mutual proof)
+
+    Note over P1,P2: Network Mode (TCP)
+    P1->>FS: create_new(.master) --> succeeds
+    P1->>FS: write MasterInfo{addr, pid, auth_token}
+    P1->>P1: bind TCP, start IpcServer
+
+    P2->>FS: read .master --> MasterInfo
+    P2->>P1: TCP connect(addr)
+    P2->>P1: Ping (active probe)
+    P1->>P2: Pong
+    P2->>P1: AuthChallenge/Response over TCP
+    P1->>P2: AuthVerify
+```
+
+## Process-wide session registry
+
+`SESSION_REGISTRY` (`src/session.rs#L77-L81`) is a process-wide `OnceLock<Mutex<HashMap<PathBuf, OifsSession>>>` keyed by the **canonicalized absolute path**. `canonicalize_path` (`src/session.rs#L84-L131`) resolves symlinks (up to 32 hops) so all links pointing at the same image deduplicate to the same registry key.
+
+`get_or_open_with_mode` (`src/session.rs#L195-L215`):
+1. Acquires `lock_unpoisoned` on the registry mutex.
+2. If a session exists for the canonical key, returns a `Clone` (which clones the inner `Arc` fields — threads share one Master with natural reference counting).
+3. Otherwise, constructs a new session via `open_with_mode_retry`, inserts it, and returns the clone.
+
+```mermaid
+flowchart TD
+    A[Thread calls get_or_open_with_mode] --> B[canonicalize_path resolves symlinks]
+    B --> C{Registry has key?}
+    C -- Yes --> D[Return Arc-clone of existing OifsSession]
+    C -- No --> E[open_with_mode_retry]
+    E --> F{bind_or_connect}
+    F -- Master --> G[Create DiskManager, start IpcServer, Direct session]
+    F -- Client --> H[Connect, authenticate, Remote session]
+    G --> I[Insert into registry]
+    H --> I
+    I --> J[Return session]
+```
+
+## IPC frame protocol
+
+Every RPC is a **length-prefixed Bincode frame** (`src/ipc.rs#L306-L335`) with a **128 MiB hard cap** (`MAX_FRAME_BYTES`). Frames larger than this are rejected **before any allocation**.
+
+- **Encoding**: `bincode::DefaultOptions` with fixint encoding, trailing bytes allowed, and a per-frame byte limit (`frame_codec`, `src/ipc.rs#L331-L339`).
+- **Thread-local pooled buffers**: Separate read/write buffers (`FRAME_READ_BUF`, `FRAME_WRITE_BUF`) reused across frames; large buffers are shrunk after use (`shrink_frame_buf`, `src/ipc.rs#L354-L358`).
+- **Streaming read**: Payload streamed in 64 KiB chunks into the pooled buffer (`FRAME_READ_CHUNK`), never allocating the announced size up front (`read_framed`, `src/ipc.rs#L370-L403`).
+- **Single dispatcher**: `IpcServer::handle_request` (`src/ipc.rs#L699-L780`) maps each `IpcRequest` variant to a `DiskManager` call. Logic is **never duplicated** across Direct and Remote arms.
+
+## IPC authentication: challenge-response with mutual proof
+
+Authentication is mandatory for all data operations. Ping is allowed unauthenticated for the active probe.
+
+### Credential types (`src/ipc.rs#L432-L440`)
+
+```rust
+pub enum AuthCredential {
+    Password(String),      // Filesystem password (encrypted images)
+    Secret([u8; 32]),      // Session secret published by Master (plain images)
+}
+```
+
+### Handshake flow
+
+1. **Client → Master**: `AuthChallenge { client_nonce[32], has_password: bool }`
+   - Client sends a fresh random nonce. **Password never travels in cleartext**.
+2. **Master → Client**: `AuthChallenge { server_nonce[32], salt[16], encrypted: bool }`
+   - Master replies with its nonce, the image's encryption salt, and whether the image is encrypted.
+   - If encrypted and client sent `has_password=false`, Master immediately rejects with "Password required".
+3. **Client computes MAC**: `client_mac = BLAKE2b-MAC(key, transcript(0, client_nonce, server_nonce, salt))`
+   - Key = Argon2id(password, salt) for encrypted images; key = session secret for plain images.
+4. **Client → Master**: `AuthResponse { client_mac[32] }`
+5. **Master verifies client_mac**, then computes `server_mac = BLAKE2b-MAC(key, transcript(1, ...))` and returns `AuthVerify { server_mac }`.
+6. **Client verifies server_mac** — proves Master holds the same key, detecting redirection to a fake Master.
+
+**Domain separation**: transcript includes constant `AUTH_DOMAIN = b"oifs-ipc-auth-v1"`. Direction byte (0/1) prevents tag interchangeability. Constant-time comparison (`ct_eq`) for MACs.
+
+### Where the key comes from
+
+- **Encrypted image**: `DiskManager` derives Argon2id key from password + salt at open time. `auth_key()` returns the 32-byte IPC auth key. Master uses this for all peers.
+- **Plain image**: Master generates random 32-byte `auth_secret` at startup, publishes it in `.tok` (Local) or `.master` (Network). Clients read it and use as `AuthCredential::Secret`.
+
+### Security properties
+
+- Password never on wire (even encrypted).
+- Mutual authentication — client verifies Master.
+- Session secret is owner-readable only (`0600`).
+- Per-connection 10 s handshake timeout (`AUTH_HANDSHAKE_TIMEOUT`) prevents Slowloris.
+- Max 256 concurrent unauthenticated peers (`MAX_CONCURRENT_PEERS`) bounds resource exhaustion.
+
+## IpcServer architecture
+
+- **Listener thread** (`src/ipc.rs#L1070-L1140`): non-blocking listener fd, `libc::poll` with 50 ms timeout, accepts connections, spawns **one dedicated worker thread per peer**.
+- **Worker thread** (`src/ipc.rs#L1142-L1300`): per-connection authentication state machine; after auth, loops reading framed requests, dispatches to `handle_request`, writes framed response. Emits `SessionEvent::PeerConnected`, `RequestHandled`, `PeerDisconnected` via bounded channel (`MAX_PENDING_SESSION_EVENTS = 1024`).
+- **Drop**: graceful shutdown — waits up to 1.5 s for active peers, then removes socket/rendezvous file.
+
+## IpcClient connection pool
+
+- **Bounded pool**: up to `MAX_CLIENT_POOL_STREAMS = 8` concurrent authenticated streams (`src/ipc.rs#L1407-L1412`).
+- **Checkout protocol**: `CheckedOutStream` RAII guard ensures a stream is either in the pool **or** checked out for one RPC. On panic or I/O error mid-exchange, `Drop` closes the desynchronized socket and decrements `total_streams` — never returns a potentially desynchronized socket to the pool.
+- **Lazy secondary streams**: Single-threaded callers use one socket; concurrent callers open additional streams on demand, each re-authenticating using the cached `ClientAuthCache` (Argon2id key or session secret, zeroized on drop).
+
+## Transparent failover (self-healing)
+
+A Remote session survives Master loss (crash, power loss, network partition) without caller intervention. Implemented in `send_request` (`src/session.rs#L768-L848`):
+
+```mermaid
+sequenceDiagram
+    participant Client as Remote Session
+    participant Master as Master Process
+    participant FS as Filesystem
+
+    Client->>Master: RPC over UDS/TCP
+    Master--xClient: Connection error (broken pipe, reset, EOF)
+    Note over Client: is_connection_error() matches
+    loop Up to 5 attempts
+        Client->>FS: Re-run bind_or_connect (master election)
+        alt Becomes new Master
+            Client->>Client: Create local DiskManager
+            Client->>Client: Pin as dm_fallback (lock_unpoisoned)
+            Client->>Client: Set has_fallback = true
+            Client->>Client: Serve RPC locally via handle_request
+        else Connects to new Master
+            Client->>Client: Update IpcClient to new connection
+            Client->>Master: Retry RPC on new connection
+        end
+    end
+```
+
+- **Lock-free fast path**: `has_fallback: AtomicBool` checked before acquiring `dm_fallback` mutex (`src/session.rs#L773-L779`).
+- **Fallback promotion**: When a Remote process wins election, it pins a local `DiskManager` as `dm_fallback` and continues serving locally — the session **becomes Direct** transparently.
+- **Password persistence**: Remote session stores the password in a `Zeroizing<String>` for automatic reconnection (`src/session.rs#L75-L76`).
 
 ## Reader parallelism and lock hierarchy
 
-Within the Master process, concurrency is managed by a fine-grained hierarchy:
+Within the Master process, concurrency is managed by a fine-grained hierarchy (`src/disk.rs`):
 
-1. **Shared Read Lock (`inner.read()`)**: Multiple reader threads calling `read_at` or `read_data` acquire a shared read lock concurrently, executing zero-copy memory reads with no reader-reader contention.
-2. **Dedicated Flush Mutex (`sync_mutex`)**: Physical disk flushes via `flush_range` / `msync` acquire `sync_mutex: Arc<Mutex<()>>` without holding the inner write lock, ensuring durable background writebacks never stall concurrent readers.
-3. **Exclusive Write Lock (`inner.write()`)**: Allocation, bitmap updates, and inode commits acquire an exclusive lock during the commit phase (Stage 3), ensuring full mutual exclusion.
+1. **Shared Read Lock** (`inner.read()`): Multiple reader threads calling `read_at` or `read_data` acquire a shared `RwLock` read guard concurrently, executing zero-copy memory reads with no reader-reader contention.
+2. **Dedicated Flush Mutex** (`sync_mutex: Arc<Mutex<()>>`): Physical disk flushes via `flush_range` / `msync` acquire `sync_mutex` **without holding the inner write lock** (`src/disk.rs#L1560`, `#L5397`, `#L5468`), ensuring durable background writebacks never stall concurrent readers.
+3. **Exclusive Write Lock** (`inner.write()`): Allocation, bitmap updates, and inode commits acquire an exclusive lock during the commit phase, ensuring full mutual exclusion.
+
+The `DiskManager` struct holds:
+```rust
+inner: Arc<RwLock<DiskManagerInner>>,   // guards all on-disk metadata
+sync_mutex: Arc<Mutex<()>>,              // serializes msync only
+```
+
+## Poison-recovered locks: `lock_unpoisoned` / `read_unpoisoned`
+
+Some mutexes guard **reconstructible in-memory state** (registries, caches, coordination flags) where a panic mid-critical-section cannot leave the data inconsistent. For these, propagating poison would permanently brick the subsystem — one unrelated panic anywhere would make every later acquisition fail.
+
+**Helpers in `src/lib.rs#L42-L68`**:
+
+```rust
+pub(crate) fn lock_unpoisoned<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+pub(crate) fn read_unpoisoned<T>(r: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    r.read().unwrap_or_else(PoisonError::into_inner)
+}
+// write_unpoisoned exists for symmetry but has no call sites yet
+```
+
+**Where used**:
+- `SESSION_REGISTRY` mutex (`src/session.rs#L285`, `#L304`, `#L311`)
+- `IpcClient` connection pool mutex (`src/ipc.rs#L1443`, `#L1454`, `#L1480`, `#L1618`, `#L1646`, `#L1758`)
+- Auto-defrag config/stats/worker mutexes (`src/auto_defrag.rs`)
+- Async flush pending ranges (`src/disk.rs#L555`, `#L580`, `#L1563`, `#L5428`, `#L5471`)
+- Decoded blob cache (`src/disk.rs#L3756`, `#L3761`)
+
+**Where NOT used** (poison propagates, as required for on-disk consistency):
+- `DiskManagerInner` RwLock — guards bitmap, inode tables, block allocation. A panic here could leave on-disk structures inconsistent; the process must fail fast.
 
 ## POSIX OpenMode and race safety
 
-`DiskManager::open_file` and `OifsSession::open_file` provide POSIX-standard file creation semantics:
+`DiskManager::open_file` and `OifsSession::open_file` provide POSIX-standard file creation semantics (`src/session.rs#L870-L888`):
 
-- `OpenMode::OpenExisting`: Returns the existing inode ID or `ENOENT` if missing.
-- `OpenMode::CreateNew`: Atomically creates the file or returns `EEXIST` (`AlreadyExists`) if it exists.
-- `OpenMode::CreateOrOpen`: Opens the file if present or creates it if missing.
+| OpenMode | Behavior |
+|----------|----------|
+| `OpenExisting` | Returns existing inode ID or `ENOENT` |
+| `CreateNew` | Atomically creates file or returns `EEXIST` (`AlreadyExists`) |
+| `CreateOrOpen` | Opens if present, creates if missing |
 
-Under concurrent execution, `create_file` uses double-checked locking within directory blocks: even under aggressive multi-threaded races on non-existent files, exactly one thread succeeds in creation while concurrent contenders receive `EEXIST`, preventing duplicate directory entries or orphan inodes.
+Under concurrent execution, `create_file` uses **double-checked locking** within directory blocks: even under aggressive multi-threaded races on non-existent files, exactly one thread succeeds while contenders receive `EEXIST`, preventing duplicate directory entries or orphan inodes.
 
 ## Block-level merge policy and Copy-on-Write (COW)
 
-Mutations funnelling into `DiskManagerInner` follow strict isolation guarantees:
+All mutations funnel through the **single Master's `DiskManagerInner` mutex** (exclusive write lock). The merge rules are:
 
 - **Disjoint byte offsets in the same block** merge in place — each write modifies only its own byte range.
-- **Overlapping offsets** are Last-Writer-Wins because the exclusive lock serializes writes into POSIX `pwrite` semantics with no torn writes.
-- **Seekable 64K Chunked Compression** uses Copy-on-Write (COW): updating data inside a chunk allocates fresh physical blocks, writes the payload, atomically swaps the inode `ChunkEntry` pointer, and frees the previous blocks. Readers never observe partially updated blocks.
+- **Overlapping offsets** are **Last-Writer-Wins** because the exclusive lock serializes writes into POSIX `pwrite` semantics with no torn writes.
+- **Seekable 64K Chunked Compression** uses COW: updating data inside a chunk allocates fresh physical blocks, writes the payload, atomically swaps the inode `ChunkEntry` pointer, and frees the previous blocks. Readers never observe partially updated blocks.
 - **Stream compressed files** use zstd multi-frame append at EOF, or transparent read-modify-recompress for random offsets.
+
+This single-writer model (enforced by the Master-Proxy architecture) is the **sole source of write serialization** — there are no per-block locks or finer-grained coordination.

@@ -1,18 +1,88 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:8eb50606aadf681caa3191f6e2bf989dfaf6c6fee8468f39200f87d8c2c38d8a",
+  "pageVersion": "sha256:8d681099b058df6d71bae0269848d685ca9650c476cfd1fadb6ee5cfb21aa103",
   "claims": [
     {
-      "id": "claim_bd4bac734c814d41a04e424e00d44b38",
-      "statement": "The integration tests for OIFS validate end-to-end behavior in disk persistence, crash safety, and network synchronization.",
+      "id": "claim_f44a3380e74f4b1499fced3f31fed940",
+      "statement": "The CLI concurrent process test (tests/cli_concurrent_process_test.rs) validates multi-process access to a single image using Local IPC mode with deterministic UDS master election and challenge-response authentication.",
       "evidence": [
         {
-          "resource": "repo://tests/crash_safety_test.rs",
-          "version": "repo-file-v1:sha256:e0f36249db06f6770b9942b74d7edb0835e04871f5191d9a9ec2ea16e64987f7"
+          "resource": "repo://tests/cli_concurrent_process_test.rs",
+          "version": "repo-file-v1:sha256:fcc1bab34aa289a54ea1d97f651ab20e4c87732b0dd46d052df528d009438124"
+        }
+      ]
+    },
+    {
+      "id": "claim_229b4a09a9c54cd6a215a5c10ca2534c",
+      "statement": "The FFI C/C++ test (tests/ffi_c_cpp_test.rs) compiles include/oifs.h with zero warnings under -Wall -Wextra -Wpedantic -Werror in both C11 and C++17, and exercises full lifecycle including version handshake, I/O backend switching, encrypted images, RAII handles, lambda callbacks, and 8-thread concurrent access through a shared handle.",
+      "evidence": [
+        {
+          "resource": "repo://tests/ffi_c_cpp_test.rs",
+          "version": "repo-file-v1:sha256:315a513fb62bc30627308d80c424edc45d56f42103135bf13717b9cfe7e8d538"
+        }
+      ]
+    },
+    {
+      "id": "claim_d953ba90436e4a6083cbbceb4d43d0ce",
+      "statement": "The MCP server test (tests/mcp_server_test.rs) validates JSON-RPC 2.0 over stdio, tool schema advertisement during initialize, and robust JSON escaping by asserting every server output line and nested tool payload parses as valid JSON even with hostile file names containing quotes, backslashes, and control characters.",
+      "evidence": [
+        {
+          "resource": "repo://tests/mcp_server_test.rs",
+          "version": "repo-file-v1:sha256:f19c29493fd0c1b019e02bcb45c20d64a0b0890f92b3f665bbad58dca0ad27b5"
+        }
+      ]
+    },
+    {
+      "id": "claim_9cdec4ee1aa24f5589c5343a88992263",
+      "statement": "The network mode test (tests/network_single_file_sync_test.rs) uses OifsSession::open_network with TCP transport, master election via atomic create_new on a .master rendezvous file, clock-free active Ping/Pong liveness probe, and auth_token exchange; it validates concurrent disjoint slice writes, partitioned record writes, and concurrent readers/writers on a single shared file across 8 nodes.",
+      "evidence": [
+        {
+          "resource": "repo://tests/network_single_file_sync_test.rs",
+          "version": "repo-file-v1:sha256:1cea01a7c2d037cf559581fe579d0f1ba9a8e198f30422c10a05441e8fd73c30"
+        }
+      ]
+    },
+    {
+      "id": "claim_ce80d4e3c35646758a4af81db59e4df3",
+      "statement": "The backward compatibility test (tests/backward_compatibility_test.rs) synthesizes a genuine v1 on-disk image (no format_version on superblock, inodes as packed bincode records with 12 direct blocks) and verifies the current DiskManager detects it as legacy, decodes v1 inodes correctly, and keeps new writes in v1 format.",
+      "evidence": [
+        {
+          "resource": "repo://tests/backward_compatibility_test.rs",
+          "version": "repo-file-v1:sha256:4c382f3aa31a94e74b683b20e61ec6dccb635ff2503e1ea06ef33d240244dc6d"
+        }
+      ]
+    },
+    {
+      "id": "claim_84cf48864799436cab997a5b14a794fe",
+      "statement": "The format migration test (tests/format_migration_test.rs) synthesizes v1 images by rewriting v2 images (downgrade_to_v1 helper), validates detection via is_legacy_inode_format(), mutation persistence across reopen in v1 layout, and fsck cleanliness on v1 images; migration is explicit (not automatic) — v1 images stay v1 unless migrated by user tool.",
+      "evidence": [
+        {
+          "resource": "repo://tests/format_migration_test.rs",
+          "version": "repo-file-v1:sha256:64b1eff708c401d9c6ebbb99ce8e59668453e8ea0709c4db1246681129a322f2"
+        }
+      ]
+    },
+    {
+      "id": "claim_3b117127dae24b37a633fed8297396ae",
+      "statement": "The large image bitmap test (tests/large_image_bitmap_test.rs) validates the v3 layout for images >128 MiB: multi-block data bitmaps, dynamic region offset computation (inode_bitmap_block=1, data_bitmap_block follows inode bitmap blocks, inode_table_block follows data bitmap blocks, data_block_start = inode_table_block + 1024), and consistency across allocator, fsck, and defrag.",
+      "evidence": [
+        {
+          "resource": "repo://tests/large_image_bitmap_test.rs",
+          "version": "repo-file-v1:sha256:f1f8040eaab301d4e580d299c1224d3c7ed58d9f6a62377cdec638ac3fefc857"
+        }
+      ]
+    },
+    {
+      "id": "claim_d2352d1d7a47437f9fd5c486b5f5c1a4",
+      "statement": "Cross-platform test considerations include dynamic library naming per OS (so/dylib/dll), library load path env vars (DYLD_LIBRARY_PATH/LD_LIBRARY_PATH/PATH), compiler detection (clang/gcc fallback), temp directories via tempfile, UTF-8 path assumption, loopback-only TCP bind, Unix-only UDS with 0600/0700 permissions, and little-endian on-disk format.",
+      "evidence": [
+        {
+          "resource": "repo://tests/cli_concurrent_process_test.rs",
+          "version": "repo-file-v1:sha256:fcc1bab34aa289a54ea1d97f651ab20e4c87732b0dd46d052df528d009438124"
         },
         {
-          "resource": "repo://tests/integration_test.rs",
-          "version": "repo-file-v1:sha256:5b140b8375daa1b39f90ad1e07024353250dbfeb87ecd6d7b9e048752e4fa28f"
+          "resource": "repo://tests/ffi_c_cpp_test.rs",
+          "version": "repo-file-v1:sha256:315a513fb62bc30627308d80c424edc45d56f42103135bf13717b9cfe7e8d538"
         },
         {
           "resource": "repo://tests/network_single_file_sync_test.rs",
@@ -22,7 +92,7 @@
     }
   ],
   "verification": {
-    "by": "openwiki/0.6.1",
-    "at": "2026-10-04T10:12:53.730Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-20T22:07:36.625Z"
   }
 }

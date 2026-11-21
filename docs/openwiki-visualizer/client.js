@@ -397,7 +397,14 @@ function rewriteLinks(node) {
         const href = a.getAttribute("href") ?? "";
         if (!href.endsWith(".md") && !href.includes(".md#"))
             return;
-        const clean = href.split("#")[0];
+        let clean = href.split("#")[0];
+        try {
+            // marked percent-encodes non-ASCII targets; node ids use the raw name.
+            clean = decodeURIComponent(clean);
+        }
+        catch {
+            // Keep literal percent signs; the target must still match a node.
+        }
         const target = normalize(dir, clean).replace(/\.md$/, "");
         if (byId(target)) {
             a.classList.add("wikilink");
@@ -483,10 +490,23 @@ async function load(firstTime) {
         lastSig = sig;
     }
     // else: identical topology -> leave the graph and viewport untouched entirely.
-    if (current && byId(current))
+    const requested = firstTime ? requestedPageId() : null;
+    if (requested)
+        selectNode(requested);
+    else if (current && byId(current))
         renderReader(current);
     else if (firstTime && anchorId)
         renderReader(anchorId);
+}
+/**
+ * The page named by a `#page=<id>` URL fragment (e.g. `#page=apps/p4admin`), if
+ * it exists in the loaded graph. Lets a link open the visualizer on a specific
+ * page instead of the default entry page. A fragment is never sent to the
+ * server, so no route changes; an unknown or malformed id is ignored.
+ */
+function requestedPageId() {
+    const raw = new URLSearchParams(location.hash.replace(/^#/, "")).get("page");
+    return raw && byId(raw) ? raw : null;
 }
 /**
  * Build the force-graph payload, reusing node objects across reloads so

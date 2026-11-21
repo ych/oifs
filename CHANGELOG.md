@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-21
+
 ### Added
 - **Pluggable `StorageMode::FileIo` (`pread`/`pwrite`, Zero `mmap`)**:
   - Added `src/storage.rs` implementing a unified `ImageBacking` abstraction over both `StorageMode::Mmap` (default) and `StorageMode::FileIo` (100% `mmap`-free positional `pread`/`pwrite` I/O in Safe Rust, eliminating `SIGBUS` truncation hazards).

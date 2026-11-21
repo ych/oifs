@@ -69,6 +69,15 @@ struct OpenOptions {
 };
 
 /**
+ * Directory entry metadata returned by `FileSystem::ls()`.
+ */
+struct DirEntry {
+    std::string name;
+    uint64_t size = 0;
+    uint64_t mtime = 0;
+};
+
+/**
  * Lightweight typed non-owning contiguous span (C++17 & C++20 compatible).
  * In C++20 mode, implicitly converts to `std::span<T>`.
  */
@@ -224,7 +233,8 @@ public:
     PinnableSlice(PinnableSlice&& other) noexcept
         : fallback_buf_(std::move(other.fallback_buf_)),
           pin_holder_(std::move(other.pin_holder_)),
-          data_(other.pinned_ ? other.data_ : fallback_buf_.data()),
+          data_(other.pinned_ ? other.data_
+                              : (other.size_ > 0 ? fallback_buf_.data() : nullptr)),
           size_(other.size_),
           pinned_(other.pinned_) {
         other.data_ = nullptr;
@@ -240,7 +250,7 @@ public:
 
             fallback_buf_ = std::move(other.fallback_buf_);
             pin_holder_ = std::move(other.pin_holder_);
-            data_ = was_pinned ? ext_ptr : fallback_buf_.data();
+            data_ = was_pinned ? ext_ptr : (sz > 0 ? fallback_buf_.data() : nullptr);
             size_ = sz;
             pinned_ = was_pinned;
 
@@ -790,6 +800,32 @@ public:
         }
     }
 
+    void truncate_file(std::string_view path, uint64_t new_size) {
+        ensure_open();
+        std::string c_path(path);
+        if (oifs_truncate_file(handle_, c_path.c_str(), new_size) != 0) {
+            throw Error(last_error());
+        }
+    }
+
+    std::vector<DirEntry> ls() const {
+        ensure_open();
+        std::vector<DirEntry> entries;
+        ListCallback cb = [](const char* name, uint64_t size, uint64_t mtime, void* user_data) {
+            auto* out = static_cast<std::vector<DirEntry>*>(user_data);
+            try {
+                out->push_back(
+                    DirEntry{name != nullptr ? std::string(name) : std::string{}, size, mtime});
+            } catch (...) {
+                // Never allow C++ exceptions to unwind across the extern "C" ABI boundary.
+            }
+        };
+        if (oifs_ls(handle_, cb, &entries) != 0) {
+            throw Error(last_error());
+        }
+        return entries;
+    }
+
     uint64_t resolve_path(std::string_view path) const {
         ensure_open();
         std::string c_path(path);
@@ -845,6 +881,14 @@ public:
                                         zstd_level) != 0) {
             throw Error(last_error());
         }
+    }
+
+    void write_file(std::string_view path,
+                    uint64_t offset,
+                    ByteView data,
+                    WritePolicy policy,
+                    int32_t zstd_level = 0) {
+        write_file(path, offset, data, static_cast<uint32_t>(policy), zstd_level);
     }
 
     std::size_t read_at(std::string_view path, uint64_t offset, MutableByteSpan dst) const {
@@ -913,6 +957,14 @@ public:
         return AsyncFuture(fut);
     }
 
+    AsyncFuture create_file_with_data_async(std::string_view path,
+                                            ByteView data,
+                                            WritePolicy policy,
+                                            int32_t zstd_level = 0) {
+        return create_file_with_data_async(
+            path, data, static_cast<uint32_t>(policy), zstd_level);
+    }
+
     AsyncFuture write_file_async(std::string_view path,
                                  uint64_t offset,
                                  ByteView data,
@@ -926,6 +978,14 @@ public:
             throw Error("oifs_write_file_async failed");
         }
         return AsyncFuture(fut);
+    }
+
+    AsyncFuture write_file_async(std::string_view path,
+                                 uint64_t offset,
+                                 ByteView data,
+                                 WritePolicy policy,
+                                 int32_t zstd_level = 0) {
+        return write_file_async(path, offset, data, static_cast<uint32_t>(policy), zstd_level);
     }
 
     AsyncFuture write_file_async(std::string_view path, ByteView data) {
@@ -1005,6 +1065,17 @@ public:
             delete heap_cb;
             throw Error("oifs_create_file_with_data_async_cb failed");
         }
+    }
+
+    template <typename Fn,
+              typename = std::enable_if_t<std::is_invocable_v<std::decay_t<Fn>, int64_t>>>
+    void create_file_with_data_async_cb(std::string_view path,
+                                        ByteView data,
+                                        WritePolicy policy,
+                                        int32_t zstd_level,
+                                        Fn&& cb) {
+        create_file_with_data_async_cb(
+            path, data, static_cast<uint32_t>(policy), zstd_level, std::forward<Fn>(cb));
     }
 
     template <typename Fn,

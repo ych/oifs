@@ -8,8 +8,8 @@ use crate::BLOCK_SIZE;
 use crate::allocator::{AllocatorError, BlockAllocator, SimpleBlockAllocator};
 use crate::inode::Inode;
 use crate::io_engine::{ExtentList, IoBackend, IoEngine, ReadTarget};
+use crate::storage::{BitmapSliceMut, ImageBacking, StorageMode};
 use crate::superblock::SuperBlock;
-use memmap2::{MmapMut, MmapOptions};
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -288,8 +288,8 @@ pub(crate) struct DiskManagerInner {
     file: File,
     /// Canonical path of the underlying image file on host disk
     pub(crate) backing_path: PathBuf,
-    /// Memory-mapped view of the file system image
-    pub(crate) mmap: MmapMut,
+    /// Active storage engine (`StorageMode::Mmap` or `StorageMode::FileIo`)
+    pub(crate) backing: ImageBacking,
     /// Cached copy of the superblock
     pub superblock: SuperBlock,
     /// Encryption key (if filesystem is encrypted)
@@ -306,7 +306,7 @@ pub(crate) struct DiskManagerInner {
     pub chunk_read_cache: RwLock<ChunkReadCache>,
     /// Bounded decoded-payload cache for non-seekable `read_at`
     pub decoded_blob_cache: Mutex<DecodedBlobCache>,
-    /// Durability policy governing mmap msync behavior on mutations
+    /// Durability policy governing flush/msync behavior on mutations
     pub durability_mode: std::sync::atomic::AtomicU8,
     /// Batched dirty-range accumulator for `DurabilityMode::RangeAsync`
     pub(crate) pending_async_ranges: Mutex<PendingAsyncRanges>,
@@ -319,64 +319,26 @@ pub(crate) struct DiskManagerInner {
 impl DiskManagerInner {
     /// The inode bitmap as one contiguous slice.
     ///
-    /// The bitmap may span several blocks. The blocks are consecutive
-    /// in the image, so the span is a contiguous slice of the mapping.
+    /// The bitmap may span several blocks. Under `Mmap`, this borrows the
+    /// mapped span directly; under `FileIo`, this borrows the write-through
+    /// in-memory bitmap mirror.
     pub(crate) fn inode_bitmap_slice(&self) -> Option<&[u8]> {
-        self.bitmap_span(
-            self.superblock.inode_bitmap_block,
-            self.superblock.inode_bitmap_blocks(),
-        )
+        self.backing.inode_bitmap_slice(&self.superblock)
     }
 
     /// The data bitmap as one contiguous slice.
     pub(crate) fn data_bitmap_slice(&self) -> Option<&[u8]> {
-        self.bitmap_span(
-            self.superblock.data_bitmap_block,
-            self.superblock.data_bitmap_blocks(),
-        )
+        self.backing.data_bitmap_slice(&self.superblock)
     }
 
-    /// The mutable inode bitmap span.
-    pub(crate) fn inode_bitmap_slice_mut(&mut self) -> Option<&mut [u8]> {
-        let start = self.bitmap_start(self.superblock.inode_bitmap_block)?;
-        let len = self.bitmap_len(self.superblock.inode_bitmap_blocks())?;
-        let end = start.checked_add(len)?;
-        if end > self.mmap.len() {
-            return None;
-        }
-        Some(&mut self.mmap[start..end])
+    /// The mutable inode bitmap span (auto-flushes to disk on drop under `FileIo`).
+    pub(crate) fn inode_bitmap_slice_mut(&mut self) -> Option<BitmapSliceMut<'_>> {
+        self.backing.inode_bitmap_slice_mut(&self.superblock)
     }
 
-    /// The mutable data bitmap span.
-    pub(crate) fn data_bitmap_slice_mut(&mut self) -> Option<&mut [u8]> {
-        let start = self.bitmap_start(self.superblock.data_bitmap_block)?;
-        let len = self.bitmap_len(self.superblock.data_bitmap_blocks())?;
-        let end = start.checked_add(len)?;
-        if end > self.mmap.len() {
-            return None;
-        }
-        Some(&mut self.mmap[start..end])
-    }
-
-    /// The byte offset of the first block of a bitmap.
-    fn bitmap_start(&self, block: u64) -> Option<usize> {
-        usize::try_from(block).ok()?.checked_mul(BLOCK_SIZE)
-    }
-
-    /// The byte length of a bitmap span.
-    fn bitmap_len(&self, blocks: u64) -> Option<usize> {
-        usize::try_from(blocks).ok()?.checked_mul(BLOCK_SIZE)
-    }
-
-    /// The byte range of a bitmap span.
-    fn bitmap_span(&self, start_block: u64, blocks: u64) -> Option<&[u8]> {
-        let start = self.bitmap_start(start_block)?;
-        let len = self.bitmap_len(blocks)?;
-        let end = start.checked_add(len)?;
-        if end > self.mmap.len() {
-            return None;
-        }
-        Some(&self.mmap[start..end])
+    /// The mutable data bitmap span (auto-flushes to disk on drop under `FileIo`).
+    pub(crate) fn data_bitmap_slice_mut(&mut self) -> Option<BitmapSliceMut<'_>> {
+        self.backing.data_bitmap_slice_mut(&self.superblock)
     }
 
     /// Whether a block id addresses a block inside the data area.
@@ -533,20 +495,20 @@ impl DiskManagerInner {
         if self.superblock.has_journal_layout() {
             let bs = self.superblock.block_size as u64;
             if let Some(start) = DiskManager::journal_region_start(&self.superblock) {
-                let len =
-                    DiskManager::journal_region_len(bs).min(self.mmap.len().saturating_sub(start));
+                let len = DiskManager::journal_region_len(bs)
+                    .min(self.backing.len().saturating_sub(start));
                 if len > 0 {
-                    let _ = self.mmap.flush_async_range(start, len);
+                    let _ = self.backing.flush_async_range(start, len);
                 }
             }
         }
         let coalesced = Self::coalesce_ranges_with_gap(
             batch,
-            self.mmap.len(),
+            self.backing.len(),
             Self::RANGE_ASYNC_GAP_BRIDGE_BYTES,
         );
         for (offset, actual_len) in coalesced {
-            let _ = self.mmap.flush_async_range(offset, actual_len);
+            let _ = self.backing.flush_async_range(offset, actual_len);
         }
     }
 
@@ -574,16 +536,16 @@ impl DiskManagerInner {
                 if ranges.is_empty() {
                     return Ok(());
                 }
-                let mmap_len = self.mmap.len();
+                let img_len = self.backing.len();
                 let mut inline_batch = None;
                 {
                     let mut pending = crate::lock_unpoisoned(&self.pending_async_ranges);
                     let mut added = false;
                     for &(off, len) in ranges {
-                        if len == 0 || off >= mmap_len {
+                        if len == 0 || off >= img_len {
                             continue;
                         }
-                        let clamped_len = len.min(mmap_len - off);
+                        let clamped_len = len.min(img_len - off);
                         if let Some(last) = pending.ranges.last_mut() {
                             let ls = last.0;
                             let prev_len = last.1;
@@ -633,20 +595,25 @@ impl DiskManagerInner {
                 Ok(())
             }
             DurabilityMode::Strict => {
-                let coalesced = Self::coalesce_ranges_with_gap(
-                    ranges,
-                    self.mmap.len(),
-                    Self::STRICT_GAP_BRIDGE_BYTES,
-                );
-                for (offset, actual_len) in coalesced {
-                    self.mmap
-                        .flush_range(offset, actual_len)
-                        .map_err(DiskManagerError::Io)?;
+                if self.backing.as_mmap_slice().is_some() {
+                    let coalesced = Self::coalesce_ranges_with_gap(
+                        ranges,
+                        self.backing.len(),
+                        Self::STRICT_GAP_BRIDGE_BYTES,
+                    );
+                    for (offset, actual_len) in coalesced {
+                        self.backing
+                            .flush_range(offset, actual_len)
+                            .map_err(DiskManagerError::Io)?;
+                    }
+                } else {
+                    // Under FileIo, a single sync_data() flushes all dirty ranges at once.
+                    self.backing.flush().map_err(DiskManagerError::Io)?;
                 }
                 Ok(())
             }
             DurabilityMode::LegacyWholeMmapAsync => {
-                let _ = self.mmap.flush_async();
+                let _ = self.backing.flush_async();
                 Ok(())
             }
         }
@@ -692,12 +659,13 @@ impl Drop for DiskManagerInner {
         if self.superblock.has_journal_layout() {
             let bs = self.superblock.block_size as u64;
             if let Some(start) = DiskManager::journal_region_start(&self.superblock) {
-                let len = DiskManager::journal_region_len(bs).min(self.mmap.len() - start);
-                let _ = self.mmap.flush_range(start, len);
+                let len = DiskManager::journal_region_len(bs)
+                    .min(self.backing.len().saturating_sub(start));
+                let _ = self.backing.flush_range(start, len);
             }
         }
         // Flush any pending changes to disk when dropped
-        let _ = self.mmap.flush();
+        let _ = self.backing.flush();
     }
 }
 
@@ -1070,10 +1038,41 @@ fn plan_write<'a>(
 }
 
 impl DiskManager {
+    /// Default storage mode: honors process override, `OIFS_STORAGE_MODE` (`mmap` / `pread` / `file_io`),
+    /// falling back to [`StorageMode::Mmap`].
+    #[inline]
+    fn default_storage_mode() -> StorageMode {
+        crate::storage::default_storage_mode()
+    }
+
     /// Open an existing OIFS image or create a new one if it doesn't exist.
     /// `size`: Total size in bytes (only used when creating a new file).
     pub fn open<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, DiskManagerError> {
-        Self::init_or_open(path, total_size, None, false, false)
+        Self::init_or_open(
+            path,
+            total_size,
+            None,
+            false,
+            false,
+            Self::default_storage_mode(),
+        )
+    }
+
+    /// Open an existing OIFS image or create a new one using an explicit [`StorageMode`].
+    pub fn open_with_storage_mode<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        mode: StorageMode,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open(path, total_size, None, false, false, mode)
+    }
+
+    /// Open (or create) an OIFS image using pure positional `pread`/`pwrite` I/O (zero `mmap`).
+    pub fn open_file_io<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open(path, total_size, None, false, false, StorageMode::FileIo)
     }
 
     /// Open (or create) a journaled OIFS image with metadata WAL enabled.
@@ -1085,7 +1084,22 @@ impl DiskManager {
         path: P,
         total_size: u64,
     ) -> Result<Self, DiskManagerError> {
-        Self::init_or_open(path, total_size, None, false, true)
+        Self::init_or_open(
+            path,
+            total_size,
+            None,
+            false,
+            true,
+            Self::default_storage_mode(),
+        )
+    }
+
+    /// Open (or create) a journaled OIFS image using pure positional `pread`/`pwrite` I/O (zero `mmap`).
+    pub fn open_file_io_journaled<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open(path, total_size, None, false, true, StorageMode::FileIo)
     }
 
     /// Open an encrypted OIFS image with a password
@@ -1094,7 +1108,30 @@ impl DiskManager {
         total_size: u64,
         password: Option<&str>,
     ) -> Result<Self, DiskManagerError> {
-        Self::init_or_open(path, total_size, password, false, false)
+        Self::init_or_open(
+            path,
+            total_size,
+            password,
+            false,
+            false,
+            Self::default_storage_mode(),
+        )
+    }
+
+    /// Open an encrypted OIFS image with a password using pure positional `pread`/`pwrite` I/O (zero `mmap`).
+    pub fn open_file_io_with_password<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open(
+            path,
+            total_size,
+            password,
+            false,
+            false,
+            StorageMode::FileIo,
+        )
     }
 
     /// Create a new encrypted filesystem
@@ -1103,7 +1140,30 @@ impl DiskManager {
         total_size: u64,
         password: &str,
     ) -> Result<Self, DiskManagerError> {
-        Self::init_or_open(path, total_size, Some(password), true, false)
+        Self::init_or_open(
+            path,
+            total_size,
+            Some(password),
+            true,
+            false,
+            Self::default_storage_mode(),
+        )
+    }
+
+    /// Create a new encrypted filesystem using pure positional `pread`/`pwrite` I/O (zero `mmap`).
+    pub fn create_encrypted_file_io<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: &str,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open(
+            path,
+            total_size,
+            Some(password),
+            true,
+            false,
+            StorageMode::FileIo,
+        )
     }
 
     /// Create a new encrypted filesystem with metadata journaling enabled.
@@ -1112,7 +1172,30 @@ impl DiskManager {
         total_size: u64,
         password: &str,
     ) -> Result<Self, DiskManagerError> {
-        Self::init_or_open(path, total_size, Some(password), true, true)
+        Self::init_or_open(
+            path,
+            total_size,
+            Some(password),
+            true,
+            true,
+            Self::default_storage_mode(),
+        )
+    }
+
+    /// Create a new encrypted, journaled filesystem using pure positional `pread`/`pwrite` I/O (zero `mmap`).
+    pub fn create_encrypted_file_io_journaled<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: &str,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open(
+            path,
+            total_size,
+            Some(password),
+            true,
+            true,
+            StorageMode::FileIo,
+        )
     }
 
     /// Open an existing OIFS image with an existing derived encryption key (or unencrypted if None).
@@ -1121,7 +1204,57 @@ impl DiskManager {
         total_size: u64,
         key: Option<crate::encryption::EncryptionKey>,
     ) -> Result<Self, DiskManagerError> {
-        Self::init_or_open_with_key(path, total_size, None, key, false, false)
+        Self::init_or_open_with_key(
+            path,
+            total_size,
+            None,
+            key,
+            false,
+            false,
+            Self::default_storage_mode(),
+        )
+    }
+
+    /// Open an existing OIFS image with an existing derived encryption key and explicit [`StorageMode`].
+    pub fn open_with_key_and_storage_mode<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        key: Option<crate::encryption::EncryptionKey>,
+        mode: StorageMode,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open_with_key(path, total_size, None, key, false, false, mode)
+    }
+
+    /// Returns the active low-level storage backing mode (`Mmap` or `FileIo`).
+    pub fn storage_mode(&self) -> StorageMode {
+        self.inner.read().unwrap().backing.mode()
+    }
+
+    /// Configures the user-space data page cache budget (in bytes) when running under
+    /// [`StorageMode::FileIo`]. Passing `0` disables the cache and releases all cached pages.
+    /// No-op when running under [`StorageMode::Mmap`].
+    pub fn set_file_io_cache_bytes(&self, bytes: usize) {
+        self.inner
+            .read()
+            .unwrap()
+            .backing
+            .set_data_cache_capacity_bytes(bytes);
+    }
+
+    /// Returns the configured user-space data page cache capacity in bytes (`0` for `Mmap`
+    /// or when disabled).
+    pub fn file_io_cache_bytes(&self) -> usize {
+        self.inner
+            .read()
+            .unwrap()
+            .backing
+            .data_cache_capacity_bytes()
+    }
+
+    /// Returns the approximate number of bytes currently resident in the [`StorageMode::FileIo`]
+    /// user-space data page cache.
+    pub fn file_io_cache_used_bytes(&self) -> usize {
+        self.inner.read().unwrap().backing.data_cache_used_bytes()
     }
 
     #[cfg(test)]
@@ -1135,8 +1268,17 @@ impl DiskManager {
         password: Option<&str>,
         create_encrypted: bool,
         journal: bool,
+        storage_mode: StorageMode,
     ) -> Result<Self, DiskManagerError> {
-        Self::init_or_open_with_key(path, total_size, password, None, create_encrypted, journal)
+        Self::init_or_open_with_key(
+            path,
+            total_size,
+            password,
+            None,
+            create_encrypted,
+            journal,
+            storage_mode,
+        )
     }
 
     fn init_or_open_with_key<P: AsRef<Path>>(
@@ -1146,6 +1288,7 @@ impl DiskManager {
         existing_key: Option<crate::encryption::EncryptionKey>,
         create_encrypted: bool,
         journal: bool,
+        storage_mode: StorageMode,
     ) -> Result<Self, DiskManagerError> {
         let path = path.as_ref();
         let exists = path.exists();
@@ -1174,7 +1317,7 @@ impl DiskManager {
             file.set_len(total_size)?;
         }
 
-        let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+        let mut backing = ImageBacking::open(&file, storage_mode)?;
         let superblock: SuperBlock;
         let encryption_key: Option<crate::encryption::EncryptionKey>;
 
@@ -1206,18 +1349,20 @@ impl DiskManager {
                 encryption_key = None;
             }
             let serialized = bincode::serialize(&sb)?;
-            mmap[0..serialized.len()].copy_from_slice(&serialized);
+            backing.write_all_at(0, &serialized)?;
             superblock = sb;
         } else {
-            if mmap.len() < BLOCK_SIZE {
+            if backing.len() < BLOCK_SIZE {
                 return Err(DiskManagerError::FileTooSmall);
             }
-            superblock = bincode::deserialize(&mmap[0..BLOCK_SIZE])?;
+            let mut sb_buf = [0u8; BLOCK_SIZE];
+            backing.read_exact_at(0, &mut sb_buf)?;
+            superblock = bincode::deserialize(&sb_buf)?;
             if superblock.magic != SuperBlock::MAGIC {
                 return Err(DiskManagerError::InvalidMagic);
             }
             superblock
-                .validate(mmap.len())
+                .validate(backing.len())
                 .map_err(DiskManagerError::CorruptedSuperblock)?;
 
             if superblock.encrypted {
@@ -1236,23 +1381,33 @@ impl DiskManager {
             }
         }
 
+        // Load in-memory bitmap & journal mirrors for `StorageMode::FileIo` (no-op for `Mmap`).
+        backing.configure_regions(&superblock)?;
+
         // Mount-time journal handling.
         // A journaled image is recovered *before* the manager is published, so no
         // caller can ever observe a filesystem mid-replay.
         if is_new {
-            Self::format_journal(&mut mmap, &superblock)?;
+            Self::format_journal(&mut backing, &superblock)?;
         } else if superblock.has_journal_layout() {
-            Self::recover_journal(&mut mmap, &superblock)?;
-            mmap.flush()?;
+            Self::recover_journal(&mut backing, &superblock)?;
+            backing.flush()?;
         }
 
         let backing_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let free_block_hint = superblock.data_block_start;
         let async_drain_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let requested_io_backend = match storage_mode {
+            StorageMode::Mmap => IoBackend::from_env().unwrap_or_default(),
+            StorageMode::FileIo => match IoBackend::from_env() {
+                Some(IoBackend::IoUring) => IoBackend::IoUring,
+                _ => IoBackend::Pread,
+            },
+        };
         let inner = DiskManagerInner {
             file,
             backing_path,
-            mmap,
+            backing,
             superblock,
             encryption_key,
             free_block_hint,
@@ -1264,7 +1419,7 @@ impl DiskManager {
             durability_mode: std::sync::atomic::AtomicU8::new(DurabilityMode::Lazy as u8),
             pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
             async_drain_ready: async_drain_ready.clone(),
-            io_engine: IoEngine::new(IoBackend::from_env().unwrap_or_default()),
+            io_engine: IoEngine::new(requested_io_backend),
         };
 
         let inner = Arc::new(RwLock::new(inner));
@@ -1277,36 +1432,40 @@ impl DiskManager {
 
         if is_new {
             let mut guard = dm.inner.write().unwrap();
-            let bitmap_slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::other("Failed to get inode bitmap"))
-            })?;
-            let mut ia = SimpleBlockAllocator::new(bitmap_slice, 0);
-            let root_id = ia.allocate()?;
-            if root_id != 0 {
-                return Err(DiskManagerError::Io(std::io::Error::other(
-                    "Failed init root inode",
-                )));
+            {
+                let mut bitmap_slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
+                    DiskManagerError::Io(std::io::Error::other("Failed to get inode bitmap"))
+                })?;
+                let mut ia = SimpleBlockAllocator::new(&mut bitmap_slice, 0);
+                let root_id = ia.allocate()?;
+                if root_id != 0 {
+                    return Err(DiskManagerError::Io(std::io::Error::other(
+                        "Failed init root inode",
+                    )));
+                }
             }
 
             let data_start = guard.superblock.data_block_start;
-            let data_slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::other("Failed to get data bitmap"))
-            })?;
-            let mut da = SimpleBlockAllocator::new(data_slice, data_start);
-            let root_data = da.allocate()?;
+            let root_data = {
+                let mut data_slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
+                    DiskManagerError::Io(std::io::Error::other("Failed to get data bitmap"))
+                })?;
+                let mut da = SimpleBlockAllocator::new(&mut data_slice, data_start);
+                da.allocate()?
+            };
 
             let mut root_inode = Inode::new(crate::inode::FileType::Directory);
             root_inode.blocks[0] = root_data;
             root_inode.size = BLOCK_SIZE as u64;
             Self::write_inode_internal(&mut guard, 0, &root_inode)?;
-            guard.mmap.flush()?;
+            guard.backing.flush()?;
         } else {
             // Already replayed at mount time above; record a clean-shutdown marker so
             // the next mount can tell "clean" from "crashed" without a ring scan.
             let mut guard = dm.inner.write().unwrap();
             if guard.superblock.has_journal_layout() {
                 let sb = guard.superblock;
-                Self::mark_journal_clean(&mut guard.mmap, &sb)?;
+                Self::mark_journal_clean(&mut guard.backing, &sb)?;
             }
         }
 
@@ -1333,13 +1492,17 @@ impl DiskManager {
     }
 
     /// Record a clean-shutdown marker in the journal header.
-    fn mark_journal_clean(mmap: &mut MmapMut, sb: &SuperBlock) -> Result<(), DiskManagerError> {
+    fn mark_journal_clean(
+        backing: &mut ImageBacking,
+        sb: &SuperBlock,
+    ) -> Result<(), DiskManagerError> {
         if !sb.has_journal_layout() {
             return Ok(());
         }
-        let region = Self::journal_region(mmap, sb)?;
+        let mut region = backing.journal_region_mut(sb)?;
+        region.mark_header_only();
         let bs = sb.block_size as u64;
-        crate::journal::JournalRing::open(region, bs)?.mark_clean_shutdown();
+        crate::journal::JournalRing::open(&mut region, bs)?.mark_clean_shutdown();
         Ok(())
     }
 
@@ -1415,17 +1578,6 @@ impl DiskManager {
         }
     }
 
-    // Private helper for Inner
-    pub(crate) fn get_block_mut_from_map(mmap: &mut MmapMut, block_id: u64) -> Option<&mut [u8]> {
-        let start = usize::try_from(block_id).ok()?.checked_mul(BLOCK_SIZE)?;
-        let end = start.checked_add(BLOCK_SIZE)?;
-        if end > mmap.len() {
-            None
-        } else {
-            Some(&mut mmap[start..end])
-        }
-    }
-
     /// Byte length of the journal region (header block + record ring).
     fn journal_region_len(block_size: u64) -> usize {
         usize::try_from(crate::journal::JOURNAL_RESERVED_BLOCKS.saturating_mul(block_size))
@@ -1442,39 +1594,17 @@ impl DiskManager {
             .checked_mul(usize::try_from(sb.block_size).ok()?)
     }
 
-    /// Resolve the journal region as a mutable slice, if the image is large enough.
-    fn journal_region<'m>(
-        mmap: &'m mut MmapMut,
-        sb: &SuperBlock,
-    ) -> Result<&'m mut [u8], DiskManagerError> {
-        let bs = sb.block_size as u64;
-        let start = Self::journal_region_start(sb).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::other("Journal offset overflow"))
-        })?;
-        let end = start
-            .checked_add(Self::journal_region_len(bs))
-            .ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::other("Journal region overflow"))
-            })?;
-        if end > mmap.len() {
-            return Err(DiskManagerError::Io(std::io::Error::other(
-                "Journal region does not fit in image",
-            )));
-        }
-        Ok(&mut mmap[start..end])
-    }
-
     /// Format the journal region of a freshly created journaled image.
     ///
     /// No-op for non-journaled images. The ring starts empty with
     /// `cleanly_unmounted = false`, so a crash before the next clean shutdown is
     /// still detectable on the next mount.
-    fn format_journal(mmap: &mut MmapMut, sb: &SuperBlock) -> Result<(), DiskManagerError> {
+    fn format_journal(backing: &mut ImageBacking, sb: &SuperBlock) -> Result<(), DiskManagerError> {
         if !sb.has_journal_layout() {
             return Ok(());
         }
-        let region = Self::journal_region(mmap, sb)?;
-        crate::journal::JournalRing::create(region, sb.block_size as u64)
+        let mut region = backing.journal_region_mut(sb)?;
+        crate::journal::JournalRing::create(&mut region, sb.block_size as u64)
             .map_err(DiskManagerError::Journal)?;
         Ok(())
     }
@@ -1486,14 +1616,17 @@ impl DiskManager {
     /// The region is snapshotted so the image can be mutated while iterating, and
     /// every op is an absolute post-image write, so replaying a transaction twice
     /// is indistinguishable from replaying it once.
-    fn recover_journal(mmap: &mut MmapMut, sb: &SuperBlock) -> Result<usize, DiskManagerError> {
+    fn recover_journal(
+        backing: &mut ImageBacking,
+        sb: &SuperBlock,
+    ) -> Result<usize, DiskManagerError> {
         if !sb.has_journal_layout() {
             return Ok(0);
         }
         let bs = sb.block_size as u64;
 
         // Phase 1: validate + decode frames from a snapshot, releasing the borrow.
-        let mut snapshot = Self::journal_region(mmap, sb)?.to_vec();
+        let mut snapshot = backing.journal_region_ref(sb)?.to_vec();
         let mut ops = Vec::new();
         let (tx_count, tx_seq) = {
             let mut ring = crate::journal::JournalRing::open(&mut snapshot, bs)
@@ -1509,7 +1642,9 @@ impl DiskManager {
 
         // Phase 2: redo the ops directly against the image.
         for op in &ops {
-            crate::journal::apply_op_in_place(mmap, sb, op).map_err(DiskManagerError::Journal)?;
+            backing
+                .apply_journal_op(sb, op)
+                .map_err(DiskManagerError::Journal)?;
         }
 
         // Phase 3: reset the ring and record a clean shutdown.
@@ -1522,7 +1657,8 @@ impl DiskManager {
         let header_len = usize::try_from(bs)
             .unwrap_or(0)
             .min(crate::journal::JOURNAL_HEADER_LEN);
-        let region = Self::journal_region(mmap, sb)?;
+        let mut region = backing.journal_region_mut(sb)?;
+        region.mark_header_only();
         region[..header_len].copy_from_slice(&state.encode()[..header_len]);
 
         Ok(tx_count)
@@ -1610,12 +1746,18 @@ impl DiskManager {
     /// Switches the payload-read backend and returns the effective one.
     ///
     /// Waits for in-progress operations (takes the write lock), so no read straddles
-    /// two engines. Metadata and all writes always go through the shared mmap
-    /// regardless of the backend.
+    /// two engines. Under [`StorageMode::FileIo`], requesting `IoBackend::Mmap` falls
+    /// back to `IoBackend::Pread`.
     pub fn set_io_backend(&self, backend: IoBackend) -> IoBackend {
-        let engine = IoEngine::new(backend);
+        let mut guard = self.inner.write().unwrap();
+        let target = if guard.backing.mode() == StorageMode::FileIo && backend == IoBackend::Mmap {
+            IoBackend::Pread
+        } else {
+            backend
+        };
+        let engine = IoEngine::new(target);
         let effective = engine.effective();
-        self.inner.write().unwrap().io_engine = engine;
+        guard.io_engine = engine;
         effective
     }
 
@@ -1654,21 +1796,22 @@ impl DiskManager {
 
     #[allow(dead_code)]
     fn find_dir_entry_in_block(
-        mmap: &MmapMut,
+        backing: &ImageBacking,
         block_id: u64,
         name: &str,
     ) -> Result<Option<u64>, DiskManagerError> {
-        if let Some(slice) = Self::get_block_from_map(mmap, block_id) {
-            return Ok(crate::directory::find_entry_in_block(slice, name));
-        }
-        Ok(None)
+        Ok(backing
+            .with_block(block_id, |slice| {
+                crate::directory::find_entry_in_block(slice, name)
+            })
+            .unwrap_or(None))
     }
 
     fn read_dir_entries_from_block(
-        mmap: &MmapMut,
+        backing: &ImageBacking,
         block_id: u64,
     ) -> Result<Vec<crate::directory::DirectoryEntry>, DiskManagerError> {
-        if let Some(slice) = Self::get_block_from_map(mmap, block_id) {
+        match backing.with_block(block_id, |slice| {
             let iter = crate::directory::DirectoryIterator::new(slice);
             let mut entries = Vec::new();
             for entry in iter {
@@ -1680,8 +1823,9 @@ impl DiskManager {
                 })?);
             }
             Ok(entries)
-        } else {
-            Ok(Vec::new())
+        }) {
+            Ok(res) => res,
+            Err(_) => Ok(Vec::new()),
         }
     }
 
@@ -1695,20 +1839,19 @@ impl DiskManager {
     /// Scans a directory's blocks for `target_name`, using the stored 64-bit hash to skip
     /// mismatching records without comparing names. Returns `(inode_id, physical_block)`.
     fn locate_entry_in_dir(
-        mmap: &MmapMut,
+        backing: &ImageBacking,
         inode: &Inode,
         target_name: &str,
         target_hash: u64,
     ) -> Option<(u64, u64)> {
         for blk_idx in 0..Self::dir_num_blocks(inode) {
-            let phys_blk = Self::resolve_logical_block_id(mmap, inode, blk_idx);
+            let phys_blk = Self::resolve_logical_block_id(backing, inode, blk_idx);
             if phys_blk == 0 {
                 continue;
             }
-            if let Some(slice) = Self::get_block_from_map(mmap, phys_blk)
-                && let Some(id) =
-                    crate::directory::find_entry_in_block_with_hash(slice, target_name, target_hash)
-            {
+            if let Ok(Some(id)) = backing.with_block(phys_blk, |slice| {
+                crate::directory::find_entry_in_block_with_hash(slice, target_name, target_hash)
+            }) {
                 return Some((id, phys_blk));
             }
         }
@@ -1720,7 +1863,7 @@ impl DiskManager {
     /// deletions, and zero-hash-recomputation `list_dir` calls.
     #[allow(clippy::type_complexity)]
     fn build_dir_index(
-        mmap: &MmapMut,
+        backing: &ImageBacking,
         inode: &Inode,
     ) -> Result<(FxHashMap<String, (u64, u64, u64)>, bool, Option<(u64, u16)>), DiskManagerError>
     {
@@ -1729,11 +1872,11 @@ impl DiskManager {
         let mut may_have_holes = false;
         let mut tail_offset = None;
         for blk_idx in 0..num_blocks {
-            let phys_blk = Self::resolve_logical_block_id(mmap, inode, blk_idx);
+            let phys_blk = Self::resolve_logical_block_id(backing, inode, blk_idx);
             if phys_blk == 0 {
                 continue;
             }
-            let entries = Self::read_dir_entries_from_block(mmap, phys_blk)?;
+            let entries = Self::read_dir_entries_from_block(backing, phys_blk)?;
             let mut used_bytes = 0usize;
             for entry in entries {
                 used_bytes += 18 + entry.name.len();
@@ -1845,7 +1988,7 @@ impl DiskManager {
         //    instead of scanning all blocks twice on a cold negative lookup.
         if !has_entry_yet {
             let (stored, may_have_holes, tail_offset) =
-                Self::build_dir_index(&guard.mmap, &parent)?;
+                Self::build_dir_index(&guard.backing, &parent)?;
             let found = candidates
                 .iter()
                 .flatten()
@@ -1880,7 +2023,7 @@ impl DiskManager {
         // 4. Targeted on-disk scan (retains `(id, blk, hash)` so a hit never re-scans).
         let found_loc = candidates.iter().flatten().find_map(|c| {
             let h = crate::directory::hash_filename(c);
-            Self::locate_entry_in_dir(&guard.mmap, &parent, c, h).map(|(id, blk)| (id, blk, h))
+            Self::locate_entry_in_dir(&guard.backing, &parent, c, h).map(|(id, blk)| (id, blk, h))
         });
         let found = found_loc.map(|(id, _, _)| id);
 
@@ -1888,7 +2031,7 @@ impl DiskManager {
         let promoted_index = if found.is_none()
             || cold_scans_so_far.saturating_add(1) >= DIR_INDEX_BUILD_AFTER_SCANS
         {
-            Some(Self::build_dir_index(&guard.mmap, &parent)?)
+            Some(Self::build_dir_index(&guard.backing, &parent)?)
         } else {
             None
         };
@@ -1947,23 +2090,27 @@ impl DiskManager {
             .unwrap_or((None, num_blocks > 1));
 
         let last_idx = num_blocks - 1;
-        let tail_blk = Self::resolve_logical_block_id(&guard.mmap, parent_inode, last_idx);
+        let tail_blk = Self::resolve_logical_block_id(&guard.backing, parent_inode, last_idx);
         if guard.is_data_block(tail_blk)
-            && let Some(slice) = Self::get_block_from_map(&guard.mmap, tail_blk)
-        {
-            let insert_offset = match cached_tail {
-                Some((blk, off))
-                    if blk == tail_blk
-                        && (off as usize) + 18 <= BLOCK_SIZE
-                        && slice[off as usize..off as usize + 18] == [0u8; 18] =>
-                {
-                    off as usize
+            && let Ok(Some(res)) = guard.backing.with_block(tail_blk, |slice| {
+                let insert_offset = match cached_tail {
+                    Some((blk, off))
+                        if blk == tail_blk
+                            && (off as usize) + 18 <= BLOCK_SIZE
+                            && slice[off as usize..off as usize + 18] == [0u8; 18] =>
+                    {
+                        off as usize
+                    }
+                    _ => crate::directory::find_insert_offset_in_block(slice),
+                };
+                if insert_offset + needed_space <= BLOCK_SIZE {
+                    Some((tail_blk, insert_offset, true))
+                } else {
+                    None
                 }
-                _ => crate::directory::find_insert_offset_in_block(slice),
-            };
-            if insert_offset + needed_space <= BLOCK_SIZE {
-                return (Some((tail_blk, insert_offset, true)), !may_have_holes);
-            }
+            })
+        {
+            return (Some(res), !may_have_holes);
         }
 
         // If no deletions have occurred in earlier blocks (`0..num_blocks - 1`),
@@ -1974,16 +2121,22 @@ impl DiskManager {
 
         let mut any_hole_remaining = false;
         for blk_idx in 0..last_idx {
-            let phys_blk = Self::resolve_logical_block_id(&guard.mmap, parent_inode, blk_idx);
+            let phys_blk = Self::resolve_logical_block_id(&guard.backing, parent_inode, blk_idx);
             if !guard.is_data_block(phys_blk) {
                 continue;
             }
-            if let Some(slice) = Self::get_block_from_map(&guard.mmap, phys_blk) {
+            if let Ok((found, has_hole)) = guard.backing.with_block(phys_blk, |slice| {
                 let insert_offset = crate::directory::find_insert_offset_in_block(slice);
                 if insert_offset + needed_space <= BLOCK_SIZE {
-                    return (Some((phys_blk, insert_offset, false)), false);
+                    (Some((phys_blk, insert_offset, false)), false)
+                } else {
+                    (None, insert_offset + 21 <= BLOCK_SIZE)
                 }
-                if insert_offset + 21 <= BLOCK_SIZE {
+            }) {
+                if let Some(slot) = found {
+                    return (Some(slot), false);
+                }
+                if has_hole {
                     any_hole_remaining = true;
                 }
             }
@@ -2011,7 +2164,7 @@ impl DiskManager {
         let (slot, all_earlier_full) =
             Self::find_dir_insert_slot(guard, parent_inode_id, parent_inode, needed_space);
         if let Some((phys_blk, insert_offset, is_tail)) = slot {
-            Self::append_dir_entry_to_block(&mut guard.mmap, phys_blk, insert_offset, entry)?;
+            Self::append_dir_entry_to_block(&mut guard.backing, phys_blk, insert_offset, entry)?;
             let next_tail = if is_tail {
                 Some((phys_blk, (insert_offset + entry_len) as u16))
             } else {
@@ -2024,7 +2177,7 @@ impl DiskManager {
         // `get_or_alloc_block` already zeroes newly allocated blocks via `allocate_block`.
         let new_blk_idx = num_blocks;
         let new_phys_block = Self::get_or_alloc_block(guard, parent_inode, new_blk_idx, true)?;
-        Self::append_dir_entry_to_block(&mut guard.mmap, new_phys_block, 0, entry)?;
+        Self::append_dir_entry_to_block(&mut guard.backing, new_phys_block, 0, entry)?;
         parent_inode.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
         Ok((
             new_phys_block,
@@ -2034,45 +2187,51 @@ impl DiskManager {
     }
 
     fn append_dir_entry_to_block(
-        mmap: &mut MmapMut,
+        backing: &mut ImageBacking,
         block_id: u64,
         insert_offset: usize,
         entry: &crate::directory::DirectoryEntry,
     ) -> Result<(), DiskManagerError> {
-        let block_slice = Self::get_block_mut_from_map(mmap, block_id).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::other("Directory block not found"))
-        })?;
-
         if insert_offset + 20 + entry.name.len() > BLOCK_SIZE {
             return Err(DiskManagerError::Io(std::io::Error::other(
                 "Directory block is full",
             )));
         }
 
-        let mut cursor = std::io::Cursor::new(block_slice);
-        cursor.set_position(insert_offset as u64);
-        entry
-            .serialize_into(&mut cursor)
-            .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
+        backing
+            .with_block_mut(block_id, |block_slice| {
+                let mut cursor = std::io::Cursor::new(&mut block_slice[..]);
+                cursor.set_position(insert_offset as u64);
+                entry
+                    .serialize_into(&mut cursor)
+                    .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))
+            })
+            .map_err(|_| {
+                DiskManagerError::Io(std::io::Error::other("Directory block not found"))
+            })??;
         Ok(())
     }
 
     #[allow(dead_code)]
     fn rewrite_dir_entries_in_block(
-        mmap: &mut MmapMut,
+        backing: &mut ImageBacking,
         block_id: u64,
         entries: &[crate::directory::DirectoryEntry],
     ) -> Result<(), DiskManagerError> {
-        let block_slice = Self::get_block_mut_from_map(mmap, block_id).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::other("Directory block not found"))
-        })?;
-        block_slice.fill(0);
-        let mut cursor = std::io::Cursor::new(block_slice);
-        for entry in entries {
-            entry
-                .serialize_into(&mut cursor)
-                .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
-        }
+        backing
+            .with_block_mut(block_id, |block_slice| {
+                block_slice.fill(0);
+                let mut cursor = std::io::Cursor::new(&mut block_slice[..]);
+                for entry in entries {
+                    entry
+                        .serialize_into(&mut cursor)
+                        .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
+                }
+                Ok::<(), DiskManagerError>(())
+            })
+            .map_err(|_| {
+                DiskManagerError::Io(std::io::Error::other("Directory block not found"))
+            })??;
         Ok(())
     }
 
@@ -2112,28 +2271,6 @@ impl DiskManager {
         Self::encode_inode_slot(guard, inode_id, inode)
     }
 
-    /// Immutable view of the journal region, if the image is large enough.
-    fn journal_region_ref<'m>(
-        mmap: &'m MmapMut,
-        sb: &SuperBlock,
-    ) -> Result<&'m [u8], DiskManagerError> {
-        let bs = sb.block_size as u64;
-        let start = Self::journal_region_start(sb).ok_or_else(|| {
-            DiskManagerError::Io(std::io::Error::other("Journal offset overflow"))
-        })?;
-        let end = start
-            .checked_add(Self::journal_region_len(bs))
-            .ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::other("Journal region overflow"))
-            })?;
-        if end > mmap.len() {
-            return Err(DiskManagerError::Io(std::io::Error::other(
-                "Journal region does not fit in image",
-            )));
-        }
-        Ok(&mmap[start..end])
-    }
-
     /// Write a metadata transaction to the WAL and flush it to stable storage.
     ///
     /// This is the **commit point**: on return the transaction is durable, so the
@@ -2152,37 +2289,25 @@ impl DiskManager {
         }
         let bs = sb.block_size as u64;
         let written = {
-            let region = Self::journal_region(&mut guard.mmap, &sb)?;
-            let mut ring = crate::journal::JournalRing::open(region, bs)?;
-            ring.append(ops)?;
-            ring.last_write()
+            let mut region = guard.backing.journal_region_mut(&sb)?;
+            let (written, wrap_pad) = {
+                let mut ring = crate::journal::JournalRing::open(&mut region, bs)?;
+                ring.append(ops)?;
+                (ring.last_write(), ring.last_wrap_pad())
+            };
+            region.mark_append_written(bs as usize, written, wrap_pad);
+            written
         };
 
         // The WAL must reach stable storage *before* the metadata it describes, or a
         // power loss can leave the image with partially applied metadata that recovery
         // has no record of.
-        //
-        // How urgently that must happen is exactly a durability-policy question, so
-        // the same mode that governs metadata governs the WAL:
-        //
-        // * `Strict` — flush the frame *and* the header that advances `head` before
-        //   the caller applies anything. Two `msync` calls per transaction, which is
-        //   what buys the power-loss guarantee.
-        // * `Lazy` / `RangeAsync` / `LegacyWholeMmapAsync` — the image bytes live in
-        //   the page cache, which already survives a *process* crash; these modes
-        //   never promise power-loss safety for metadata either. Forcing a per-
-        //   transaction barrier on the WAL would impose a full power-loss cost on
-        //   users who explicitly opted out of it, so the WAL is left to be written
-        //   back with the rest of the mapping by `flush()` / drop.
         if guard.durability_mode() != DurabilityMode::Strict {
             return Ok(());
         }
 
         // Without the header flush the cursor update could be reordered after the
         // frame, and recovery would never see the transaction.
-        // When the frame starts at ring offset 0 (`s == 0`, immediately after the
-        // 4 KiB journal header block), coalesce the header block and frame into a single
-        // contiguous `flush_range` (`msync(MS_SYNC)`) syscall.
         let start = Self::journal_region_start(&sb).unwrap_or(0);
         let ring_base = start + usize::try_from(bs).unwrap_or(0);
         let header_len = usize::try_from(bs)
@@ -2193,13 +2318,13 @@ impl DiskManager {
         {
             let off = ring_base + usize::try_from(s).unwrap_or(0);
             let len = usize::try_from(e - s).unwrap_or(0);
-            if off + len <= guard.mmap.len() {
-                guard.mmap.flush_range(start, (off - start) + len)?;
+            if off + len <= guard.backing.len() {
+                guard.backing.flush_range(start, (off - start) + len)?;
                 return Ok(());
             }
         }
         if header_len > 0 {
-            guard.mmap.flush_range(start, header_len)?;
+            guard.backing.flush_range(start, header_len)?;
         }
         Ok(())
     }
@@ -2217,9 +2342,9 @@ impl DiskManager {
         let bs = sb.block_size as u64;
         let start = Self::journal_region_start(&sb).unwrap_or(0);
         let len = Self::journal_region_len(bs);
-        let end = start.saturating_add(len).min(guard.mmap.len());
+        let end = start.saturating_add(len).min(guard.backing.len());
         if end > start {
-            guard.mmap.flush_range(start, end - start)?;
+            guard.backing.flush_range(start, end - start)?;
         }
         Ok(())
     }
@@ -2231,7 +2356,7 @@ impl DiskManager {
     ) -> Result<(), DiskManagerError> {
         let sb = guard.superblock;
         for op in ops {
-            crate::journal::apply_op_in_place(&mut guard.mmap, &sb, op)?;
+            guard.backing.apply_journal_op(&sb, op)?;
             match op {
                 crate::journal::MetadataOp::WriteInode { inode_id, .. }
                 | crate::journal::MetadataOp::SetInodeBitmap {
@@ -2246,13 +2371,13 @@ impl DiskManager {
         Ok(())
     }
 
-    fn collect_inode_blocks(mmap: &MmapMut, inode: &Inode) -> Vec<u64> {
+    fn collect_inode_blocks(backing: &ImageBacking, inode: &Inode) -> Vec<u64> {
         let mut blks = Vec::new();
-        Self::for_each_inode_block(mmap, inode, |blk| blks.push(blk));
+        Self::for_each_inode_block(backing, inode, |blk| blks.push(blk));
         blks
     }
 
-    fn for_each_inode_block(mmap: &MmapMut, inode: &Inode, mut visit: impl FnMut(u64)) {
+    fn for_each_inode_block(backing: &ImageBacking, inode: &Inode, mut visit: impl FnMut(u64)) {
         let is_seekable = inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0;
 
         #[inline]
@@ -2282,12 +2407,12 @@ impl DiskManager {
         let sib_id = inode.blocks[10];
         if sib_id != 0 {
             visit(sib_id);
-            if let Some(slice) = Self::get_block_from_map(mmap, sib_id) {
+            let _ = backing.with_block(sib_id, |slice| {
                 for chunk in slice.as_chunks::<8>().0 {
                     let blk = u64::from_le_bytes(*chunk);
                     push_leaf(blk, is_seekable, &mut visit);
                 }
-            }
+            });
         }
 
         // 3. Double Indirect block (11)
@@ -2312,19 +2437,25 @@ impl DiskManager {
                 512 // Fallback if size was 0 or reset before collect
             };
 
-            if let Some(slice) = Self::get_block_from_map(mmap, dib_id) {
-                for chunk in slice[..max_s_entries * 8].as_chunks::<8>().0 {
-                    let sib = u64::from_le_bytes(*chunk);
-                    if sib != 0 {
-                        visit(sib);
-                        if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
-                            for d_chunk in s_slice.as_chunks::<8>().0 {
-                                let blk = u64::from_le_bytes(*d_chunk);
-                                push_leaf(blk, is_seekable, &mut visit);
-                            }
-                        }
+            let sibs: Vec<u64> = backing
+                .with_block(dib_id, |slice| {
+                    slice[..max_s_entries * 8]
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| u64::from_le_bytes(*c))
+                        .filter(|&sib| sib != 0)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for sib in sibs {
+                visit(sib);
+                let _ = backing.with_block(sib, |s_slice| {
+                    for d_chunk in s_slice.as_chunks::<8>().0 {
+                        let blk = u64::from_le_bytes(*d_chunk);
+                        push_leaf(blk, is_seekable, &mut visit);
                     }
-                }
+                });
             }
         }
 
@@ -2350,45 +2481,48 @@ impl DiskManager {
                 512 // Fallback if size was 0 or reset before collect
             };
 
-            if let Some(slice) = Self::get_block_from_map(mmap, tib_id) {
-                for chunk in slice[..max_t_entries * 8].as_chunks::<8>().0 {
-                    let dib = u64::from_le_bytes(*chunk);
-                    if dib != 0 {
-                        visit(dib);
-                        if let Some(d_slice) = Self::get_block_from_map(mmap, dib) {
-                            for s_chunk in d_slice.as_chunks::<8>().0 {
-                                let sib = u64::from_le_bytes(*s_chunk);
-                                if sib != 0 {
-                                    visit(sib);
-                                    if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
-                                        for blk_chunk in s_slice.as_chunks::<8>().0 {
-                                            let blk = u64::from_le_bytes(*blk_chunk);
-                                            push_leaf(blk, is_seekable, &mut visit);
-                                        }
-                                    }
-                                }
-                            }
+            let dibs: Vec<u64> = backing
+                .with_block(tib_id, |slice| {
+                    slice[..max_t_entries * 8]
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| u64::from_le_bytes(*c))
+                        .filter(|&dib| dib != 0)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for dib in dibs {
+                visit(dib);
+                let sibs: Vec<u64> = backing
+                    .with_block(dib, |d_slice| {
+                        d_slice
+                            .as_chunks::<8>()
+                            .0
+                            .iter()
+                            .map(|c| u64::from_le_bytes(*c))
+                            .filter(|&sib| sib != 0)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for sib in sibs {
+                    visit(sib);
+                    let _ = backing.with_block(sib, |s_slice| {
+                        for blk_chunk in s_slice.as_chunks::<8>().0 {
+                            let blk = u64::from_le_bytes(*blk_chunk);
+                            push_leaf(blk, is_seekable, &mut visit);
                         }
-                    }
+                    });
                 }
             }
         }
     }
 
-    /// Journaled create: simulate the allocation, commit one transaction, then apply.
-    ///
-    /// Covers both [`crate::inode::FileType::File`] and
-    /// [`crate::inode::FileType::Directory`], since `mkdir` differs only in whether a
-    /// data block is reserved for the new inode.
-    ///
-    /// The hard part is that allocation itself mutates the bitmaps, and the chosen
-    /// ids depend on the current bitmap contents. [`AllocSim`] therefore runs the
-    /// exact same allocator against *copies* of the bitmaps, so every allocated id
-    /// (including any indirect pointer blocks needed to grow a multi-block directory)
-    /// is known before the image is touched. That lets the whole operation be
-    /// described as post-images and committed before it is applied.
     /// Reset the journal ring, discarding transactions already applied in place.
-    fn checkpoint_journal(mmap: &mut MmapMut, sb: &SuperBlock) -> Result<(), DiskManagerError> {
+    fn checkpoint_journal(
+        backing: &mut ImageBacking,
+        sb: &SuperBlock,
+    ) -> Result<(), DiskManagerError> {
         if !sb.has_journal_layout() {
             return Ok(());
         }
@@ -2398,11 +2532,12 @@ impl DiskManager {
             .unwrap_or(0)
             .min(crate::journal::JOURNAL_HEADER_LEN);
         {
-            let region = Self::journal_region(mmap, sb)?;
-            crate::journal::JournalRing::open(region, bs)?.checkpoint();
+            let mut region = backing.journal_region_mut(sb)?;
+            region.mark_header_only();
+            crate::journal::JournalRing::open(&mut region, bs)?.checkpoint();
         }
         if header_len > 0 {
-            mmap.flush_range(start, header_len)?;
+            backing.flush_range(start, header_len)?;
         }
         Ok(())
     }
@@ -2428,19 +2563,20 @@ impl DiskManager {
         }
         // JBD2-style deferred in-place metadata checkpointing:
         // Under `Strict` mode on a journaled image, every transaction's payload and WAL
-        // commit frame+header are synchronously `msync(MS_SYNC)`'d before the mutation
-        // returns, while in-place metadata blocks (bitmaps, inode table, directory blocks)
-        // stay in the OS page cache and are flushed in one batch once the WAL ring reaches
-        // its 50% checkpoint watermark (`should_checkpoint()`), or on `flush()` / `Drop`.
+        // commit frame+header are synchronously flushed before the mutation returns,
+        // while in-place metadata blocks stay in the OS page cache and are flushed in
+        // one batch once the WAL ring reaches its 50% checkpoint watermark, or on
+        // `flush()` / `Drop`.
         let bs = sb.block_size as u64;
         let needs_ckpt = {
-            let region = Self::journal_region(&mut guard.mmap, &sb)?;
-            let ring = crate::journal::JournalRing::open(region, bs)?;
+            let mut region = guard.backing.journal_region_mut(&sb)?;
+            region.mark_clean();
+            let ring = crate::journal::JournalRing::open(&mut region, bs)?;
             ring.used() >= ring.ring_bytes() / 2
         };
         if needs_ckpt {
-            guard.mmap.flush()?;
-            Self::checkpoint_journal(&mut guard.mmap, &sb)?;
+            guard.backing.flush()?;
+            Self::checkpoint_journal(&mut guard.backing, &sb)?;
         }
         Ok(())
     }
@@ -2455,9 +2591,10 @@ impl DiskManager {
             return Ok(0);
         }
         let bs = sb.block_size as u64;
-        let region = Self::journal_region(&mut guard.mmap, &sb)?;
         let discarded = {
-            let mut ring = crate::journal::JournalRing::open(region, bs)?;
+            let mut region = guard.backing.journal_region_mut(&sb)?;
+            region.mark_header_only();
+            let mut ring = crate::journal::JournalRing::open(&mut region, bs)?;
             let pending = ring.pending_transactions();
             ring.checkpoint();
             pending
@@ -2467,7 +2604,7 @@ impl DiskManager {
             .unwrap_or(0)
             .min(crate::journal::JOURNAL_HEADER_LEN);
         if header_len > 0 {
-            guard.mmap.flush_range(start, header_len)?;
+            guard.backing.flush_range(start, header_len)?;
         }
         Ok(discarded)
     }
@@ -2548,12 +2685,12 @@ impl DiskManager {
                 next_free_inode_hint,
                 guard.free_block_hint,
             )?);
-            let dir_data_block = sim.alloc_block(&guard.mmap)?;
+            let dir_data_block = sim.alloc_block(&guard.backing)?;
             ops.push(crate::journal::MetadataOp::SetDataBitmap {
                 block_id: dir_data_block,
                 allocated: true,
             });
-            if crate::journal::block_has_nonzero_bytes(&guard.mmap, dir_data_block) {
+            if crate::journal::block_has_nonzero_bytes(&guard.backing, dir_data_block) {
                 ops.push(crate::journal::MetadataOp::WriteBlockSlice {
                     block_id: dir_data_block,
                     offset: 0,
@@ -2609,7 +2746,7 @@ impl DiskManager {
             };
             let new_blk_idx = num_blocks;
             let phys_blk = crate::journal::sim_get_or_alloc_block(
-                &guard.mmap,
+                &guard.backing,
                 &mut parent_inode,
                 new_blk_idx,
                 sim,
@@ -2785,20 +2922,22 @@ impl DiskManager {
         let hint = guard.free_inode_hint;
         let usable_inodes = guard.superblock.usable_inode_count();
         let new_inode_id = {
-            let bitmap_slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
+            let mut bitmap_slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
                 DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
             })?;
-            let mut allocator = SimpleBlockAllocator::new(bitmap_slice, 0);
+            let mut allocator = SimpleBlockAllocator::new(&mut bitmap_slice, 0);
             let id = allocator.allocate_with_hint(Some(hint))?;
             // The bitmap can track more ids than the inode table can
             // hold. An id beyond the table would be written into the data
             // area, so it is released again and reported as "no space".
             if id >= usable_inodes {
                 let _ = allocator.free(id);
+                bitmap_slice.set_dirty_bits(0, 0);
                 return Err(DiskManagerError::Allocator(
                     crate::allocator::AllocatorError::NoSpace,
                 ));
             }
+            bitmap_slice.set_dirty_bits(id as usize, 1);
             id
         };
         guard.free_inode_hint = new_inode_id + 1;
@@ -2888,6 +3027,578 @@ impl DiskManager {
         self.create_entry_internal(parent_inode_id, name, crate::inode::FileType::File)
     }
 
+    /// Atomically creates a new file and writes its initial contents in a single write-lock
+    /// acquisition (and a single WAL transaction on journaled images).
+    ///
+    /// On journaled images in [`DurabilityMode::Strict`], small payloads up to 8 KiB (two
+    /// blocks) are data-journaled inside the metadata commit so durable file creation requires
+    /// only **1 sync barrier** instead of 3 (`create_file` + payload + `write_data`).
+    pub fn create_file_with_data(
+        &self,
+        parent_inode_id: u64,
+        name: &str,
+        data: &[u8],
+        compression_mode: CompressionMode,
+    ) -> Result<u64, DiskManagerError> {
+        self.create_file_with_data_with_filters(
+            parent_inode_id,
+            name,
+            data,
+            compression_mode,
+            crate::filters::FilterConfig::none(),
+        )
+    }
+
+    /// Atomically creates a new file and writes its initial contents with custom pre-compression
+    /// filters in a single write-lock acquisition (and a single WAL transaction on journaled
+    /// images for standard compression modes).
+    pub fn create_file_with_data_with_filters(
+        &self,
+        parent_inode_id: u64,
+        name: &str,
+        data: &[u8],
+        compression_mode: CompressionMode,
+        filter_config: crate::filters::FilterConfig,
+    ) -> Result<u64, DiskManagerError> {
+        crate::directory::validate_filename(name).map_err(|e| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                e.to_string(),
+            ))
+        })?;
+
+        // Seekable 64K files maintain their own parallel chunk pipeline; compose with rollback
+        // so a failed write never leaves an empty orphan file behind.
+        if matches!(compression_mode, CompressionMode::Seekable { .. }) {
+            let inode_id = self.create_file(parent_inode_id, name)?;
+            if let Err(e) =
+                self.write_data_with_filters(inode_id, 0, data, compression_mode, filter_config)
+            {
+                let _ = self.delete_file(parent_inode_id, name);
+                return Err(e);
+            }
+            return Ok(inode_id);
+        }
+
+        // --- STAGE 1: Out-of-Lock Validation & Filename Encryption ---
+        let (stored_name, stored_hash) = {
+            let guard = self.inner.read().unwrap();
+            let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
+            if parent_inode.mode != crate::inode::FileType::Directory {
+                return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
+            }
+            if Self::dir_lookup(&guard, parent_inode_id, name)?.is_some() {
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("File '{}' already exists", name),
+                )));
+            }
+            let stored_name = Self::stored_filename(&guard, parent_inode_id, name)?.into_owned();
+            crate::directory::validate_filename(&stored_name).map_err(|e| {
+                DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    e.to_string(),
+                ))
+            })?;
+            let stored_hash = crate::directory::hash_filename(&stored_name);
+            (stored_name, stored_hash)
+        };
+
+        // --- STAGE 2: Lock-Free Pre-Compression Filtering & Compression ---
+        // Encryption is finalized in Stage 3 once `new_inode_id` is allocated so the
+        // AEAD associated data binds to the newly assigned inode ID.
+        let prep = Self::build_full_overwrite_buffer_pure(
+            data,
+            compression_mode,
+            &filter_config,
+            None,
+            &[],
+        )?;
+
+        // --- STAGE 3: Exclusive Lock Allocation & Single-Commit Persistence ---
+        let mut guard = self.inner.write().unwrap();
+
+        if guard.superblock.has_journal_layout() {
+            let res = Self::create_file_with_data_journaled(
+                &mut guard,
+                parent_inode_id,
+                name,
+                stored_name,
+                stored_hash,
+                data.len() as u64,
+                prep,
+                filter_config,
+            );
+            drop(guard);
+            self.maybe_drain_async_ranges();
+            return res;
+        }
+
+        // Re-verify parent & collision under exclusive write lock.
+        let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
+        if parent_inode.mode != crate::inode::FileType::Directory {
+            return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
+        }
+        if Self::dir_lookup(&guard, parent_inode_id, name)?.is_some() {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("File '{}' already exists", name),
+            )));
+        }
+
+        let hint = guard.free_inode_hint;
+        let usable_inodes = guard.superblock.usable_inode_count();
+        let new_inode_id = {
+            let mut bitmap_slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
+                DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
+            })?;
+            let mut allocator = SimpleBlockAllocator::new(&mut bitmap_slice, 0);
+            let id = allocator.allocate_with_hint(Some(hint))?;
+            if id >= usable_inodes {
+                let _ = allocator.free(id);
+                bitmap_slice.set_dirty_bits(0, 0);
+                return Err(DiskManagerError::Allocator(
+                    crate::allocator::AllocatorError::NoSpace,
+                ));
+            }
+            bitmap_slice.set_dirty_bits(id as usize, 1);
+            id
+        };
+        guard.free_inode_hint = new_inode_id + 1;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut new_inode = Inode::new(crate::inode::FileType::File);
+        new_inode.created_at = now;
+        new_inode.modified_at = now;
+        new_inode.filter_typesize = filter_config.typesize;
+        new_inode.filter_delta = filter_config.delta;
+        new_inode.filter_shuffle = filter_config.shuffle;
+        new_inode.filter_bitshuffle = filter_config.bitshuffle;
+
+        let (final_buf, encryption_nonce) = if let Some(key) = guard.encryption_key.as_ref() {
+            let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(
+                new_inode_id,
+                guard.superblock.encryption_version,
+            );
+            let nonce = crate::encryption::generate_nonce();
+            let mut enc = prep.buffer.into_owned();
+            enc.reserve(16);
+            if let Err(e) =
+                crate::encryption::encrypt_data_in_place(&mut enc, key, &nonce, &aad_buf[..aad_len])
+            {
+                Self::rollback_unlinked_file(&mut guard, new_inode_id, &new_inode);
+                return Err(e.into());
+            }
+            (std::borrow::Cow::Owned(enc), Some(nonce))
+        } else {
+            (prep.buffer, None)
+        };
+
+        if let Some(nonce) = encryption_nonce {
+            new_inode.encrypted = true;
+            new_inode.encryption_nonce = nonce;
+        }
+        new_inode.size = if prep.is_compressed {
+            data.len() as u64
+        } else {
+            final_buf.len() as u64
+        };
+        new_inode.compressed_size = if prep.is_compressed {
+            final_buf.len() as u64
+        } else {
+            0
+        };
+
+        let mut touched_blocks = if guard.durability_mode().is_range_based() {
+            Some(Vec::new())
+        } else {
+            None
+        };
+        if !final_buf.is_empty()
+            && let Err(e) = Self::write_buffer_at_offset(
+                &mut guard,
+                &mut new_inode,
+                0,
+                &final_buf,
+                touched_blocks.as_mut(),
+            )
+        {
+            Self::rollback_unlinked_file(&mut guard, new_inode_id, &new_inode);
+            return Err(e);
+        }
+
+        if let Err(e) = Self::write_inode_internal(&mut guard, new_inode_id, &new_inode) {
+            Self::rollback_unlinked_file(&mut guard, new_inode_id, &new_inode);
+            return Err(e);
+        }
+
+        let entry = crate::directory::DirectoryEntry {
+            inode: new_inode_id,
+            hash: stored_hash,
+            name: stored_name,
+        };
+        let (written_blk, new_tail, all_earlier_full) = match Self::append_dir_entry_to_dir(
+            &mut guard,
+            parent_inode_id,
+            &mut parent_inode,
+            &entry,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                Self::rollback_unlinked_file(&mut guard, new_inode_id, &new_inode);
+                return Err(e);
+            }
+        };
+
+        parent_inode.modified_at = now;
+        Self::write_inode_internal(&mut guard, parent_inode_id, &parent_inode)?;
+
+        let stored_name = entry.name;
+        let encrypted = guard.encryption_key.is_some();
+        if let Some(ix) = guard
+            .dir_cache
+            .write_shard(parent_inode_id)
+            .get_mut(&parent_inode_id)
+        {
+            if encrypted {
+                ix.plain.insert(
+                    name.to_string(),
+                    (new_inode_id, crate::directory::hash_filename(name)),
+                );
+            }
+            ix.stored
+                .insert(stored_name, (new_inode_id, written_blk, stored_hash));
+            if encrypted && ix.complete && ix.plain.len() == ix.stored.len() {
+                ix.plain_complete = true;
+            }
+            if let Some(tail) = new_tail {
+                ix.tail_offset = Some(tail);
+            }
+            if all_earlier_full {
+                ix.may_have_holes = false;
+            }
+        }
+
+        let sync_res = if guard.durability_mode().is_range_based() {
+            let mut ranges = vec![
+                guard.inode_bitmap_byte_range(),
+                guard.data_bitmap_byte_range(),
+                guard.inode_byte_range(new_inode_id),
+                guard.inode_byte_range(parent_inode_id),
+                guard.block_byte_range(written_blk),
+            ];
+            if let Some(blks) = touched_blocks {
+                for blk in blks {
+                    ranges.push(guard.block_byte_range(blk));
+                }
+            }
+            guard.sync_mutation_ranges(&ranges)
+        } else {
+            guard.sync_mutation_ranges(&[])
+        };
+        drop(guard);
+        self.maybe_drain_async_ranges();
+        sync_res?;
+        Ok(new_inode_id)
+    }
+
+    fn rollback_unlinked_file(guard: &mut DiskManagerInner, inode_id: u64, inode: &Inode) {
+        let blocks = Self::collect_inode_blocks(&guard.backing, inode);
+        if !blocks.is_empty() {
+            let db_start = guard.superblock.data_block_start;
+            let mut min_blk = u64::MAX;
+            if let Some(mut slice) = guard.data_bitmap_slice_mut() {
+                let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
+                for &blk in &blocks {
+                    let _ = da.free(blk);
+                    min_blk = min_blk.min(blk);
+                }
+            }
+            if min_blk < guard.free_block_hint {
+                guard.free_block_hint = min_blk;
+            }
+        }
+        if let Some(mut ib) = guard.inode_bitmap_slice_mut() {
+            let mut ia = SimpleBlockAllocator::new(&mut ib, 0);
+            let _ = ia.free(inode_id);
+            ib.set_dirty_bits(inode_id as usize, 1);
+        }
+        if inode_id < guard.free_inode_hint {
+            guard.free_inode_hint = inode_id;
+        }
+        guard.inode_cache.remove(inode_id);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_file_with_data_journaled(
+        guard: &mut DiskManagerInner,
+        parent_inode_id: u64,
+        name: &str,
+        stored_name: String,
+        stored_hash: u64,
+        orig_len: u64,
+        prep: FullOverwritePayload<'_>,
+        filter_config: crate::filters::FilterConfig,
+    ) -> Result<u64, DiskManagerError> {
+        let mut parent_inode = Self::read_inode_internal(guard, parent_inode_id)?;
+        if parent_inode.mode != crate::inode::FileType::Directory {
+            return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
+        }
+        if Self::dir_lookup(guard, parent_inode_id, name)?.is_some() {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("File '{}' already exists", name),
+            )));
+        }
+
+        let ib_slice = guard
+            .inode_bitmap_slice()
+            .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("inode bitmap not found")))?;
+        let new_inode_id = crate::bitmap::BitmapRef::new(ib_slice)
+            .find_next_free_bounded(
+                guard.free_inode_hint as usize,
+                guard.superblock.usable_inode_count() as usize,
+            )
+            .ok_or(DiskManagerError::Allocator(
+                crate::allocator::AllocatorError::NoSpace,
+            ))? as u64;
+        let next_free_inode_hint = new_inode_id + 1;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut new_inode = Inode::new(crate::inode::FileType::File);
+        new_inode.created_at = now;
+        new_inode.modified_at = now;
+        new_inode.filter_typesize = filter_config.typesize;
+        new_inode.filter_delta = filter_config.delta;
+        new_inode.filter_shuffle = filter_config.shuffle;
+        new_inode.filter_bitshuffle = filter_config.bitshuffle;
+
+        let final_buf = if let Some(key) = guard.encryption_key.as_ref() {
+            let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(
+                new_inode_id,
+                guard.superblock.encryption_version,
+            );
+            let nonce = crate::encryption::generate_nonce();
+            let mut enc = prep.buffer.into_owned();
+            enc.reserve(16);
+            crate::encryption::encrypt_data_in_place(&mut enc, key, &nonce, &aad_buf[..aad_len])?;
+            new_inode.encrypted = true;
+            new_inode.encryption_nonce = nonce;
+            std::borrow::Cow::Owned(enc)
+        } else {
+            prep.buffer
+        };
+
+        new_inode.size = if prep.is_compressed {
+            orig_len
+        } else {
+            final_buf.len() as u64
+        };
+        new_inode.compressed_size = if prep.is_compressed {
+            final_buf.len() as u64
+        } else {
+            0
+        };
+
+        let mut ops = Vec::with_capacity(8);
+        ops.push(crate::journal::MetadataOp::SetInodeBitmap {
+            inode_id: new_inode_id,
+            allocated: true,
+        });
+
+        let mut sim = crate::journal::AllocSim::new_data_only(
+            guard,
+            next_free_inode_hint,
+            guard.free_block_hint,
+        )?;
+        let mut used: Vec<u64> = Vec::new();
+
+        // Under `DurabilityMode::Strict`, inline small payloads (<= 2 blocks / 8 KiB)
+        // directly into the WAL frame as zero-padded `WriteBlockSlice` ops. This makes
+        // the file's data durable as part of the single WAL commit barrier (1 sync total
+        // instead of 3 for `create_file` + payload + `write_data`).
+        let inline_in_wal = guard.durability_mode() == DurabilityMode::Strict
+            && !final_buf.is_empty()
+            && final_buf.len() <= 2 * BLOCK_SIZE;
+        let mut payload_needs_pre_sync = false;
+
+        if inline_in_wal {
+            let num_blocks = final_buf.len().div_ceil(BLOCK_SIZE);
+            for i in 0..num_blocks {
+                let blk = sim.alloc_block(&guard.backing)?;
+                crate::journal::push_data_bitmap_op(&mut ops, blk, 1, true);
+                let chunk_start = i * BLOCK_SIZE;
+                let chunk_end = (chunk_start + BLOCK_SIZE).min(final_buf.len());
+                let mut blk_img = vec![0u8; BLOCK_SIZE];
+                blk_img[..chunk_end - chunk_start]
+                    .copy_from_slice(&final_buf[chunk_start..chunk_end]);
+                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                    block_id: blk,
+                    offset: 0,
+                    data: blk_img,
+                });
+                new_inode.blocks[i] = blk;
+            }
+        } else if !final_buf.is_empty() {
+            crate::journal::stage_payload_write(
+                guard,
+                &mut new_inode,
+                0,
+                &final_buf,
+                &mut sim,
+                &mut ops,
+                &mut used,
+            )?;
+            payload_needs_pre_sync = guard.durability_mode() == DurabilityMode::Strict;
+        }
+
+        // Stage directory entry into parent directory.
+        let entry = crate::directory::DirectoryEntry {
+            inode: new_inode_id,
+            hash: stored_hash,
+            name: stored_name.clone(),
+        };
+        let mut entry_bytes = Vec::with_capacity(20 + entry.name.len());
+        {
+            let mut cursor = std::io::Cursor::new(&mut entry_bytes);
+            entry
+                .serialize_into(&mut cursor)
+                .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
+        }
+        let num_blocks = Self::dir_num_blocks(&parent_inode);
+        let entry_len = entry_bytes.len();
+        let needed_space = 20 + entry.name.len();
+        let (slot, all_earlier_full) =
+            Self::find_dir_insert_slot(guard, parent_inode_id, &parent_inode, needed_space);
+        let (written_blk, next_tail) = if let Some((phys_blk, insert_offset, is_tail)) = slot {
+            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                block_id: phys_blk,
+                offset: insert_offset as u32,
+                data: std::mem::take(&mut entry_bytes),
+            });
+            let tail = if is_tail {
+                Some((phys_blk, (insert_offset + entry_len) as u16))
+            } else {
+                None
+            };
+            (phys_blk, tail)
+        } else {
+            let new_blk_idx = num_blocks;
+            let phys_blk = crate::journal::sim_get_or_alloc_block(
+                &guard.backing,
+                &mut parent_inode,
+                new_blk_idx,
+                &mut sim,
+                &mut ops,
+            )?;
+            let mut block_image = vec![0u8; BLOCK_SIZE];
+            block_image[..entry_bytes.len()].copy_from_slice(&entry_bytes);
+            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                block_id: phys_blk,
+                offset: 0,
+                data: block_image,
+            });
+            parent_inode.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
+            (phys_blk, Some((phys_blk, entry_len as u16)))
+        };
+
+        parent_inode.modified_at = now;
+
+        let new_inode_image = Self::build_inode_post_image(guard, new_inode_id, &new_inode)?;
+        let parent_image = Self::build_inode_post_image(guard, parent_inode_id, &parent_inode)?;
+        ops.push(crate::journal::MetadataOp::WriteInode {
+            inode_id: new_inode_id,
+            inode_bytes: Box::new(new_inode_image),
+        });
+        ops.push(crate::journal::MetadataOp::WriteInode {
+            inode_id: parent_inode_id,
+            inode_bytes: Box::new(parent_image),
+        });
+
+        let ops = if crate::journal::is_already_coalesced(&ops) {
+            ops
+        } else {
+            crate::journal::coalesce_ops(ops)
+        };
+
+        let payload_ranges: Vec<(usize, usize)> = if guard.durability_mode().is_range_based() {
+            used.iter().map(|b| guard.block_byte_range(*b)).collect()
+        } else {
+            Vec::new()
+        };
+        if payload_needs_pre_sync {
+            if guard.backing.as_mmap_slice().is_some() {
+                let coalesced_payload =
+                    DiskManagerInner::coalesce_ranges(&payload_ranges, guard.backing.len());
+                for (off, actual) in coalesced_payload {
+                    guard.backing.flush_range(off, actual)?;
+                }
+            } else {
+                guard.backing.flush()?;
+            }
+        }
+
+        // Commit point + in-place apply.
+        Self::commit_journal_tx(guard, &ops)?;
+        Self::apply_journal_ops(guard, &ops)?;
+
+        guard.free_inode_hint = sim.free_inode_hint;
+        guard.free_block_hint = sim.free_block_hint;
+
+        guard.inode_cache.insert(new_inode_id, new_inode);
+        guard.inode_cache.insert(parent_inode_id, parent_inode);
+        let encrypted = guard.encryption_key.is_some();
+        if let Some(ix) = guard
+            .dir_cache
+            .write_shard(parent_inode_id)
+            .get_mut(&parent_inode_id)
+        {
+            if encrypted {
+                ix.plain.insert(
+                    name.to_string(),
+                    (new_inode_id, crate::directory::hash_filename(name)),
+                );
+            }
+            ix.stored
+                .insert(stored_name, (new_inode_id, written_blk, stored_hash));
+            if encrypted && ix.complete && ix.plain.len() == ix.stored.len() {
+                ix.plain_complete = true;
+            }
+            if let Some(tail) = next_tail {
+                ix.tail_offset = Some(tail);
+            }
+            if all_earlier_full {
+                ix.may_have_holes = false;
+            }
+        }
+
+        if guard.durability_mode() == DurabilityMode::RangeAsync {
+            let mut ranges = vec![
+                guard.inode_bitmap_byte_range(),
+                guard.data_bitmap_byte_range(),
+                guard.inode_byte_range(new_inode_id),
+                guard.inode_byte_range(parent_inode_id),
+            ];
+            ranges.extend(payload_ranges);
+            for op in &ops {
+                if let crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } = op {
+                    ranges.push(guard.block_byte_range(*block_id));
+                }
+            }
+            guard.sync_mutation_ranges(&ranges)?;
+        } else if guard.durability_mode() == DurabilityMode::LegacyWholeMmapAsync {
+            guard.sync_mutation_ranges(&[])?;
+        }
+        Self::maybe_checkpoint(guard)?;
+        Ok(new_inode_id)
+    }
+
     /// Creates a file if it does not exist, or opens (looks up) the existing file.
     ///
     /// This provides safe idempotent file opening under multi-threaded concurrency.
@@ -2946,14 +3657,18 @@ impl DiskManager {
     }
 
     /// Resolves a single logical block index to its physical block ID (read-only, does not allocate).
-    pub(crate) fn resolve_logical_block_id(mmap: &MmapMut, inode: &Inode, blk_idx: usize) -> u64 {
+    pub(crate) fn resolve_logical_block_id(
+        backing: &ImageBacking,
+        inode: &Inode,
+        blk_idx: usize,
+    ) -> u64 {
         use crate::inode::BlockPath;
         // Follows one pointer level; a zero pointer means a sparse hole.
         let follow = |parent: u64, slot: usize| -> u64 {
             if parent == 0 {
                 0
             } else {
-                Self::read_block_ptr(mmap, parent, slot)
+                backing.read_block_ptr(parent, slot)
             }
         };
         match BlockPath::from_logical(blk_idx) {
@@ -2973,7 +3688,7 @@ impl DiskManager {
     /// instead of raw block ids; the defragmentation has to rewrite them as a
     /// unit, because the payload of a chunk is a run of contiguous blocks.
     fn collect_chunk_entries(
-        mmap: &MmapMut,
+        backing: &ImageBacking,
         inode: &Inode,
     ) -> Vec<(u64, crate::inode::ChunkEntry)> {
         let mut entries = Vec::new();
@@ -2996,52 +3711,67 @@ impl DiskManager {
         }
 
         let sib_id = inode.blocks[10];
-        if sib_id != 0
-            && let Some(slice) = Self::get_block_from_map(mmap, sib_id)
-        {
-            for chunk in slice.as_chunks::<8>().0 {
-                push(u64::from_le_bytes(*chunk), &mut entries);
-            }
+        if sib_id != 0 {
+            let _ = backing.with_block(sib_id, |slice| {
+                for chunk in slice.as_chunks::<8>().0 {
+                    push(u64::from_le_bytes(*chunk), &mut entries);
+                }
+            });
         }
 
         let dib_id = inode.blocks[11];
-        if dib_id != 0
-            && let Some(slice) = Self::get_block_from_map(mmap, dib_id)
-        {
-            for chunk in slice.as_chunks::<8>().0 {
-                let sib = u64::from_le_bytes(*chunk);
-                if sib == 0 {
-                    continue;
-                }
-                if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
+        if dib_id != 0 {
+            let sibs: Vec<u64> = backing
+                .with_block(dib_id, |slice| {
+                    slice
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| u64::from_le_bytes(*c))
+                        .filter(|&sib| sib != 0)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for sib in sibs {
+                let _ = backing.with_block(sib, |s_slice| {
                     for d_chunk in s_slice.as_chunks::<8>().0 {
                         push(u64::from_le_bytes(*d_chunk), &mut entries);
                     }
-                }
+                });
             }
         }
 
         let tib_id = inode.triple_indirect;
-        if tib_id != 0
-            && let Some(slice) = Self::get_block_from_map(mmap, tib_id)
-        {
-            for chunk in slice.as_chunks::<8>().0 {
-                let dib = u64::from_le_bytes(*chunk);
-                if dib == 0 {
-                    continue;
-                }
-                if let Some(d_slice) = Self::get_block_from_map(mmap, dib) {
-                    for s_chunk in d_slice.as_chunks::<8>().0 {
-                        let sib = u64::from_le_bytes(*s_chunk);
-                        if sib == 0 {
-                            continue;
+        if tib_id != 0 {
+            let dibs: Vec<u64> = backing
+                .with_block(tib_id, |slice| {
+                    slice
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| u64::from_le_bytes(*c))
+                        .filter(|&dib| dib != 0)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for dib in dibs {
+                let sibs: Vec<u64> = backing
+                    .with_block(dib, |d_slice| {
+                        d_slice
+                            .as_chunks::<8>()
+                            .0
+                            .iter()
+                            .map(|c| u64::from_le_bytes(*c))
+                            .filter(|&sib| sib != 0)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for sib in sibs {
+                    let _ = backing.with_block(sib, |s_slice| {
+                        for p_chunk in s_slice.as_chunks::<8>().0 {
+                            push(u64::from_le_bytes(*p_chunk), &mut entries);
                         }
-                        if let Some(s_slice) = Self::get_block_from_map(mmap, sib) {
-                            for p_chunk in s_slice.as_chunks::<8>().0 {
-                                push(u64::from_le_bytes(*p_chunk), &mut entries);
-                            }
-                        }
-                    }
+                    });
                 }
             }
         }
@@ -3052,11 +3782,8 @@ impl DiskManager {
     /// Walks the first `physical_size` bytes of `inode`'s on-disk payload in logical order,
     /// calling `emit(physical_block, payload_offset, len)` for every allocated block.
     /// Sparse holes (zero pointers at any indirection level) are skipped without a call.
-    ///
-    /// Indirect pointer blocks are resolved in batches straight from the mmap (metadata
-    /// always stays on the mmap); only the payload transfer itself is delegated to `emit`.
     fn walk_payload_blocks(
-        mmap: &MmapMut,
+        backing: &ImageBacking,
         inode: &Inode,
         physical_size: u64,
         data_start: u64,
@@ -3095,24 +3822,28 @@ impl DiskManager {
                     blk_idx = 10 + 512;
                     continue;
                 }
-                if let Some(sib_slice) = Self::get_block_from_map(mmap, sib_id) {
-                    let start_entry = blk_idx - 10;
-                    let num_entries = ((10 + 512) - blk_idx).min(512 - start_entry);
-                    let ptr_chunks = &sib_slice[start_entry * 8..(start_entry + num_entries) * 8];
-                    for chunk in ptr_chunks.as_chunks::<8>().0 {
-                        if read >= physical_size {
-                            break;
+                let start_entry = blk_idx - 10;
+                let num_entries = ((10 + 512) - blk_idx).min(512 - start_entry);
+                if backing
+                    .with_block(sib_id, |sib_slice| {
+                        let ptr_chunks =
+                            &sib_slice[start_entry * 8..(start_entry + num_entries) * 8];
+                        for chunk in ptr_chunks.as_chunks::<8>().0 {
+                            if read >= physical_size {
+                                break;
+                            }
+                            let to_read_curr =
+                                std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
+                            let blk = u64::from_le_bytes(*chunk);
+                            if blk != 0 && blk >= data_start && blk < data_end {
+                                emit(blk, read as usize, to_read_curr);
+                            }
+                            read += to_read_curr as u64;
+                            blk_idx += 1;
                         }
-                        let to_read_curr =
-                            std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
-                        let blk = u64::from_le_bytes(*chunk);
-                        if blk != 0 && blk >= data_start && blk < data_end {
-                            emit(blk, read as usize, to_read_curr);
-                        }
-                        read += to_read_curr as u64;
-                        blk_idx += 1;
-                    }
-                } else {
+                    })
+                    .is_err()
+                {
                     read += to_read as u64;
                     blk_idx += 1;
                 }
@@ -3134,7 +3865,7 @@ impl DiskManager {
                 let s_idx = idx / 512;
                 let d_idx = idx % 512;
 
-                let sib_id = Self::read_block_ptr(mmap, dib_id, s_idx);
+                let sib_id = backing.read_block_ptr(dib_id, s_idx);
                 if sib_id == 0 || sib_id < data_start || sib_id >= data_end {
                     let skip_blocks = 512 - d_idx;
                     let skip_bytes =
@@ -3144,23 +3875,26 @@ impl DiskManager {
                     continue;
                 }
 
-                if let Some(sib_slice) = Self::get_block_from_map(mmap, sib_id) {
-                    let num_entries = 512 - d_idx;
-                    let ptr_chunks = &sib_slice[d_idx * 8..(d_idx + num_entries) * 8];
-                    for chunk in ptr_chunks.as_chunks::<8>().0 {
-                        if read >= physical_size {
-                            break;
+                let num_entries = 512 - d_idx;
+                if backing
+                    .with_block(sib_id, |sib_slice| {
+                        let ptr_chunks = &sib_slice[d_idx * 8..(d_idx + num_entries) * 8];
+                        for chunk in ptr_chunks.as_chunks::<8>().0 {
+                            if read >= physical_size {
+                                break;
+                            }
+                            let to_read_curr =
+                                std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
+                            let blk = u64::from_le_bytes(*chunk);
+                            if blk != 0 && blk >= data_start && blk < data_end {
+                                emit(blk, read as usize, to_read_curr);
+                            }
+                            read += to_read_curr as u64;
+                            blk_idx += 1;
                         }
-                        let to_read_curr =
-                            std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
-                        let blk = u64::from_le_bytes(*chunk);
-                        if blk != 0 && blk >= data_start && blk < data_end {
-                            emit(blk, read as usize, to_read_curr);
-                        }
-                        read += to_read_curr as u64;
-                        blk_idx += 1;
-                    }
-                } else {
+                    })
+                    .is_err()
+                {
                     read += to_read as u64;
                     blk_idx += 1;
                 }
@@ -3185,7 +3919,7 @@ impl DiskManager {
                 let d_idx = rem_idx / 512;
                 let s_idx = rem_idx % 512;
 
-                let dib_id = Self::read_block_ptr(mmap, tib_id, t_idx);
+                let dib_id = backing.read_block_ptr(tib_id, t_idx);
                 if dib_id == 0 || dib_id < data_start || dib_id >= data_end {
                     let skip_blocks = (512 * 512) - rem_idx;
                     let skip_bytes =
@@ -3195,7 +3929,7 @@ impl DiskManager {
                     continue;
                 }
 
-                let sib_id = Self::read_block_ptr(mmap, dib_id, d_idx);
+                let sib_id = backing.read_block_ptr(dib_id, d_idx);
                 if sib_id == 0 || sib_id < data_start || sib_id >= data_end {
                     let skip_blocks = 512 - s_idx;
                     let skip_bytes =
@@ -3205,25 +3939,28 @@ impl DiskManager {
                     continue;
                 }
 
-                if let Some(sib_slice) = Self::get_block_from_map(mmap, sib_id) {
-                    let num_entries = 512 - s_idx;
-                    let ptr_chunks = &sib_slice[s_idx * 8..(s_idx + num_entries) * 8];
-                    for chunk in ptr_chunks.as_chunks::<8>().0 {
-                        if read >= physical_size {
-                            break;
+                let num_entries = 512 - s_idx;
+                if backing
+                    .with_block(sib_id, |sib_slice| {
+                        let ptr_chunks = &sib_slice[s_idx * 8..(s_idx + num_entries) * 8];
+                        for chunk in ptr_chunks.as_chunks::<8>().0 {
+                            if read >= physical_size {
+                                break;
+                            }
+                            let to_read_curr =
+                                std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
+                            let blk = u64::from_le_bytes(*chunk);
+                            // A pointer that does not address the data area is
+                            // ignored instead of exposing metadata as file content.
+                            if blk != 0 && blk >= data_start && blk < data_end {
+                                emit(blk, read as usize, to_read_curr);
+                            }
+                            read += to_read_curr as u64;
+                            blk_idx += 1;
                         }
-                        let to_read_curr =
-                            std::cmp::min((physical_size - read) as usize, BLOCK_SIZE);
-                        let blk = u64::from_le_bytes(*chunk);
-                        // A pointer that does not address the data area is
-                        // ignored instead of exposing metadata as file content.
-                        if blk != 0 && blk >= data_start && blk < data_end {
-                            emit(blk, read as usize, to_read_curr);
-                        }
-                        read += to_read_curr as u64;
-                        blk_idx += 1;
-                    }
-                } else {
+                    })
+                    .is_err()
+                {
                     read += to_read as u64;
                     blk_idx += 1;
                 }
@@ -3388,6 +4125,7 @@ impl DiskManager {
             && inode.mode == crate::inode::FileType::File
             && inode.compressed_size > 0
             && guard.io_engine.effective() == IoBackend::Mmap
+            && let Some(mmap) = guard.backing.as_mmap_slice()
         {
             let data_start = guard.superblock.data_block_start;
             let data_end = guard.superblock.block_count;
@@ -3396,7 +4134,7 @@ impl DiskManager {
             let mut is_contiguous = true;
 
             Self::walk_payload_blocks(
-                &guard.mmap,
+                &guard.backing,
                 inode,
                 physical_size,
                 data_start,
@@ -3429,10 +4167,10 @@ impl DiskManager {
                     .ok()
                     .and_then(|b| b.checked_mul(BLOCK_SIZE))
                 && let Some(byte_end) = byte_start.checked_add(phys_len)
-                && byte_end <= guard.mmap.len()
+                && byte_end <= mmap.len()
             {
                 let mut decoded =
-                    Self::decompress_stream_payload(&guard.mmap[byte_start..byte_end], inode.size)?;
+                    Self::decompress_stream_payload(&mmap[byte_start..byte_end], inode.size)?;
                 if filter_config.is_active() {
                     crate::filters::unapply_filters_in_place(&mut decoded, &filter_config);
                 }
@@ -3441,14 +4179,16 @@ impl DiskManager {
         }
 
         let mut raw_data = Self::try_alloc_zeroed_vec(phys_len)?;
-        if guard.io_engine.effective() == IoBackend::Mmap {
+        if guard.io_engine.effective() == IoBackend::Mmap
+            && let Some(mmap) = guard.backing.as_mmap_slice()
+        {
             // Zero-copy path: coalesce physically contiguous runs and memcpy from the mapping.
             let data_start = guard.superblock.data_block_start;
             let data_end = guard.superblock.block_count;
-            let mmap_len = guard.mmap.len();
+            let mmap_len = mmap.len();
             let mut pending_run: Option<(usize, usize, usize)> = None;
             Self::walk_payload_blocks(
-                &guard.mmap,
+                &guard.backing,
                 inode,
                 physical_size,
                 data_start,
@@ -3467,7 +4207,7 @@ impl DiskManager {
                             }
                             Some((run_src, run_dst, run_len)) => {
                                 raw_data[run_dst..run_dst + run_len]
-                                    .copy_from_slice(&guard.mmap[run_src..run_src + run_len]);
+                                    .copy_from_slice(&mmap[run_src..run_src + run_len]);
                                 pending_run = Some((src_off, off, len));
                             }
                             None => {
@@ -3479,28 +4219,33 @@ impl DiskManager {
             );
             if let Some((run_src, run_dst, run_len)) = pending_run {
                 raw_data[run_dst..run_dst + run_len]
-                    .copy_from_slice(&guard.mmap[run_src..run_src + run_len]);
+                    .copy_from_slice(&mmap[run_src..run_src + run_len]);
             }
         } else {
             // Gather coalesced extents, then hand them to the engine in one submission.
             let mut extents = ExtentList::new();
             let data_start = guard.superblock.data_block_start;
             let data_end = guard.superblock.block_count;
+            let backing_len = guard.backing.len();
             Self::walk_payload_blocks(
-                &guard.mmap,
+                &guard.backing,
                 inode,
                 physical_size,
                 data_start,
                 data_end,
                 |blk, off, len| {
-                    if Self::get_block_from_map(&guard.mmap, blk).is_some() {
+                    if let Some(byte_off) = usize::try_from(blk)
+                        .ok()
+                        .and_then(|b| b.checked_mul(BLOCK_SIZE))
+                        && byte_off.saturating_add(BLOCK_SIZE) <= backing_len
+                    {
                         extents.push(blk * BLOCK_SIZE as u64, off, len);
                     }
                 },
             );
-            guard.io_engine.read(
+            guard.io_engine.read_backing(
                 &guard.file,
-                &guard.mmap,
+                &guard.backing,
                 &mut [ReadTarget {
                     buf: &mut raw_data,
                     extents: extents.as_slice(),
@@ -3557,6 +4302,93 @@ impl DiskManager {
         Self::read_data_internal(&guard, inode_id, &inode)
     }
 
+    /// Opens a shared read-lock session ([`ReadSession`]) over this filesystem.
+    ///
+    /// Acquiring a `ReadSession` amortizes the outer `RwLock` across batches of lookups,
+    /// inode stats, and positional reads — eliminating atomic reader-count cache-line
+    /// contention under multi-threaded read workloads.
+    #[inline]
+    pub fn begin_read(&self) -> ReadSession<'_> {
+        ReadSession {
+            guard: self.inner.read().unwrap(),
+        }
+    }
+
+    #[inline]
+    fn resolve_raw_block_id(guard: &DiskManagerInner, inode: &Inode, blk_idx: usize) -> u64 {
+        const SINGLE_LIMIT: usize = 10 + 512;
+        const DOUBLE_LIMIT: usize = SINGLE_LIMIT + 512 * 512;
+        const TRIPLE_LIMIT: usize = DOUBLE_LIMIT + 512 * 512 * 512;
+        if blk_idx < 10 {
+            return inode.blocks[blk_idx];
+        }
+        if blk_idx < SINGLE_LIMIT {
+            let sib_id = inode.blocks[10];
+            if !guard.is_data_block(sib_id) {
+                return 0;
+            }
+            return guard.backing.read_block_ptr(sib_id, blk_idx - 10);
+        }
+        if blk_idx < DOUBLE_LIMIT {
+            let dib_id = inode.blocks[11];
+            if !guard.is_data_block(dib_id) {
+                return 0;
+            }
+            let rel = blk_idx - SINGLE_LIMIT;
+            let sib_id = guard.backing.read_block_ptr(dib_id, rel / 512);
+            if !guard.is_data_block(sib_id) {
+                return 0;
+            }
+            return guard.backing.read_block_ptr(sib_id, rel % 512);
+        }
+        if blk_idx < TRIPLE_LIMIT {
+            let tib_id = inode.triple_indirect;
+            if !guard.is_data_block(tib_id) {
+                return 0;
+            }
+            let rel = blk_idx - DOUBLE_LIMIT;
+            let dib_id = guard.backing.read_block_ptr(tib_id, rel / (512 * 512));
+            if !guard.is_data_block(dib_id) {
+                return 0;
+            }
+            let rem = rel % (512 * 512);
+            let sib_id = guard.backing.read_block_ptr(dib_id, rem / 512);
+            if !guard.is_data_block(sib_id) {
+                return 0;
+            }
+            return guard.backing.read_block_ptr(sib_id, rem % 512);
+        }
+        0
+    }
+
+    #[inline]
+    fn read_at_with_guard(
+        guard: &DiskManagerInner,
+        inode_id: u64,
+        inode: &Inode,
+        file_offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, DiskManagerError> {
+        if guard.io_engine.effective() == IoBackend::Mmap && guard.backing.as_mmap_slice().is_some()
+        {
+            return Self::read_at_with_inode(guard, inode_id, inode, file_offset, buf, None);
+        }
+        let mut extents = ExtentList::new();
+        let n =
+            Self::read_at_with_inode(guard, inode_id, inode, file_offset, buf, Some(&mut extents))?;
+        if !extents.is_empty() {
+            guard.io_engine.read_backing(
+                &guard.file,
+                &guard.backing,
+                &mut [ReadTarget {
+                    buf,
+                    extents: extents.as_slice(),
+                }],
+            )?;
+        }
+        Ok(n)
+    }
+
     /// Reads up to `buf.len()` bytes starting at `file_offset` from a file.
     ///
     /// # Performance
@@ -3574,22 +4406,8 @@ impl DiskManager {
         buf: &mut [u8],
     ) -> Result<usize, DiskManagerError> {
         let guard = self.inner.read().unwrap();
-        if guard.io_engine.effective() == IoBackend::Mmap {
-            return Self::read_at_prepare(&guard, inode_id, file_offset, buf, None);
-        }
-        let mut extents = ExtentList::new();
-        let n = Self::read_at_prepare(&guard, inode_id, file_offset, buf, Some(&mut extents))?;
-        if !extents.is_empty() {
-            guard.io_engine.read(
-                &guard.file,
-                &guard.mmap,
-                &mut [ReadTarget {
-                    buf,
-                    extents: extents.as_slice(),
-                }],
-            )?;
-        }
-        Ok(n)
+        let inode = Self::read_inode_internal(&guard, inode_id)?;
+        Self::read_at_with_guard(&guard, inode_id, &inode, file_offset, buf)
     }
 
     /// Single-lock, single-inode-lookup positional read returning a clamped `Vec<u8>`.
@@ -3615,7 +4433,9 @@ impl DiskManager {
         let available = usize::try_from(inode.size - file_offset).unwrap_or(usize::MAX);
         let alloc_len = max_len.min(available);
         let mut buf = Self::try_alloc_zeroed_vec(alloc_len)?;
-        let n = if guard.io_engine.effective() == IoBackend::Mmap {
+        let n = if guard.io_engine.effective() == IoBackend::Mmap
+            && guard.backing.as_mmap_slice().is_some()
+        {
             Self::read_at_with_inode(&guard, inode_id, &inode, file_offset, &mut buf, None)?
         } else {
             let mut extents = ExtentList::new();
@@ -3628,9 +4448,9 @@ impl DiskManager {
                 Some(&mut extents),
             )?;
             if !extents.is_empty() {
-                guard.io_engine.read(
+                guard.io_engine.read_backing(
                     &guard.file,
-                    &guard.mmap,
+                    &guard.backing,
                     &mut [ReadTarget {
                         buf: &mut buf,
                         extents: extents.as_slice(),
@@ -3659,7 +4479,8 @@ impl DiskManager {
         requests: &mut [ReadRequest<'_>],
     ) -> Vec<Result<usize, DiskManagerError>> {
         let guard = self.inner.read().unwrap();
-        let direct = guard.io_engine.effective() == IoBackend::Mmap;
+        let direct = guard.io_engine.effective() == IoBackend::Mmap
+            && guard.backing.as_mmap_slice().is_some();
 
         let mut results = Vec::with_capacity(requests.len());
         let mut plans: Vec<ExtentList> = Vec::with_capacity(requests.len());
@@ -3686,7 +4507,10 @@ impl DiskManager {
         if targets.is_empty() {
             return results;
         }
-        if let Err(e) = guard.io_engine.read(&guard.file, &guard.mmap, &mut targets) {
+        if let Err(e) = guard
+            .io_engine
+            .read_backing(&guard.file, &guard.backing, &mut targets)
+        {
             drop(targets);
             for (res, plan) in results.iter_mut().zip(plans.iter()) {
                 if !plan.is_empty() {
@@ -3803,21 +4627,23 @@ impl DiskManager {
         impl<'a> ReadAtSink<'a> {
             #[inline]
             fn flush_mmap_run(&mut self) {
-                if let Some((run_src, run_dst, run_len)) = self.pending_mmap_run.take() {
+                if let Some((run_src, run_dst, run_len)) = self.pending_mmap_run.take()
+                    && let Some(mmap) = self.guard.backing.as_mmap_slice()
+                {
                     self.buf[run_dst..run_dst + run_len]
-                        .copy_from_slice(&self.guard.mmap[run_src..run_src + run_len]);
+                        .copy_from_slice(&mmap[run_src..run_src + run_len]);
                 }
             }
 
             #[inline]
             fn emit_block(&mut self, blk_id: u64, in_blk_off: usize, chunk_len: usize) {
-                let mmap_len = self.guard.mmap.len();
+                let backing_len = self.guard.backing.len();
                 // Reject forged pointers targeting metadata blocks (< data_block_start).
                 let valid_src = if self.guard.is_data_block(blk_id) {
                     usize::try_from(blk_id)
                         .ok()
                         .and_then(|b| b.checked_mul(BLOCK_SIZE))
-                        .filter(|&b_start| b_start.saturating_add(BLOCK_SIZE) <= mmap_len)
+                        .filter(|&b_start| b_start.saturating_add(BLOCK_SIZE) <= backing_len)
                 } else {
                     None
                 };
@@ -3908,11 +4734,14 @@ impl DiskManager {
             // 2. Single indirect blocks (10..522) - Batch leaf slice resolution
             if blk_idx < SINGLE_LIMIT {
                 let sib_id = inode.blocks[10];
-                if guard.is_data_block(sib_id)
-                    && let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id)
+                if !guard.is_data_block(sib_id)
+                    || guard
+                        .backing
+                        .with_block(sib_id, |sib_slice| {
+                            sink.emit_sib_entries(sib_slice, blk_idx - 10);
+                        })
+                        .is_err()
                 {
-                    sink.emit_sib_entries(sib_slice, blk_idx - 10);
-                } else {
                     sink.emit_hole_until(SINGLE_LIMIT);
                 }
                 continue;
@@ -3921,29 +4750,35 @@ impl DiskManager {
             // 3. Double indirect blocks (522..262666) - Batch dib + sib resolution
             if blk_idx < DOUBLE_LIMIT {
                 let dib_id = inode.blocks[11];
-                if guard.is_data_block(dib_id)
-                    && let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, dib_id)
+                if !guard.is_data_block(dib_id)
+                    || guard
+                        .backing
+                        .with_block(dib_id, |dib_slice| {
+                            while sink.bytes_read < sink.to_read_total {
+                                let cur_blk = (sink.curr_offset / BLOCK_SIZE as u64) as usize;
+                                if cur_blk >= DOUBLE_LIMIT {
+                                    break;
+                                }
+                                let rel = cur_blk - SINGLE_LIMIT;
+                                let s_idx = rel / 512;
+                                let d_idx = rel % 512;
+                                let sib_id = u64::from_le_bytes(
+                                    dib_slice[s_idx * 8..s_idx * 8 + 8].try_into().unwrap(),
+                                );
+                                if !guard.is_data_block(sib_id)
+                                    || guard
+                                        .backing
+                                        .with_block(sib_id, |sib_slice| {
+                                            sink.emit_sib_entries(sib_slice, d_idx);
+                                        })
+                                        .is_err()
+                                {
+                                    sink.emit_hole_until(cur_blk + (512 - d_idx));
+                                }
+                            }
+                        })
+                        .is_err()
                 {
-                    while sink.bytes_read < sink.to_read_total {
-                        let cur_blk = (sink.curr_offset / BLOCK_SIZE as u64) as usize;
-                        if cur_blk >= DOUBLE_LIMIT {
-                            break;
-                        }
-                        let rel = cur_blk - SINGLE_LIMIT;
-                        let s_idx = rel / 512;
-                        let d_idx = rel % 512;
-                        let sib_id = u64::from_le_bytes(
-                            dib_slice[s_idx * 8..s_idx * 8 + 8].try_into().unwrap(),
-                        );
-                        if guard.is_data_block(sib_id)
-                            && let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id)
-                        {
-                            sink.emit_sib_entries(sib_slice, d_idx);
-                        } else {
-                            sink.emit_hole_until(cur_blk + (512 - d_idx));
-                        }
-                    }
-                } else {
                     sink.emit_hole_until(DOUBLE_LIMIT);
                 }
                 continue;
@@ -3952,27 +4787,23 @@ impl DiskManager {
             // 4. Triple indirect blocks (262666..134480394) - Batch tib + dib + sib resolution
             if blk_idx < TRIPLE_LIMIT {
                 let tib_id = inode.triple_indirect;
-                if guard.is_data_block(tib_id)
-                    && let Some(tib_slice) = Self::get_block_from_map(&guard.mmap, tib_id)
-                {
+                if guard.is_data_block(tib_id) {
                     let rel = blk_idx - DOUBLE_LIMIT;
                     let t_idx = rel / (512 * 512);
                     let rem_idx = rel % (512 * 512);
                     let d_idx = rem_idx / 512;
                     let s_idx = rem_idx % 512;
-                    let dib_id =
-                        u64::from_le_bytes(tib_slice[t_idx * 8..t_idx * 8 + 8].try_into().unwrap());
-                    if guard.is_data_block(dib_id)
-                        && let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, dib_id)
-                    {
-                        let sib_id = u64::from_le_bytes(
-                            dib_slice[d_idx * 8..d_idx * 8 + 8].try_into().unwrap(),
-                        );
-                        if guard.is_data_block(sib_id)
-                            && let Some(sib_slice) = Self::get_block_from_map(&guard.mmap, sib_id)
+                    let dib_id = guard.backing.read_block_ptr(tib_id, t_idx);
+                    if guard.is_data_block(dib_id) {
+                        let sib_id = guard.backing.read_block_ptr(dib_id, d_idx);
+                        if !guard.is_data_block(sib_id)
+                            || guard
+                                .backing
+                                .with_block(sib_id, |sib_slice| {
+                                    sink.emit_sib_entries(sib_slice, s_idx);
+                                })
+                                .is_err()
                         {
-                            sink.emit_sib_entries(sib_slice, s_idx);
-                        } else {
                             sink.emit_hole_until(blk_idx + (512 - s_idx));
                         }
                     } else {
@@ -4016,6 +4847,111 @@ impl DiskManager {
         )
     }
 
+    /// Fast path for fresh multi-block writes from offset 0 (`inode.blocks == [0; 12]`).
+    ///
+    /// Allocates all payload blocks + indirect pointer blocks in ONE contiguous bitmap
+    /// allocation, writes the entire payload in ONE contiguous `write_all_at` (plus trailing
+    /// slack zeroing), and writes each indirect pointer block once instead of per-entry.
+    /// Falls back cleanly to the general per-block path if contiguous free space is unavailable.
+    fn try_write_contiguous_fresh_file(
+        guard: &mut DiskManagerInner,
+        inode: &mut Inode,
+        data: &[u8],
+        mut touched_blocks: Option<&mut Vec<u64>>,
+    ) -> Result<Option<u64>, DiskManagerError> {
+        const DIRECT: usize = 10;
+        const PTRS: usize = 512;
+        const SINGLE_LIMIT: usize = DIRECT + PTRS;
+        const DOUBLE_LIMIT: usize = SINGLE_LIMIT + PTRS * PTRS;
+
+        let total_blks = data.len().div_ceil(BLOCK_SIZE);
+        if total_blks <= 1 || total_blks > DOUBLE_LIMIT {
+            return Ok(None);
+        }
+
+        let need_sib = total_blks > DIRECT;
+        let double_blks = total_blks.saturating_sub(SINGLE_LIMIT);
+        let num_dib_sibs = double_blks.div_ceil(PTRS);
+        let need_dib = double_blks > 0;
+        let total_meta_blks = usize::from(need_sib) + usize::from(need_dib) + num_dib_sibs;
+        let total_alloc = total_blks + total_meta_blks;
+
+        let start_blk = match Self::allocate_contiguous_blocks_internal(guard, total_alloc) {
+            Ok(b) => b,
+            Err(DiskManagerError::Allocator(AllocatorError::NoSpace)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+        // 1. Write the entire payload in one contiguous write + zero trailing slack.
+        let payload_off = start_blk.checked_mul(BLOCK_SIZE as u64).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::other("payload block offset overflow"))
+        })?;
+        guard.backing.write_all_at(payload_off, data)?;
+        let slack = total_blks * BLOCK_SIZE - data.len();
+        if slack > 0 {
+            const ZEROS: [u8; BLOCK_SIZE] = [0u8; BLOCK_SIZE];
+            guard
+                .backing
+                .write_all_at(payload_off + data.len() as u64, &ZEROS[..slack])?;
+        }
+
+        // 2. Populate direct pointers and write each indirect pointer block in one shot.
+        for i in 0..total_blks.min(DIRECT) {
+            inode.blocks[i] = start_blk + i as u64;
+        }
+        let mut next_meta = start_blk + total_blks as u64;
+
+        if need_sib {
+            let sib_blk = next_meta;
+            next_meta += 1;
+            let mut sib_buf = [0u8; BLOCK_SIZE];
+            let sib_end = total_blks.min(SINGLE_LIMIT);
+            for (slot, logical_idx) in (DIRECT..sib_end).enumerate() {
+                let phys = start_blk + logical_idx as u64;
+                sib_buf[slot * 8..slot * 8 + 8].copy_from_slice(&phys.to_le_bytes());
+            }
+            guard
+                .backing
+                .write_all_at(sib_blk * BLOCK_SIZE as u64, &sib_buf)?;
+            inode.blocks[10] = sib_blk;
+        }
+
+        if need_dib {
+            let dib_blk = next_meta;
+            next_meta += 1;
+            let mut dib_buf = [0u8; BLOCK_SIZE];
+            for a in 0..num_dib_sibs {
+                let child_sib = next_meta;
+                next_meta += 1;
+                dib_buf[a * 8..a * 8 + 8].copy_from_slice(&child_sib.to_le_bytes());
+                let mut sib_buf = [0u8; BLOCK_SIZE];
+                let range_start = SINGLE_LIMIT + a * PTRS;
+                let range_end = total_blks.min(range_start + PTRS);
+                for (slot, logical_idx) in (range_start..range_end).enumerate() {
+                    let phys = start_blk + logical_idx as u64;
+                    sib_buf[slot * 8..slot * 8 + 8].copy_from_slice(&phys.to_le_bytes());
+                }
+                guard
+                    .backing
+                    .write_all_at(child_sib * BLOCK_SIZE as u64, &sib_buf)?;
+            }
+            guard
+                .backing
+                .write_all_at(dib_blk * BLOCK_SIZE as u64, &dib_buf)?;
+            inode.blocks[11] = dib_blk;
+        }
+        debug_assert_eq!(next_meta, start_blk + total_alloc as u64);
+
+        if let Some(ref mut tb) = touched_blocks {
+            tb.reserve(total_alloc);
+            for b in 0..total_alloc as u64 {
+                tb.push(start_blk + b);
+            }
+        }
+
+        Ok(Some(data.len() as u64))
+    }
+
     fn write_buffer_at_offset(
         guard: &mut DiskManagerInner,
         inode: &mut Inode,
@@ -4023,7 +4959,24 @@ impl DiskManager {
         data: &[u8],
         mut touched_blocks: Option<&mut Vec<u64>>,
     ) -> Result<u64, DiskManagerError> {
+        if current_offset == 0
+            && data.len() > BLOCK_SIZE
+            && inode.blocks == [0; 12]
+            && inode.triple_indirect == 0
+            && let Some(end_off) = Self::try_write_contiguous_fresh_file(
+                guard,
+                inode,
+                data,
+                touched_blocks.as_deref_mut(),
+            )?
+        {
+            return Ok(end_off);
+        }
+
         let mut written = 0;
+        // Coalesce physically contiguous full-block writes into a single `write_all_at`
+        // call, turning N 4 KiB `pwrite` syscalls under `FileIo` into 1 contiguous `pwrite`.
+        let mut pending_run: Option<(u64, usize, usize)> = None;
         while written < data.len() {
             let blk_idx = (current_offset / BLOCK_SIZE as u64) as usize;
             let (blk_id, is_fresh) = Self::get_or_alloc_block_for_write(guard, inode, blk_idx)?;
@@ -4036,44 +4989,69 @@ impl DiskManager {
             let in_blk_off = (current_offset % BLOCK_SIZE as u64) as usize;
             let to_write = std::cmp::min(data.len() - written, BLOCK_SIZE - in_blk_off);
 
-            if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk_id) {
-                // On a newly allocated block, only zero the untouched
-                // prefix/suffix bytes; full-block writes skip zeroing altogether.
-                if is_fresh {
-                    slice[..in_blk_off].fill(0);
-                    slice[in_blk_off + to_write..].fill(0);
+            if in_blk_off == 0 && to_write == BLOCK_SIZE {
+                let off = blk_id.checked_mul(BLOCK_SIZE as u64).ok_or_else(|| {
+                    DiskManagerError::Io(std::io::Error::other("block offset overflow"))
+                })?;
+                match pending_run {
+                    Some((run_off, run_start, run_len))
+                        if run_off + run_len as u64 == off && run_start + run_len == written =>
+                    {
+                        pending_run = Some((run_off, run_start, run_len + to_write));
+                    }
+                    Some((run_off, run_start, run_len)) => {
+                        guard
+                            .backing
+                            .write_all_at(run_off, &data[run_start..run_start + run_len])?;
+                        pending_run = Some((off, written, to_write));
+                    }
+                    None => {
+                        pending_run = Some((off, written, to_write));
+                    }
                 }
-                slice[in_blk_off..in_blk_off + to_write]
-                    .copy_from_slice(&data[written..written + to_write]);
+            } else {
+                if let Some((run_off, run_start, run_len)) = pending_run.take() {
+                    guard
+                        .backing
+                        .write_all_at(run_off, &data[run_start..run_start + run_len])?;
+                }
+                if is_fresh && guard.backing.as_mmap_slice().is_none() {
+                    let mut block_buf = [0u8; BLOCK_SIZE];
+                    block_buf[in_blk_off..in_blk_off + to_write]
+                        .copy_from_slice(&data[written..written + to_write]);
+                    let off = blk_id.checked_mul(BLOCK_SIZE as u64).ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::other("block offset overflow"))
+                    })?;
+                    guard.backing.write_all_at(off, &block_buf)?;
+                } else {
+                    guard.backing.with_block_mut(blk_id, |slice| {
+                        // On a newly allocated block, only zero the untouched
+                        // prefix/suffix bytes; full-block writes skip zeroing altogether.
+                        if is_fresh {
+                            slice[..in_blk_off].fill(0);
+                            slice[in_blk_off + to_write..].fill(0);
+                        }
+                        slice[in_blk_off..in_blk_off + to_write]
+                            .copy_from_slice(&data[written..written + to_write]);
+                    })?;
+                }
             }
             written += to_write;
             current_offset += to_write as u64;
         }
+        if let Some((run_off, run_start, run_len)) = pending_run {
+            guard
+                .backing
+                .write_all_at(run_off, &data[run_start..run_start + run_len])?;
+        }
         Ok(current_offset)
     }
 
-    /// Journaled counterpart of [`Self::write_data_with_filters`].
-    ///
-    /// Same four cases as the in-place path, but staged through [`AllocSim`] and
-    /// committed as one metadata transaction.
-    ///
-    /// # Ordering (why this is crash-safe)
-    ///
-    /// 1. **Stage** — payload written into blocks whose bitmap bits are still clear.
-    ///    A crash here leaves garbage in free blocks, which is harmless.
-    /// 2. **Flush payload** — the touched blocks reach stable storage.
-    /// 3. **Commit** — the metadata transaction (bitmap + inode) is appended and
-    ///    `msync`ed. This is the atomic commit point.
-    /// 4. **Apply** — metadata ops are replayed in place.
-    ///
-    /// The ordering is what makes step 3 safe: metadata can only ever become durable
-    /// after the data it references is durable, so recovery never publishes a block
-    /// that has not been filled.
     /// Record every indirect pointer block in `inode` that remains active for the
     /// first `needed_logical` blocks, so `write_data_journaled` never frees a
     /// reused indirect table block when reclaiming orphaned blocks.
     fn collect_retained_indirect_blocks(
-        mmap: &MmapMut,
+        backing: &ImageBacking,
         inode: &Inode,
         needed_logical: usize,
         out: &mut FxHashSet<u64>,
@@ -4097,7 +5075,7 @@ impl DiskManager {
             out.insert(dib);
             let active_a = (needed_logical - SINGLE_SPAN).div_ceil(PTRS).min(PTRS);
             for a in 0..active_a {
-                let sib2 = Self::read_block_ptr(mmap, dib, a);
+                let sib2 = backing.read_block_ptr(dib, a);
                 if sib2 != 0 {
                     out.insert(sib2);
                 }
@@ -4112,7 +5090,7 @@ impl DiskManager {
             let rem_blocks = needed_logical - DOUBLE_SPAN;
             let active_b = rem_blocks.div_ceil(PTRS * PTRS).min(PTRS);
             for b in 0..active_b {
-                let dib2 = Self::read_block_ptr(mmap, tib, b);
+                let dib2 = backing.read_block_ptr(tib, b);
                 if dib2 == 0 {
                     continue;
                 }
@@ -4120,7 +5098,7 @@ impl DiskManager {
                 let rem_in_b = rem_blocks.saturating_sub(b * PTRS * PTRS);
                 let active_c = rem_in_b.div_ceil(PTRS).min(PTRS);
                 for c in 0..active_c {
-                    let sib3 = Self::read_block_ptr(mmap, dib2, c);
+                    let sib3 = backing.read_block_ptr(dib2, c);
                     if sib3 != 0 {
                         out.insert(sib3);
                     }
@@ -4167,7 +5145,7 @@ impl DiskManager {
             && (case.frees_previous_blocks()
                 || (rewrites_from_zero && new_physical < old_physical));
         let old_blocks = if may_free_blocks {
-            Self::collect_inode_blocks(&guard.mmap, &inode)
+            Self::collect_inode_blocks(&guard.backing, &inode)
         } else {
             Vec::new()
         };
@@ -4197,7 +5175,7 @@ impl DiskManager {
                 inode.triple_indirect = 0;
             } else if needed_logical < old_logical {
                 crate::journal::prune_stale_pointers(
-                    &guard.mmap,
+                    &guard.backing,
                     &mut inode,
                     needed_logical,
                     &mut ops,
@@ -4231,7 +5209,7 @@ impl DiskManager {
         if !old_blocks.is_empty() {
             let mut used_set: FxHashSet<u64> = used.iter().copied().collect();
             Self::collect_retained_indirect_blocks(
-                &guard.mmap,
+                &guard.backing,
                 &inode,
                 needed_logical,
                 &mut used_set,
@@ -4253,22 +5231,20 @@ impl DiskManager {
         };
 
         // 3. Payload durability BEFORE the metadata commit.
-        //
-        // Same durability-policy reasoning as the WAL barrier in
-        // `commit_journal_tx`: only `Strict` promises the data reached disk before
-        // the metadata referencing it, so only `Strict` pays for a pre-WAL barrier.
-        // `RangeAsync` syncs metadata + payload together in a single coalesced pass
-        // after applying the transaction in step 5.
         let payload_ranges: Vec<(usize, usize)> = if guard.durability_mode().is_range_based() {
             used.iter().map(|b| guard.block_byte_range(*b)).collect()
         } else {
             Vec::new()
         };
         if guard.durability_mode() == DurabilityMode::Strict {
-            let coalesced_payload =
-                DiskManagerInner::coalesce_ranges(&payload_ranges, guard.mmap.len());
-            for (off, actual) in coalesced_payload {
-                guard.mmap.flush_range(off, actual)?;
+            if guard.backing.as_mmap_slice().is_some() {
+                let coalesced_payload =
+                    DiskManagerInner::coalesce_ranges(&payload_ranges, guard.backing.len());
+                for (off, actual) in coalesced_payload {
+                    guard.backing.flush_range(off, actual)?;
+                }
+            } else {
+                guard.backing.flush()?;
             }
         }
 
@@ -4645,14 +5621,14 @@ impl DiskManager {
 
         // Decide once, apply in place.
         if plan.case.frees_previous_blocks() {
-            let old_blocks = Self::collect_inode_blocks(&guard.mmap, &inode);
+            let old_blocks = Self::collect_inode_blocks(&guard.backing, &inode);
             let mut min_freed_blk = u64::MAX;
             {
                 let db_start = guard.superblock.data_block_start;
-                let slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
+                let mut slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
                     DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
                 })?;
-                let mut da = SimpleBlockAllocator::new(slice, db_start);
+                let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
                 for blk in old_blocks {
                     da.free(blk)?;
                     min_freed_blk = min_freed_blk.min(blk);
@@ -4750,7 +5726,7 @@ impl DiskManager {
         let id_off = inode_id.checked_mul(inode_size).ok_or_else(overflow)?;
         let offset = base.checked_add(id_off).ok_or_else(overflow)?;
         let end = offset.checked_add(inode_size).ok_or_else(overflow)?;
-        if end > guard.mmap.len() as u64 {
+        if end > guard.backing.len() as u64 {
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "Bounds",
@@ -4780,7 +5756,9 @@ impl DiskManager {
         let version = guard.superblock.inode_record_version_for(inode_id);
         if version < SuperBlock::FORMAT_VERSION_FIXED_INODE {
             if let Ok((start, end)) = Self::inode_slot_range(guard, inode_id) {
-                slot.copy_from_slice(&guard.mmap[start..end]);
+                let _ = guard
+                    .backing
+                    .read_exact_at(start as u64, &mut slot[..end - start]);
             }
             let payload = crate::inode_format::encode_v1_payload(inode)?;
             if payload.len() > crate::inode_format::INODE_SLOT_SIZE {
@@ -4806,11 +5784,16 @@ impl DiskManager {
         }
 
         let (offset, end) = Self::inode_slot_range(guard, inode_id)?;
-        let slice = &guard.mmap[offset..end];
-        let inode = crate::inode_format::decode_for(
-            slice,
-            guard.superblock.inode_record_version_for(inode_id),
-        )
+        let version = guard.superblock.inode_record_version_for(inode_id);
+        let inode = if let Some(mmap) = guard.backing.as_mmap_slice() {
+            crate::inode_format::decode_for(&mmap[offset..end], version)
+        } else {
+            let mut raw = [0u8; crate::inode_format::INODE_SLOT_SIZE];
+            guard
+                .backing
+                .read_exact_at(offset as u64, &mut raw[..end - offset])?;
+            crate::inode_format::decode_for(&raw[..end - offset], version)
+        }
         .map_err(|e| {
             DiskManagerError::Io(std::io::Error::other(format!("Inode decode failed: {e}")))
         })?;
@@ -4821,7 +5804,7 @@ impl DiskManager {
         Ok(inode)
     }
 
-    /// Decodes an inode directly from the mapped slot (returning the cached entry if present)
+    /// Decodes an inode directly from the on-disk slot (returning the cached entry if present)
     /// without inserting misses into `inode_cache` — avoids evicting hot working-set inodes
     /// during full-filesystem scans (`fsck`, `defragment`).
     fn read_inode_uncached(
@@ -4833,11 +5816,19 @@ impl DiskManager {
         }
 
         let (offset, end) = Self::inode_slot_range(guard, inode_id)?;
-        let slice = &guard.mmap[offset..end];
-        crate::inode_format::decode_for(slice, guard.superblock.inode_record_version_for(inode_id))
-            .map_err(|e| {
-                DiskManagerError::Io(std::io::Error::other(format!("Inode decode failed: {e}")))
-            })
+        let version = guard.superblock.inode_record_version_for(inode_id);
+        let res = if let Some(mmap) = guard.backing.as_mmap_slice() {
+            crate::inode_format::decode_for(&mmap[offset..end], version)
+        } else {
+            let mut raw = [0u8; crate::inode_format::INODE_SLOT_SIZE];
+            guard
+                .backing
+                .read_exact_at(offset as u64, &mut raw[..end - offset])?;
+            crate::inode_format::decode_for(&raw[..end - offset], version)
+        };
+        res.map_err(|e| {
+            DiskManagerError::Io(std::io::Error::other(format!("Inode decode failed: {e}")))
+        })
     }
 
     fn write_inode_internal(
@@ -4845,11 +5836,11 @@ impl DiskManager {
         inode_id: u64,
         inode: &Inode,
     ) -> Result<(), DiskManagerError> {
-        let (offset, end) = Self::inode_slot_range(guard, inode_id)?;
+        let (offset, _end) = Self::inode_slot_range(guard, inode_id)?;
         // Single source of truth for the on-disk bytes, shared with the journal's
         // post-image path so recovery can never diverge from a clean mount.
         let slot = Self::encode_inode_slot(guard, inode_id, inode)?;
-        guard.mmap[offset..end].copy_from_slice(&slot);
+        guard.backing.write_all_at(offset as u64, &slot)?;
 
         // Update in-memory inode cache & invalidate decoded payload caches.
         guard.inode_cache.insert(inode_id, *inode);
@@ -4866,10 +5857,10 @@ impl DiskManager {
         let block_count = guard.superblock.block_count;
         let hint = guard.free_block_hint;
         let blk = {
-            let slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
+            let mut slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
                 DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
             })?;
-            let mut da = SimpleBlockAllocator::new(slice, db_start);
+            let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
             let blk = da
                 .allocate_with_hint(Some(hint))
                 .map_err(DiskManagerError::Allocator)?;
@@ -4878,10 +5869,12 @@ impl DiskManager {
             // again and reported as "no space".
             if blk >= block_count {
                 let _ = da.free(blk);
+                slice.set_dirty_bits(0, 0);
                 return Err(DiskManagerError::Allocator(
                     crate::allocator::AllocatorError::NoSpace,
                 ));
             }
+            slice.set_dirty_bits((blk - db_start) as usize, 1);
             blk
         };
         guard.free_block_hint = blk + 1;
@@ -4895,9 +5888,7 @@ impl DiskManager {
         // file that was deleted or truncated. Zero it before it becomes
         // reachable, otherwise a partial write would expose the old content
         // to the new owner of the block.
-        if let Some(slice) = Self::get_block_mut_from_map(&mut guard.mmap, blk) {
-            slice.fill(0);
-        }
+        guard.backing.zero_block(blk)?;
         Ok(blk)
     }
 
@@ -4912,19 +5903,21 @@ impl DiskManager {
         let block_count = guard.superblock.block_count;
         let hint = guard.free_block_hint;
         let blk = {
-            let slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
+            let mut slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
                 DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
             })?;
-            let mut da = SimpleBlockAllocator::new(slice, db_start);
+            let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
             let blk = da
                 .allocate_contiguous(count, Some(hint))
                 .map_err(DiskManagerError::Allocator)?;
             if blk.saturating_add(count as u64) > block_count {
                 let _ = da.free_contiguous(blk, count);
+                slice.set_dirty_bits(0, 0);
                 return Err(DiskManagerError::Allocator(
                     crate::allocator::AllocatorError::NoSpace,
                 ));
             }
+            slice.set_dirty_bits((blk - db_start) as usize, count);
             blk
         };
         guard.free_block_hint = blk + count as u64;
@@ -4941,36 +5934,20 @@ impl DiskManager {
         }
         let db_start = guard.superblock.data_block_start;
         {
-            let slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
+            let mut slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
                 DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
             })?;
-            let mut da = SimpleBlockAllocator::new(slice, db_start);
+            let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
             da.free_contiguous(start_blk, count)
                 .map_err(DiskManagerError::Allocator)?;
+            if start_blk >= db_start {
+                slice.set_dirty_bits((start_blk - db_start) as usize, count);
+            }
         }
         if start_blk < guard.free_block_hint {
             guard.free_block_hint = start_blk;
         }
         Ok(())
-    }
-
-    #[inline]
-    pub(crate) fn read_block_ptr(mmap: &MmapMut, block_id: u64, entry_idx: usize) -> u64 {
-        if let Some(slice) = Self::get_block_from_map(mmap, block_id) {
-            let start = entry_idx * 8;
-            if start + 8 <= slice.len() {
-                return u64::from_le_bytes(slice[start..start + 8].try_into().unwrap());
-            }
-        }
-        0
-    }
-
-    #[inline]
-    fn write_block_ptr(mmap: &mut MmapMut, block_id: u64, entry_idx: usize, ptr: u64) {
-        if let Some(slice) = Self::get_block_mut_from_map(mmap, block_id) {
-            let start = entry_idx * 8;
-            slice[start..start + 8].copy_from_slice(&ptr.to_le_bytes());
-        }
     }
 
     #[inline]
@@ -4993,7 +5970,7 @@ impl DiskManager {
                 parent_block_id
             ))));
         }
-        let mut child_id = Self::read_block_ptr(&guard.mmap, parent_block_id, entry_idx);
+        let mut child_id = guard.backing.read_block_ptr(parent_block_id, entry_idx);
         if child_id != 0 && !guard.is_data_block(child_id) {
             return Err(DiskManagerError::Io(std::io::Error::other(format!(
                 "Block pointer {} is outside the data area",
@@ -5006,7 +5983,9 @@ impl DiskManager {
             } else {
                 Self::allocate_block(guard)?
             };
-            Self::write_block_ptr(&mut guard.mmap, parent_block_id, entry_idx, child_id);
+            guard
+                .backing
+                .write_block_ptr(parent_block_id, entry_idx, child_id);
         }
         Ok(child_id)
     }
@@ -5047,7 +6026,7 @@ impl DiskManager {
                     parent_block_id
                 ))));
             }
-            let child_id = DiskManager::read_block_ptr(&guard.mmap, parent_block_id, entry_idx);
+            let child_id = guard.backing.read_block_ptr(parent_block_id, entry_idx);
             if child_id != 0 {
                 if !guard.is_data_block(child_id) {
                     return Err(DiskManagerError::Io(std::io::Error::other(format!(
@@ -5058,7 +6037,9 @@ impl DiskManager {
                 return Ok((child_id, false));
             }
             let fresh = DiskManager::allocate_block_unzeroed(guard)?;
-            DiskManager::write_block_ptr(&mut guard.mmap, parent_block_id, entry_idx, fresh);
+            guard
+                .backing
+                .write_block_ptr(parent_block_id, entry_idx, fresh);
             Ok((fresh, true))
         }
 
@@ -5181,16 +6162,6 @@ impl DiskManager {
         }
     }
 
-    pub(crate) fn get_block_from_map(mmap: &MmapMut, block_id: u64) -> Option<&[u8]> {
-        let start = usize::try_from(block_id).ok()?.checked_mul(BLOCK_SIZE)?;
-        let end = start.checked_add(BLOCK_SIZE)?;
-        if end > mmap.len() {
-            None
-        } else {
-            Some(&mmap[start..end])
-        }
-    }
-
     fn resolve_path_iter<'a>(
         guard: &DiskManagerInner,
         parts: impl Iterator<Item = &'a str>,
@@ -5230,7 +6201,7 @@ impl DiskManager {
 
     pub fn get_block_copy(&self, block_id: u64) -> Option<Vec<u8>> {
         let guard = self.inner.read().unwrap();
-        Self::get_block_from_map(&guard.mmap, block_id).map(|s| s.to_vec())
+        guard.backing.with_block(block_id, |s| s.to_vec()).ok()
     }
 
     /// Lists all entries in a directory
@@ -5242,7 +6213,14 @@ impl DiskManager {
         dir_inode_id: u64,
     ) -> Result<Vec<crate::directory::DirectoryEntry>, DiskManagerError> {
         let guard = self.inner.read().unwrap();
-        let inode = Self::read_inode_internal(&guard, dir_inode_id)?;
+        Self::list_dir_with_guard(&guard, dir_inode_id)
+    }
+
+    fn list_dir_with_guard(
+        guard: &DiskManagerInner,
+        dir_inode_id: u64,
+    ) -> Result<Vec<crate::directory::DirectoryEntry>, DiskManagerError> {
+        let inode = Self::read_inode_internal(guard, dir_inode_id)?;
         if inode.mode != crate::inode::FileType::Directory {
             return Err(DiskManagerError::Io(std::io::Error::other(
                 "Not a directory",
@@ -5290,11 +6268,11 @@ impl DiskManager {
         let mut stored_entries = Vec::new();
         let mut last_tail: Option<(u64, u16)> = None;
         for blk_idx in 0..num_blocks {
-            let phys_blk = Self::resolve_logical_block_id(&guard.mmap, &inode, blk_idx);
+            let phys_blk = Self::resolve_logical_block_id(&guard.backing, &inode, blk_idx);
             if !guard.is_data_block(phys_blk) {
                 continue;
             }
-            let block_entries = Self::read_dir_entries_from_block(&guard.mmap, phys_blk)?;
+            let block_entries = Self::read_dir_entries_from_block(&guard.backing, phys_blk)?;
             let used: usize = block_entries.iter().map(|e| 18 + e.name.len()).sum();
             last_tail = Some((phys_blk, used.min(BLOCK_SIZE) as u16));
             for e in block_entries {
@@ -5408,7 +6386,7 @@ impl DiskManager {
             let sb = guard.superblock;
             if sb.has_journal_layout() {
                 let bs = sb.block_size as u64;
-                let region = Self::journal_region_ref(&guard.mmap, &sb)?;
+                let region = guard.backing.journal_region_ref(&sb)?;
                 let header_len = usize::try_from(bs)
                     .unwrap_or(0)
                     .min(crate::journal::JOURNAL_HEADER_LEN);
@@ -5436,7 +6414,7 @@ impl DiskManager {
             // the log describing them, even when individual transactions skipped
             // their own barrier because of a non-Strict durability mode.
             Self::sync_journal_region(&guard)?;
-            guard.mmap.flush().map_err(DiskManagerError::Io)?;
+            guard.backing.flush().map_err(DiskManagerError::Io)?;
         }
 
         // 4. Everything committed up to the snapshot is now on disk, so those
@@ -5451,12 +6429,13 @@ impl DiskManager {
                     .unwrap_or(0)
                     .min(crate::journal::JOURNAL_HEADER_LEN);
                 {
-                    let region = Self::journal_region(&mut guard.mmap, &sb)?;
-                    let mut ring = crate::journal::JournalRing::open(region, bs)?;
+                    let mut region = guard.backing.journal_region_mut(&sb)?;
+                    region.mark_header_only();
+                    let mut ring = crate::journal::JournalRing::open(&mut region, bs)?;
                     ring.checkpoint_to(head);
                 }
                 if header_len > 0 {
-                    guard.mmap.flush_range(start, header_len)?;
+                    guard.backing.flush_range(start, header_len)?;
                 }
             }
         }
@@ -5475,35 +6454,38 @@ impl DiskManager {
             self.async_drain_ready
                 .store(false, std::sync::atomic::Ordering::Release);
         }
-        // WAL first, then the rest of the mapping, so a sync point never lets the
+        // WAL first, then the rest of the image, so a sync point never lets the
         // image reach disk ahead of the log describing it.
         if guard.superblock.has_journal_layout() {
             let bs = guard.superblock.block_size as u64;
             if let Some(start) = Self::journal_region_start(&guard.superblock) {
-                let len = Self::journal_region_len(bs).min(guard.mmap.len() - start);
-                let _ = guard.mmap.flush_async_range(start, len);
+                let len =
+                    Self::journal_region_len(bs).min(guard.backing.len().saturating_sub(start));
+                let _ = guard.backing.flush_async_range(start, len);
             }
         }
-        guard.mmap.flush_async().map_err(DiskManagerError::Io)
+        guard.backing.flush_async().map_err(DiskManagerError::Io)
     }
 
     /// Legacy flush using exclusive write lock (for performance comparison benchmarks).
     #[doc(hidden)]
     pub fn flush_exclusive_legacy(&self) -> Result<(), DiskManagerError> {
         let guard = self.inner.write().unwrap();
-        guard.mmap.flush().map_err(DiskManagerError::Io)
+        guard.backing.flush().map_err(DiskManagerError::Io)
     }
 
     /// Returns `true` if a directory has no entries across any of its allocated blocks.
     fn is_dir_empty(guard: &DiskManagerInner, dir_inode: &Inode) -> Result<bool, DiskManagerError> {
         let num_blocks = Self::dir_num_blocks(dir_inode);
         for blk_idx in 0..num_blocks {
-            let phys_blk = Self::resolve_logical_block_id(&guard.mmap, dir_inode, blk_idx);
+            let phys_blk = Self::resolve_logical_block_id(&guard.backing, dir_inode, blk_idx);
             if !guard.is_data_block(phys_blk) {
                 continue;
             }
-            if let Some(slice) = Self::get_block_from_map(&guard.mmap, phys_blk)
-                && crate::directory::has_valid_entry_in_block(slice)
+            if guard
+                .backing
+                .with_block(phys_blk, crate::directory::has_valid_entry_in_block)
+                .unwrap_or(false)
             {
                 return Ok(false);
             }
@@ -5541,15 +6523,15 @@ impl DiskManager {
         }
 
         let initial_hash = crate::directory::hash_filename(matched_name);
-        let (matched_name, target_inode_id, phys_blk, matched_hash) = if let Some(id) =
-            Self::get_block_from_map(&guard.mmap, phys_blk).and_then(|s| {
+        let (matched_name, target_inode_id, phys_blk, matched_hash) = if let Ok(Some(id)) =
+            guard.backing.with_block(phys_blk, |s| {
                 crate::directory::find_entry_in_block_with_hash(s, matched_name, initial_hash)
             }) {
             (matched_name.to_string(), id, phys_blk, initial_hash)
         } else {
             let target_name = Self::stored_filename(guard, parent_inode_id, name)?;
             let h = crate::directory::hash_filename(target_name.as_ref());
-            Self::locate_entry_in_dir(&guard.mmap, &parent_inode, target_name.as_ref(), h)
+            Self::locate_entry_in_dir(&guard.backing, &parent_inode, target_name.as_ref(), h)
                 .map(|(id, blk)| (target_name.into_owned(), id, blk, h))
                 .ok_or_else(|| {
                     DiskManagerError::Io(std::io::Error::new(
@@ -5572,14 +6554,15 @@ impl DiskManager {
         }
 
         // Build post-image by compacting raw block bytes in place (zero String allocs).
-        let mut dir_image = Self::get_block_from_map(&guard.mmap, phys_blk)
-            .ok_or_else(|| {
+        let mut dir_image = guard
+            .backing
+            .with_block(phys_blk, |s| s.to_vec())
+            .map_err(|_| {
                 DiskManagerError::Io(std::io::Error::other("Directory block not found"))
-            })?
-            .to_vec();
+            })?;
         crate::directory::remove_entry_in_block_bytes(&mut dir_image, &matched_name, matched_hash);
 
-        let blocks_to_free = Self::collect_inode_blocks(&guard.mmap, &file_inode);
+        let blocks_to_free = Self::collect_inode_blocks(&guard.backing, &file_inode);
 
         parent_inode.modified_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -5708,7 +6691,7 @@ impl DiskManager {
                     .flatten()
                     .find_map(|c| {
                         Self::locate_entry_in_dir(
-                            &guard.mmap,
+                            &guard.backing,
                             &parent_inode,
                             c,
                             crate::directory::hash_filename(c),
@@ -5753,15 +6736,15 @@ impl DiskManager {
         }
 
         let initial_hash = crate::directory::hash_filename(&matched_name);
-        let (matched_name, target_inode_id, phys_blk, matched_hash) = if let Some(id) =
-            Self::get_block_from_map(&guard.mmap, phys_blk).and_then(|s| {
+        let (matched_name, target_inode_id, phys_blk, matched_hash) = if let Ok(Some(id)) =
+            guard.backing.with_block(phys_blk, |s| {
                 crate::directory::find_entry_in_block_with_hash(s, &matched_name, initial_hash)
             }) {
             (matched_name, id, phys_blk, initial_hash)
         } else {
             let target_name = Self::stored_filename(&guard, parent_inode_id, name)?;
             let h = crate::directory::hash_filename(target_name.as_ref());
-            Self::locate_entry_in_dir(&guard.mmap, &parent_inode, target_name.as_ref(), h)
+            Self::locate_entry_in_dir(&guard.backing, &parent_inode, target_name.as_ref(), h)
                 .map(|(id, blk)| (target_name.into_owned(), id, blk, h))
                 .ok_or_else(|| {
                     DiskManagerError::Io(std::io::Error::new(
@@ -5784,11 +6767,18 @@ impl DiskManager {
         }
 
         // Compact only the affected directory block in place with zero heap allocations.
-        let block_slice =
-            Self::get_block_mut_from_map(&mut guard.mmap, phys_blk).ok_or_else(|| {
+        guard
+            .backing
+            .with_block_mut(phys_blk, |block_slice| {
+                crate::directory::remove_entry_in_block_bytes(
+                    block_slice,
+                    &matched_name,
+                    matched_hash,
+                );
+            })
+            .map_err(|_| {
                 DiskManagerError::Io(std::io::Error::other("Directory block not found"))
             })?;
-        crate::directory::remove_entry_in_block_bytes(block_slice, &matched_name, matched_hash);
 
         // Invalidate cached names in the parent, and drop the target's own index in case it was
         // a directory: its inode id can be reused, and stale names must never resolve under it.
@@ -5806,20 +6796,29 @@ impl DiskManager {
         guard.dir_cache.remove(target_inode_id);
 
         // Free Inode & Blocks
-        let blocks_to_free = Self::collect_inode_blocks(&guard.mmap, &file_inode);
+        let blocks_to_free = Self::collect_inode_blocks(&guard.backing, &file_inode);
 
         // Free Data Blocks
         let mut min_freed_blk = u64::MAX;
+        let mut max_freed_blk = 0u64;
         {
             let db_start = guard.superblock.data_block_start;
-            let slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
+            let mut slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
                 DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
             })?;
-            let mut da = SimpleBlockAllocator::new(slice, db_start);
+            let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
 
             for blk in blocks_to_free {
                 da.free(blk)?;
                 min_freed_blk = min_freed_blk.min(blk);
+                max_freed_blk = max_freed_blk.max(blk);
+            }
+            if min_freed_blk <= max_freed_blk && min_freed_blk >= db_start {
+                let start_bit = (min_freed_blk - db_start) as usize;
+                let bit_count = (max_freed_blk - min_freed_blk + 1) as usize;
+                slice.set_dirty_bits(start_bit, bit_count);
+            } else {
+                slice.set_dirty_bits(0, 0);
             }
         }
         if min_freed_blk < guard.free_block_hint {
@@ -5828,11 +6827,12 @@ impl DiskManager {
 
         // Free Inode
         {
-            let slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
+            let mut slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
                 DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
             })?;
-            let mut ia = SimpleBlockAllocator::new(slice, 0);
+            let mut ia = SimpleBlockAllocator::new(&mut slice, 0);
             ia.free(target_inode_id)?;
+            slice.set_dirty_bits(target_inode_id as usize, 1);
         }
         if target_inode_id < guard.free_inode_hint {
             guard.free_inode_hint = target_inode_id;
@@ -5981,14 +6981,14 @@ impl DiskManager {
             }
 
             if plan.case.frees_previous_blocks() {
-                let old_blocks = Self::collect_inode_blocks(&guard.mmap, &inode);
+                let old_blocks = Self::collect_inode_blocks(&guard.backing, &inode);
                 let mut min_freed_blk = u64::MAX;
                 {
                     let db_start = guard.superblock.data_block_start;
-                    let slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
+                    let mut slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
                         DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
                     })?;
-                    let mut da = SimpleBlockAllocator::new(slice, db_start);
+                    let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
                     for blk in old_blocks {
                         da.free(blk)?;
                         min_freed_blk = min_freed_blk.min(blk);
@@ -6036,7 +7036,7 @@ impl DiskManager {
             if old_size > 0 {
                 let last_logical_idx = ((old_size - 1) / BLOCK_SIZE as u64) as usize;
                 let last_phys_blk =
-                    Self::resolve_logical_block_id(&guard.mmap, &inode, last_logical_idx);
+                    Self::resolve_logical_block_id(&guard.backing, &inode, last_logical_idx);
                 // Only zero slack if the resolved block resides in the data area.
                 if guard.is_data_block(last_phys_blk) {
                     let slack_start = (old_size % BLOCK_SIZE as u64) as usize;
@@ -6047,10 +7047,10 @@ impl DiskManager {
                             offset: slack_start as u32,
                             data: vec![0u8; slack_len],
                         });
-                    } else if let Some(slice) =
-                        Self::get_block_mut_from_map(&mut guard.mmap, last_phys_blk)
-                    {
-                        slice[slack_start..].fill(0);
+                    } else {
+                        let _ = guard.backing.with_block_mut(last_phys_blk, |slice| {
+                            slice[slack_start..].fill(0);
+                        });
                     }
                 }
             }
@@ -6089,7 +7089,7 @@ impl DiskManager {
         if !new_size.is_multiple_of(BLOCK_SIZE as u64) && new_blocks_needed > 0 {
             let last_logical_idx = new_blocks_needed - 1;
             let last_phys_blk =
-                Self::resolve_logical_block_id(&guard.mmap, &inode, last_logical_idx);
+                Self::resolve_logical_block_id(&guard.backing, &inode, last_logical_idx);
             // Only zero slack if the resolved block resides in the data area.
             if guard.is_data_block(last_phys_blk) {
                 let slack_start = (new_size % BLOCK_SIZE as u64) as usize;
@@ -6100,10 +7100,10 @@ impl DiskManager {
                         offset: slack_start as u32,
                         data: vec![0u8; slack_len],
                     });
-                } else if let Some(slice) =
-                    Self::get_block_mut_from_map(&mut guard.mmap, last_phys_blk)
-                {
-                    slice[slack_start..BLOCK_SIZE].fill(0);
+                } else {
+                    let _ = guard.backing.with_block_mut(last_phys_blk, |slice| {
+                        slice[slack_start..BLOCK_SIZE].fill(0);
+                    });
                 }
             }
         }
@@ -6111,12 +7111,12 @@ impl DiskManager {
         // Free blocks beyond new_blocks_needed
         //
         // On a journaled image the pointer zeroing is staged in the
-        // transaction instead of being written to the mapping before the
+        // transaction instead of being written to the image before the
         // commit.
         let journaled = guard.superblock.has_journal_layout();
         let mut freed_blocks = Vec::new();
         for blk_idx in new_blocks_needed..old_blocks_needed {
-            let phys_blk = Self::resolve_logical_block_id(&guard.mmap, &inode, blk_idx);
+            let phys_blk = Self::resolve_logical_block_id(&guard.backing, &inode, blk_idx);
             // Only free and clear pointers for valid data blocks.
             if guard.is_data_block(phys_blk) {
                 freed_blocks.push(phys_blk);
@@ -6184,10 +7184,10 @@ impl DiskManager {
             let mut min_freed_blk = u64::MAX;
             {
                 let db_start = guard.superblock.data_block_start;
-                let slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
+                let mut slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
                     DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
                 })?;
-                let mut da = SimpleBlockAllocator::new(slice, db_start);
+                let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
                 for blk in &freed_blocks {
                     let _ = da.free(*blk);
                     min_freed_blk = min_freed_blk.min(*blk);
@@ -6232,7 +7232,7 @@ impl DiskManager {
             Some(BlockPath::Double(a, b)) => {
                 let dib = inode.blocks[11];
                 if guard.is_data_block(dib) {
-                    let sib = Self::read_block_ptr(&guard.mmap, dib, a);
+                    let sib = guard.backing.read_block_ptr(dib, a);
                     if guard.is_data_block(sib) {
                         Self::zero_block_ptr(guard, sib, b, ops);
                     }
@@ -6241,9 +7241,9 @@ impl DiskManager {
             Some(BlockPath::Triple(a, b, c)) => {
                 let tib = inode.triple_indirect;
                 if guard.is_data_block(tib) {
-                    let dib = Self::read_block_ptr(&guard.mmap, tib, a);
+                    let dib = guard.backing.read_block_ptr(tib, a);
                     if guard.is_data_block(dib) {
-                        let sib = Self::read_block_ptr(&guard.mmap, dib, b);
+                        let sib = guard.backing.read_block_ptr(dib, b);
                         if guard.is_data_block(sib) {
                             Self::zero_block_ptr(guard, sib, c, ops);
                         }
@@ -6258,7 +7258,7 @@ impl DiskManager {
     ///
     /// On a journaled image the metadata must not change before the
     /// transaction commits, so the zeroing is staged as a WAL operation
-    /// instead of being written to the mapping directly. A crash between the
+    /// instead of being written to the image directly. A crash between the
     /// mutation and the commit would otherwise leave the pointer tables
     /// cleared while the journal knows nothing about it.
     fn zero_block_ptr(
@@ -6281,7 +7281,7 @@ impl DiskManager {
                 );
             }
             None => {
-                Self::write_block_ptr(&mut guard.mmap, block_id, entry_idx, 0);
+                guard.backing.write_block_ptr(block_id, entry_idx, 0);
             }
         }
     }
@@ -6304,18 +7304,21 @@ impl DiskManager {
             if inode.blocks[11] != 0 {
                 let dib_id = inode.blocks[11];
                 if guard.is_data_block(dib_id) {
-                    if let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, dib_id) {
-                        let mut sibs = Vec::new();
-                        for chunk in dib_slice.as_chunks::<8>().0 {
-                            let sib = u64::from_le_bytes(*chunk);
-                            if sib != 0 {
-                                sibs.push(sib);
-                            }
-                        }
-                        for sib in sibs {
-                            if guard.is_data_block(sib) {
-                                freed_blocks.push(sib);
-                            }
+                    let sibs: Vec<u64> = guard
+                        .backing
+                        .with_block(dib_id, |dib_slice| {
+                            dib_slice
+                                .as_chunks::<8>()
+                                .0
+                                .iter()
+                                .map(|c| u64::from_le_bytes(*c))
+                                .filter(|&sib| sib != 0)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    for sib in sibs {
+                        if guard.is_data_block(sib) {
+                            freed_blocks.push(sib);
                         }
                     }
                     freed_blocks.push(dib_id);
@@ -6327,17 +7330,25 @@ impl DiskManager {
             let keep_sibs = (new_blocks_needed - 522).div_ceil(512);
             // The pruning is staged in the WAL on a journaled image
             // (see `zero_block_ptr`).
-            let mut pruned_slots = Vec::new();
-            if let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, dib_id) {
-                for (a_idx, chunk) in dib_slice.as_chunks::<8>().0.iter().enumerate() {
-                    if a_idx >= keep_sibs {
-                        let sib = u64::from_le_bytes(*chunk);
-                        if sib != 0 {
-                            pruned_slots.push((a_idx, sib));
-                        }
-                    }
-                }
-            }
+            let pruned_slots: Vec<(usize, u64)> = guard
+                .backing
+                .with_block(dib_id, |dib_slice| {
+                    dib_slice
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(a_idx, chunk)| {
+                            if a_idx >= keep_sibs {
+                                let sib = u64::from_le_bytes(*chunk);
+                                (sib != 0).then_some((a_idx, sib))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             for (a_idx, sib) in pruned_slots {
                 if guard.is_data_block(sib) {
                     freed_blocks.push(sib);
@@ -6352,7 +7363,7 @@ impl DiskManager {
                         );
                     }
                     None => {
-                        Self::write_block_ptr(&mut guard.mmap, dib_id, a_idx, 0);
+                        guard.backing.write_block_ptr(dib_id, a_idx, 0);
                     }
                 }
             }
@@ -6363,26 +7374,32 @@ impl DiskManager {
             if inode.triple_indirect != 0 {
                 let tib_id = inode.triple_indirect;
                 if guard.is_data_block(tib_id) {
-                    let mut dibs = Vec::new();
-                    if let Some(tib_slice) = Self::get_block_from_map(&guard.mmap, tib_id) {
-                        for dib_chunk in tib_slice.as_chunks::<8>().0 {
-                            let dib = u64::from_le_bytes(*dib_chunk);
-                            if dib != 0 {
-                                dibs.push(dib);
-                            }
-                        }
-                    }
+                    let dibs: Vec<u64> = guard
+                        .backing
+                        .with_block(tib_id, |tib_slice| {
+                            tib_slice
+                                .as_chunks::<8>()
+                                .0
+                                .iter()
+                                .map(|c| u64::from_le_bytes(*c))
+                                .filter(|&dib| dib != 0)
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     for dib in dibs {
                         if guard.is_data_block(dib) {
-                            let mut sibs = Vec::new();
-                            if let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, dib) {
-                                for sib_chunk in dib_slice.as_chunks::<8>().0 {
-                                    let sib = u64::from_le_bytes(*sib_chunk);
-                                    if sib != 0 {
-                                        sibs.push(sib);
-                                    }
-                                }
-                            }
+                            let sibs: Vec<u64> = guard
+                                .backing
+                                .with_block(dib, |dib_slice| {
+                                    dib_slice
+                                        .as_chunks::<8>()
+                                        .0
+                                        .iter()
+                                        .map(|c| u64::from_le_bytes(*c))
+                                        .filter(|&sib| sib != 0)
+                                        .collect()
+                                })
+                                .unwrap_or_default();
                             for sib in sibs {
                                 if guard.is_data_block(sib) {
                                     freed_blocks.push(sib);
@@ -6401,7 +7418,7 @@ impl DiskManager {
             let keep_dibs = triple_rel.div_ceil(512 * 512);
             let mut pruned_dibs = Vec::new();
             let mut boundary_dib: Option<(usize, u64)> = None;
-            if let Some(tib_slice) = Self::get_block_from_map(&guard.mmap, tib_id) {
+            let _ = guard.backing.with_block(tib_id, |tib_slice| {
                 for (t_idx, chunk) in tib_slice.as_chunks::<8>().0.iter().enumerate() {
                     let dib = u64::from_le_bytes(*chunk);
                     if dib != 0 {
@@ -6412,18 +7429,21 @@ impl DiskManager {
                         }
                     }
                 }
-            }
+            });
             for (t_idx, dib) in pruned_dibs {
                 if guard.is_data_block(dib) {
-                    let mut sibs = Vec::new();
-                    if let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, dib) {
-                        for sib_chunk in dib_slice.as_chunks::<8>().0 {
-                            let sib = u64::from_le_bytes(*sib_chunk);
-                            if sib != 0 {
-                                sibs.push(sib);
-                            }
-                        }
-                    }
+                    let sibs: Vec<u64> = guard
+                        .backing
+                        .with_block(dib, |dib_slice| {
+                            dib_slice
+                                .as_chunks::<8>()
+                                .0
+                                .iter()
+                                .map(|c| u64::from_le_bytes(*c))
+                                .filter(|&sib| sib != 0)
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     for sib in sibs {
                         if guard.is_data_block(sib) {
                             freed_blocks.push(sib);
@@ -6441,7 +7461,7 @@ impl DiskManager {
                         );
                     }
                     None => {
-                        Self::write_block_ptr(&mut guard.mmap, tib_id, t_idx, 0);
+                        guard.backing.write_block_ptr(tib_id, t_idx, 0);
                     }
                 }
             }
@@ -6450,17 +7470,25 @@ impl DiskManager {
             {
                 let rem_in_dib = triple_rel - t_idx * (512 * 512);
                 let keep_sibs = rem_in_dib.div_ceil(512);
-                let mut pruned_sibs = Vec::new();
-                if let Some(dib_slice) = Self::get_block_from_map(&guard.mmap, dib) {
-                    for (d_idx, sib_chunk) in dib_slice.as_chunks::<8>().0.iter().enumerate() {
-                        if d_idx >= keep_sibs {
-                            let sib = u64::from_le_bytes(*sib_chunk);
-                            if sib != 0 {
-                                pruned_sibs.push((d_idx, sib));
-                            }
-                        }
-                    }
-                }
+                let pruned_sibs: Vec<(usize, u64)> = guard
+                    .backing
+                    .with_block(dib, |dib_slice| {
+                        dib_slice
+                            .as_chunks::<8>()
+                            .0
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(d_idx, sib_chunk)| {
+                                if d_idx >= keep_sibs {
+                                    let sib = u64::from_le_bytes(*sib_chunk);
+                                    (sib != 0).then_some((d_idx, sib))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 for (d_idx, sib) in pruned_sibs {
                     if guard.is_data_block(sib) {
                         freed_blocks.push(sib);
@@ -6475,12 +7503,188 @@ impl DiskManager {
                             );
                         }
                         None => {
-                            Self::write_block_ptr(&mut guard.mmap, dib, d_idx, 0);
+                            guard.backing.write_block_ptr(dib, d_idx, 0);
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/// A shared read-lock session over a [`DiskManager`].
+///
+/// Created via [`DiskManager::begin_read`], a `ReadSession` holds the filesystem's shared
+/// read lock once for its entire lifetime. Batching lookups, inode stats, directory listings,
+/// and positional reads through a `ReadSession` eliminates per-call `RwLock` atomic reader-count
+/// contention across concurrent reader threads.
+///
+/// Note: Because a `ReadSession` holds a shared read lock, concurrent writers wait until all
+/// active `ReadSession`s are dropped. Keep sessions scoped to bounded read batches.
+pub struct ReadSession<'a> {
+    guard: std::sync::RwLockReadGuard<'a, DiskManagerInner>,
+}
+
+impl<'a> ReadSession<'a> {
+    /// Looks up a child entry by name in `parent_inode_id` without re-acquiring the outer lock.
+    pub fn lookup(&self, parent_inode_id: u64, name: &str) -> Result<u64, DiskManagerError> {
+        crate::directory::validate_filename(name).map_err(|e| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                e.to_string(),
+            ))
+        })?;
+        DiskManager::dir_lookup(&self.guard, parent_inode_id, name)?.ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Not found",
+            ))
+        })
+    }
+
+    /// Reads an inode's metadata without re-acquiring the outer lock.
+    #[inline]
+    pub fn read_inode(&self, inode_id: u64) -> Result<Inode, DiskManagerError> {
+        DiskManager::read_inode_internal(&self.guard, inode_id)
+    }
+
+    /// Lists all directory entries in `dir_inode_id` without re-acquiring the outer lock.
+    pub fn list_dir(
+        &self,
+        dir_inode_id: u64,
+    ) -> Result<Vec<crate::directory::DirectoryEntry>, DiskManagerError> {
+        DiskManager::list_dir_with_guard(&self.guard, dir_inode_id)
+    }
+
+    /// Reads the entire contents of `inode_id` without re-acquiring the outer lock.
+    pub fn read_data(&self, inode_id: u64) -> Result<Vec<u8>, DiskManagerError> {
+        let inode = DiskManager::read_inode_internal(&self.guard, inode_id)?;
+        DiskManager::read_data_internal(&self.guard, inode_id, &inode)
+    }
+
+    /// Performs a positional read from `inode_id` without re-acquiring the outer lock.
+    #[inline]
+    pub fn read_at(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, DiskManagerError> {
+        let inode = DiskManager::read_inode_internal(&self.guard, inode_id)?;
+        DiskManager::read_at_with_guard(&self.guard, inode_id, &inode, file_offset, buf)
+    }
+
+    /// Pins a validated regular file [`Inode`] into a [`FileReadHandle`] so repeated
+    /// [`FileReadHandle::read_at`] calls skip both outer `RwLock` acquisition and
+    /// `BoundedInodeCache` lookups.
+    pub fn open_file(&self, inode_id: u64) -> Result<FileReadHandle<'_, 'a>, DiskManagerError> {
+        let inode = DiskManager::read_inode_internal(&self.guard, inode_id)?;
+        if inode.mode != crate::inode::FileType::File {
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Cannot read non-file inode",
+            )));
+        }
+        if self.guard.superblock.encrypted && !inode.encrypted && inode.size > 0 {
+            return Err(DiskManagerError::DecryptionFailed);
+        }
+        let is_raw_fast = inode.compressed_size == 0
+            && !inode.encrypted
+            && !self.guard.superblock.encrypted
+            && (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) == 0
+            && !inode.filter_delta
+            && !inode.filter_shuffle
+            && !inode.filter_bitshuffle
+            && (self.guard.io_engine.effective() == IoBackend::Mmap
+                || self.guard.backing.as_mmap_slice().is_none());
+        Ok(FileReadHandle {
+            session: self,
+            inode_id,
+            inode,
+            is_raw_fast,
+        })
+    }
+}
+
+/// A pinned read-only handle to a single regular file within a [`ReadSession`].
+///
+/// Eliminates both per-call `RwLock` acquisition and `BoundedInodeCache` lookups, and uses a
+/// direct single-block fast path for raw uncompressed files under both [`StorageMode::Mmap`]
+/// and [`StorageMode::FileIo`] (backed by the 64-shard user-space data page cache).
+pub struct FileReadHandle<'s, 'a> {
+    session: &'s ReadSession<'a>,
+    inode_id: u64,
+    inode: Inode,
+    is_raw_fast: bool,
+}
+
+impl FileReadHandle<'_, '_> {
+    /// Returns the pinned inode ID.
+    #[inline]
+    pub fn inode_id(&self) -> u64 {
+        self.inode_id
+    }
+
+    /// Returns a reference to the pinned [`Inode`].
+    #[inline]
+    pub fn inode(&self) -> &Inode {
+        &self.inode
+    }
+
+    /// Returns the logical file size in bytes.
+    #[inline]
+    pub fn size(&self) -> u64 {
+        self.inode.size
+    }
+
+    /// Reads the entire contents of this file.
+    pub fn read_all(&self) -> Result<Vec<u8>, DiskManagerError> {
+        DiskManager::read_data_internal(&self.session.guard, self.inode_id, &self.inode)
+    }
+
+    /// Reads up to `buf.len()` bytes starting at `file_offset`.
+    #[inline]
+    pub fn read_at(&self, file_offset: u64, buf: &mut [u8]) -> Result<usize, DiskManagerError> {
+        if self.is_raw_fast {
+            if file_offset >= self.inode.size || buf.is_empty() {
+                return Ok(0);
+            }
+            let available = (self.inode.size - file_offset) as usize;
+            let to_read = buf.len().min(available);
+            let in_blk_off = (file_offset % BLOCK_SIZE as u64) as usize;
+            if in_blk_off + to_read <= BLOCK_SIZE {
+                let guard = &self.session.guard;
+                let blk_idx = (file_offset / BLOCK_SIZE as u64) as usize;
+                let phys_blk = DiskManager::resolve_raw_block_id(guard, &self.inode, blk_idx);
+                if guard.is_data_block(phys_blk) {
+                    if let Some(mmap) = guard.backing.as_mmap_slice() {
+                        if let Some(src) = usize::try_from(phys_blk)
+                            .ok()
+                            .and_then(|b| b.checked_mul(BLOCK_SIZE))
+                            .and_then(|b| b.checked_add(in_blk_off))
+                            && src.saturating_add(to_read) <= mmap.len()
+                        {
+                            buf[..to_read].copy_from_slice(&mmap[src..src + to_read]);
+                            return Ok(to_read);
+                        }
+                    } else {
+                        let disk_off = phys_blk * BLOCK_SIZE as u64 + in_blk_off as u64;
+                        guard
+                            .backing
+                            .read_data_cached(disk_off, &mut buf[..to_read])?;
+                        return Ok(to_read);
+                    }
+                }
+                buf[..to_read].fill(0);
+                return Ok(to_read);
+            }
+        }
+        DiskManager::read_at_with_guard(
+            &self.session.guard,
+            self.inode_id,
+            &self.inode,
+            file_offset,
+            buf,
+        )
     }
 }
 
@@ -6874,7 +8078,10 @@ mod encryption_scheme_tests {
             let mut sb = guard.superblock;
             sb.encryption_version = crate::encryption::ENCRYPTION_SCHEME_LEGACY;
             let serialized = bincode::serialize(&sb).expect("serialize superblock");
-            guard.mmap[0..serialized.len()].copy_from_slice(&serialized);
+            guard
+                .backing
+                .write_all_at(0, &serialized)
+                .expect("write superblock");
             guard.superblock = sb;
         }
 

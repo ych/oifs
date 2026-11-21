@@ -383,6 +383,7 @@ impl IoEngine {
     /// `mmap` must be the shared mapping of `file`; its length is the image length
     /// used for bounds checks. Bytes of a buffer not covered by any extent are left
     /// untouched. Extents within one buffer must not overlap.
+    #[allow(dead_code)]
     pub fn read(&self, file: &File, mmap: &[u8], targets: &mut [ReadTarget<'_>]) -> io::Result<()> {
         validate(targets, mmap.len() as u64)?;
         match self.effective {
@@ -392,6 +393,60 @@ impl IoEngine {
             }
             IoBackend::Pread => read_pread(file, targets),
             IoBackend::IoUring => {
+                #[cfg(all(target_os = "linux", feature = "io_uring"))]
+                {
+                    match &self.rings {
+                        Some(pool) => pool.read(file, targets),
+                        None => read_pread(file, targets),
+                    }
+                }
+                #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
+                {
+                    read_pread(file, targets)
+                }
+            }
+        }
+    }
+
+    /// Reads payload extents from an [`crate::storage::ImageBacking`] (`Mmap` or pure `FileIo`).
+    pub(crate) fn read_backing(
+        &self,
+        file: &File,
+        backing: &crate::storage::ImageBacking,
+        targets: &mut [ReadTarget<'_>],
+    ) -> io::Result<()> {
+        validate(targets, backing.len() as u64)?;
+        match (self.effective, backing.as_mmap_slice()) {
+            (IoBackend::Mmap, Some(mmap)) => {
+                read_mmap(mmap, targets);
+                Ok(())
+            }
+            (IoBackend::Mmap, None) | (IoBackend::Pread, _) => {
+                if backing.has_data_page_cache() {
+                    for t in targets.iter_mut() {
+                        let target_bytes: usize = t.extents.iter().map(|e| e.len).sum();
+                        if target_bytes <= crate::storage::MAX_CACHED_EXTENT {
+                            for e in t.extents {
+                                backing.read_data_cached(
+                                    e.disk_offset,
+                                    &mut t.buf[e.buf_offset..e.buf_offset + e.len],
+                                )?;
+                            }
+                        } else {
+                            for e in t.extents {
+                                backing.read_exact_at(
+                                    e.disk_offset,
+                                    &mut t.buf[e.buf_offset..e.buf_offset + e.len],
+                                )?;
+                            }
+                        }
+                    }
+                    Ok(())
+                } else {
+                    read_pread(file, targets)
+                }
+            }
+            (IoBackend::IoUring, _) => {
                 #[cfg(all(target_os = "linux", feature = "io_uring"))]
                 {
                     match &self.rings {

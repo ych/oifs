@@ -145,6 +145,10 @@ struct Cli {
     #[arg(long, global = true, default_value_t = 300)]
     defrag_interval: u64,
 
+    /// Use pure positional pread/pwrite file I/O instead of mmap (eliminates SIGBUS and mmap hazards)
+    #[arg(long = "no-mmap", global = true)]
+    no_mmap: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -379,6 +383,9 @@ struct LsEntry {
 }
 
 fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    if cli.no_mmap {
+        oifs::storage::set_default_storage_mode(oifs::StorageMode::FileIo);
+    }
     // Background auto-defragmentation configuration (`--auto-defrag[=THRESHOLD]`).
     let auto_defrag: Option<AutoDefragConfig> = cli.auto_defrag.map(|threshold| {
         AutoDefragConfig::new(threshold)

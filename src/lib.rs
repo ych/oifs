@@ -12,17 +12,21 @@ pub mod io_engine;
 pub mod ipc;
 pub mod journal;
 pub mod session;
+pub mod storage;
 pub mod superblock;
 pub mod zstd_pool;
 
 pub use auto_defrag::{AutoDefragConfig, AutoDefragStats};
-pub use disk::{DiskManager, DiskManagerError, DurabilityMode, ReadRequest};
+pub use disk::{
+    DiskManager, DiskManagerError, DurabilityMode, FileReadHandle, ReadRequest, ReadSession,
+};
 pub use filters::{FilterConfig, FilterPipeline, FilterType};
 pub use inode_format::INODE_FORMAT_V2;
 pub use io_engine::IoBackend;
 pub use ipc::{MasterInfo, SessionEvent, SessionMode};
 pub use journal::{JournalState, MetadataOp, Transaction};
 pub use session::{OifsSession, SessionError};
+pub use storage::StorageMode;
 
 pub const BLOCK_SIZE: usize = 4096;
 

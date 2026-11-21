@@ -1,21 +1,7 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a30a7e05a650c80c31bb4685ac4d85564ecc9f3acf10d5fa3e83c6f019b9e540",
+  "pageVersion": "sha256:b2a176295259bba934bb5748ddc70df593f5ac139d7764dc6a6e3c159d30c6ee",
   "claims": [
-    {
-      "id": "claim_8eccbc7a648e4c478605801185ff08b1",
-      "statement": "src/lib.rs declares the core subsystems of OIFS (allocator, bitmap, directory, disk, encryption, ffi, filters, inode, inode_format, io_engine, ipc, journal, session, superblock) and defines the uniform BLOCK_SIZE constant as 4096 bytes.",
-      "evidence": [
-        {
-          "resource": "repo://src/lib.rs#L1-L15",
-          "version": "repo-lines-v1:sha256:01768b901a232490aa82ae9e47547fabdab99c64daa65addf6389ec9fc206a9a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOGIwZTZkZjFjMDViNzMwMmFmNGUxNmU3MDhkMDA3OWVjOTRjNzliOWYzNTk5NjAzZDVhMjIyYTQ5YzZiZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI4NmI0NTQ5ZjllNmM3NjU0YmIzY2YyYjE5ZDMyYjc3OGY0ZmZmOGZjOTBjYWJlZWY2NDA2YjAwYmQ3MTVhMGEifQ"
-        },
-        {
-          "resource": "repo://src/lib.rs#L24-L24",
-          "version": "repo-lines-v1:sha256:583feaa2c8b7d021ebba42c3cb15c09c88b7ca4807d245f88784cb306a687bcd:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTgzZmVhYTJjOGI3ZDAyMWViYmE0MmMzY2IxNWMwOWM4OGI3Y2E0ODA3ZDI0NWY4ODc4NGNiMzA2YTY4N2JjZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTgzZmVhYTJjOGI3ZDAyMWViYmE0MmMzY2IxNWMwOWM4OGI3Y2E0ODA3ZDI0NWY4ODc4NGNiMzA2YTY4N2JjZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTMyMmRmNjZjMzBjOTRmZmFlOTg1ZjQ0Y2MwNWYwYjZmZjE2NmE3MWQ3MGUyMGIxODQ0NjgwNTkxNWNkMjBiNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjQyMjU2M2Q0MWQ4M2M0Y2QwMmFhZDNmZjE0OTFjMmQ4MTE0ODgyYTVlMGJkZWNjNDQwYjAyMTZhMDM1MzZlZCJ9"
-        }
-      ]
-    },
     {
       "id": "claim_ec4bccfc008e49a6a600c5293a404169",
       "statement": "Cargo.toml configures crate-type cdylib to produce an unmangled C dynamic shared library (liboifs.so/dylib) for the FFI, alongside rlib for library use.",
@@ -27,52 +13,128 @@
       ]
     },
     {
-      "id": "claim_52e1e4476a2943ebb0febdf162cc10eb",
-      "statement": "The Model Context Protocol (MCP) server dependencies and the oifs_mcp binary are gated behind the optional mcp feature flag, keeping the core CLI buildable without async runtime deps.",
+      "id": "claim_bc4915f9c05349efb4c9499827aad099",
+      "statement": "src/lib.rs declares 16 core subsystems of OIFS (allocator, auto_defrag, bitmap, directory, disk, encryption, ffi, filters, inode, inode_format, io_engine, ipc, journal, session, superblock, zstd_pool) and defines the uniform BLOCK_SIZE constant as 4096 bytes.",
       "evidence": [
         {
-          "resource": "repo://Cargo.toml#L39-L42",
-          "version": "repo-lines-v1:sha256:8b8b0771246deb484f9fa15eff0c482582a2733481d51f92af2d0688b996568a:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmM0N2MwNmMwOWNjODYyZDUxZWJhMDM4ZDJkNzMwYjkzM2QxYzAxNDgzNzcxMmNjMzIyZDdiY2UyNDE1MjNhMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDhhMTBjOGZlNTI4NGY2Zjc3NTEzZjUzOWI3ZDE5YmZjNjFmZjRiZjMxODIzNjI4YzlkYzZmNGE2MWZmNjRmNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2JkYWVhMDA5Zjc4MDE4ODAyMDVlNzVlOGQ4YjBkM2FlMmZkNWQ0ZTI5NDU0MmUyZjBkNzNmNWMzNjJiMThhMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTQxYzhjNjU3NTExZWY3YTQwOGE5OWE0MWEzZDNhMTY0ODQ3N2UwYjUzYTUzZmMzYTc2MGRhZGU1NjEwY2MyYSJ9"
+          "resource": "repo://src/lib.rs#L1-L16",
+          "version": "repo-lines-v1:sha256:72639e603f6c7aca265b35cf3d9eaf540e675287eb091eef28e9d9c2698051f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOGIwZTZkZjFjMDViNzMwMmFmNGUxNmU3MDhkMDA3OWVjOTRjNzliOWYzNTk5NjAzZDVhMjIyYTQ5YzZiZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1M2Q2MWFmMDJiMzA2YmEyYzhmMDUyNmFjZWE2ZjI4NDNhYWRjMGIyZDlmYzEzYjEyOGE5ODYwOTViZWMzZjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyOWRkOGJkYjU2NWNlZjY1NmZhM2RkYmI5OWJiNTQ0YmFhMTFhZDM2OTljMjUyMDZkZjM3MDA4MDEwODk4ZmIifQ"
         },
         {
-          "resource": "repo://Cargo.toml#L53-L53",
-          "version": "repo-lines-v1:sha256:b6f6c1c73e4685b6f55792ae5392553ff79d3cc067b0b74e068698f6b2c76b82:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjZmNmMxYzczZTQ2ODViNmY1NTc5MmFlNTM5MjU1M2ZmNzlkM2NjMDY3YjBiNzRlMDY4Njk4ZjZiMmM3NmI4MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjZmNmMxYzczZTQ2ODViNmY1NTc5MmFlNTM5MjU1M2ZmNzlkM2NjMDY3YjBiNzRlMDY4Njk4ZjZiMmM3NmI4MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODY0ZjY4YWY1MmRjZTY0ZDE3ZWUwNmYxMzk2YzAyZTUzOTNlNzI2MWIyZTU3MzM0MWM5NTI4MDI0YmJlZTVhYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmU5YjY1M2ZjZWY1ZmI1N2E3MjIxNDc3MDcwYWJmNjdkODgzNDIyYmM0NWM1YmRjZTc2ZDQ0YTVhZDZiODc4NiJ9"
-        },
-        {
-          "resource": "repo://Cargo.toml#L60-L63",
-          "version": "repo-lines-v1:sha256:fc1b6d294ce7f5d4c2634789855cf7a27eb23f72dcd8abaa507c44b7104e2ecb:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWZkNTQzNTU4ZGI5MTJjN2MwM2JjNDZiM2M2Y2Q3YTUzNzUzNzg4NjkyYzhiYmMyMGFiN2MxOGEzODM3ZjIwZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzU5YTc1YjE2M2U3ZTM2MTUwM2U5YmU0NThkNjg3ODBjNDdhNTQ5ZDgxNjBhOGJhMDg2YTU3YTI1OGEzZWNmMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjZlMDlhZGFiZTRhYmE1NTE0OWZiNTc2MTRmZDNiMTE3MWRhMWQ0MWJkNWM5Yzk2ODVlZDc1ODU1NDk2OWFhMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWE0ODRjOWFiMTU5N2UyYTYyN2Y1MWZjZmM4NjlhNDhjZjBlMTM3ZWY3YzE4YzdhZTFhZmM3NTdjZjc2YmI1ZiJ9"
+          "resource": "repo://src/lib.rs#L24-L24",
+          "version": "repo-lines-v1:sha256:3bae9f3c8361e927899831f79106a50da0e417245a12cc6a5d2cc1447fe9c3b8:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2JhZTlmM2M4MzYxZTkyNzg5OTgzMWY3OTEwNmE1MGRhMGU0MTcyNDVhMTJjYzZhNWQyY2MxNDQ3ZmU5YzNiOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2JhZTlmM2M4MzYxZTkyNzg5OTgzMWY3OTEwNmE1MGRhMGU0MTcyNDVhMTJjYzZhNWQyY2MxNDQ3ZmU5YzNiOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzZkMGE3YTJhYmNmZmMzNGIzODE0YTQ3ZWQwN2Q2ZDBhMGZjZDVkZTBjODYxNTQ5ZTBlZGJjZDM3YzliZjFhYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDIyMGMxOTIyMTJkOTUwNDlkZjIxMzE1MzMyMWExNzg3MDkyOTIxZmFkYTdiOGFjOTc3MDE1ZDk3Nzc5MWZhNiJ9"
         }
       ]
     },
     {
-      "id": "claim_b831644dc4f14ce0828e34c9d6058b71",
+      "id": "claim_a04a1af792514687ae4a3dda620fbd4f",
+      "statement": "The Model Context Protocol (MCP) server dependencies (rmcp, tokio, schemars) and the oifs_mcp binary are gated behind the optional mcp feature flag, keeping the core CLI buildable without async runtime deps.",
+      "evidence": [
+        {
+          "resource": "repo://Cargo.toml#L33-L36",
+          "version": "repo-lines-v1:sha256:d263dfff2fcd4039b79e59dda5181f05d58e0a403a70b9c0e66071393c80f6f4:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmM0N2MwNmMwOWNjODYyZDUxZWJhMDM4ZDJkNzMwYjkzM2QxYzAxNDgzNzcxMmNjMzIyZDdiY2UyNDE1MjNhMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTY2ZDEwZWRhY2ExY2JkZDU4MmJiYzFmZTU0YzE2NGE3NzIyNGNkYzFjZmY3ZGQxZTRhNmY4NWE3NzI3N2RlYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2JkYWVhMDA5Zjc4MDE4ODAyMDVlNzVlOGQ4YjBkM2FlMmZkNWQ0ZTI5NDU0MmUyZjBkNzNmNWMzNjJiMThhMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2RjNWE0MDgwNjVmMTRjODJlNTVkMWU1ZWJjMzk3MWJmNTYyNDMyMmQ1NzhhNGUzYWIzMmM4MDk0MGRlZmFlZSJ9"
+        },
+        {
+          "resource": "repo://Cargo.toml#L53-L55",
+          "version": "repo-lines-v1:sha256:20768ccf97cc49c3c0318ff232cf803db229ce04cf372285abdf30d9685b65d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzcyMTFiNzhlMWFkOWJlNzE0MzEyYmQ4OTJlMGJiOWNjYjJkMTI1MzE2NTgxMmZlOTZkMzMwZTk1YWI1MmJmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZWZkNTQzNTU4ZGI5MTJjN2MwM2JjNDZiM2M2Y2Q3YTUzNzUzNzg4NjkyYzhiYmMyMGFiN2MxOGEzODM3ZjIwZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmYwMzllYWVlZjdlM2VkMzRlMjQ0ZGE1Nzg3OWRhOGFjMGNlY2ViZjIyOGMwYjAxZGU5NDU2MjRiNDk3ZjU2ZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjA1M2UwNDAyNzg5OTMxNWQ1YTQyOGZiOTg0MjY3MjQyOGFjZjUzMDdmYzIzNjU4MjYwZjBkOGRmYTU4ZDQwMiJ9"
+        },
+        {
+          "resource": "repo://Cargo.toml#L59-L63",
+          "version": "repo-lines-v1:sha256:68d7b1f24ae435ebb38c8789db1b27ea34a1c3da9f1d251919065a3711d03e06:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzBkN2NjYzU2NDRiZjJkMTgyZDU3ZTRiYmNmYjMzY2QwYjhiZTQ4MmNiMzk5ZjMyOTNmYmU5ZmQ3NjA3MWQyMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDU4MTAxM2I4ZDlkZmZkNTNkMWE4Y2NiY2ZjZTQ0ZDQ0N2NhZDcxMjg0YmNjYjFiNjc4YjllNDUxNDBhMzFiYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjA1M2UwNDAyNzg5OTMxNWQ1YTQyOGZiOTg0MjY3MjQyOGFjZjUzMDdmYzIzNjU4MjYwZjBkOGRmYTU4ZDQwMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWI3MmU3MWUzMzIzNzgzMTk3MjU0YTdmY2RkNzBiZDRlMGVhM2E4NWM2MzA2ZGM0MGExMDYwMTk1YjEyNTA0ZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_42a02f92398c4c908d2686294cd9a0d0",
       "statement": "OIFS implements an inode-based filesystem with large file support up to 513GB, authenticated encryption, online defragmentation, and multiple access frontends (CLI, FFI, MCP).",
       "evidence": [
         {
-          "resource": "repo://README.md#L18-L18",
-          "version": "repo-lines-v1:sha256:7b7adade134a10c5f50c5b7427ef6a40391a67eb71ca13eb1abbd7562056ac0e:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2I3YWRhZGUxMzRhMTBjNWY1MGM1Yjc0MjdlZjZhNDAzOTFhNjdlYjcxY2ExM2ViMWFiYmQ3NTYyMDU2YWMwZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2I3YWRhZGUxMzRhMTBjNWY1MGM1Yjc0MjdlZjZhNDAzOTFhNjdlYjcxY2ExM2ViMWFiYmQ3NTYyMDU2YWMwZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGJjOTNiZTVjOTRhMTc5NTg1NzQyYzk1ZDE4ODRiMWE5MzdkY2YxNmMyZTliNzVjYTU4Yzg0YjkyOTQwZTY0NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDZlZDM4MWE2MGI3MmQ2NGM5M2IwZjdhYzk0NWI1MDI5ZTJhNTYyYTgwM2RhNGEwODRiOGI0OTAwYjQwN2FmMCJ9"
+          "resource": "repo://README.md#L1-L10",
+          "version": "repo-lines-v1:sha256:2da3d733a9ea7e359824a7e5d9a0d21e05623b281cf88d77995fa34143c784af:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5NmU2Yjk1MWE0ODExOTRiOTdiNmE5NzAwZWUwZDNmNmRlNGE0ZTQxOGExNTczODVhZjBkY2RhYzc0YjJmYzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MmQ3MTExMDNkNTBhNDM3ODMwYzZmYmNkMDRmYjRiYWI0OWEwZjgyZjZkMjZkMWM3OTFjNmU4NDg4ZGQwOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxMjA0MGFiNzY1NTYxMDRkMmNkMjJlM2Y5OGYzMDBiZjU5MzA4YTg2MGZkN2U1OTgyM2EzZTgwODNiNTk3ZDkifQ"
         },
         {
-          "resource": "repo://README.md#L37-L41",
-          "version": "repo-lines-v1:sha256:f30fb312c91f1b5f9bfc450f6cf50f8b8fcca8a541de6fef08bff367c5f2ce24:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWE5OWVlMjA1NTkzMWVjODRkMjdiM2E0ZDJlYTc1YjgwM2I4OWY5MDhmMmMzYjdkYzYzZTg0NzI5NjE1MDZmZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFjZTc5NzFjN2UxMGY0ZGRkMzg5NGVkNjA3NGEwNTViZGE4MGQ1NGJmNWM3N2FiN2I4YWI3NWUzMzU3NWQ0NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTc1NDY0ODEzNzdhMDdkOTI3ZDhiNzdlMTc1MmRhMTBiNDNhOWViNmNmNTNmOThlMjJmMDEzNDRjNTY3YTI3NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGY3ZjVhNjhkZmI0ZTg2OTliYjE3NGIxZTc5YjM0ODQ1MzVhYWExMTA4ZDZjMTVlZjZmMzNlYWRlMzBlNDUwOSJ9"
+          "resource": "repo://README.md#L20-L30",
+          "version": "repo-lines-v1:sha256:1c653e1a7c00345f45f4d31c458b0349e79e271a46d7c5ed1cb2e42069d26991:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlYjFjZGY2YjY4MDQ5YmJhNTc3NDY2ZjkwZTU3N2E3MDc4ZWU3ZjA5MzE0YTUwM2ZkMThhN2IwMGZmZjQwODUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDQwNDczOGY5ZTkwMzFkYjI0ZGM0Nzc0ODAxMTBkZmNlYzBkNmNiNzdhZjk0Mzk2ODNhNWVlYThjMWU1NjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlkODZhMjExNTUwN2UzMTI4NjBmNDViODFmMTAyY2ZlY2I4ZDJlOTJlOTdjNTQyNGMyYWQ1YjQwNmI1YzhkZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZjQ0NzEzYzI1MWM5ODIyNmVlOGZmM2ZkODA0ODFiODRmNmQyODA2YjIxMDU0YzVmMmFkOWUxOWJjOGQ4ZWUifQ"
         },
         {
-          "resource": "repo://README.md#L63-L63",
-          "version": "repo-lines-v1:sha256:a7a6a9fe85581563f82128fdb3712338f210b85485d87884f9e9cc28a37a44cf:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTdhNmE5ZmU4NTU4MTU2M2Y4MjEyOGZkYjM3MTIzMzhmMjEwYjg1NDg1ZDg3ODg0ZjllOWNjMjhhMzdhNDRjZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTdhNmE5ZmU4NTU4MTU2M2Y4MjEyOGZkYjM3MTIzMzhmMjEwYjg1NDg1ZDg3ODg0ZjllOWNjMjhhMzdhNDRjZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzJiNjA0OWJjMDUyMGI5NGU1N2I4OWNhZjY1NjA0ZjA2YTRjYjE3MTAzMmJkYTc2MTcxMjczZTdiNzRjNTIyZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDk4ODJlZDkxMjBiMTZkZmMxZjc1Y2EzNjc3MmM3NmMyNjYzMWY0MzNmZmE1NmI0MWMwNTg4OGMwODllMDEyMSJ9"
+          "resource": "repo://README.md#L30-L50",
+          "version": "repo-lines-v1:sha256:acdd301785f2a4f323738b7afa1f4b9fc1a39b34d98c796e9dd32590d9d3c878:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDQwNDczOGY5ZTkwMzFkYjI0ZGM0Nzc0ODAxMTBkZmNlYzBkNmNiNzdhZjk0Mzk2ODNhNWVlYThjMWU1NjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg2OThmN2ZmMTY4OGY0OWI4ODkwM2E3ZDYyNzdlMDMxZGI3Mzk2NmQyYzFkM2UzMzg3YWM0Yjk5NGYwMWE5YWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU5ZThjNDBkYTRiNGYyMDM3ZmFhOTZkZDY2YjU4ZWJlNGNhOGE5NjBlNzY2YzA4M2Y4NzRkOWQ2ZjJkOTY4YWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_636c9703c0734b88a9ebe14a12ad1f00",
+      "statement": "OIFS version is 1.2.0 with Edition 2024, and the v3 on-disk layout (format_version=3) introduces multi-block bitmaps and a journal region between the data bitmap and inode table.",
+      "evidence": [
+        {
+          "resource": "repo://Cargo.toml#L1-L6",
+          "version": "repo-lines-v1:sha256:d5e2f7f328f37090f2ac0980237c5d90b5fa7d076f0ff98fabcb94a820c3f710:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGEzY2Q1YTgxYjNmOWE2MjFhYTQ5M2Q5MGM0NWY0MmFiNTcxZDRlNDJiOGFlNWFmZjM1MWNiMGEwMmQwNmQ4MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWY4NmQ3ZjRkM2Q4YzgxMjZhNGRmMjM5ZjZkMDA5OTg3MGMyOWNkYWE1NTk1Njg1Njc1M2MyNDBkY2I0YzhmYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjFiODVmZGU3MGYzYWM5OWViZjQzN2Y2NDBmODQ0NTRjMDFiN2Q5ZmU4ZmQwZDQ4YTJmMjcyNDM4M2FjZTRhMSJ9"
         },
         {
-          "resource": "repo://README.md#L8-L8",
-          "version": "repo-lines-v1:sha256:0e306e498257fa088e55788e5e19a4cc04896d6134c12a3e78a3dbed0920709b:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGUzMDZlNDk4MjU3ZmEwODhlNTU3ODhlNWUxOWE0Y2MwNDg5NmQ2MTM0YzEyYTNlNzhhM2RiZWQwOTIwNzA5YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGUzMDZlNDk4MjU3ZmEwODhlNTU3ODhlNWUxOWE0Y2MwNDg5NmQ2MTM0YzEyYTNlNzhhM2RiZWQwOTIwNzA5YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjAwNDA5NGJjZWU4NDhhODM2ZDQxMjU5YTJmMWUzZWMyMTc3OTE2OGQ4N2JkNzBjYjliNWM2ODIxMTdiYmMyZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDAxZjJlYzE3NTkzYzEwNTRlYjQ2MzY3ZDg0NTNlZjI0YTE3M2NlOTZiNzExN2Q5MWY5YTY4ZDQ0ZmVmOGIwMSJ9"
+          "resource": "repo://src/superblock.rs#L343-L360",
+          "version": "repo-lines-v1:sha256:8cbf68cba3d3b2a2e9deceebc7e1e450268e1578840bee9515afbbf96ffeebb7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhZGFhNTExMDczY2IxMWE2NGMzZTlhYTQwZWEyNDEwYTUzYmExMmVkMTY2NWJmMzEzM2ZiY2VkZDU4ZTBjZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxNDVkNThjZTFjMTViYzU2MjExYTVmMTcwNTVhMzQ5ZmUwN2FjMGJmZDM2YzBlODhiMTY4YjdjOGFmNGU4MWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNlMmE0NmMxYTc4MWM4ZTUwODkzZmRjYjk1Y2E1ZjZkMDk5MjNiZTE0YWRkNWZhYTc4MjQ2ZDRmYzg1YmRiMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhN2M1ZmQwMjk5MWRlNTU2NDkxMmEyZTQ0ODI5OWRmYTc4OTczNDFmMGNkNWU1OGFkNjhlYzAzNDFhOWU2N2MifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3d50e31e7d34443a82b51c353c94f123",
+      "statement": "OIFS supports three session modes: Standalone (direct mmap, zero IPC), Local (Unix Domain Socket in $XDG_RUNTIME_DIR/oifs/ with owner-only 0700/0600 permissions), and Network (TCP with .image.master rendezvous file and Clock-Free Active Ping Probe for liveness).",
+      "evidence": [
+        {
+          "resource": "repo://src/ipc.rs#L1-L100",
+          "version": "repo-lines-v1:sha256:c6e3546a8fc6f44e342130ff6a6abfeb0784bd6d2a7be46b325249bd57bdd7f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwNDIxMTVkODhjMzA3YTkzMjMwZTk5NmMyNTEzNmFmYTBkNzM2NTQ3NDRjZjIwMzQ1YzBlYTE0YjA3ZTU0Zjc4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNDhmMTZiMDQ4NGJiMjM3OWU5M2E0YTczMDRiM2Y2Y2QyY2RhMDZjZjRmZWZkOThkNDNmYWYyY2ZjZWY0YzUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4MmYxZTk3MGY5NjI1OTgwYjM0YTcwNzFkNTA5YmZmODAyMTUwYWY0M2ZhM2NjYjNiOTBjNjk0MjE2NmY1ZWM4In0"
         },
         {
-          "resource": "repo://README.md#L8-L15",
-          "version": "repo-lines-v1:sha256:9fd0b9777ae808c4dba4105cc09c6b2835d6a90cde20915b2557899c3a43482e:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGUzMDZlNDk4MjU3ZmEwODhlNTU3ODhlNWUxOWE0Y2MwNDg5NmQ2MTM0YzEyYTNlNzhhM2RiZWQwOTIwNzA5YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDU1N2FjNWZjYjM3Yzg3OTc0YzEyNmEyYjE2M2RiZTJlN2QyZTc0NGE1MWZmMzk2NTc3MjUwOTg4NTM4OWJlMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjAwNDA5NGJjZWU4NDhhODM2ZDQxMjU5YTJmMWUzZWMyMTc3OTE2OGQ4N2JkNzBjYjliNWM2ODIxMTdiYmMyZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjNiMzI5OWI4NTRiNjFiNGE4ZGQ1ZDk5NjYxYjNjNWI4M2QzMzEwOTAzZjA4M2JkZjk3Zjk2YTFkNTBhZjA5ZiJ9"
+          "resource": "repo://src/ipc.rs#L100-L200",
+          "version": "repo-lines-v1:sha256:e5a5d08c322e3b1376361f49e3c5a314c0fbfcce7f327e1d2f7d7c23d7cda019:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlNDhmMTZiMDQ4NGJiMjM3OWU5M2E0YTczMDRiM2Y2Y2QyY2RhMDZjZjRmZWZkOThkNDNmYWYyY2ZjZWY0YzUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwYjRhYjk1NDMzNjA4ZGE4NzRhMDdjNTZhYmYxNzI5ZGM3MTBhMjJiMWVmMzQyZTljZGQwOWVlYWE3MDIxMGVhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzMTY4NjQ5NDMzOGE3OTA0MTdlY2ZmM2YxMDEyOTk4N2JkZmNhOTVmN2YxYTQwNGIwNTQyZDQzYmFkM2Q4ZjllIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5NWNkZjljNDhkMmFhYTk4NWIyOTNhN2YzODJkYzBjOWFhNDVmZjA3MDY0NjFhYmQzMDJiMGMxZThhYzA5ZDdlIn0"
+        },
+        {
+          "resource": "repo://src/session.rs#L100-L300",
+          "version": "repo-lines-v1:sha256:c4fffa43797e149d4b1cadeecaf2ce4290bbb6e29867b799affaf2ef3d290979:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxZjBjZGI5NzJhN2JmYjdlZDI0NmY5ZmY2NzIzODVlNTVmNDk2OGZjMTEwNDNkYzViNjg0ZDUxZGZhMzFkYmNiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NTcwMTJkZGVhMDIzY2VkNTBiNDAyODI2MTE2MzZhZWQzYWFiYzAzMWVlYTExYmE5YzYxMmM2OTY0MTViOTUwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwZTM1YzA3MzkwY2FkNzY4NjE5ZDY3MzQzOTk2YzgzNDhkNGM0MzA0ZDMwM2FkODE3YmEzMGRjMzQ5MmJmMjU2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4NWFjM2JhMTM0ZWVkM2FlN2UwNDVkZjI3MzIzOWM0OWQ4NmRkZWU2ZmQzNTc0N2Q5YWRiZTdlM2UyOGI3MDI3In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_300fdf7dfeff4789812ebd1c515fcf41",
+      "statement": "The pluggable I/O engine (src/io_engine.rs) provides three backends: Mmap (default, zero-copy from shared mapping), Pread (positional pread(2) per coalesced extent), and IoUring (Linux async submission, gated by io_uring feature and kernel >= 5.6).",
+      "evidence": [
+        {
+          "resource": "repo://src/io_engine.rs#L1-L100",
+          "version": "repo-lines-v1:sha256:6c5c9af1c8198cfab3f97892846e9a2c38129fe56da54cb51368b788f46eeba8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiNTA1NzU1OThlZjQxMGFmYzc1OGU0NzE3YzE0NTA0YTAxM2M4OTcyNjgzNGY1MDAyM2E1M2I4MWUyNDU1MzA5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1Nzc5OGNmMDk1NjgwMjU1NmQwOGViNzM4YWE2ODNkMGNmMjdhNGZiYTFmMjI2MDJhOWM3NTkxZjc1ZDhkZWFkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5OTliZGVmZWVhY2E2MzQwZTAyOTBkYzg2ZTg4OWM4OWQ1ZTE4OWFhNWJhNDRiNTg1YjNiNzA3MzRmNGE2MmQ4In0"
+        },
+        {
+          "resource": "repo://src/io_engine.rs#L100-L200",
+          "version": "repo-lines-v1:sha256:8a7453597ab0cb8fcd20bb9797c61ea8ff778118f08e0f798d509d2aa1a4fbb0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1Nzc5OGNmMDk1NjgwMjU1NmQwOGViNzM4YWE2ODNkMGNmMjdhNGZiYTFmMjI2MDJhOWM3NTkxZjc1ZDhkZWFkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2NjBiYmMwYzVhODRiMzZmMzEwNzkwMDBjZTU2ODYzNzQyMmNlODNjYmY2NGQ3MzQ1ZmU4Zjg0YjlkYjM2MWVkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiMzFiNDA0MjFhNTU5Yzg5ODAxNGZjMzNjMDA5MzAyNjIzMWEwNmRkNDNhZjE0YWFiMWUzYmVhYjA4MDAzOWI5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_eeb4971f4ac2499b8d764e622941be70",
+      "statement": "The encryption subsystem uses Argon2id (m=64MiB, t=3, p=4) for KDF with BLAKE2b-512 domain-separated subkeys for payload (XChaCha20-Poly1305), filename SIV (BLAKE2b-512), filename AEAD (XChaCha20-Poly1305), and IPC auth, all with zeroize on drop.",
+      "evidence": [
+        {
+          "resource": "repo://src/encryption.rs#L1-L100",
+          "version": "repo-lines-v1:sha256:8e944a5b4a26462b0f226c04a6852f04f50b43b57a3187948de79d3ed9905108:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjZWIwYTQ2YjQwOTc5ZmEyZjFlOTg4OTE1NGZmMzA0MzJhNDY2NDYwZGM0ZmQ5ZmQ3OWUzY2RjZjdkYTk0MTM2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxZDZlODRlMGRiZDRjZDBiODhiNzQwY2UzNmM2NDQwZjk0YjliMjM4MzBiOTJiNDk3YTZhNmY3ZGZkODAyNDQ0In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_0341ff3b3248449f8f8e27ae2208a245",
+      "statement": "The C FFI (src/ffi.rs) exposes a 3-state version handshake (oifs_check_version returns OK/WARN/ERR) and oifs_loaded_path for runtime library path introspection, compiled as cdylib and rlib.",
+      "evidence": [
+        {
+          "resource": "repo://Cargo.toml#L10-L12",
+          "version": "repo-lines-v1:sha256:af78a9666ab30603f56ac7d8a2037f1344a3c247b715d0aec9d153cfc4c7c3fd:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg0MzVlZjU5NGYzMzcwNzMwN2MxZmU1OWIwMTdmMjExZTllZThhMTVjODJkZDVlYWIxOWI3NjdhNmY3NGJlOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjFiODVmZGU3MGYzYWM5OWViZjQzN2Y2NDBmODQ0NTRjMDFiN2Q5ZmU4ZmQwZDQ4YTJmMjcyNDM4M2FjZTRhMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2U5NTMzYmQ5YTg3Zjk0MjY5MmFjZmU5ODgyNDhlNmY1ZTQxN2NkZGU0NDgwZmFkM2M3YjQ2NWY2MGJkNTg3ZSJ9"
+        },
+        {
+          "resource": "repo://src/ffi.rs#L780-L850",
+          "version": "repo-lines-v1:sha256:97d31bcb47e993aaa8453f37cb19b8412f64ab849962d75eb56e7cec5a6d6ee0:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyMDBiMjI1Y2UyNjdmMTIwMjczNTI1NmFhMjBlYmZmMjc4ODI1YTY5NTc4YzFmMGFjNzQ1YmRhY2FkYjAzYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ5ODEzZGJlMDJkNGJiMzcyNDI5YzdiNmU1Zjk1YWFjNTU2ODg5ZDg5Zjk2ZjVkZTZiMTdmZDE1NTgzNmY0ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMyMDg2YTc0YzZhMDYwY2NiNzFjMDVjZDI3ZDZlOTQzMjM4M2IwODg4NzFjNDM0OTQ2ZThlNDZmZGFjYjY1OTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE3Mjg3Y2UwOWIzZjhhNzFlN2VmNzhhYTZmZGFhYWYxYTg1N2MwZTViYjUxNjc5OTUxNzk2ODU1NWU0NmI5ZGMifQ"
         }
       ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.6.1",
-    "at": "2026-10-07T12:20:29.772Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-20T22:07:36.625Z"
   }
 }

@@ -1,20 +1,10 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e948b4642cea1f3e7886787833e4c9f42496af84700702b6d60034d58d72ba4d",
+  "pageVersion": "sha256:21eeb9384cc928f472c1d40637a390f0d1744b63d9489a19c3e5e59c8f9bbae2",
   "claims": [
     {
       "id": "claim_a6750493d45a4249aff843ec899f04e3",
       "statement": "The concurrency_stress_test.rs file is designed to detect data races or memory corruption using ThreadSanitizer.",
-      "evidence": [
-        {
-          "resource": "repo://tests/concurrency_stress_test.rs#L1-L5",
-          "version": "repo-lines-v1:sha256:12b1287944474c8556fa7e09b48d6ef212852caf10fd3651fda93d33ece6056a:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjEzZTM2YzM4ZjM5MWI3OTZlY2FhMGZjMGMzNjdlYzgyZmZjMDcyNDNlNDEwN2E2MGJjM2NiMTQ5NjQ3N2RhNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2QyYTYxNWJjZTRiOTViOTU2MzBlY2IwOGQwNWZhNzYyYTczYzllMjBmNDRiZjQ3NWYxMGY1NTA0NTUzM2RiMiJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_e3233f959e9f44bdbb6678913fef52d0",
-      "statement": "OIFS employs ThreadSanitizer through its continuous integration pipeline and dedicated stress test binaries.",
       "evidence": [
         {
           "resource": "repo://tests/concurrency_stress_test.rs#L1-L5",
@@ -41,24 +31,6 @@
       ]
     },
     {
-      "id": "claim_bfc64fb2f63b4af599e90af9f3e1d4a5",
-      "statement": "The concurrency_test.rs, rwlock_concurrency_test.rs, and session_ipc_test.rs tests additionally run under ThreadSanitizer in CI to broaden coverage.",
-      "evidence": [
-        {
-          "resource": "repo://tests/concurrency_test.rs",
-          "version": "repo-file-v1:sha256:dc424af6c9b41176cfef08e5a1d180deefb2229ceed3f9d6556440c18654bcf8"
-        },
-        {
-          "resource": "repo://tests/rwlock_concurrency_test.rs",
-          "version": "repo-file-v1:sha256:7517d4f28d4ab2cd402f55d6f509b801f8b0a5042ec21c91b8191c44694e7e02"
-        },
-        {
-          "resource": "repo://tests/session_ipc_test.rs",
-          "version": "repo-file-v1:sha256:0401b787d6477c517bdc7029ad5f21c5507b788f80bb4cdf07f455429b314df7"
-        }
-      ]
-    },
-    {
       "id": "claim_49ed991f95b04a7baf435509adb77cb2",
       "statement": "ThreadSanitizer tests can be executed locally using the nightly Rust toolchain with the `-Zsanitizer=thread` flag: `cargo +nightly test -Zsanitizer=thread --test concurrency_stress`",
       "evidence": [
@@ -67,10 +39,126 @@
           "version": "repo-file-v1:sha256:9fd1e531c31eaaabfc04e58ce5c0b2a42e28f0e629e56c8fe4c85dfb0756207e"
         }
       ]
+    },
+    {
+      "id": "claim_98856f459cdb45deab9d8a45eefb8188",
+      "statement": "There is no tsan Cargo feature and no CI integration for ThreadSanitizer; TSAN tests are run locally using the nightly toolchain with -Zsanitizer=thread.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/rust.yml",
+          "version": "repo-file-v1:sha256:7a477f392d4c1265f908471a9f00a82eb4f17551a4460d381b096f6fc97caced"
+        },
+        {
+          "resource": "repo://Cargo.toml",
+          "version": "repo-file-v1:sha256:12f16fedeedac4b8338567b9821455ae8b76a7a06a29678e5c961383b488b393"
+        }
+      ]
+    },
+    {
+      "id": "claim_4c477d81c65d4a30941bc71f813db0a6",
+      "statement": "The rwlock_concurrency_test.rs suite stresses the DiskManager's internal RwLock and sync_mutex with 7 test scenarios including concurrent readers, mixed readers/writers, flush operations, compression/encryption pipeline, reader latency, sharded inode cache, and cache miss eviction contention.",
+      "evidence": [
+        {
+          "resource": "repo://tests/rwlock_concurrency_test.rs#L1-L581",
+          "version": "repo-lines-v1:sha256:210b3f2e873bffa28e04618a33680aac8c946c0366d8d658e67af72a48891613:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3ZjQ2ODExY2U5NWQ3YzIyZmRiZjVkYzkwYmVmOWQ0NTBhMGY2ZDY0M2EyYTUxZGM1MjBiZGQ4ODJhMzFiYmYxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_ca028c4b30314233a7eaf288b8f89727",
+      "statement": "The session_ipc_test.rs suite stresses multi-process IPC concurrency and transparent failover with tests for concurrent client writes, event notification, stale socket recovery, encrypted authentication handshake, network mode proxy, and stale rendezvous recovery.",
+      "evidence": [
+        {
+          "resource": "repo://tests/session_ipc_test.rs#L1-L519",
+          "version": "repo-lines-v1:sha256:e4b4b35304fa36d824aac0c110e17e9c1ec34b8b0437b029a3bc04d006e2b49e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTE5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyZTUzZWYyYjZmYzViZTRjZjYxYTNhOWY0MzAxYjg1ZGM5MDNiYTkxNTc1M2ViYTg2MTRiNzliYWFjZDE1YWM4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_3a62ec4c81de45bbbbc3a5d3131226a0",
+      "statement": "The lock_unpoisoned/read_unpoisoned/write_unpoisoned helpers in src/lib.rs recover from mutex/RwLock poisoning for caches, registries, and coordination primitives where a panic cannot leave data inconsistent, while DiskManagerInner and sync_mutex propagate poison.",
+      "evidence": [
+        {
+          "resource": "repo://src/auto_defrag.rs#L187-L244",
+          "version": "repo-lines-v1:sha256:56bca8e1e0c11f7788eb2bf77f23dbcef279c969bb239aeb9058cd94a9c91034:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlYzczYjNlNTdjOGY5NTk3YmM5YmQ3ZmJkNTBiYmExMWQ0NjVjZWY4OWMwNDIzZWFlY2JkZTQ1OTZkMTgzNWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0ZTVmNDBjMzdmNmU4ODQ4MWU3ZGE0ZTgxODM5Yzk5YmY2Nzc0MTFjMzUyYTk3ZmQ2MzAxZjQyYmNkZDExMDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRhYjEyNTU2ZTE3Y2I2MTYwMjVlZjI3NmNhMWQyYWYzMWYxNTU3M2FiYmRhMzhiYWU0NGFhOGUxOGI5ZDZjNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlNjQzMjg3MTUwZWJhY2RhYWRjNTA5MjM4NTYyMDk2NzAyYWMzMWY1MWRjYzIwYjE0YzYzMzE2ODZkYWI3ZmYifQ"
+        },
+        {
+          "resource": "repo://src/ipc.rs#L1443-L1646",
+          "version": "repo-lines-v1:sha256:a353a4eeab56f5722d657957b1e88ddb4052331cc62159d5f6b19582e7d33374:eyJzZWxlY3RlZExpbmVDb3VudCI6MjA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyNDA2ZDFiMjJhMDcxNzQ0YWI0MzI4ZmVhMjc3ZmMxNmJiZjJiMTEzODFiM2QzMmZjZTQ5YmYxNjQyZDk1MjExIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmZmI1NWY4OTAyNGRjNWVmZGQ5ZWFmZWIyNTAzYmQ3MzY3NzYyZGEyMWExNzQ3YjUxMWUzMjU5ODM0YWU5NGNiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3MmY3YTcwNzdiZDg2OGE3ODY0Njc3ZWVkZjcwNWY4MGFhMjAxMGRiY2MyMmVmN2JlYmMzOGJlMDg4MTg0MzVhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxYzg5MzVhYmM5YzFkMjc5M2VlNzNlZTFjNWJiNjljYWE3MzYyMzQwMjQyYWI1MGM4ZGIyNDAwNzExNmE4MmU4In0"
+        },
+        {
+          "resource": "repo://src/lib.rs#L42-L68",
+          "version": "repo-lines-v1:sha256:3c871101afc57e0e725236f4ccfc41c485cdcc93ad17c71b99cfa5abc0b8da3e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkNWZlZTE2YjAyODU2NzljYzk5Y2JjZWU2ZWNhYTFjNzliYWI5YjIzZmJlMzJmNzRkZjAwYjlmNzc4YjgyYzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3OGM0ZjIzNTY1ODg4MTQ4YTk4NGU4NmJjNjhkYzg0ZDU4ZmY2YWQzYmJjYjhkZjE1MTJjNWNlODNlMzBiZmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU4NTk5NjkzNDcxNjkzZWNiZDM3Nzc2NTg4YTU3YjNlNmNlNjdiM2JhZDY0ZmJmOWI5ZmFiNmMyZDc0NDYzOWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljYzEwNjc2NThiNzViMTRlYTBjNmJhMzQ4NDg4MDFmZjQ0NjA1MDYyMzEzMDkxNTAyMGYxOTEwOGRjNThmYmIifQ"
+        },
+        {
+          "resource": "repo://src/session.rs#L77-L311",
+          "version": "repo-lines-v1:sha256:d369b2ca9a9162aa290a57564d73541aa7734d50407f66a76719226d317c43b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjM1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjMGZlZWQ3N2ZkYWRhZmJhYWFmNTBjZDhkMmVjNTEyYjU0NmZiNDE1ZDZhNDFjMzIyYjlmMzc0OThmOWI1ZGQ3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2YzAwNzVlMWNmMWNkMmI5N2Q0NGZiMTJhYmJkMTBkODllNDc0NzU2NmFhYjJjOTZlYTY2MjQzNTQwY2RhOTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1M2NjMTA5ZjhlMzBiYThiZGM1YTIzYjM1YjEzZGRkYmM5ZTY3YjNkNjNjZDRkY2FmYjNiNWU3ZmEzYjM0ODM3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhNzJlZjAxNzZjNDJiODlmYjYzMjA3MjBlZTk1NGRmNTMzMDdkOWYzYmY0NmM5OGIxMTBkY2JjMmFmMmFlYzRkIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_5a766213ba904a01a09a9b7e3c6bb4f6",
+      "statement": "The DirCache (ShardedDirCache) uses 32 shards with Fibonacci hashing (0x517cc1b727220a95) to stripe directory indexes across independent RwLocks, so cold indexing on one directory never stalls lookups on other directories.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk/caches.rs#L1-L10",
+          "version": "repo-lines-v1:sha256:1f9a7ac9b9b6aa01d94b0b347e286b1e2e25e1fbfcffe05b1d2f615c006856b6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjNTZkM2Q1MjIzM2RlNGZjNjZkYWU2NzdiZWE2NWU2NGYzZTYzODAzOTYyNGM1MGQ5ZTRiMmFlYjYyN2M5NmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMWU4YjYyZTMzYmM0ODQxYzg2YTUyYmJmZDQyNGFlNDFlMGJiZWE4MjQyMmQxMGUwZDIwYjlmMzA1ZmI0MGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmMDU0NmQ4YjczY2FmMzNkNzdjNWNhNTRlMTcyMjJlMDM2ZWVkZTNiYjU2N2IzMWMzMGVlNjZjZGZkNmJmNDUifQ"
+        },
+        {
+          "resource": "repo://src/disk/caches.rs#L202-L274",
+          "version": "repo-lines-v1:sha256:a6039fab981077a31eae47536278f52510a2d39e68fd36f3cdb54554446303b0:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2MWIwZWIwODYyMDljYmI3ZjQ2MGE5MmU0YjM3N2E3MzA1ZDZjMjVlN2RiOTY4MTBlNGRkMGI4M2FlODUwNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0M2I2ZjhjNGIyOGJhMmMyNGJhNWJhYmM2ZmUzMTgwZmI5MzViOWI0NThlZGY5NTU1Y2FkMWZmNTgxMGQxMDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBiMDExZTVkNTYwYjgzMjk0ODdiZWYyNTI5MzQ2YjE0MmM2NzNhYTk3NzI0NjQ3ODUzOWVmMjFiZDZjNzExZWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMzRmOGM5MmEzNmFkODc1YTY2YzVjYTNmYjg0ZTllZGRkZmI3ZGUxNzMyZDk3MjQyN2YyODRiN2Y4ODk5MDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_894f873393724e6085c17abb4b0ce3f4",
+      "statement": "The auto-defrag daemon takes the DiskManagerInner write lock for every pass, serializing against all metadata mutations; it uses a Weak reference so it cannot keep the manager alive, and reads config under lock_unpoisoned at the start of each cycle.",
+      "evidence": [
+        {
+          "resource": "repo://src/auto_defrag.rs#L1-L50",
+          "version": "repo-lines-v1:sha256:90c58ecea47e0188eef9ab9ac05e935b42572657aec12c1c3d2127b70066faca:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU0ZmQwNTBlNDM0NDM4ZjU2ZTFiODcyMjE4OTMyNTNmMjkxZWVlMzFkMjRlYWRjNzc0MjQzZWU2MDNjYjIzODIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNzY1MTE5OWM0YTBhZTQ2MWY1MWM4Y2I1ODBiMzE4YTI5NjQ4MDBjZGJlNWU1M2JkNmI5NDQ3M2FjZTA3NTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFiZTYzZDc3OWVjMGJlMTc5NjQyMjQyNDEyYmU0MDZiYzc5ZDE1NGIyYTAwMWQ1M2M1NThhMTNjYjFkM2E3MDUifQ"
+        },
+        {
+          "resource": "repo://src/auto_defrag.rs#L255-L299",
+          "version": "repo-lines-v1:sha256:77977213d559a372b6ea15ccec13fb19fb810b8eac450d5a27ce2f0902a24412:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyOGYwOTNhNDM1OTI1MjM3YzFmZGU5ZGIyZTdkYmI1YTk0ODhkMzU0MTJiMjY4N2ZmY2NiMDE1YWIyMTY0MjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0M2IwZDYwNWFhYjM4YWI5Mzk3YTgzNzA2YjdkOWYwMWQ2N2U0NDdjZTFmMWM4OWVmMjQ4MTZjNGVhNmM5NzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUifQ"
+        },
+        {
+          "resource": "repo://src/auto_defrag.rs#L340-L370",
+          "version": "repo-lines-v1:sha256:b07da620690a31b8a028c80ec578518ad99cd1b9a59a9eb5e85c24d0c3fa0805:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwNGY5ZGZlNWZiYjdjMTI2YjQ3NjU0ZGMxZGZkOGNiZmMwNjg4MGFjNTc1OTQxMzk4ZjJmNDgzNGYxOGRiNDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmOTc5MzEyNWI1YjZmYmE1MjEwMTdlOGM2N2Y3MzZhN2IyZDc2NjIwYzExNmY0YTg2NjhmZjQ0OTNjMDk5YzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiYzdmODI0MzQyYjkwYjI3MjQ0MWU1NjE4MDI5YmYyMzFiMjg5YTEyNjYzMjJiNjE1YjliMTY2NjUyNjJiNTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZhODg0ZmY4NDBlZWE1YTkwMTU2Zjc1Y2M1NjIyZTkwYTFhYTlkNDc1MDRjODJhZGM4ZTY0NGNhMjE3OThlZWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_70aee1a851a5458488305bd3692e86c3",
+      "statement": "IPC client failover uses a lock-free has_fallback AtomicBool (Acquire/Release) and a dm_fallback Mutex to pin a promoted local DiskManager; CheckedOutStream RAII guards ensure connection pool consistency on panic.",
+      "evidence": [
+        {
+          "resource": "repo://src/ipc.rs#L1407-L1480",
+          "version": "repo-lines-v1:sha256:6ed8a4d4e539b0600fdc1ec0ebc049779957ccfee87a6689a717910305c35397:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTA4Yzk2N2U5YTA1NmNhYjNmMDViYjFmZDViMmUyODM1MjQ1NWFiMWU3NDNkZGM5MTEyMmNlMjI2ZWM2ZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0MDZkMWIyMmEwNzE3NDRhYjQzMjhmZWEyNzdmYzE2YmJmMmIxMTM4MWIzZDMyZmNlNDliZjE2NDJkOTUyMTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmNWY5ZWNhNTFiZmVkNWI0N2YyODUzODJmY2UxOGMzMzVhZGM2ODkxODZhYjkwNWQzNjJiYjJhZDYzMThjODMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1ZTQ3ZTM5MGJjZmE0Nzg2ZTYzZDk1NzY2ZTkyODc4N2I5MzU4OTE4NGJkMWIyOGFiY2YwODI5YmZiOTg2NTQifQ"
+        },
+        {
+          "resource": "repo://src/ipc.rs#L1618-L1758",
+          "version": "repo-lines-v1:sha256:87164321e5de97bf3f99fd0e95666bf6fef8a66f10540892a4e1eb46440090cb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiYmYzNmFlNDQ4N2RmMDFhY2E3M2UxZGM2ZWYxODBiMjliM2QwNzMyYjA1YzBlZmNhOTZhODNmOGM2ZGQyNDMxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjZTQ0MWQzZmQzNjU0OWY5YTZlZmI1MTljNTk4ZDY3NTVkOGE2N2QxMjY4MjBlOTNiOTI3ZTI3MGU1YWNkZjJkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0YjkzOTkwMzUzOGQ3NzA0OGM3Njg1YWE3N2QyNDhjMjcwMWMzNzY5NWU0NjNlMmRjYWFmODU2YTFjOWM4NzA1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3NGVlM2Q5MmIyZGNiOGQ5ZDY0YmNmNmM5MWNiZTY1NDc2YzZmYmExYjQ1ODk1NTQ2NGU0YWIyNDhkN2Y4MDNmIn0"
+        },
+        {
+          "resource": "repo://src/session.rs#L749-L848",
+          "version": "repo-lines-v1:sha256:7d2dd5ae3f9c067624deb41c4f63f3c83a1a5b9022af74753226a6b70e88f438:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwZTQzOTBkOWM3NDYwZDY0ZjAzNzk3ZGJlYWFmNDU0OGM2ZDFhMDdiOTgyZWEyNzQ5NzFlMDk5NGFhMjcyNTA0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyODVmNDRhYWVjZTY4YTdiMjA0Mjk3MGY4NjhhNjdhMDFhMDcwMjA3NjJhYjZlM2MyY2VjODMyMDRjNTBlY2I3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwMGVlNjA5MzNmMDBkMmIzZGYxOGJiN2VlOTI3OTYzNjJiNGU0MDFiM2NjZTZhZDdlYzUwYTY5YTMzNmRjOTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5NjE0ZjQ4NjAwZTM2OGQ5YzJkYjI1NTdiZDJhMTgwZjM3MDE0MDkwNTZmNWUxNWJhMzc2N2QxOTY0NTdlMjdjIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_4f27fd9d46b24d8c8164ebbb860fd09f",
+      "statement": "Shuttle model checking (shuttle_concurrency_test.rs) is complementary to ThreadSanitizer: Shuttle systematically explores thread interleavings of pure-Rust logic while TSAN detects races in actual native execution including FFI, I/O, and OS interactions.",
+      "evidence": [
+        {
+          "resource": "repo://tests/shuttle_concurrency_test.rs#L1-L521",
+          "version": "repo-lines-v1:sha256:eb73ddda923de88be50b90e389fd7c355d37c3e581961cf54cb77ff0de636ba2:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmNWRiMzVjZmNjZWI3ODIwMjJjMTk2MzEzYWYzMDllN2MwYjYxNzJiNjhmMzkwMDhhOTRmOTdkODI1ZmNjNmFmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.6.1",
-    "at": "2026-10-14T13:26:03.589Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-20T22:07:36.625Z"
   }
 }

@@ -1,26 +1,28 @@
 ---
 type: workflow
-title: Filesystem Check Workflow
-description: Step-by-step guide to running fsck, interpreting the consistency report, and understanding next steps when inconsistencies are detected.
-tags: [fsck, integrity, verification, diagnostics]
+title: Fsck Workflow
+description: Step-by-step guide to running OIFS fsck (CLI and API), interpreting the consistency report (orphan inodes, leaked blocks, missing blocks, cross-linked blocks), when manual fsck is needed versus journaled auto-recovery on mount, and the meaning of the is_clean flag.
+tags: [fsck, integrity, verification, diagnostics, journal, recovery]
+verified:
+  - by: openwiki/0.9.0
+    at: 2026-11-20T22:07:36.625Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
+  - id: openwiki-source-115024023ade9f243c6b4ec3
+    resource: repo://src/disk/maintenance.rs
   - id: openwiki-source-ef0afc6eaf5c925c9975314d
     resource: repo://src/ipc.rs
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
-generated: { by: "openwiki/0.6.1", at: "2026-10-04T10:12:53.730Z" }
-verified:
-  - by: openwiki/0.6.1
-    at: 2026-10-13T15:40:56.857Z
+generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
 ---
 
 ## Purpose
 
-The OIFS filesystem check (`fsck`) workflow verifies structural consistency by comparing allocation bitmaps with directory reachability. It detects four types of metadata corruption: orphan inodes, leaked blocks, missing blocks, and cross-linked blocks. Unlike continuous runtime integrity guarantees, `fsck` treats the on-disk state as untrusted and reports discrepancies without automatic repair.
+The OIFS filesystem check (`fsck`) verifies structural consistency by comparing allocation bitmaps with directory reachability. It detects four types of metadata corruption: orphan inodes, leaked blocks, missing blocks, and cross-linked blocks. Unlike continuous runtime integrity guarantees, `fsck` treats the on-disk state as untrusted and reports discrepancies without automatic repair.
 
 ## Running fsck
 
@@ -36,20 +38,26 @@ Options:
 - `--image`: Path to the OIFS image file (required)
 - `--password`: Provide password for encrypted filesystems (optional, prompts if omitted)
 - `--json`: Output machine-readable JSON instead of human-readable text
-<!-- openwiki: broken internal link [../quickstart.md#network-mode] heading anchor "network-mode" does not exist in "../quickstart.md". Fix the href or restore the target, then delete this comment. -->
-- `--network`: Enable network mode for remote images (see [basic operations](../quickstart.md#network-mode))
+- `--network`: Enable network mode for remote images
 
-### IPC interface
+### IPC / API interface
 
-Clients can trigger a consistency check via the IPC layer by sending an `IpcRequest::Fsck` message. The server responds with an `IpcResponse::Fsck` containing the serialized `FsckReport`. Refer to [session.rs](repo://src/session.rs#L806-L815) for the server-side implementation.
+Clients can trigger a consistency check via the IPC layer by sending an `IpcRequest::VerifyIntegrity` message. The server responds with an `IpcResponse::Success(IpcResponseData::Fsck)` containing the serialized `FsckReport`. See `session.rs` for the server-side implementation and `IpcClient::send` for the client entrypoint.
+
+Programmatic access through `OifsSession::verify_integrity()`:
+
+```rust
+let report = session.verify_integrity()?;
+// report.is_clean, report.orphan_inodes, etc.
+```
 
 ## Understanding the fsck Report
 
-The consistency check returns a [`FsckReport`](repo://src/disk.rs#L163-L174) structure with the following fields:
+The consistency check returns a [`FsckReport`](repo://src/disk.rs#L251-L260) structure with the following fields:
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `is_clean` | `bool` | `true` if no inconsistencies detected; `false` otherwise |
+| `is_clean` | `bool` | `true` if no inconsistencies detected (all four vectors empty); `false` otherwise |
 | `orphan_inodes` | `Vec<u64>` | Allocated inodes not reachable from the root directory |
 | `leaked_blocks` | `Vec<u64>` | Data blocks marked allocated in bitmaps but not referenced by any inode |
 | `missing_blocks` | `Vec<u64>` | Data blocks referenced by inodes but marked free in bitmaps |
@@ -83,20 +91,77 @@ JSON format (`--json`):
 }
 ```
 
-## Interpreting Results
+## Interpreting Results — Field-by-Field Remediation
 
-Refer to the [Filesystem Integrity Checking (fsck)](../architecture/integrity_checking_fsck.md) page for detailed definitions and severity rankings:
+The `is_clean` flag is `true` only when **all four vectors are empty**. Any non-empty vector means the filesystem has structural corruption.
 
-- **Orphan Inodes** (Medium): Consume inode table space but are inaccessible. Safe to ignore or reclaim by clearing the inode bitmap bit.
-- **Leaked Blocks** (Low): Wasted storage capacity. Safe to ignore or reclaim by clearing the corresponding data bitmap bit.
-- **Missing Blocks** (**Critical**): Active file data points to blocks the allocator considers free. Subsequent allocations will overwrite live data, causing silent corruption.
-- **Cross-Linked Blocks** (**Critical**): Multiple files share the same physical block. Writes to one file corrupt another.
+| Field | Severity | Definition | Remediation |
+|-------|----------|------------|-------------|
+| `orphan_inodes` | Medium | Inodes with allocation bit set but no directory entry points to them. They occupy inode-table space but contain no user-accessible data. | Safe to clear the inode bitmap bit for each ID (`Bitmap::clear(idx)`). Orphan inodes carry no reachable user data. |
+| `leaked_blocks` | Low | Data blocks with allocation bit set but not mapped by any reachable inode. Wasted capacity. | Safe to clear the corresponding data bitmap bits. These blocks contain no live file data. |
+| `missing_blocks` | **Critical** | Data blocks referenced by reachable inodes but marked free in the bitmap. Subsequent allocations will overwrite live file data, causing silent corruption. | **Requires manual investigation**. Marking them allocated in the bitmap restores accounting but does not guarantee file contents are intact if blocks were subsequently reused. |
+| `cross_linked_blocks` | **Critical** | A single physical block referenced by ≥2 distinct inodes. Writes to one file corrupt the other. | **Requires manual investigation**. Copy the block data to a fresh block for all but one inode, update that inode's pointer, then clear the cross-link. |
 
-A filesystem is consistent only when all four vectors are empty and `is_clean` is `true`.
+> **Note**: OIFS `fsck` is a diagnostic tool; it does **not** perform automatic repairs. Future versions may implement repair options based on the reported inconsistencies.
+
+## Cross-Linked Block Resolution Strategy
+
+Cross-linked blocks are detected during the single-pass BFS traversal of the directory tree (`verify_integrity_on`). The algorithm maintains two bitsets over the data block range:
+
+- `seen_data`: blocks referenced by ≥1 reachable inode
+- `cross_linked_data`: blocks referenced by ≥2 reachable inodes
+
+For each block pointer visited via `for_each_inode_block` (which flattens direct, single-indirect, double-indirect, and triple-indirect pointers, and expands contiguous runs for 64K-chunked files):
+
+```text
+if block in valid range:
+    idx = block - data_block_start
+    if seen_data[idx] already set:
+        cross_linked_data[idx] = 1   // second or later reference
+    else:
+        seen_data[idx] = 1           // first reference
+```
+
+After traversal, `cross_linked_data` is iterated to emit the sorted list in `FsckReport.cross_linked_blocks`.
+
+**Resolution**: Because multiple inodes share the same physical block, the only safe fix is:
+1. Read the shared block's contents.
+2. Allocate a fresh block for each inode except one (e.g., the first encountered).
+3. Copy the data to each fresh block.
+4. Update the inode's block pointer to point to its new private block.
+5. Clear the cross-link from the report and mark the original block allocated to the remaining inode.
+
+This requires manual intervention or a future repair tool; `fsck` itself does not modify the image.
+
+## When fsck Is Needed vs. Journaled Auto-Recovery
+
+### Non-journaled images (default)
+
+After a crash or power loss, a non-journaled image may have inconsistent metadata because in-place updates can be torn. **Run `fsck` before mounting** to diagnose the damage. The test in `tests/fsck_test.rs` demonstrates this by corrupting the data bitmap and confirming `verify_integrity` detects the missing block.
+
+### Journaled images (`create_encrypted_journaled` / `open_journaled`)
+
+On every mount, `DiskManager::open` calls `recover_journal` **before** publishing the manager:
+
+1. **Phase 1**: Snapshot the journal region, decode all valid transaction frames via `JournalRing::recover`, collecting `MetadataOp` list.
+2. **Phase 2**: Redo every op directly against the mmap via `apply_op_in_place` (idempotent post-image writes: `SetInodeBitmap`, `SetDataBitmap`/`SetDataBitmapRange`, `WriteInode`, `WriteBlockSlice`).
+3. **Phase 3**: Reset the ring (`head = tail = 0`, `cleanly_unmounted = true`) and persist the header.
+
+Because every `MetadataOp` is an **absolute post-image** (not a delta), replay is idempotent: replaying a transaction any number of times yields the same filesystem state. Torn writes are detected by the per-frame CRC32C and trailing commit marker (`0xDEAD_BEEF`); incomplete frames are ignored.
+
+**Result**: On a correctly functioning journaled image, `fsck` will consistently report `is_clean = true` even after unclean shutdowns. The journal replaces the traditional "fsck on boot" with a guaranteed-bounded, deterministic replay proportional to the number of uncommitted transactions (typically a handful), not to the filesystem size.
+
+### Summary
+
+| Scenario | Action |
+|----------|--------|
+| Non-journaled image, unclean shutdown | Run `oifs fsck --image <path>` before mount |
+| Journaled image, any shutdown | Mount directly; replay is automatic; `fsck` optional as diagnostic |
+| Suspected bit rot / hardware fault / manual hex-edit | Run `fsck` on either image type to detect non-journal corruptions |
 
 ## Next Steps After Detecting Inconsistencies
 
-OIFS `fsck` is a diagnostic tool; it does **not** perform automatic repairs. If the report indicates corruption:
+If the report indicates corruption:
 
 1. **Stop using the filesystem** to prevent further damage, especially if missing blocks or cross-linked blocks are present.
 2. **Backup the image** immediately to preserve the current state for analysis.
@@ -104,12 +169,9 @@ OIFS `fsck` is a diagnostic tool; it does **not** perform automatic repairs. If 
 4. **Manual intervention** (advanced): Experienced users may edit the raw image using a hex editor to adjust bitmap bits or clear orphan inodes, but this risks exacerbating corruption.
 5. **Recreate the filesystem**: The safest recovery path is to backup user data, create a fresh OIFS image (`oifs create`), and restore data.
 
-> **Note**: Future versions may implement repair options based on the reported inconsistencies. Monitor the project roadmap for updates.
-
 ## Relationship to Other Workflows
 
-<!-- openwiki: broken internal link [../quickstart.md#mounting-an-image] heading anchor "mounting-an-image" does not exist in "../quickstart.md". Fix the href or restore the target, then delete this comment. -->
-- Run `fsck` after an unclean shutdown before mounting the filesystem (see [basic operations](../quickstart.md#mounting-an-image)).
+- Run `fsck` after an unclean shutdown before mounting the filesystem (non-journaled images).
 - Use `fsck` to validate the success of data recovery procedures.
 - Combine with fragmentation analysis (`oifs analyze`) to assess overall filesystem health.
 

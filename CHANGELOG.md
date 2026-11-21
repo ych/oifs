@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+- **Persistent Scoped Worker Pool & Global Zstd Context Recycling**: Added a zero-dependency persistent worker pool (`par_for_index`) and bounded global `CCtx`/`DCtx` recycling pool in `src/zstd_pool.rs`, keeping worker thread-local Zstd contexts warm across calls and eliminating per-call OS thread creation overhead (`2.70x` faster 1 MiB seekable `read_at`, `12.6 GB/s`).
+- **Sequential 4-Chunk Parallel Read-Ahead**: Upgraded `ChunkReadCache` to an `RwLock` with zero-`Arc`-clone slice copying (`copy_slice_if_hit`) and automatic 4-chunk parallel read-ahead on sequential sub-chunk `read_at` scans (`1.47x` faster sequential 4 KiB seekable `read_at`).
+- **Non-Journaled In-Place Chunk Reuse & Single-Lock Seekable Stage-1**: Reused existing contiguous chunk runs in place on non-journaled seekable overwrites when `blocks_needed <= old_cnt`, checked `ChunkReadCache` during partial-chunk RMW, and merged `write_data_with_filters` seekable routing into a single shared read lock.
+- **AArch64 NEON SIMD + Short-Message Scalar XChaCha20 Fast Path**: Enabled `chacha20_force_neon` for `aarch64` targets in `.cargo/config.toml` (`+21.7%` encrypted 64 KiB append throughput, `701 MB/s`) alongside an RFC 8439-identical 1-block scalar XChaCha20-Poly1305 fast path for short filenames (`<= 192 B`), avoiding 4-block/8-block SIMD waste on both AArch64 NEON and x86_64 AVX2.
+
+### Documentation & CI
+- Updated `README.md`, `README_zh.md`, and `AGENTS.md` with current v1.2.0+ architecture, security hardening, and verified release benchmarks.
+- Updated `.github/workflows/openwiki-update.yml` to use `openwiki@0.9.0`, `nvidia/nemotron-3-ultra-550b-a55b:free` (with manual `workflow_dispatch` `model_id` override), and Node 24-compatible `actions/checkout@v5` / `actions/setup-node@v5`.
+
 ## [1.2.0] - 2026-11-21
 
 ### Added
@@ -17,18 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `src/auto_defrag.rs` with `AutoDefragConfig` / `AutoDefragStats` and a daemon worker thread that periodically measures data-area fragmentation and runs an in-place defragmentation pass once the configured threshold is exceeded.
   - Added `DiskManager::set_auto_defrag` / `auto_defrag_config` / `auto_defrag_stats` / `stop_auto_defrag` and `OifsSession::set_auto_defrag` / `auto_defrag_stats`.
   - Added CLI flags `--auto-defrag[=THRESHOLD]` and `--defrag-interval` (opt-in, default disabled).
-  - The worker holds only a `Weak` reference to the inner state, so it exits as soon as the last manager is dropped; it skips WAL-enabled images unless `allow_journaled` is set, because in-place defragmentation is not journalled.
-  - Added `tests/auto_defrag_test.rs` (6 tests) covering the default-off behaviour, threshold-triggered passes with fsck-verified data integrity, shutdown, the journaled-image skip, and the `min_free_blocks` guard.
-- **IPC Frame Buffer Pooling & Bounded Frame Parsing (P4.8)**:
+  - The worker holds only a `Weak` reference to the inner state, so it exits as soon as the last manager is dropped; in-place defragmentation is fully WAL-atomic and supported on WAL-enabled images by default.
+  - Added `tests/auto_defrag_test.rs` covering the default-off behaviour, threshold-triggered passes with fsck-verified data integrity, shutdown, journaled-image support, and the `min_free_blocks` guard.
+- **IPC Frame Buffer Pooling & Bounded Frame Parsing**:
   - Added thread-local pooled buffers for the IPC framing layer (`FRAME_WRITE_BUF`, `FRAME_READ_BUF`, `FRAME_CHUNK_BUF`), eliminating per-message heap allocations in Master-Proxy mode.
   - Added the public `MAX_FRAME_BYTES` limit, validated on both the write and read paths *before* any allocation.
   - `read_framed` now streams payloads in bounded 64 KiB chunks, removing the blind `vec![0u8; len]` allocation a malicious peer could weaponize.
-  - Added `tests/ipc_frame_test.rs` covering round-trips, chunked streaming, buffer reuse, oversized-frame rejection and truncated frames.
-- **Kani Proofs**:
-  - Added `proof_find_next_free_wrapped_soundness` (wrap-around allocator scan), the first `ipc` module harnesses `proof_frame_len_validation_soundness` / `proof_zero_length_frame_is_valid` and `proof_sanitized_config_is_always_valid` for the auto-defrag configuration. The suite now holds 77 harnesses.
-  - Added `proof_block_path_tier_boundaries_symbolic`, which proves the pointer-tree tier classification for *every* logical block index instead of a handful of constants.
-  - Added `proof_usable_inode_count_fits_the_table`, which proves that the usable inode ids always fit in the inode table (SEC-25).
-  - Every proof that constrains its input with `kani::assume` now carries `kani::cover!` assertions, so no harness can pass vacuously.
+  - Added `tests/ipc_frame_test.rs` covering round-trips, chunked streaming, buffer reuse, oversized-frame rejection, and truncated frames.
+- **Multi-Block Bitmaps (Layout v3)**: The inode and data bitmaps were previously hardcoded to a single 4 KiB block, capping the data area at 32,768 blocks (128 MiB). The v3 layout sizes bitmaps dynamically with the image; spans are derived from recorded offsets without breaking `bincode` superblock compatibility.
+- **Kani Formal Verification Suite (92 Harnesses)**:
+  - Expanded formal proofs across allocator wrap-around scanning, IPC frame length validation, auto-defrag configuration sanitization, symbolic `BlockPath` tier classification, usable inode table bounds, sharded directory cache Fibonacci hashing, indirect hole-skip conservation, contiguous mmap run coalescing, seekable truncate incremental size conservation, and encryption AAD domain separation.
+  - Every proof that constrains its input with `kani::assume` carries `kani::cover!` assertions so no harness can pass vacuously.
 
 ### Security
 - **Encrypted Image Integrity & Anti-Downgrade Hardening**:
@@ -39,50 +48,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Enforced `SuperBlock::validate` allow-lists for `format_version`, `encryption_version`, `migration_cursor`, and `encrypted` flag consistency.
   - Created new `.img` files with owner-only `0600` permissions on Unix and `O_NOFOLLOW` on `create_encrypted` to prevent symlink truncation.
   - Added cycle detection and depth limits to recursive CLI `ls -r` and `rm -r` (also fixing `rm -r` for directories nested deeper than 2 levels).
-- **Encryption Bypass on Non-Zero-Offset Writes (SEC-16, Critical)**: Fixed the write planner so that a compressed, filtered or encrypted payload is always rebuilt as a whole instead of being patched in place. Previously a write at `file_offset > 0` on an encrypted image could store **plaintext** on disk, overwrite the XChaCha20-Poly1305 ciphertext of an existing file (destroying its Poly1305 tag), and a shrinking overwrite kept a stale file size that broke AEAD authentication. The inode's filter metadata now also describes the filter pipeline that was actually applied.
-- **IPC Deserialization Allocation Bomb (SEC-17, High)**: The framing layer now deserializes with a hard byte limit (the size of the frame), so a tiny frame announcing a huge `Vec`/`String` length can no longer make the receiver allocate gigabytes. The wire format is unchanged.
-- **IPC Transport Hardening (SEC-18, High)**:
-  - The cleartext password no longer travels over the wire: authentication is a challenge-response over a direction-separated transcript, authenticated with keyed BLAKE2b, and the client verifies that the master holds the same key (so a client redirected to a fake master aborts).
-  - Unencrypted images are no longer unauthenticated: a master publishes a random session secret that clients must present.
-  - Unix sockets now live in a per-user private directory (`0700`) with `0600` socket and secret files, and the TCP rendezvous file is created with `0600`.
-  - The number of concurrent peers is bounded (256) and every connection gets a 10 s handshake budget, which removes the Slowloris / thread-exhaustion vector.
-- **Data-Area Lower-Bound Checks (SEC-20, Medium)**: Block pointers that leave the data area are now rejected everywhere: the read path ignores them, the write path fails with an error instead of landing in the superblock, the bitmaps or the inode table, and the WAL replay refuses every operation that addresses metadata.
-- **FFI Boundary Hardening (SEC-21, Medium)**: Every `CStr::from_ptr` conversion of a caller-provided pointer now happens inside the `catch_unwind` closure, and `oifs_write_file_with_policy` reports a null buffer with a non-zero size instead of silently writing nothing.
-- **MCP Response Encoding (SEC-22, Medium)**: The MCP tool responses are built with `serde_json` instead of `format!`, so file names and error messages can no longer inject JSON, and the image size is computed with checked arithmetic.
-- **Release Verification Tooling**: `scripts/release_check.sh` now runs the *complete* Kani suite in parallel (`cargo kani -j 8 --output-format=terse`) instead of a handful of harnesses, and gained a native LLVM coverage step (step 7/8) that reports ~77% region coverage. The step prefers the `llvm-tools-preview` component of the active toolchain and asks cargo for the test executable paths.
-- **Session Password Hygiene (SEC-24, Low)**: The password kept by a remote session for the automatic reconnection now lives in a `zeroize::Zeroizing<String>` and is wiped when the session is dropped.
-- **Plain-TCP Network Transport (SEC-10, Mitigated)**: The IPC master binds loopback by default, a non-loopback bind address is refused unless `--allow-remote-ipsc` is given, and the library warns when such a bind is requested. The transport itself remains plain TCP and is expected to be tunnelled.
-- **Inode Table and Data Bitmap Bounds (SEC-25, Critical)**: The superblock's `inode_count` was sized with the historical 128-byte inode records and is therefore twice the number of 256-byte slots that actually fit in the inode table, while `inode_slot_range` only checked the mapped length. An inode id beyond the table addressed the **data area**: a crafted "fake inode" inside a file could be used to read or overwrite another file, creating a file beyond the table capacity overwrote the root directory's data blocks, and the data allocator could hand out blocks beyond the end of a small image. The usable inode range is now derived from the real table capacity, every entry point that takes an inode id refuses an id outside it, both allocators stop at their region boundary, and `SuperBlock::validate` rejects the impossible layouts.
-- **Defragmentation of Seekable 64K Chunked Files (SEC-26, High)**: A seekable file stores packed `ChunkEntry` values (a run of contiguous blocks) in its pointer slots, but the defragmentation treated them as raw block ids: the in-place pass relocated the wrong blocks, freed the file's real blocks in the rebuilt bitmap and left invalid pointers behind, and the safe pass copied the content as a plain file while the seekable flag stayed set. The layout collector now decodes the chunk entries, the in-place pass rewrites them with their new start block, and the safe pass copies such files with `CompressionMode::Seekable`.
-- **Unzeroed Data Blocks (SEC-27, High)**: A data block that was freed kept its plaintext, and a block allocated again was handed to the new owner uncleared, so a short write could expose the content of a deleted file. Newly allocated blocks are now zeroed (in-place and journaled paths), and extending a file zeroes the slack of its last block.
-- **WAL-First Ordering and Orphaned Directory Children (SEC-29, Medium)**: The journaled shrink path of `truncate_internal` zeroed the indirect pointer tables directly in the mapping before the transaction was committed, so a crash in between lost the tail of the file without the journal knowing. The zeroing is now staged as a transaction operation. In addition, both delete paths refused nothing: removing a non-empty directory orphaned all its children. A non-empty directory is now rejected before the parent entry is touched.
-- **AEAD Associated Data (SEC-19, Critical)**: XChaCha20-Poly1305 was used without associated data, so an attacker with write access to the image could move a ciphertext to another file, reorder the chunks of a file or roll a file back — the Poly1305 tag still verified. The associated data now binds the ciphertext to its inode (and, for a seekable chunk, to the chunk index and its flags). The image-wide `encryption_version` selects the scheme, so images written before this change stay readable.
-- **Multi-Block Bitmaps (P4.25)**: The inode and data bitmaps were hardcoded to a single 4 KiB block, capping the data area at 32,768 blocks (128 MiB) and the inode count at 32,768. The new v3 layout sizes the bitmaps with the image; the spans are derived from the recorded offsets, so the `bincode`-encoded superblock needs no new field and every existing image keeps its layout.
+- **Encryption Bypass on Non-Zero-Offset Writes**: Fixed the write planner so that a compressed, filtered, or encrypted payload is always rebuilt as a whole (or upgraded to context-bound 64 KiB AEAD chunks) instead of being patched in place, preventing plaintext leakage and Poly1305 tag corruption.
+- **AEAD Context Binding**: Bound `XChaCha20-Poly1305` ciphertexts via Poly1305 associated data to `inode_id` (and `chunk_idx` + `flags` for seekable chunks) so ciphertexts cannot be swapped across files or reordered undetected. Image-wide `encryption_version` preserves read compatibility with older images.
+- **Inode Table & Data Bitmap Bounds**: Derived usable inode capacity from the real 256-byte inode table span, enforced bounds across all inode entry points and both allocators, and rejected impossible layouts in `SuperBlock::validate`.
+- **Data-Area Lower-Bound Checks**: Rejected block pointers outside the data area across read paths, write paths, and WAL replay.
+- **Unzeroed Data Blocks**: Zeroed freshly allocated data blocks and extension slack bytes across both in-place and journaled paths so recycled blocks never expose deleted file plaintext.
+- **Chunk-Aware Defragmentation**: Decoded packed `ChunkEntry` values for seekable 64K files during defragmentation so chunk runs relocate intact and safe defragmentation preserves the chunked format.
+- **WAL-First Truncation & Non-Empty Directory Protection**: Staged indirect pointer table zeroing inside WAL transactions on journaled shrink paths and rejected deleting non-empty directories before touching parent entries.
+- **IPC Deserialization & Transport Hardening**:
+  - Enforced hard byte allocation limits during frame deserialization.
+  - Replaced cleartext password transmission with keyed BLAKE2b challenge-response authentication over a direction-separated transcript with mutual key verification, and added random session secrets for unencrypted images.
+  - Moved Unix sockets into per-user `0700` directories with `0600` socket/secret/rendezvous files, bounded concurrent peers (256) with a 10 s handshake budget, and defaulted network IPC to loopback unless `--allow-remote-ipsc` is explicitly passed.
+- **FFI, MCP & Password Hygiene**:
+  - Wrapped `CStr::from_ptr` conversions and `oifs_set_io_backend` / `oifs_get_io_backend` / `oifs_loaded_path` inside `catch_unwind` boundaries, and rejected null buffers with non-zero lengths in `oifs_write_file_with_policy`.
+  - Built MCP JSON responses with `serde_json` and checked arithmetic.
+  - Stored CLI and remote-session reconnection passwords in `zeroize::Zeroizing<String>` and wiped input scratch buffers.
 
 ### Performance
 - **JBD2-Style Deferred Metadata Checkpointing & Durability-Aware COW Defragmentation**: Coalesced non-wrapping WAL header + frame `msync(MS_SYNC)` into a single syscall, deferred in-place metadata `msync` under `DurabilityMode::Strict` on journaled images to the 50% WAL watermark (`2.31x` higher `Strict` write throughput), and upgraded in-place COW defragmentation to compact word-level bitmaps, WAL op coalescing, and durability-aware barriers (`3.25x–4.53x` faster).
-- **Incremental $O(\Delta \text{chunks})$ Seekable Truncate & Indirect Table Pruning**: Eliminated full-file chunk rescans during `truncate_chunked_64k` and pruned unused Single/Double/Triple indirect pointer tables on truncation (verified with Kani proof `proof_seekable_truncate_incremental_compressed_size_conservation`, 92 Kani proofs total).
-- **Batch Indirect Reads & 32-Shard Directory Cache**: Coalesced contiguous `Mmap` extents and skipped sparse indirect subtrees in `read_at`, and sharded `ShardedDirCache` across 32 shards with out-of-lock index promotion.
-- **Pooled Zstd Contexts and Single-Pass Decompression (P4.26)**: Added a thread-local pool of Zstd contexts, so a frame (or a 64 KiB chunk) no longer allocates and initialises a fresh `CCtx`/`DCtx`. Seekable chunks are decompressed in one pass into a caller-provided buffer, the whole-file read path allocates the expected size once, and a stream of small appended frames is rewritten as a single frame once the frame overhead exceeds a quarter.
-- **IPC Payload Copies and Pooled Buffer Retention (P4.28)**: The pooled frame buffers are released again when they grew beyond 1 MiB (a single 128 MiB frame used to pin its buffer per worker thread), `IpcClient::send` takes the request by reference so the retry loop no longer clones the whole payload, and the per-request event name is only materialized when a listener exists.
+- **Incremental $O(\Delta \text{chunks})$ Seekable Truncate & Indirect Table Pruning**: Eliminated full-file chunk rescans during `truncate_chunked_64k` and pruned unused Single/Double/Triple indirect pointer tables on truncation.
+- **Batch Indirect Reads & 32-Shard Directory Cache**: Coalesced contiguous `Mmap` extents and skipped sparse indirect subtrees in `read_at`, and sharded `ShardedDirCache` across 32 shards with out-of-lock index promotion (`9.97x` faster under contention).
+- **Pooled Zstd Contexts and Single-Pass Decompression**: Added thread-local Zstd `CCtx`/`DCtx` pooling, single-pass chunk decompression into caller-provided buffers, and automatic frame consolidation when multi-frame overhead exceeds 25%.
+- **IPC Payload Copies and Pooled Buffer Retention**: Released pooled frame buffers exceeding 1 MiB, passed requests by reference in `IpcClient::send`, and avoided materializing event names when no listener is attached.
 
 ### Fixed
-- **Kani Vacuity and Runtime**: The `SetDataBitmapRange` replay used a `while` loop over the bitmap blocks; CBMC had to unwind a symbolic trip count, which exploded the formula (19 GB RSS, no progress) in the journal proofs. The replay now sets the range on the whole bitmap span in one go. The three idempotency proofs also carried a `cover!` assertion, because SEC-20 had made `proof_apply_op_write_block_slice_idempotent` pass vacuously (its block ids were below `data_block_start`).
-- **Broken Kani Build**: `proof_crc_input_is_deterministic` still referenced the `crc_input` helper removed by the P4.13 CRC refactor, so `cargo kani` failed to compile. The harness now uses `crc_frame_checksum` and additionally proves that the sequence number and payload length are covered by the checksum.
-- **Auto-Defrag Configuration Boundaries (SEC-23)**: `AutoDefragConfig::sanitized` now replaces a `NaN` fragmentation threshold with the default (a `NaN` threshold silently disabled the "not fragmented enough" check and defragmented on every tick) and raises a zero check interval to `MIN_CHECK_INTERVAL`, which removes the 100% CPU busy-spin loop. The coordinator's locks now use `crate::lock_unpoisoned` / `crate::read_unpoisoned`.
-- **FFI Panic Boundary (SEC-11)**: Wrapped `oifs_set_io_backend`, `oifs_get_io_backend` and `oifs_loaded_path` with `std::panic::catch_unwind` so a panic can never unwind across the `extern "C"` boundary; they now record the error and return `-1`.
-- **Password Hygiene (SEC-12)**: CLI password handling (flag, `OIFS_PASSWORD` env var, interactive prompt) now uses `zeroize::Zeroizing<String>`, and the raw `read_line` scratch buffer is wiped before the password is handed to the session layer.
-
+- **Auto-Defrag Configuration Boundaries**: `AutoDefragConfig::sanitized` replaces `NaN` thresholds with the default and clamps zero intervals to `MIN_CHECK_INTERVAL`, preventing busy-spin loops; coordinator locks use unpoisoned acquisition helpers.
+- **Kani Harness Maintenance**: Replaced symbolic loop unwinding in `SetDataBitmapRange` replay with span-wide bit updates, added `cover!` assertions to idempotency proofs, and updated `proof_crc_input_is_deterministic` to use `crc_frame_checksum`.
+- **Release Verification Tooling**: Updated `scripts/release_check.sh` to run the full Kani suite in parallel (`cargo kani -j 8 --output-format=terse`) and added native LLVM coverage reporting.
 
 ## [1.1.0] - 2026-10-14
 
 ### Added
-- **Seekable 64KB Chunked Compression & Out-of-Lock Parallel Pipeline (P4.2 / H2)**:
-  - Implemented 3-stage pipeline: Stage 1 shared read-lock inspection, Stage 2 zero-lock multi-threaded parallel Zstd compression and XChaCha20 encryption via Rayon, and Stage 3 atomic write-lock commit (`write_chunked_64k_pipeline`).
+- **Seekable 64KB Chunked Compression & Out-of-Lock Parallel Pipeline**:
+  - Implemented 3-stage pipeline: Stage 1 shared read-lock inspection, Stage 2 zero-lock multi-threaded parallel Zstd compression and XChaCha20 encryption, and Stage 3 atomic write-lock commit (`write_chunked_64k_pipeline`).
   - Added sub-file random rewind writes with fine-grained chunk dirtying, read-modify-write decompressed chunk preservation, and anti-inflation raw chunk fallback.
-  - Added incremental $\Delta$ tracking for seekable chunk compressed size (H3).
-  - Added contiguous chunk block allocation (`allocate_contiguous`, `free_contiguous`, P4.4).
-- **Metadata WAL Journaling (M1–M5)**:
+  - Added incremental $\Delta$ tracking for seekable chunk compressed size.
+  - Added contiguous chunk block allocation (`allocate_contiguous`, `free_contiguous`).
+- **Metadata WAL Journaling**:
   - Added opt-in 128KB journal ring buffer (`--journal` / `DiskManager::open_journaled`) with CRC32C-checksummed frames and torn-write detection.
   - Implemented WAL-first atomic metadata transactions for `create_file`, `mkdir`, `delete_file`, `write_data`, and `truncate`.
   - Ordered-mode payload data flush ensuring payload blocks reach disk before metadata commit.
@@ -93,8 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Preserved backward compatibility with legacy v1 images, supported by in-place idempotent `oifs migrate`.
 - **POSIX-Style OpenMode API & Concurrency**:
   - Added `OpenMode` (`Read`, `Write`, `Create`, `CreateNew`, `Truncate`, `Append`) supporting POSIX `O_CREAT | O_EXCL` atomic file creation.
-  - Implemented sharded bounded inode cache (`BoundedInodeCache`) with interior lock striping to eliminate global cache miss lock contention (P4.3).
-  - Implemented directory cache acceleration (`DirIndex`) and zero-alloc path resolution (P4.6).
+  - Implemented sharded bounded inode cache (`BoundedInodeCache`) with interior lock striping to eliminate global cache miss lock contention.
+  - Implemented directory cache acceleration (`DirIndex`) and zero-alloc path resolution.
   - Defaulted `OifsSession` to high-performance standalone mode with opt-in IPC.
 - **Verification & Tooling**:
   - Expanded formal verification suite to 59 Kani proofs covering filter bijectivity, block addressing, directory lookups, CRC32C, journal ring buffer invariants, and version compatibility soundness.
@@ -102,9 +104,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Performance Optimizations**:
-  - Replaced $O(N^2)$ block deduplication scan in `stage_payload_write` with fast $O(1)$ set lookup (H1), doubling 32MB overwrite throughput from 8.8 GB/s to 18.5 GB/s (+110%).
+  - Replaced $O(N^2)$ block deduplication scan in `stage_payload_write` with fast $O(1)$ set lookup, doubling 32MB overwrite throughput from 8.8 GB/s to 18.5 GB/s (+110%).
   - Added mutation range coalescing to merge adjacent and overlapping block ranges before `msync` syscalls.
-  - Enabled `TCP_NODELAY` on network IPC client and server sockets to eliminate Nagle's algorithm round-trip latency stalls (M5).
+  - Enabled `TCP_NODELAY` on network IPC client and server sockets to eliminate Nagle's algorithm round-trip latency stalls.
 
 ### Fixed
 - **WAL Ordering on Seekable Writes**: Fixed issue where seekable 64K chunked writes and truncations mutated bitmaps and pointer tables prior to transaction commit; mutations are now fully staged via `AllocSim` and payload flushed before WAL frame commit.

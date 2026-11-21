@@ -26,27 +26,23 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 **OIFS** is a high-performance, single-file containerized Unix-like inode filesystem written in Rust (Edition 2024 / Rust 1.85+). It packs an entire filesystem—inodes, multi-block directories, raw/compressed data blocks, encryption, and pre-compression filter pipelines—into a single `.img` container file backed by memory mapping (`memmap2::MmapMut`).
 
 ### Key Highlights
-- **Multi-Process Concurrency**: Master-Proxy architecture using OS-level file locking (`flock`). The first process is Master; concurrent secondary processes connect as Proxies over Unix Domain Sockets or Network TCP.
-- **Pluggable I/O Engine (P3.2)**: `Mmap` (zero-copy direct slice), `Pread` (contiguous extent batching), and `IoUring` (Linux async submission rings with thread-safe pooling).
-- **Configurable Durability (P3.3)**: `Lazy` (fastest, OS writeback / process crash safe), `RangeAsync` (msync modified byte ranges), `Strict` (msync synchronous), and `LegacyWholeMmapAsync`.
-- **Pre-compression Filters**: Integrated Blosc2 filters (Delta, Byte Shuffle, BitShuffle with Hacker's Delight 8x8 transposition, TruncPrecision) followed by Zstandard.
-- **Encryption**: XChaCha20-Poly1305 with OWASP / RFC 9106 hardened Argon2id KDF (`64 MiB`, `t=3`, `p=4`), BLAKE2b-512 domain-separated subkeys (`payload_key`, `filename_siv_key`, `filename_cipher_key`, `ipc_auth_key`), and 24-byte (192-bit) `XChaCha20-Poly1305` deterministic SIV filename encryption (`_e_...`) with `parent_inode` bound in Poly1305 AAD.
+- **Multi-Process Concurrency**: Master-Proxy architecture using OS-level file locking (`fcntl`). The first process is Master; concurrent secondary processes connect as Proxies over Unix Domain Sockets or Network TCP.
+- **Pluggable I/O Engine**: `Mmap` (zero-copy direct slice with contiguous extent coalescing), `Pread` (contiguous extent batching), and `IoUring` (Linux async submission rings with thread-safe pooling, optional `io-uring` feature).
+- **Configurable Durability**: `Lazy` (fastest, OS writeback / process crash safe), `RangeAsync` (batched dirty-range coalescing drained asynchronously outside write locks), `Strict` (synchronous `msync` with single-syscall WAL header+frame coalescing and JBD2-style deferred in-place metadata checkpointing), and `LegacyWholeMmapAsync`.
+- **Pre-compression Filters**: Built-in SIMD-accelerated Delta, Byte Shuffle, BitShuffle (delta-swap ILP 8x8 transposition), and TruncPrecision followed by Zstandard (with optional `blosc2` feature).
+- **Encryption**: XChaCha20-Poly1305 with OWASP / RFC 9106 hardened Argon2id KDF (`64 MiB`, `t=3`, `p=4`), BLAKE2b-512 domain-separated subkeys (`payload_key`, `filename_siv_key`, `filename_cipher_key`, `ipc_auth_key`), and 24-byte (192-bit) `XChaCha20-Poly1305` deterministic SIV filename encryption (`_e_...`) with `parent_inode` bound in Poly1305 AAD. Payloads leverage AArch64 NEON (via `.cargo/config.toml`) and x86_64 AVX2 SIMD, while short filenames (`<= 192 B`) use an RFC 8439-identical 1-block scalar fast path to avoid multi-block SIMD overhead.
+- **Encrypted Image Integrity & Anti-Downgrade**: Encrypted images reject unencrypted regular files (`!inode.encrypted`) on all read paths (`read_data`, `read_at`, seekable 64K) and reject plaintext directory entries in `lookup`, `create`, `list_dir`, and `delete_file`. Providing a password or key for an unencrypted/downgraded image returns `DiskManagerError::NotEncrypted`; `open_with_password` / `open_with_key` on a new path creates an encrypted image.
 - **FFI Dynamic Library Handshake**: 3-state runtime version & path verification (`oifs_check_version`, `oifs_loaded_path`): 0=OK, 1=WARN (newer), -1=ERR (older).
 - **Formal Verification**: 92 Kani proofs verifying filter bijectivity, block addressing, directory lookups, checked arithmetic, CRC32C torn-write detection, journal ring/checkpoint invariants, version policy soundness, chunk entry bit-isolation/state predicates, sharded directory cache Fibonacci hashing, indirect hole-skip conservation, contiguous mmap run coalescing, seekable truncate incremental size conservation, encryption AAD domain separation, and bounds safety.
-- **On-Disk Format v2**: Fixed 256-byte inode records with explicit little-endian fields, a 1-byte file-type tag, and zeroed reserved space. Deterministic, reproducible, leak-free. Legacy v1 images stay fully readable and writable; `oifs migrate` upgrades them in place.
-- **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file`/`write_data` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Payload data is *not* journaled — it is flushed before the metadata commit (ordered mode), so WAL traffic stays proportional to metadata, not file size. Recovery runs automatically at mount, so a power loss no longer requires a full-image `fsck`.
-- **Durability governs the journal too**: only `DurabilityMode::Strict` pays the per-transaction `msync` barriers (WAL + payload); the process-crash-safe modes rely on the page cache and sync at `flush()`/`Drop`, with the WAL always written before the image.
-- **Encrypted Writes Never Bypass the Cipher (SEC-16)**: A compressed, filtered or encrypted payload is a single blob over the whole file, so any write to such a file rebuilds it (decrypt → splice → re-filter/re-compress/re-encrypt with a fresh nonce). A write at a non-zero offset can therefore never store plaintext on an encrypted image.
-- **Zeroed Data Blocks (SEC-27)**: A freshly allocated data block is zeroed before it is handed to a new owner, so a recycled block can never expose the plaintext of a deleted or truncated file.
-- **Context-Bound Encryption (SEC-19)**: The AEAD associated data binds a ciphertext to its inode (and a seekable chunk to its chunk index and flags), so a ciphertext cannot be moved to another file or rolled back undetected. The image-wide `encryption_version` selects the scheme, so older images stay readable.
-- **Multi-Block Bitmaps (P4.25)**: The v3 layout sizes the inode and data bitmaps with the image, so the data area is no longer capped at the 32,768 blocks a single bitmap block can track (128 MiB). The spans are derived from the recorded offsets, so the `bincode`-encoded superblock needs no new field.
-- **Pooled Zstd Contexts (P4.26)**: The compression contexts are pooled per thread (one compressor per level, one decompressor), so a frame or a 64 KiB chunk no longer allocates a fresh `CCtx`/`DCtx`.
-- **Chunk-Aware Defragmentation (SEC-26)**: The defragmentation decodes the packed `ChunkEntry` values of seekable 64K files, so their chunk runs are relocated as a unit and the safe pass keeps the chunked format.
-- **Bounded Inode & Data Regions (SEC-25)**: The usable inode range is derived from the real inode-table capacity (the superblock's `inode_count` is twice the table capacity because it was sized for the old 128-byte records), so an inode id can never address the data area, and both allocators stop at the boundary of their own region.
-- **Plain-TCP Network Transport (SEC-10)**: The IPC master binds loopback by default; a non-loopback bind has to be requested explicitly (`--allow-remote-ipsc`) and prints a warning, because the transport itself is not encrypted.
-- **Hardened IPC Transport (SEC-17/SEC-18)**: Frames are deserialized with a hard allocation limit, authentication is a challenge-response (keyed BLAKE2b, the password never crosses the wire), sockets and rendezvous files are owner-only, and the number of concurrent peers is bounded.
-- **Background Auto-Defragmentation (Blueprint item 7)**: Opt-in coordinator (`--auto-defrag[=THRESHOLD]`, `DiskManager::set_auto_defrag`) that measures data-area fragmentation on an interval and runs an in-place defragmentation pass when the threshold is exceeded, keeping large contiguous free runs available for the contiguous allocator and the seekable chunked compressor. The worker holds only a `Weak` reference to the inner state, so it exits as soon as the last manager is dropped. In-place defragmentation is fully WAL-atomic (ordered payload flush before bounded metadata transaction commits) and supported on WAL-enabled images by default (`allow_journaled` defaults to `true`).
-- **Batched `RangeAsync` Durability (P4.33)**: `DurabilityMode::RangeAsync` buffers and coalesces dirty byte ranges across mutations and drains them (WAL-first, then merged metadata/payload spans) under `sync_mutex` + `inner.read()` outside the exclusive write lock, avoiding per-mutation `msync(MS_ASYNC)` syscalls (details in `docs/metadata_wal_design.md` §10).
+- **On-Disk Format v2 & v3**: Fixed 256-byte inode records with explicit little-endian fields, a 1-byte file-type tag, and zeroed reserved space. The v3 layout sizes inode and data bitmaps dynamically with the image so images scale beyond 128 MiB. Legacy v1 images stay fully readable and writable; `oifs migrate` upgrades them in place.
+- **Metadata WAL (Journaling, opt-in)**: `--journal` reserves 33 blocks (1 header + 128 KB ring) and records `create_file`/`mkdir`/`delete_file`/`write_data`/`truncate`/`defragment` as CRC32C-checksummed transactions. WAL-first, idempotent redo, torn-write rejection, and checkpointing. Payload data is *not* journaled — it is flushed before the metadata commit (ordered mode), so WAL traffic stays proportional to metadata, not file size. Recovery runs automatically at mount.
+- **Encrypted Writes Never Bypass the Cipher**: A compressed, filtered, or encrypted payload is rebuilt as a whole (or transparently upgraded to context-bound 64 KiB AEAD chunks for non-zero-offset writes on v2+ non-filtered encrypted files), so a write at a non-zero offset can never store plaintext on an encrypted image.
+- **Zeroed Data Blocks**: A freshly allocated data block (and file-extension slack) is zeroed before it is handed to a new owner, so a recycled block can never expose deleted or truncated plaintext.
+- **Context-Bound Encryption**: The AEAD associated data binds a ciphertext to its `inode_id` (and a seekable chunk to its `chunk_idx` and `flags`), so a ciphertext cannot be moved to another file or reordered undetected. Image-wide `encryption_version` selects the scheme so older images stay readable.
+- **Pooled Zstd Contexts & Persistent Scoped Worker Pool**: `src/zstd_pool.rs` provides thread-local `CCtx`/`DCtx` pools backed by a bounded global recycling pool plus a zero-dependency persistent scoped worker pool (`par_for_index`) for parallel seekable 64K chunk compression, decompression, and sequential 4-chunk read-ahead.
+- **Chunk-Aware & Background Auto-Defragmentation**: Defragmentation decodes packed `ChunkEntry` values for seekable 64K files so chunk runs relocate intact. In-place COW defragmentation is fully WAL-atomic and supported by the opt-in background coordinator (`--auto-defrag[=THRESHOLD]`, `DiskManager::set_auto_defrag`) whose worker holds only a `Weak` reference.
+- **Bounded Format, Memory & File Security**: `SuperBlock::validate` enforces version allow-lists (`format_version`, `encryption_version`, `migration_cursor`, `encrypted` flag consistency) and table/region bounds; allocators and block pointers are bounded to their respective regions; whole-file reads and stream decompression enforce `MAX_READ_DATA_BYTES` (2 GiB), `MAX_DECOMPRESSED_STREAM_BYTES` (256 MiB), physical `compressed_size <= data_area_bytes`, and fallible `try_reserve_exact` allocations against forged-size OOM and Zstd bombs; new images are created with owner-only `0600` permissions on Unix (`O_NOFOLLOW` on `create_encrypted`); CLI `ls -r` and `rm -r` enforce cycle detection and depth limits.
+- **Hardened IPC Transport**: Frames are deserialized with a hard allocation limit, authentication uses keyed BLAKE2b challenge-response (passwords never cross the wire), sockets and rendezvous files are owner-only (`0700`/`0600`), concurrent peers are bounded (256), and TCP binds loopback by default unless `--allow-remote-ipsc` is explicitly passed.
 
 ---
 
@@ -54,16 +50,17 @@ Welcome, Agent! This guide provides the architectural mental model, codebase map
 
 ```text
 +-------------------+--------------------+-------------------+---------------------+-------------------------+
-| Block 0           | Block 1            | Block 2           | Blocks 3 .. N       | Blocks N+1 .. End       |
-| SuperBlock (4KB)  | Inode Bitmap (4KB) | Data Bitmap (4KB) | Inode Table (4KB*K) | Data Blocks (4KB each)  |
+| Block 0           | Blocks 1..I        | Blocks I+1..D     | [Optional WAL]      | Inode Table -> Data     |
+| SuperBlock (4KB)  | Inode Bitmap       | Data Bitmap       | 33 Blocks (1+32)    | 256B Slots -> 4KB Data  |
 +-------------------+--------------------+-------------------+---------------------+-------------------------+
 ```
 
-1. **Block 0 - SuperBlock**: Magic (`0x4F494653`), block counts, bitmap offsets, root inode (0), and encryption salt.
-2. **Block 1 - Inode Bitmap**: 1 block tracks up to 32,768 inodes. Bit=1 means allocated.
-3. **Block 2 - Data Bitmap**: 1 block tracks up to 32,768 data blocks.
-4. **Block 3+ - Inode Table**: Contiguous table of 256-byte `Inode` structures (16 inodes per 4KB block).
-5. **Remaining Blocks - Data Blocks**: Stores directory entry lists, file payloads, and indirect pointer tables.
+1. **Block 0 - SuperBlock**: Magic (`0x4F494653`), block counts, bitmap offsets, root inode (0), encryption salt/version, format version, and migration cursor.
+2. **Inode Bitmap**: Dynamically sized in v3 (1 block tracks up to 32,768 inodes). Bit=1 means allocated.
+3. **Data Bitmap**: Dynamically sized in v3 (1 block tracks up to 32,768 data blocks).
+4. **Optional Metadata WAL**: 33 reserved blocks (1 header + 128 KB circular ring) placed between the data bitmap and inode table when `--journal` is enabled.
+5. **Inode Table**: Contiguous table of 256-byte `Inode` structures (16 inodes per 4KB block).
+6. **Data Blocks**: Stores directory entry lists, file payloads, seekable chunk runs, and indirect pointer tables.
 
 ### Inode Block Addressing (Max ~513 GB)
 An inode stores:
@@ -80,32 +77,32 @@ An inode stores:
 
 | Path | Purpose & Key Types |
 | :--- | :--- |
-| `src/lib.rs` | Public re-exports, module tree, and `BLOCK_SIZE = 4096`. |
-| `src/superblock.rs` | `SuperBlock` definition, layout geometry calculation, Kani proofs. |
-| `src/inode.rs` | `Inode` (256B `#[repr(C)]`), `FileType`, `BlockPath` tier resolver. |
+| `src/lib.rs` | Public re-exports, module tree, custom `FxHashMap`/`FxHashSet`, and `BLOCK_SIZE = 4096`. |
+| `src/superblock.rs` | `SuperBlock` definition, v3 layout geometry calculation, strict `validate`, Kani proofs. |
+| `src/inode.rs` | `Inode` (256B `#[repr(C)]`), `FileType`, `ChunkEntry`, `BlockPath` tier resolver. |
 | `src/inode_format.rs` | On-disk inode encoding: fixed 256B v2 record, legacy `bincode` v1 decoder, version dispatch. |
 | `src/disk.rs` | Core storage engine: `DiskManager`, `DiskManagerInner`, `DurabilityMode`, open/mount/WAL recovery, directory & standard file read/write/truncate paths. |
-| `src/disk/caches.rs` | In-memory caches: `ChunkReadCache`, `DecodedBlobCache`, 32-shard `ShardedDirCache`, and 32-shard Second-Chance `BoundedInodeCache`. |
-| `src/disk/chunked.rs` | Seekable 64K chunked compression/encryption engine (`write_chunked_64k`, `read_at_chunked_64k`, `truncate_chunked_64k`). |
+| `src/disk/caches.rs` | In-memory caches: `RwLock`-backed `ChunkReadCache`, `DecodedBlobCache`, 32-shard `ShardedDirCache`, and 32-shard Second-Chance `BoundedInodeCache`. |
+| `src/disk/chunked.rs` | Seekable 64K chunked compression/encryption engine (`write_chunked_64k`, `read_at_chunked_64k` with 4-chunk parallel read-ahead, non-journaled in-place reuse, `truncate_chunked_64k`). |
 | `src/disk/maintenance.rs` | Online maintenance: `migrate`, `analyze_fragmentation`, `defragment` (`Safe` / `InPlace` / `Journaled COW`), and `verify_integrity` (`fsck`). |
 | `src/directory.rs` | `DirectoryEntry`, multi-block directory iteration, 64-bit SipHash filename hashing. |
 | `src/io_engine.rs` | `IoEngine`, `IoBackend` (`Mmap`, `Pread`, `IoUring`), `ExtentList`, extent merging. |
-| `src/journal.rs` | Optional Metadata WAL: CRC32C, transaction frames, `MetadataOp`, `JournalRing`, idempotent redo. |
+| `src/journal.rs` | Optional Metadata WAL: CRC32C, transaction frames, `MetadataOp`, `JournalRing`, `AllocSim`, idempotent redo. |
 | `src/auto_defrag.rs` | Background automatic defragmentation coordinator: `AutoDefragConfig`, `AutoDefragStats`, worker thread. |
-| `src/zstd_pool.rs` | Thread-local pool of the Zstd compression contexts (P4.26). |
-| `src/bitmap.rs` | `BitmapRef`, fast 64-bit chunk `tzcnt` free-bit scanner, set-bit iterator. |
-| `src/allocator.rs` | `SimpleBlockAllocator`, sequential block/inode allocation with hint. |
-| `src/filters.rs` | Blosc2 filters: Delta, Shuffle, BitShuffle (delta-swap ILP), TruncPrecision. |
-| `src/encryption.rs` | Argon2id KDF, XChaCha20-Poly1305 encryption, SIV deterministic filename cipher. |
+| `src/zstd_pool.rs` | Thread-local + global-recycled Zstd `CCtx`/`DCtx` pool and zero-dependency persistent scoped worker pool (`par_for_index`). |
+| `src/bitmap.rs` | `BitmapRef` / `Bitmap`, fast 64-bit word `tzcnt` free-bit scanner, range set/clear, set-bit iterator. |
+| `src/allocator.rs` | `SimpleBlockAllocator`, sequential block/inode allocation with hint and contiguous allocation. |
+| `src/filters.rs` | Numeric pre-compression filters: Delta (NEON/SSE2 SIMD), Shuffle, BitShuffle (delta-swap ILP), TruncPrecision. |
+| `src/encryption.rs` | Argon2id KDF (OWASP/RFC 9106), BLAKE2b-512 subkeys, XChaCha20-Poly1305 AEAD (NEON/AVX2 payloads + 1-block scalar short-filename fast path), 192-bit SIV filename cipher. |
 | `src/session.rs` | `OifsSession`: Process-level session registry (`get_or_open`), Master/Proxy dispatch. |
-| `src/ipc.rs` | `IpcServer`, `IpcClient`, length-prefixed binary framing, polling via `libc::poll`. |
+| `src/ipc.rs` | `IpcServer`, `IpcClient`, length-prefixed binary framing, challenge-response auth, connection pooling. |
 | `src/ffi.rs` | C-compatible dynamic library bindings (`include/oifs.h`). |
-| `src/bin/oifs.rs` | CLI application entry point (`clap`-based). |
-| `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling. |
-| `tests/` | 63 integration test files (491 tests): Bolero property/fuzz suites, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer, inode-bounds, defrag-seekable, zeroed-block, zstd-pool, encrypted-context-binding, large-image-bitmap, and CLI suites. |
-| `docs/optimization_roadmap.md` | Detailed changelog and benchmarks for P0, P1, P2, and P3 optimizations. |
-| `docs/metadata_wal_design.md` | Metadata WAL specification and implementation status (M1–M5 complete). |
-| `docs/performance_and_verification_research.md` | In-depth audit of performance bottlenecks, safety vulnerabilities, and Kani blueprints. |
+| `src/bin/oifs.rs` | CLI application entry point (`clap`-based), cycle-safe recursive `ls -r` / `rm -r`. |
+| `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling (optional `mcp` feature). |
+| `tests/` | 63 integration test files (68 total test targets): Bolero property/fuzz suites, stress, crash-safety, concurrency, journal, auto-defrag, IPC-security, block-pointer & size/bomb bounds, inode-bounds, defrag-seekable, zeroed-block, zstd-pool, encrypted-context-binding, large-image-bitmap, and CLI suites. |
+| `docs/optimization_roadmap.md` | Detailed optimization changelog and benchmarks. |
+| `docs/metadata_wal_design.md` | Metadata WAL specification, durability modes, and recovery guarantees. |
+| `docs/performance_and_verification_research.md` | Audit of performance bottlenecks, safety properties, and formal verification blueprints. |
 
 ---
 
@@ -115,19 +112,19 @@ An inode stores:
    - `DiskManager` wraps `Arc<RwLock<DiskManagerInner>>` and a dedicated `sync_mutex: Arc<Mutex<()>>`.
    - Read operations (`read_data`, `read_at`, `lookup`, `stat`, `list_dir`, `resolve_path`, `flush`, `flush_async`) acquire `.read()` locks.
    - Flush operations (`flush`, `flush_async`) hold `sync_mutex` to serialize physical `msync` calls, but only hold `inner.read()`, allowing all concurrent readers to proceed without latency spikes.
-   - Write operations (`create_file`, `mkdir`, `delete_file`, `write_data`) hold `inner.write()`.
-   - **Every metadata mutation must be journaled on a journaled image.** A transaction left pending in the ring becomes stale the moment an unjournaled path touches the same metadata, and recovery will replay the old post-image over the newer change. All four paths stage through `AllocSim` (run the real allocator against copied bitmaps) so every allocated id is known before the image is touched.
-   - Inside `DiskManagerInner`, `inode_cache` and `dir_cache` have their own fine-grained `RwLock`s.
+   - Write operations (`create_file`, `mkdir`, `delete_file`, `write_data`) hold `inner.write()` only during Stage 3 commit after Stage 1 read inspection and Stage 2 lock-free CPU processing.
+   - **Every metadata mutation must be journaled on a journaled image.** A transaction left pending in the ring becomes stale the moment an unjournaled path touches the same metadata, and recovery will replay the old post-image over the newer change. All journaled paths stage through `AllocSim` so every allocated id is known before the image is touched.
+   - Inside `DiskManagerInner`, `inode_cache`, `dir_cache`, and `chunk_read_cache` have their own fine-grained `RwLock`s.
    - **Rule**: Never hold an inner write lock while requesting an outer lock (prevent deadlocks).
-   - **Lock poisoning**: use `crate::lock_unpoisoned(&m)` for locks guarding reconstructible in-memory state (caches, registries, serialization-only mutexes). Propagating a poison there would leave the subsystem permanently unusable, since every later acquisition fails the same way — one unrelated panic anywhere would brick it for the life of the process. Do **not** return a stateful resource to a shared pool if a panic mid-critical-section could leave it inconsistent: `IpcClient` checks sockets out via `CheckedOutStream` so a panic or I/O error between `write_framed` and `read_framed` closes and discards the desynchronized stream instead of returning it to `idle`.
+   - **Lock poisoning**: use `crate::lock_unpoisoned(&m)` for locks guarding reconstructible in-memory state (caches, registries, serialization-only mutexes). Do **not** return a stateful resource to a shared pool if a panic mid-critical-section could leave it inconsistent: `IpcClient` checks sockets out via `CheckedOutStream` so a panic or I/O error between `write_framed` and `read_framed` closes and discards the desynchronized stream instead of returning it to `idle`.
 2. **Zero-Copy Inode & Directory Caching**:
-   - `inode_cache`: Sharded bounded `BoundedInodeCache` (`FxHashMap` + Second-Chance Clock order, capacity 2048). Eviction drops **one** unreferenced entry; it never clears the whole cache, which would cause a cache stampede.
-   - `dir_cache`: 32-shard `ShardedDirCache` (`FxHashMap<u64, DirIndex>` per shard, P4.35) storing per-directory entry name-to-inode mappings. Negative lookups trigger out-of-lock complete indexing without stalling other directories.
-   - **Note**: inodes are persisted through `src::inode_format`, not by casting `#[repr(C)]` bytes. `bincode`'s 169-byte packed output does **not** match the 176-byte in-memory layout (which contains uninitialized padding), so raw casting would misparse every existing image and leak stack memory to disk. Format v2 fixes this with an explicit layout.
+   - `inode_cache`: 32-shard bounded `BoundedInodeCache` (`FxHashMap` + Second-Chance Clock order, capacity 2048). Eviction drops **one** unreferenced entry; it never clears the whole cache.
+   - `dir_cache`: 32-shard `ShardedDirCache` (`FxHashMap<u64, DirIndex>` per shard) storing per-directory entry name-to-inode mappings. Negative lookups trigger out-of-lock complete indexing without stalling other directories.
+   - **Note**: inodes are persisted through `src::inode_format`, not by casting `#[repr(C)]` bytes. Format v2 writes an explicit deterministic 256-byte little-endian layout with zeroed reserved space.
 3. **Master-Proxy Session Architecture**:
-   - Always prefer `OifsSession::get_or_open(...)` in multi-threaded code. It canonicalizes paths, coordinates flocking, and shares Master instances within the same process.
+   - Always prefer `OifsSession::get_or_open(...)` in multi-threaded code. It canonicalizes paths, coordinates file locking, and shares Master instances within the same process.
 4. **Backward Compatibility**:
-   - OIFS images created under v1 (single-block directories where `inode.size == 0`) must remain transparently readable and upgrade on the fly to multi-block format.
+   - OIFS images created under v1 (single-block directories where `inode.size == 0`) remain transparently readable and upgrade on the fly to multi-block format.
    - **Inode format v1** (packed `bincode` records) images remain readable *and writable*; they keep writing v1 until `oifs migrate` upgrades them, so an image never holds a mix of encodings by accident.
    - `SuperBlock.format_version` selects the inode decoder family. `migration_cursor` makes a partially-applied migration an explicit, resumable state rather than an ambiguous one.
 
@@ -145,7 +142,7 @@ An inode stores:
 cargo build
 cargo build --release
 
-# 2. Run all standard unit and integration tests (68 test suites, 491 tests)
+# 2. Run all standard unit and integration tests (68 test targets)
 cargo test --release
 
 # 3. Run multi-block directory performance benchmark
@@ -154,13 +151,16 @@ cargo test --release --test dir_bench -- --ignored --nocapture
 # 3b. Run the metadata WAL benchmarks (journaled vs legacy, durability-mode cost, flush cost)
 cargo test --release --test journal_bench -- --ignored --nocapture -- --test-threads=1
 
-# 3c. Run the background auto-defragmentation coordinator tests
+# 3c. Run the seekable, cache coherence, and SIMD filter benchmarks
+cargo test --release --test cache_coherence_and_simd_filter_test -- --ignored --nocapture --test-threads=1
+
+# 3d. Run the background auto-defragmentation coordinator tests
 cargo test --release --test auto_defrag_test
 
-# 3d. Run the IPC framing / transport security tests
+# 3e. Run the IPC framing / transport security tests
 cargo test --release --test ipc_frame_test --test ipc_security_test
 
-# 3e. Run Bolero property & fuzz test suite
+# 3f. Run Bolero property & fuzz test suite
 cargo test --release --test bolero_fuzz_test
 
 # 4. Run Shuttle randomized concurrency permutation tests
@@ -179,7 +179,7 @@ cargo kani --harness proof_get_block_checked_arithmetic_prevents_wrap_around
 
 # 7. Check formatting and clippy
 cargo fmt --check
-cargo clippy --lib --bins -- -D warnings
+cargo clippy --all-targets -- -D warnings
 ```
 
 ---
@@ -188,6 +188,7 @@ cargo clippy --lib --bins -- -D warnings
 
 - **Preserve Formal Proofs**: If you alter `BlockPath`, bitmap scanning, directory block headers, or superblock layout, update and run the corresponding Kani proof harnesses (`cargo kani`).
 - **Endianness Portability**: All on-disk numbers are strictly Little-Endian (`to_le_bytes()` / `from_le_bytes()`). Never use native-endian binary casts for on-disk data.
+- **No Internal Task Codes in Code/Docs**: Keep comments, tests, `CHANGELOG.md`, and `AGENTS.md` free of internal phase/ticket/milestone labels; use clear technical descriptions instead.
 - **Verification Rule (`.agent/rules/cargo_test_verification.md`)**:
   - Always verify that the exit code of `cargo test` is 0.
   - Check for `FAILED` or `test result: FAILED` in stdout.

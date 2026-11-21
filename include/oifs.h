@@ -51,17 +51,52 @@ extern "C" {
 /* Opaque handle representing an open OIFS filesystem instance */
 typedef struct OIFSHandle OIFSHandle;
 
+/* Opaque handle representing a shared read-lock session (amortizes RwLock & Inode lookups) */
+typedef struct OIFSReadSession OIFSReadSession;
+
+/* Opaque handle representing a pinned file within an OIFSReadSession */
+typedef struct OIFSFileHandle OIFSFileHandle;
+
+/* Opaque handle representing an in-flight or inline-completed asynchronous operation */
+typedef struct OIFSAsyncFuture OIFSAsyncFuture;
+
 /* Callback function type for directory listing: oifs_ls */
 typedef void (*ListCallback)(const char *name, uint64_t size, uint64_t mtime, void *user_data);
+
+/* Callback function type for asynchronous read completion: oifs_read_at_async_cb */
+typedef void (*OifsAsyncReadCallback)(int64_t status_or_len, const uint8_t *data, size_t data_len, void *user_data);
+
+/* Callback function type for asynchronous write/create completion: oifs_create_file_with_data_async_cb */
+typedef void (*OifsAsyncStatusCallback)(int64_t status_or_inode, void *user_data);
+
+/*
+ * Storage Mode & Durability Constants
+ */
+#define OIFS_STORAGE_MODE_MMAP      0  /* Memory-mapped container (default) */
+#define OIFS_STORAGE_MODE_FILE_IO   1  /* Pure positional pread/pwrite (zero mmap) */
+
+#define OIFS_DURABILITY_LAZY        0  /* OS page-cache writeback (default) */
+#define OIFS_DURABILITY_RANGE_ASYNC 1  /* Batched dirty-range async flush */
+#define OIFS_DURABILITY_STRICT      2  /* Synchronous msync / sync_data barriers */
 
 /*
  * Lifecycle Management
  */
 OIFSHandle* oifs_open(const char *path, uint64_t size);
 OIFSHandle* oifs_open_with_password(const char *path, uint64_t size, const char *password);
+OIFSHandle* oifs_open_with_options(
+    const char *path,
+    uint64_t size,
+    const char *password,
+    uint8_t storage_mode,
+    uint8_t journaled
+);
 OIFSHandle* oifs_get_or_open(const char *path, uint64_t size);
 OIFSHandle* oifs_get_or_open_with_password(const char *path, uint64_t size, const char *password);
 void oifs_close(OIFSHandle *handle);
+int32_t oifs_flush(OIFSHandle *handle);
+int32_t oifs_set_durability_mode(OIFSHandle *handle, uint8_t mode);
+int32_t oifs_set_file_io_cache_bytes(OIFSHandle *handle, size_t bytes);
 
 /*
  * Directory Operations
@@ -141,6 +176,141 @@ int32_t oifs_write_file_with_policy(
  * @return 0 on success, -1 on failure (error string accessible via oifs_last_error)
  */
 int32_t oifs_truncate_file(OIFSHandle *handle, const char *filename, uint64_t new_size);
+
+/*
+ * Direct Inode, Single-Transaction Creation & Scatter-Gather Batch I/O
+ */
+int64_t oifs_resolve_path(OIFSHandle *handle, const char *path);
+
+int64_t oifs_create_file_with_data(
+    OIFSHandle *handle,
+    const char *path,
+    const uint8_t *buf,
+    uint64_t buf_size,
+    uint32_t policy_flags,
+    int32_t zstd_level
+);
+
+int64_t oifs_read_at_inode(
+    OIFSHandle *handle,
+    uint64_t inode_id,
+    uint64_t offset,
+    uint8_t *buf,
+    uint64_t buf_size
+);
+
+typedef struct {
+    uint64_t inode_id;
+    uint64_t offset;
+    uint8_t *buf;
+    uint64_t buf_size;
+    int64_t result;
+} OIFSReadBatchItem;
+
+int32_t oifs_read_at_batch(OIFSHandle *handle, OIFSReadBatchItem *items, size_t count);
+
+/*
+ * Shared Read Session, Pinned File Handle & True Zero-Copy Mmap View
+ */
+OIFSReadSession* oifs_begin_read(OIFSHandle *handle);
+void oifs_end_read(OIFSReadSession *session);
+
+OIFSFileHandle* oifs_session_open_file(const OIFSReadSession *session, const char *path);
+OIFSFileHandle* oifs_session_open_inode(const OIFSReadSession *session, uint64_t inode_id);
+void oifs_file_close(OIFSFileHandle *file);
+
+uint64_t oifs_file_size(const OIFSFileHandle *file);
+uint64_t oifs_file_inode_id(const OIFSFileHandle *file);
+int64_t oifs_file_read_at(
+    const OIFSFileHandle *file,
+    uint64_t offset,
+    uint8_t *buf,
+    uint64_t buf_size
+);
+
+/**
+ * True Zero-Copy view into the memory-mapped image for a pinned OIFSFileHandle.
+ *
+ * Returns:
+ * -  0: Zero-copy succeeded; *out_ptr points directly to the mapped file bytes (valid while
+ *       the OIFSFileHandle or its parent OIFSReadSession remains open) and *out_len is the
+ *       clamped byte count.
+ * -  1: Zero-copy unavailable (e.g. StorageMode::FileIo, compressed/encrypted file, sparse
+ *       hole, or non-contiguous block boundary); caller should fall back to oifs_file_read_at.
+ * - -1: Error or null pointer argument.
+ */
+int32_t oifs_file_mmap_slice(
+    const OIFSFileHandle *file,
+    uint64_t offset,
+    uint64_t max_len,
+    const uint8_t **out_ptr,
+    uint64_t *out_len
+);
+
+/*
+ * Asynchronous I/O & Group-Commit Write Engine (Future & Callback APIs)
+ *
+ * - Reads use an Inline Fast-Path: cache/mmap hits complete immediately on the calling thread
+ *   (oifs_async_poll == 1, zero thread switch), while cold reads and compressed/encrypted
+ *   decodes execute on the persistent background pool.
+ * - Writes use Group Commit: concurrent async writes under OIFS_DURABILITY_STRICT share a
+ *   single physical sync barrier per batch.
+ * - Use-After-Free Safe: oifs_async_free waits for any in-flight write to `buf` to finish
+ *   before returning.
+ */
+OIFSAsyncFuture* oifs_read_at_async(
+    OIFSHandle *handle,
+    uint64_t inode_id,
+    uint64_t offset,
+    uint8_t *buf,
+    uint64_t buf_size
+);
+
+OIFSAsyncFuture* oifs_create_file_with_data_async(
+    OIFSHandle *handle,
+    const char *path,
+    const uint8_t *buf,
+    uint64_t buf_size,
+    uint32_t policy_flags,
+    int32_t zstd_level
+);
+
+OIFSAsyncFuture* oifs_write_file_async(
+    OIFSHandle *handle,
+    const char *path,
+    uint64_t offset,
+    const uint8_t *buf,
+    uint64_t buf_size,
+    uint32_t policy_flags,
+    int32_t zstd_level
+);
+
+OIFSAsyncFuture* oifs_flush_async(OIFSHandle *handle);
+
+int32_t oifs_async_poll(const OIFSAsyncFuture *fut);
+int64_t oifs_async_wait(OIFSAsyncFuture *fut);
+int32_t oifs_async_last_error(const OIFSAsyncFuture *fut, char *buf, uint32_t buf_size);
+void oifs_async_free(OIFSAsyncFuture *fut);
+
+int32_t oifs_read_at_async_cb(
+    OIFSHandle *handle,
+    uint64_t inode_id,
+    uint64_t offset,
+    uint64_t len,
+    OifsAsyncReadCallback cb,
+    void *user_data
+);
+
+int32_t oifs_create_file_with_data_async_cb(
+    OIFSHandle *handle,
+    const char *path,
+    const uint8_t *buf,
+    uint64_t buf_size,
+    uint32_t policy_flags,
+    int32_t zstd_level,
+    OifsAsyncStatusCallback cb,
+    void *user_data
+);
 
 /*
  * Diagnostics and Error Handling

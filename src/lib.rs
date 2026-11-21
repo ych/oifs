@@ -18,7 +18,8 @@ pub mod zstd_pool;
 
 pub use auto_defrag::{AutoDefragConfig, AutoDefragStats};
 pub use disk::{
-    DiskManager, DiskManagerError, DurabilityMode, FileReadHandle, ReadRequest, ReadSession,
+    DiskManager, DiskManagerError, DurabilityMode, FileReadHandle, OifsAsyncTask, ReadRequest,
+    ReadSession,
 };
 pub use filters::{FilterConfig, FilterPipeline, FilterType};
 pub use inode_format::INODE_FORMAT_V2;

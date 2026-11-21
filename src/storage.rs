@@ -1009,6 +1009,93 @@ impl ImageBacking {
         }
     }
 
+    /// Non-blocking cache-only read of `[offset..offset + dst.len()]`.
+    ///
+    /// - Under `Mmap`: copies directly from the memory mapping and returns `Some(Ok(()))`.
+    /// - Under `FileIo`: copies from `DataPageCache` if every overlapping 4 KiB block is already
+    ///   resident in RAM, returning `Some(Ok(()))`; returns `None` if any block would require a
+    ///   blocking `pread` syscall.
+    #[inline]
+    pub(crate) fn try_read_data_cached_only(
+        &self,
+        offset: u64,
+        dst: &mut [u8],
+    ) -> Option<io::Result<()>> {
+        if dst.is_empty() {
+            return Some(Ok(()));
+        }
+        let Ok(start) = usize::try_from(offset) else {
+            return Some(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "read offset overflow",
+            )));
+        };
+        let Some(end) = start.checked_add(dst.len()) else {
+            return Some(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "read offset overflow",
+            )));
+        };
+        if end > self.len() {
+            return Some(Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "read past end of image",
+            )));
+        }
+        match self {
+            Self::Mmap(m) => {
+                dst.copy_from_slice(&m[start..end]);
+                Some(Ok(()))
+            }
+            Self::File(fb) => {
+                if !fb.data_cache.is_enabled() || dst.len() > DataPageCache::MAX_CACHED_EXTENT {
+                    return None;
+                }
+                let mut cur_off = offset;
+                let mut written = 0usize;
+                while written < dst.len() {
+                    let blk_id = cur_off / BLOCK_SIZE as u64;
+                    let in_blk = (cur_off % BLOCK_SIZE as u64) as usize;
+                    let take = (dst.len() - written).min(BLOCK_SIZE - in_blk);
+                    let dst_slice = &mut dst[written..written + take];
+                    if !fb.data_cache.try_copy_into(blk_id, in_blk, dst_slice) {
+                        return None;
+                    }
+                    written += take;
+                    cur_off += take as u64;
+                }
+                Some(Ok(()))
+            }
+        }
+    }
+
+    /// Non-blocking cache-only read of an 8-byte little-endian `u64` slot from a pointer block.
+    /// Returns `None` under `FileIo` if the pointer block is not yet cached in `MetadataBlockCache`.
+    #[inline]
+    pub(crate) fn try_read_block_ptr_cached_only(
+        &self,
+        block_id: u64,
+        entry_idx: usize,
+    ) -> Option<u64> {
+        let off = entry_idx * 8;
+        if off + 8 > BLOCK_SIZE {
+            return Some(0);
+        }
+        match self {
+            Self::Mmap(m) => {
+                let start = usize::try_from(block_id)
+                    .ok()
+                    .and_then(|b| b.checked_mul(BLOCK_SIZE))
+                    .and_then(|b| b.checked_add(off))?;
+                if start + 8 > m.len() {
+                    return Some(0);
+                }
+                Some(u64::from_le_bytes(m[start..start + 8].try_into().unwrap()))
+            }
+            Self::File(fb) => fb.block_cache.read_u64_le(block_id, off),
+        }
+    }
+
     /// Reads file payload bytes `[offset..offset + dst.len()]`, using the bounded 64-shard
     /// user-space [`DataPageCache`] under [`StorageMode::FileIo`] for extents up to 64 KiB.
     ///
@@ -1813,6 +1900,94 @@ impl ImageBacking {
     pub(crate) fn replace_file_for_test(&mut self, file: File) {
         if let Self::File(fb) = self {
             fb.file = file;
+        }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Formally prove that `BitmapSliceMut::set_dirty_bits` computes a valid byte range
+    /// `[byte_start..byte_end)` that never exceeds `slice.len()` and covers every bit in
+    /// `[start_bit..start_bit + bit_count)` whenever the bit range lies within the bitmap.
+    #[kani::proof]
+    fn proof_bitmap_slice_mut_set_dirty_bits_coverage_and_bounds() {
+        let mut buf = [0u8; 64];
+        let slice_len: usize = kani::any();
+        kani::assume(slice_len <= buf.len());
+        let start_bit: usize = kani::any();
+        let bit_count: usize = kani::any();
+
+        let mut bm = BitmapSliceMut {
+            slice: &mut buf[..slice_len],
+            file_writeback: None,
+            dirty_range: None,
+        };
+        bm.set_dirty_bits(start_bit, bit_count);
+        let (byte_start, byte_end) = bm.dirty_range.expect("dirty_range must be populated");
+
+        assert!(byte_start <= slice_len);
+        assert!(byte_end <= slice_len);
+
+        if bit_count == 0 {
+            assert_eq!((byte_start, byte_end), (0, 0));
+            kani::cover!(true, "Zero bit_count produces empty dirty range");
+        } else {
+            assert!(byte_start <= byte_end);
+            if let Some(end_bit) = start_bit.checked_add(bit_count)
+                && end_bit <= slice_len * 8
+            {
+                let probe_bit: usize = kani::any();
+                kani::assume(probe_bit >= start_bit && probe_bit < end_bit);
+                let probe_byte = probe_bit / 8;
+                assert!(probe_byte >= byte_start && probe_byte < byte_end);
+                kani::cover!(byte_end - byte_start == 1, "Single-byte dirty bit range");
+                kani::cover!(byte_end - byte_start > 1, "Multi-byte dirty bit range");
+            }
+        }
+    }
+
+    /// Formally prove that `MetadataBlockCache::shard_idx` (`< 16`) and
+    /// `DataPageCache::shard_idx` (`< 64`) are strictly in bounds for every `u64` block ID,
+    /// and that the Fibonacci step `h.wrapping_add(0x9E37_79B9_7F4A_7C15)` between
+    /// consecutive block IDs never collides in the top 4 bits (16 shards) or top 6 bits (64 shards).
+    #[kani::proof]
+    fn proof_storage_cache_shard_idx_bounds_and_mixing() {
+        let block_id: u64 = kani::any();
+        let meta_s = MetadataBlockCache::shard_idx(block_id);
+        let data_s = DataPageCache::shard_idx(block_id);
+        assert!(meta_s < MetadataBlockCache::NUM_SHARDS);
+        assert!(data_s < DataPageCache::NUM_SHARDS);
+
+        // Because (block_id + 1) * C == block_id * C + C (mod 2^64) and gcd(C, 2^64) == 1,
+        // consecutive block IDs advance the 64-bit product `h` by C = 0x9E37_79B9_7F4A_7C15.
+        let h: u64 = kani::any();
+        let h_next = h.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        assert_ne!((h >> 60) as usize, (h_next >> 60) as usize);
+        assert_ne!((h >> 58) as usize, (h_next >> 58) as usize);
+    }
+
+    /// Formally prove that `DataPageCache::blocks_per_shard_for_bytes` clamps against
+    /// `MAX_FILE_IO_CACHE_BYTES` and cannot overflow when computing total cache capacity.
+    #[kani::proof]
+    fn proof_data_page_cache_blocks_per_shard_clamping_and_no_overflow() {
+        let bytes: usize = kani::any();
+        let per_shard = DataPageCache::blocks_per_shard_for_bytes(bytes);
+        let max_per_shard = DataPageCache::blocks_per_shard_for_bytes(MAX_FILE_IO_CACHE_BYTES);
+
+        assert!(per_shard <= max_per_shard);
+        let total_blocks = per_shard.checked_mul(DataPageCache::NUM_SHARDS).unwrap();
+        let total_bytes = total_blocks.checked_mul(BLOCK_SIZE).unwrap();
+        assert!(total_bytes <= MAX_FILE_IO_CACHE_BYTES);
+
+        if bytes < BLOCK_SIZE {
+            assert_eq!(per_shard, 0);
+        } else {
+            assert!(per_shard >= 1);
+        }
+        if bytes >= MAX_FILE_IO_CACHE_BYTES {
+            assert_eq!(per_shard, max_per_shard);
         }
     }
 }

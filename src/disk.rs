@@ -595,6 +595,9 @@ impl DiskManagerInner {
                 Ok(())
             }
             DurabilityMode::Strict => {
+                if is_strict_sync_deferred() {
+                    return Ok(());
+                }
                 if self.backing.as_mmap_slice().is_some() {
                     let coalesced = Self::coalesce_ranges_with_gap(
                         ranges,
@@ -1065,6 +1068,19 @@ impl DiskManager {
         mode: StorageMode,
     ) -> Result<Self, DiskManagerError> {
         Self::init_or_open(path, total_size, None, false, false, mode)
+    }
+
+    /// Open or create an OIFS image with explicit password, metadata WAL journaling flag,
+    /// and [`StorageMode`].
+    pub fn open_with_options<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>,
+        journaled: bool,
+        mode: StorageMode,
+    ) -> Result<Self, DiskManagerError> {
+        let create_enc = !path.as_ref().exists() && password.is_some_and(|p| !p.is_empty());
+        Self::init_or_open(path, total_size, password, create_enc, journaled, mode)
     }
 
     /// Open (or create) an OIFS image using pure positional `pread`/`pwrite` I/O (zero `mmap`).
@@ -2307,8 +2323,10 @@ impl DiskManager {
 
         // The WAL must reach stable storage *before* the metadata it describes, or a
         // power loss can leave the image with partially applied metadata that recovery
-        // has no record of.
-        if guard.durability_mode() != DurabilityMode::Strict {
+        // has no record of. Under group-commit batching (`is_strict_sync_deferred()`),
+        // the drainer thread performs a unified `flush()` barrier before completing any
+        // future in the batch.
+        if guard.durability_mode() != DurabilityMode::Strict || is_strict_sync_deferred() {
             return Ok(());
         }
 
@@ -3429,7 +3447,11 @@ impl DiskManager {
         // directly into the WAL frame as zero-padded `WriteBlockSlice` ops. This makes
         // the file's data durable as part of the single WAL commit barrier (1 sync total
         // instead of 3 for `create_file` + payload + `write_data`).
+        // Under Group-Commit batching (`is_strict_sync_deferred()`), the drainer issues
+        // a unified `flush()` for the whole batch, so payload blocks are written directly
+        // to the data area instead of consuming WAL ring capacity.
         let inline_in_wal = guard.durability_mode() == DurabilityMode::Strict
+            && !is_strict_sync_deferred()
             && !final_buf.is_empty()
             && final_buf.len() <= 2 * BLOCK_SIZE;
         let mut payload_needs_pre_sync = false;
@@ -3461,7 +3483,8 @@ impl DiskManager {
                 &mut ops,
                 &mut used,
             )?;
-            payload_needs_pre_sync = guard.durability_mode() == DurabilityMode::Strict;
+            payload_needs_pre_sync =
+                guard.durability_mode() == DurabilityMode::Strict && !is_strict_sync_deferred();
         }
 
         // Stage directory entry into parent directory.
@@ -5251,7 +5274,7 @@ impl DiskManager {
         } else {
             Vec::new()
         };
-        if guard.durability_mode() == DurabilityMode::Strict {
+        if guard.durability_mode() == DurabilityMode::Strict && !is_strict_sync_deferred() {
             if guard.backing.as_mmap_slice().is_some() {
                 let coalesced_payload =
                     DiskManagerInner::coalesce_ranges(&payload_ranges, guard.backing.len());
@@ -7541,6 +7564,12 @@ pub struct ReadSession<'a> {
 }
 
 impl<'a> ReadSession<'a> {
+    /// Returns the root directory inode ID without re-acquiring the outer lock.
+    #[inline]
+    pub fn root_inode(&self) -> u64 {
+        self.guard.superblock.root_inode
+    }
+
     /// Looks up a child entry by name in `parent_inode_id` without re-acquiring the outer lock.
     pub fn lookup(&self, parent_inode_id: u64, name: &str) -> Result<u64, DiskManagerError> {
         crate::directory::validate_filename(name).map_err(|e| {
@@ -7637,7 +7666,7 @@ pub struct FileReadHandle<'s, 'a> {
     is_raw_fast: bool,
 }
 
-impl FileReadHandle<'_, '_> {
+impl<'s, 'a> FileReadHandle<'s, 'a> {
     /// Returns the pinned inode ID.
     #[inline]
     pub fn inode_id(&self) -> u64 {
@@ -7659,6 +7688,65 @@ impl FileReadHandle<'_, '_> {
     /// Reads the entire contents of this file.
     pub fn read_all(&self) -> Result<Vec<u8>, DiskManagerError> {
         DiskManager::read_data_internal(&self.session.guard, self.inode_id, &self.inode)
+    }
+
+    /// Returns a direct zero-copy slice `&'s [u8]` into the memory-mapped container when:
+    /// 1. The filesystem is backed by [`StorageMode::Mmap`],
+    /// 2. The file is raw (uncompressed, unencrypted, non-seekable, no active filters), and
+    /// 3. The requested range `[file_offset..file_offset + max_len)` (clamped to EOF) resides
+    ///    in physically contiguous data blocks with no sparse holes.
+    ///
+    /// Returns `Ok(Some(slice))` when zero-copy is possible, or `Ok(None)` when the caller
+    /// should fall back to [`Self::read_at`] (e.g. under [`StorageMode::FileIo`], compressed or
+    /// encrypted files, sparse holes, or non-contiguous block boundaries).
+    #[inline]
+    pub fn mmap_slice(
+        &self,
+        file_offset: u64,
+        max_len: usize,
+    ) -> Result<Option<&'s [u8]>, DiskManagerError> {
+        if !self.is_raw_fast {
+            return Ok(None);
+        }
+        let guard = &self.session.guard;
+        let Some(mmap) = guard.backing.as_mmap_slice() else {
+            return Ok(None);
+        };
+        if file_offset >= self.inode.size || max_len == 0 {
+            return Ok(Some(&[]));
+        }
+        let available = usize::try_from(self.inode.size - file_offset).unwrap_or(usize::MAX);
+        let len = max_len.min(available);
+        let first_blk_idx = (file_offset / BLOCK_SIZE as u64) as usize;
+        let in_blk_off = (file_offset % BLOCK_SIZE as u64) as usize;
+        let last_byte = file_offset + (len - 1) as u64;
+        let last_blk_idx = (last_byte / BLOCK_SIZE as u64) as usize;
+
+        let first_phys = DiskManager::resolve_raw_block_id(guard, &self.inode, first_blk_idx);
+        if !guard.is_data_block(first_phys) {
+            return Ok(None);
+        }
+        for b_idx in (first_blk_idx + 1)..=last_blk_idx {
+            let expected = first_phys + (b_idx - first_blk_idx) as u64;
+            let actual = DiskManager::resolve_raw_block_id(guard, &self.inode, b_idx);
+            if actual != expected || !guard.is_data_block(actual) {
+                return Ok(None);
+            }
+        }
+        let Some(start) = usize::try_from(first_phys)
+            .ok()
+            .and_then(|b| b.checked_mul(BLOCK_SIZE))
+            .and_then(|b| b.checked_add(in_blk_off))
+        else {
+            return Ok(None);
+        };
+        let Some(end) = start.checked_add(len) else {
+            return Ok(None);
+        };
+        if end > mmap.len() {
+            return Ok(None);
+        }
+        Ok(Some(&mmap[start..end]))
     }
 
     /// Reads up to `buf.len()` bytes starting at `file_offset`.
@@ -7705,6 +7793,789 @@ impl FileReadHandle<'_, '_> {
             file_offset,
             buf,
         )
+    }
+}
+
+thread_local! {
+    static TL_DEFER_STRICT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[inline]
+fn is_strict_sync_deferred() -> bool {
+    TL_DEFER_STRICT_SYNC.with(|c| c.get())
+}
+
+struct DeferStrictSyncGuard;
+
+impl DeferStrictSyncGuard {
+    fn enter() -> Self {
+        TL_DEFER_STRICT_SYNC.with(|c| c.set(true));
+        Self
+    }
+}
+
+impl Drop for DeferStrictSyncGuard {
+    fn drop(&mut self) {
+        TL_DEFER_STRICT_SYNC.with(|c| c.set(false));
+    }
+}
+
+pub(crate) struct AsyncTaskState<T> {
+    done: std::sync::atomic::AtomicBool,
+    slot: Mutex<(Option<T>, Option<std::task::Waker>)>,
+    cvar: std::sync::Condvar,
+}
+
+impl<T> AsyncTaskState<T> {
+    pub(crate) fn new_pending() -> Arc<Self> {
+        Arc::new(Self {
+            done: std::sync::atomic::AtomicBool::new(false),
+            slot: Mutex::new((None, None)),
+            cvar: std::sync::Condvar::new(),
+        })
+    }
+
+    pub(crate) fn complete(&self, val: T) {
+        let waker = {
+            let mut guard = crate::lock_unpoisoned(&self.slot);
+            guard.0 = Some(val);
+            self.done.store(true, std::sync::atomic::Ordering::Release);
+            guard.1.take()
+        };
+        self.cvar.notify_all();
+        if let Some(w) = waker {
+            w.wake();
+        }
+    }
+
+    pub(crate) fn mark_finished_without_value(&self) {
+        if self.done.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let waker = {
+            let mut guard = crate::lock_unpoisoned(&self.slot);
+            self.done.store(true, std::sync::atomic::Ordering::Release);
+            guard.1.take()
+        };
+        self.cvar.notify_all();
+        if let Some(w) = waker {
+            w.wake();
+        }
+    }
+}
+
+/// Handle to an asynchronous OIFS operation.
+///
+/// Implements [`std::future::Future`] for zero-dependency `.await` in any Rust async runtime
+/// (`tokio`, `smol`, `futures::executor::block_on`), while also supporting synchronous polling
+/// ([`Self::is_ready`], [`Self::try_take`]) and blocking wait ([`Self::wait`]).
+///
+/// Hot cache-hit and `Mmap` reads complete on the **Inline Fast-Path** (`OifsAsyncTask::ready`)
+/// in ~50 ns without spawning or waking background threads.
+pub struct OifsAsyncTask<T> {
+    inline_ready: Option<T>,
+    state: Option<Arc<AsyncTaskState<T>>>,
+    wait_on_drop: bool,
+}
+
+impl<T> OifsAsyncTask<T> {
+    /// Creates an immediately completed [`OifsAsyncTask`] with zero heap allocation or thread hop.
+    #[inline]
+    pub fn ready(val: T) -> Self {
+        Self {
+            inline_ready: Some(val),
+            state: None,
+            wait_on_drop: false,
+        }
+    }
+
+    pub(crate) fn from_state(state: Arc<AsyncTaskState<T>>, wait_on_drop: bool) -> Self {
+        Self {
+            inline_ready: None,
+            state: Some(state),
+            wait_on_drop,
+        }
+    }
+
+    /// Returns `true` if the operation has completed.
+    #[inline]
+    pub fn is_ready(&self) -> bool {
+        if self.inline_ready.is_some() {
+            return true;
+        }
+        self.state
+            .as_ref()
+            .is_some_and(|s| s.done.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    /// Extracts the result if the operation has completed, returning `None` if still in flight
+    /// or already taken.
+    #[inline]
+    pub fn try_take(&mut self) -> Option<T> {
+        if let Some(v) = self.inline_ready.take() {
+            self.wait_on_drop = false;
+            return Some(v);
+        }
+        let s = self.state.as_ref()?;
+        if !s.done.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        let v = crate::lock_unpoisoned(&s.slot).0.take();
+        if v.is_some() {
+            self.wait_on_drop = false;
+        }
+        v
+    }
+
+    /// Blocks the current thread until the operation completes without consuming the result.
+    pub fn wait_for_completion(&self) {
+        if self.inline_ready.is_some() {
+            return;
+        }
+        let Some(s) = self.state.as_ref() else {
+            return;
+        };
+        if s.done.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let mut guard = crate::lock_unpoisoned(&s.slot);
+        while !s.done.load(std::sync::atomic::Ordering::Acquire) {
+            guard = s.cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// Blocks the current thread until the operation completes and returns the output.
+    #[inline]
+    pub fn wait(mut self) -> T {
+        if let Some(v) = self.inline_ready.take() {
+            self.wait_on_drop = false;
+            return v;
+        }
+        self.wait_for_completion();
+        self.wait_on_drop = false;
+        let s = self.state.as_ref().expect("missing async state");
+        let res = crate::lock_unpoisoned(&s.slot).0.take();
+        res.expect("OifsAsyncTask result already taken")
+    }
+}
+
+impl<T: Send + 'static> OifsAsyncTask<T> {
+    /// Spawns `work` onto the persistent async read/compute pool.
+    pub fn spawn(work: impl FnOnce() -> T + Send + 'static) -> Self {
+        Self::spawn_with_drop_policy(work, false)
+    }
+
+    /// Spawns `work` onto the persistent async read/compute pool; when `wait_on_drop` is `true`,
+    /// dropping the task waits for `work` to finish (preventing Use-After-Free when FFI callers
+    /// pass borrowed output buffers).
+    pub(crate) fn spawn_with_drop_policy(
+        work: impl FnOnce() -> T + Send + 'static,
+        wait_on_drop: bool,
+    ) -> Self {
+        struct PanicCompletionGuard<T>(Option<Arc<AsyncTaskState<T>>>);
+        impl<T> Drop for PanicCompletionGuard<T> {
+            fn drop(&mut self) {
+                if let Some(s) = self.0.take() {
+                    s.mark_finished_without_value();
+                }
+            }
+        }
+
+        let state = AsyncTaskState::new_pending();
+        let worker_state = Arc::clone(&state);
+        submit_async_job(Box::new(move || {
+            let mut guard = PanicCompletionGuard(Some(worker_state));
+            let out = work();
+            if let Some(s) = guard.0.take() {
+                s.complete(out);
+            }
+        }));
+        Self::from_state(state, wait_on_drop)
+    }
+}
+
+impl<T> Drop for OifsAsyncTask<T> {
+    fn drop(&mut self) {
+        if self.wait_on_drop {
+            self.wait_for_completion();
+        }
+    }
+}
+
+impl<T: Unpin> std::future::Future for OifsAsyncTask<T> {
+    type Output = T;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        if let Some(val) = this.inline_ready.take() {
+            this.wait_on_drop = false;
+            return std::task::Poll::Ready(val);
+        }
+        let s = this.state.as_ref().expect("missing async state");
+        if s.done.load(std::sync::atomic::Ordering::Acquire)
+            && let Some(val) = crate::lock_unpoisoned(&s.slot).0.take()
+        {
+            this.wait_on_drop = false;
+            return std::task::Poll::Ready(val);
+        }
+        let mut guard = crate::lock_unpoisoned(&s.slot);
+        if let Some(val) = guard.0.take() {
+            this.wait_on_drop = false;
+            return std::task::Poll::Ready(val);
+        }
+        guard.1 = Some(cx.waker().clone());
+        std::task::Poll::Pending
+    }
+}
+
+type AsyncJob = Box<dyn FnOnce() + Send + 'static>;
+
+struct AsyncPoolQueue {
+    queue: Mutex<std::collections::VecDeque<AsyncJob>>,
+    cvar: std::sync::Condvar,
+}
+
+pub(crate) fn submit_async_job(job: AsyncJob) {
+    static POOL: std::sync::OnceLock<Arc<AsyncPoolQueue>> = std::sync::OnceLock::new();
+    let pool = POOL.get_or_init(|| {
+        let q = Arc::new(AsyncPoolQueue {
+            queue: Mutex::new(std::collections::VecDeque::with_capacity(64)),
+            cvar: std::sync::Condvar::new(),
+        });
+        let num_workers = std::thread::available_parallelism()
+            .map(|n| n.get().clamp(2, 8))
+            .unwrap_or(4);
+        for idx in 0..num_workers {
+            let q_worker = Arc::clone(&q);
+            let _ = std::thread::Builder::new()
+                .name(format!("oifs-async-{idx}"))
+                .spawn(move || {
+                    loop {
+                        let job = {
+                            let mut guard = crate::lock_unpoisoned(&q_worker.queue);
+                            loop {
+                                if let Some(j) = guard.pop_front() {
+                                    break j;
+                                }
+                                guard =
+                                    q_worker.cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
+                            }
+                        };
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                    }
+                });
+        }
+        q
+    });
+    {
+        let mut guard = crate::lock_unpoisoned(&pool.queue);
+        guard.push_back(job);
+    }
+    pool.cvar.notify_one();
+}
+
+type GroupWriteRun =
+    Box<dyn FnOnce(&DiskManager) -> Result<u64, DiskManagerError> + Send + 'static>;
+type GroupWriteComplete = Box<dyn FnOnce(Result<u64, DiskManagerError>) + Send + 'static>;
+type GroupWriteResultItem = (
+    DiskManager,
+    Result<u64, DiskManagerError>,
+    GroupWriteComplete,
+);
+
+struct GroupWriteOp {
+    dm: DiskManager,
+    run: GroupWriteRun,
+    complete: GroupWriteComplete,
+}
+
+struct GroupWriteQueue {
+    queue: Mutex<std::collections::VecDeque<GroupWriteOp>>,
+    cvar: std::sync::Condvar,
+}
+
+pub(crate) fn submit_group_write_op(
+    dm: DiskManager,
+    run: impl FnOnce(&DiskManager) -> Result<u64, DiskManagerError> + Send + 'static,
+    complete: impl FnOnce(Result<u64, DiskManagerError>) + Send + 'static,
+) {
+    static WRITE_POOL: std::sync::OnceLock<Arc<GroupWriteQueue>> = std::sync::OnceLock::new();
+    let pool = WRITE_POOL.get_or_init(|| {
+        let q = Arc::new(GroupWriteQueue {
+            queue: Mutex::new(std::collections::VecDeque::with_capacity(128)),
+            cvar: std::sync::Condvar::new(),
+        });
+        let q_worker = Arc::clone(&q);
+        let _ = std::thread::Builder::new()
+            .name("oifs-group-commit".to_string())
+            .spawn(move || {
+                let mut batch = Vec::with_capacity(64);
+                loop {
+                    {
+                        let mut guard = crate::lock_unpoisoned(&q_worker.queue);
+                        while guard.is_empty() {
+                            guard = q_worker.cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
+                        }
+                        if guard.len() == 1 {
+                            drop(guard);
+                            std::thread::yield_now();
+                            guard = crate::lock_unpoisoned(&q_worker.queue);
+                        }
+                        while let Some(op) = guard.pop_front() {
+                            batch.push(op);
+                            if batch.len() >= 128 {
+                                break;
+                            }
+                        }
+                    }
+
+                    // Multi-operation Group Commit batch:
+                    // Defer individual Strict WAL sync barriers while applying operations in
+                    // memory, harvest any operations that arrived while the batch was executing
+                    // (up to 128 ops), and then flush each involved Strict DiskManager once
+                    // before notifying any caller.
+                    let mut results: Vec<GroupWriteResultItem> =
+                        Vec::with_capacity(batch.len().max(16));
+                    {
+                        let _defer = DeferStrictSyncGuard::enter();
+                        loop {
+                            for op in batch.drain(..) {
+                                let res =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        (op.run)(&op.dm)
+                                    }))
+                                    .unwrap_or_else(|_| {
+                                        Err(DiskManagerError::Io(std::io::Error::other(
+                                            "panic in async write",
+                                        )))
+                                    });
+                                results.push((op.dm, res, op.complete));
+                            }
+                            if results.len() >= 128 {
+                                break;
+                            }
+                            let mut guard = crate::lock_unpoisoned(&q_worker.queue);
+                            while results.len() + batch.len() < 128
+                                && let Some(op) = guard.pop_front()
+                            {
+                                batch.push(op);
+                            }
+                            if batch.is_empty() {
+                                break;
+                            }
+                        }
+                    }
+
+                    // Deduplicate Strict DiskManagers by Arc pointer and flush each once.
+                    let mut flushed_ptrs: Vec<(usize, Option<String>)> = Vec::new();
+                    for (dm, res, _) in &results {
+                        if res.is_ok() && dm.durability_mode() == DurabilityMode::Strict {
+                            let ptr = Arc::as_ptr(&dm.inner) as usize;
+                            if !flushed_ptrs.iter().any(|(p, _)| *p == ptr) {
+                                let flush_err = dm.flush().err().map(|e| e.to_string());
+                                flushed_ptrs.push((ptr, flush_err));
+                            }
+                        }
+                    }
+
+                    for (dm, mut res, complete) in results {
+                        if res.is_ok() && dm.durability_mode() == DurabilityMode::Strict {
+                            let ptr = Arc::as_ptr(&dm.inner) as usize;
+                            if let Some((_, Some(err_msg))) =
+                                flushed_ptrs.iter().find(|(p, _)| *p == ptr)
+                            {
+                                res = Err(DiskManagerError::Io(std::io::Error::other(
+                                    err_msg.clone(),
+                                )));
+                            }
+                        }
+                        complete(res);
+                    }
+                }
+            });
+        q
+    });
+    {
+        let mut guard = crate::lock_unpoisoned(&pool.queue);
+        guard.push_back(GroupWriteOp {
+            dm,
+            run: Box::new(run),
+            complete: Box::new(complete),
+        });
+    }
+    pool.cvar.notify_one();
+}
+
+impl DiskManager {
+    /// Non-blocking cache-only pointer resolution used by the Async Read Inline Fast-Path.
+    #[inline]
+    fn try_resolve_raw_block_id_cached_only(
+        guard: &DiskManagerInner,
+        inode: &Inode,
+        blk_idx: usize,
+    ) -> Option<u64> {
+        const SINGLE_LIMIT: usize = 10 + 512;
+        const DOUBLE_LIMIT: usize = SINGLE_LIMIT + 512 * 512;
+        const TRIPLE_LIMIT: usize = DOUBLE_LIMIT + 512 * 512 * 512;
+        if blk_idx < 10 {
+            return Some(inode.blocks[blk_idx]);
+        }
+        if blk_idx < SINGLE_LIMIT {
+            let sib_id = inode.blocks[10];
+            if !guard.is_data_block(sib_id) {
+                return Some(0);
+            }
+            return guard
+                .backing
+                .try_read_block_ptr_cached_only(sib_id, blk_idx - 10);
+        }
+        if blk_idx < DOUBLE_LIMIT {
+            let dib_id = inode.blocks[11];
+            if !guard.is_data_block(dib_id) {
+                return Some(0);
+            }
+            let rel = blk_idx - SINGLE_LIMIT;
+            let sib_id = guard
+                .backing
+                .try_read_block_ptr_cached_only(dib_id, rel / 512)?;
+            if !guard.is_data_block(sib_id) {
+                return Some(0);
+            }
+            return guard
+                .backing
+                .try_read_block_ptr_cached_only(sib_id, rel % 512);
+        }
+        if blk_idx < TRIPLE_LIMIT {
+            let tib_id = inode.triple_indirect;
+            if !guard.is_data_block(tib_id) {
+                return Some(0);
+            }
+            let rel = blk_idx - DOUBLE_LIMIT;
+            let dib_id = guard
+                .backing
+                .try_read_block_ptr_cached_only(tib_id, rel / (512 * 512))?;
+            if !guard.is_data_block(dib_id) {
+                return Some(0);
+            }
+            let rem = rel % (512 * 512);
+            let sib_id = guard
+                .backing
+                .try_read_block_ptr_cached_only(dib_id, rem / 512)?;
+            if !guard.is_data_block(sib_id) {
+                return Some(0);
+            }
+            return guard
+                .backing
+                .try_read_block_ptr_cached_only(sib_id, rem % 512);
+        }
+        Some(0)
+    }
+
+    /// Attempts to satisfy a positional read immediately on the calling thread without blocking
+    /// or issuing syscalls (Inline Fast-Path).
+    ///
+    /// Succeeds when `inner.try_read()` succeeds and the requested range is either:
+    /// - backed by [`StorageMode::Mmap`] on a raw uncompressed/unencrypted file,
+    /// - resident in the [`StorageMode::FileIo`] `DataPageCache`,
+    /// - resident in `ChunkReadCache` (for Seekable 64K files), or
+    /// - resident in `DecodedBlobCache` (for compressed/encrypted files).
+    pub(crate) fn try_read_at_inline_into(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        buf: &mut [u8],
+    ) -> Option<Result<usize, DiskManagerError>> {
+        let guard = self.inner.try_read().ok()?;
+        let inode = if let Some(cached) = guard.inode_cache.get(inode_id) {
+            cached
+        } else if guard.backing.as_mmap_slice().is_some() {
+            match Self::read_inode_internal(&guard, inode_id) {
+                Ok(i) => i,
+                Err(e) => return Some(Err(e)),
+            }
+        } else {
+            return None;
+        };
+
+        if inode.mode != crate::inode::FileType::File {
+            return Some(Err(DiskManagerError::Io(std::io::Error::other(
+                "Cannot read non-file inode",
+            ))));
+        }
+        if guard.superblock.encrypted && !inode.encrypted {
+            return Some(Err(DiskManagerError::DecryptionFailed));
+        }
+        if file_offset >= inode.size || buf.is_empty() {
+            return Some(Ok(0));
+        }
+
+        let available = usize::try_from(inode.size - file_offset).unwrap_or(usize::MAX);
+        let to_read = buf.len().min(available);
+
+        // 1. Seekable 64K cache-hit probe (single chunk).
+        if inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0 {
+            let chunk_size = crate::inode::CHUNK_SIZE_64K;
+            let start_chunk = (file_offset as usize) / chunk_size;
+            let end_chunk = ((file_offset as usize) + to_read - 1) / chunk_size;
+            if start_chunk == end_chunk {
+                let in_chunk = (file_offset as usize) % chunk_size;
+                let chunk_start = (start_chunk * chunk_size) as u64;
+                let chunk_valid_len = ((inode.size - chunk_start) as usize).min(chunk_size);
+                if in_chunk >= chunk_valid_len {
+                    return Some(Ok(0));
+                }
+                let raw_entry =
+                    Self::try_resolve_raw_block_id_cached_only(&guard, &inode, start_chunk)?;
+                if raw_entry == 0 {
+                    buf[..to_read].fill(0);
+                    return Some(Ok(to_read));
+                }
+                if let Some(n) = guard
+                    .chunk_read_cache
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .copy_slice_if_hit(
+                        inode_id,
+                        start_chunk,
+                        raw_entry,
+                        chunk_valid_len,
+                        in_chunk,
+                        &mut buf[..to_read],
+                    )
+                {
+                    return Some(Ok(n));
+                }
+            }
+            return None;
+        }
+
+        // 2. DecodedBlobCache hit probe for compressed/encrypted files.
+        if inode.compressed_size > 0 || inode.encrypted {
+            if let Some(blob) =
+                crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, &inode)
+            {
+                let start = file_offset as usize;
+                if start >= blob.len() {
+                    return Some(Ok(0));
+                }
+                let end = (start + to_read).min(blob.len());
+                let actual = end - start;
+                buf[..actual].copy_from_slice(&blob[start..end]);
+                return Some(Ok(actual));
+            }
+            return None;
+        }
+
+        // 3. Raw uncompressed/unencrypted file: Mmap or DataPageCache hit probe.
+        if inode.filter_delta || inode.filter_shuffle || inode.filter_bitshuffle {
+            return None;
+        }
+        let mut written = 0usize;
+        let mut cur_off = file_offset;
+        while written < to_read {
+            let blk_idx = (cur_off / BLOCK_SIZE as u64) as usize;
+            let in_blk = (cur_off % BLOCK_SIZE as u64) as usize;
+            let take = (to_read - written).min(BLOCK_SIZE - in_blk);
+            let phys_blk = Self::try_resolve_raw_block_id_cached_only(&guard, &inode, blk_idx)?;
+            if guard.is_data_block(phys_blk) {
+                let disk_off = phys_blk * BLOCK_SIZE as u64 + in_blk as u64;
+                match guard
+                    .backing
+                    .try_read_data_cached_only(disk_off, &mut buf[written..written + take])?
+                {
+                    Ok(()) => {}
+                    Err(e) => return Some(Err(DiskManagerError::Io(e))),
+                }
+            } else {
+                buf[written..written + take].fill(0);
+            }
+            written += take;
+            cur_off += take as u64;
+        }
+        Some(Ok(to_read))
+    }
+
+    /// Asynchronously reads up to `len` bytes starting at `file_offset` from `inode_id`.
+    ///
+    /// Completes immediately on the calling thread (`Poll::Ready`, zero thread hop) when the
+    /// range is served from `Mmap`, `DataPageCache`, `ChunkReadCache`, or `DecodedBlobCache`;
+    /// dispatches to the background pool only on cache miss, lock contention, or cold decode.
+    pub fn read_at_async(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        len: usize,
+    ) -> OifsAsyncTask<Result<Vec<u8>, DiskManagerError>> {
+        if len <= DecodedBlobCache::MAX_ENTRY_BYTES
+            && let Ok(guard) = self.inner.try_read()
+        {
+            let inode_opt = guard.inode_cache.get(inode_id).or_else(|| {
+                if guard.backing.as_mmap_slice().is_some() {
+                    Self::read_inode_internal(&guard, inode_id).ok()
+                } else {
+                    None
+                }
+            });
+            if let Some(inode) = inode_opt
+                && inode.mode == crate::inode::FileType::File
+                && !(guard.superblock.encrypted && !inode.encrypted)
+            {
+                if file_offset >= inode.size || len == 0 {
+                    return OifsAsyncTask::ready(Ok(Vec::new()));
+                }
+                let avail = usize::try_from(inode.size - file_offset).unwrap_or(usize::MAX);
+                let alloc_len = len.min(avail);
+                drop(guard);
+                if let Ok(mut buf) = Self::try_alloc_zeroed_vec(alloc_len)
+                    && let Some(res) = self.try_read_at_inline_into(inode_id, file_offset, &mut buf)
+                {
+                    return OifsAsyncTask::ready(res.map(|n| {
+                        buf.truncate(n);
+                        buf
+                    }));
+                }
+            }
+        }
+        let dm = self.clone();
+        OifsAsyncTask::spawn(move || dm.read_at_vec(inode_id, file_offset, len))
+    }
+
+    /// Asynchronously reads the entire decoded contents of `inode_id`.
+    ///
+    /// Completes inline when the file is already resident in cache/`Mmap`;
+    /// otherwise dispatches to the background pool.
+    pub fn read_data_async(
+        &self,
+        inode_id: u64,
+    ) -> OifsAsyncTask<Result<Vec<u8>, DiskManagerError>> {
+        if let Ok(guard) = self.inner.try_read() {
+            let inode_opt = guard.inode_cache.get(inode_id).or_else(|| {
+                if guard.backing.as_mmap_slice().is_some() {
+                    Self::read_inode_internal(&guard, inode_id).ok()
+                } else {
+                    None
+                }
+            });
+            if let Some(inode) = inode_opt
+                && inode.mode == crate::inode::FileType::File
+                && !(guard.superblock.encrypted && !inode.encrypted)
+                && inode.size <= DecodedBlobCache::MAX_ENTRY_BYTES as u64
+            {
+                let sz = inode.size as usize;
+                drop(guard);
+                if sz == 0 {
+                    return OifsAsyncTask::ready(Ok(Vec::new()));
+                }
+                if let Ok(mut buf) = Self::try_alloc_zeroed_vec(sz)
+                    && let Some(res) = self.try_read_at_inline_into(inode_id, 0, &mut buf)
+                {
+                    return OifsAsyncTask::ready(res.map(|n| {
+                        buf.truncate(n);
+                        buf
+                    }));
+                }
+            }
+        }
+        let dm = self.clone();
+        OifsAsyncTask::spawn(move || {
+            let data = dm.read_data(inode_id)?;
+            if data.len() <= DecodedBlobCache::MAX_ENTRY_BYTES
+                && let Ok(guard) = dm.inner.read()
+                && let Some(inode) = guard.inode_cache.get(inode_id)
+                && (inode.compressed_size > 0 || inode.encrypted)
+                && (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) == 0
+            {
+                crate::lock_unpoisoned(&guard.decoded_blob_cache).insert(
+                    inode_id,
+                    &inode,
+                    Arc::new(data.clone()),
+                );
+            }
+            Ok(data)
+        })
+    }
+
+    /// Asynchronously executes a batch of positional reads (`read_at_batch`) on the background pool.
+    pub fn read_at_batch_async(
+        &self,
+        requests: Vec<(u64, u64, usize)>,
+    ) -> OifsAsyncTask<Vec<Result<Vec<u8>, DiskManagerError>>> {
+        let dm = self.clone();
+        OifsAsyncTask::spawn(move || {
+            let mut bufs: Vec<Vec<u8>> =
+                requests.iter().map(|&(_, _, len)| vec![0u8; len]).collect();
+            let mut req_refs: Vec<ReadRequest<'_>> = requests
+                .iter()
+                .zip(bufs.iter_mut())
+                .map(|(&(inode_id, offset, _), buf)| ReadRequest {
+                    inode_id,
+                    offset,
+                    buf: &mut buf[..],
+                })
+                .collect();
+            let results = dm.read_at_batch(&mut req_refs);
+            results
+                .into_iter()
+                .zip(bufs)
+                .map(|(res, mut b)| {
+                    res.map(|n| {
+                        b.truncate(n);
+                        b
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// Asynchronously creates a file and writes its initial payload via the Group-Commit write
+    /// pipeline. Under [`DurabilityMode::Strict`], concurrent async writes share a single
+    /// physical flush barrier per batch.
+    pub fn create_file_with_data_async(
+        &self,
+        parent_inode_id: u64,
+        name: String,
+        data: Vec<u8>,
+        compression_mode: CompressionMode,
+    ) -> OifsAsyncTask<Result<u64, DiskManagerError>> {
+        let state = AsyncTaskState::new_pending();
+        let state_done = Arc::clone(&state);
+        submit_group_write_op(
+            self.clone(),
+            move |dm| dm.create_file_with_data(parent_inode_id, &name, &data, compression_mode),
+            move |res| state_done.complete(res),
+        );
+        OifsAsyncTask::from_state(state, false)
+    }
+
+    /// Asynchronously writes `data` at `file_offset` into `inode_id` via the Group-Commit write
+    /// pipeline.
+    pub fn write_data_async(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        data: Vec<u8>,
+        compression_mode: CompressionMode,
+    ) -> OifsAsyncTask<Result<(), DiskManagerError>> {
+        let state = AsyncTaskState::new_pending();
+        let state_done = Arc::clone(&state);
+        submit_group_write_op(
+            self.clone(),
+            move |dm| {
+                dm.write_data(inode_id, file_offset, &data, compression_mode)
+                    .map(|()| 0)
+            },
+            move |res| state_done.complete(res.map(|_| ())),
+        );
+        OifsAsyncTask::from_state(state, false)
+    }
+
+    /// Asynchronously flushes dirty data and checkpoints the WAL on the background pool.
+    pub fn flush_async_task(&self) -> OifsAsyncTask<Result<(), DiskManagerError>> {
+        let dm = self.clone();
+        OifsAsyncTask::spawn(move || dm.flush())
     }
 }
 
@@ -8072,6 +8943,65 @@ mod verification {
         }
 
         assert_eq!(incremental_total, full_scan_total);
+    }
+
+    /// Formally prove that `FileReadHandle::mmap_slice` block-range and byte-offset
+    /// arithmetic is overflow-free, preserves exact slice length, and never indexes
+    /// past `mmap_len` for any symbolic `(inode_size, file_offset, max_len, first_phys)`.
+    #[kani::proof]
+    fn proof_file_read_handle_mmap_slice_bounds_soundness() {
+        let inode_size: u64 = kani::any();
+        let file_offset: u64 = kani::any();
+        let max_len: usize = kani::any();
+        let first_phys: u64 = kani::any();
+        let mmap_len: usize = kani::any();
+
+        kani::assume(inode_size <= 1024 * 1024 * 1024);
+        kani::assume(max_len <= 64 * 1024 * 1024);
+
+        if file_offset >= inode_size || max_len == 0 {
+            kani::cover!(
+                file_offset >= inode_size,
+                "EOF or past-EOF offset returns empty slice"
+            );
+            kani::cover!(max_len == 0, "Zero max_len returns empty slice");
+            return;
+        }
+
+        let available = usize::try_from(inode_size - file_offset).unwrap_or(usize::MAX);
+        let len = max_len.min(available);
+        assert!(len >= 1 && len <= max_len);
+        assert!((len as u64) <= inode_size - file_offset);
+
+        let first_blk_idx = (file_offset / BLOCK_SIZE as u64) as usize;
+        let in_blk_off = (file_offset % BLOCK_SIZE as u64) as usize;
+        let last_byte = file_offset + (len - 1) as u64;
+        let last_blk_idx = (last_byte / BLOCK_SIZE as u64) as usize;
+
+        assert!(first_blk_idx <= last_blk_idx);
+        assert!(in_blk_off < BLOCK_SIZE);
+        let spanned_blocks = last_blk_idx - first_blk_idx + 1;
+        assert!(in_blk_off + len <= spanned_blocks * BLOCK_SIZE);
+
+        if let Some(start) = usize::try_from(first_phys)
+            .ok()
+            .and_then(|b| b.checked_mul(BLOCK_SIZE))
+            .and_then(|b| b.checked_add(in_blk_off))
+            && let Some(end) = start.checked_add(len)
+            && end <= mmap_len
+        {
+            assert!(start < end);
+            assert_eq!(end - start, len);
+            assert!(end <= mmap_len);
+            kani::cover!(
+                first_blk_idx == last_blk_idx,
+                "Single-block zero-copy slice"
+            );
+            kani::cover!(
+                first_blk_idx < last_blk_idx,
+                "Multi-block contiguous zero-copy slice"
+            );
+        }
     }
 }
 

@@ -1085,6 +1085,52 @@ public:
             path, data, OIFS_WRITE_POLICY_DEFAULT, 0, std::forward<Fn>(cb));
     }
 
+    /**
+     * Dispatches a raw FUSE Kernel ABI v7.28 request frame against this filesystem and
+     * writes the serialized response frame into `resp_buf`.
+     *
+     * Returns the response byte length (`>= 16` for request/reply opcodes, `0` for one-way
+     * notifications like `FUSE_FORGET`). Throws `oifs::Error` on invalid arguments or
+     * insufficient `resp_buf` capacity.
+     */
+    std::size_t fuse_dispatch_frame(ByteView req_frame, MutableByteSpan resp_buf) const {
+        ensure_open();
+        int64_t n = oifs_fuse_dispatch_frame(
+            handle_, req_frame.data(), req_frame.size(), resp_buf.data(), resp_buf.size());
+        if (n < 0) {
+            throw Error(last_error());
+        }
+        return static_cast<std::size_t>(n);
+    }
+
+    /**
+     * Dispatches a raw FUSE Kernel ABI v7.28 request frame against this filesystem and
+     * returns the serialized response frame (`fuse_out_header` + body).
+     */
+    std::vector<uint8_t> fuse_dispatch_frame(ByteView req_frame) const {
+        ensure_open();
+        std::size_t cap = 16 + 128 * 1024;
+        if (req_frame.size() >= 60) {
+            uint32_t opcode = 0;
+            uint32_t req_size = 0;
+            std::memcpy(&opcode, req_frame.data() + 4, sizeof(opcode));
+            std::memcpy(&req_size, req_frame.data() + 56, sizeof(req_size));
+            opcode = OIFS_FROM_LE32(opcode);
+            req_size = OIFS_FROM_LE32(req_size);
+            if (opcode == 15 || opcode == 28) {
+                constexpr std::size_t kMaxReply = 16ULL * 1024 * 1024 + 16;
+                std::size_t needed = static_cast<std::size_t>(req_size) + 16;
+                if (needed > cap) {
+                    cap = needed < kMaxReply ? needed : kMaxReply;
+                }
+            }
+        }
+        std::vector<uint8_t> out(cap);
+        std::size_t n = fuse_dispatch_frame(req_frame, MutableByteSpan(out));
+        out.resize(n);
+        return out;
+    }
+
 private:
     void ensure_open() const {
         if (handle_ == nullptr) {

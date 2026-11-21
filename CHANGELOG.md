@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Pure-Rust Cross-Platform FUSE Kernel Protocol (ABI v7.28) & VFS Engine (`src/fuse.rs`)**:
+  - Added a zero-external-C-dependency FUSE ABI v7.28 wire parser, panic-free binary frame dispatcher (`OifsFuseFs::dispatch_frame`, `dispatch_frame_for_platform`), high-level VFS API (`lookup`, `getattr`, `setattr_size`, `mkdir`, `unlink`, `rmdir`, `open`, `create`, `read`, `write`, `flush`, `fsync`, `release`, `opendir`, `readdir`, `releasedir`, `statfs`, `access`, xattr handlers), and stateful `FuseHandleTable` multiplexing thousands of open FUSE handles (`fh`) over the single underlying `.img` OS file descriptor.
+  - Added cross-platform Linux and macOS kernel mount & transport support: atomic packet device I/O (`serve_fuse_fd`), Unix stream runner (`serve_stream`), Linux `fusermount3`/`fusermount` `_FUSE_COMMFD` + `SCM_RIGHTS` FD passing (`send_fd_scm_rights`/`recv_fd_scm_rights`) with direct `/dev/fuse` fallback, macOS `FUSE-T` / `macFUSE` / `osxfuse` discovery (`discover_macos_fuse_backend`), dual ABI wire layouts (Linux 88-byte `FuseAttr` & macOS 104-byte `FuseAttr` with `crtime`/`crtimensec`/`flags`, plus Linux 8-byte and macOS 16-byte xattr headers), OS-filtered mount options (`build_mount_options_for_os`), and host `unmount` helper.
+  - Added macOS/cross-platform desktop compatibility: Finder metadata storm fast-rejection (`is_macos_metadata_filename` for `.DS_Store`, `._*`, `.Spotlight-V100`, `.Trashes`, `.fseventsd`, `.TemporaryItems`), `-ENOTSUP` extended-attribute replies (avoiding `-ENOSYS`/`-EINVAL` Finder copy aborts), pure-Rust UTF-8 NFD→NFC filename normalization (`normalize_filename_nfc` covering ASCII fast path, Latin diacritics, Japanese Kana dakuten/handakuten, and Korean Hangul Jamo composition), `geteuid()`/`getegid()` defaults, real non-zero `FUSE_STATFS` free/available space (`bavail = 0` when read-only), and strict `-EROFS` enforcement on read-only mounts.
+  - Exposed FUSE mounting and frame dispatch across CLI (`oifs mount <mountpoint> [--foreground] [--allow-other]` honoring `--read-only`, `--no-mmap`, and `--password` in `src/bin/oifs.rs`), C FFI (`oifs_fuse_dispatch_frame` with lazy persistent `OifsFuseState` per `OIFSHandle` in `src/ffi.rs` & `include/oifs.h`), and Modern C++ (`oifs::FileSystem::fuse_dispatch_frame` in `include/oifs.hpp`).
+  - Added `tests/fuse_test.rs` (10 integration tests covering `Mmap` & `FileIo` plain/journaled/encrypted lifecycles, 1,000 open FUSE handles with 0 extra OS FDs, multi-block `FUSE_READDIR` pagination, `SETATTR`/`O_TRUNC`/`O_APPEND`/`UNLINK`/`RMDIR`/`STATFS`, read-only `-EROFS` immutability, live Unix stream & `SOCK_DGRAM` packet sessions, `SCM_RIGHTS` FD passing, dual Linux/macOS ABI wire frames, Finder metadata filtering, `-ENOTSUP` xattrs, NFD→NFC normalization, and OS-filtered mount options) and extended `tests/cpp_api_test.rs` with C++17/C++20 `fuse_dispatch_frame` and CLI `oifs mount` tests.
+- **Kani Formal Verification Suite Expanded to 102 Harnesses (+3)**:
+  - Added 3 new `#[kani::proof]` harnesses in `src/fuse.rs`: `proof_fuse_nodeid_inode_bijection_and_root_mapping`, `proof_fuse_dirent_align_and_record_bounds`, and `proof_fuse_frame_header_parse_no_panic_and_bounds`.
+
 ## [1.3.0] - 2026-11-21
 
 ### Added

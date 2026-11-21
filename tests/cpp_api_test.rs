@@ -44,16 +44,21 @@ fn get_dylib_path() -> PathBuf {
     let target_dylib = base.join("target").join(profile_dir).join(dylib_name);
 
     let ffi_src = base.join("src/ffi.rs");
+    let fuse_src = base.join("src/fuse.rs");
     let disk_src = base.join("src/disk.rs");
     let storage_src = base.join("src/storage.rs");
     let needs_rebuild = match (
         target_dylib.metadata().and_then(|m| m.modified()),
         ffi_src.metadata().and_then(|m| m.modified()),
+        fuse_src.metadata().and_then(|m| m.modified()),
         disk_src.metadata().and_then(|m| m.modified()),
         storage_src.metadata().and_then(|m| m.modified()),
     ) {
-        (Ok(dylib_time), Ok(ffi_time), Ok(disk_time), Ok(storage_time)) => {
-            dylib_time < ffi_time || dylib_time < disk_time || dylib_time < storage_time
+        (Ok(dylib_time), Ok(ffi_time), Ok(fuse_time), Ok(disk_time), Ok(storage_time)) => {
+            dylib_time < ffi_time
+                || dylib_time < fuse_time
+                || dylib_time < disk_time
+                || dylib_time < storage_time
         }
         _ => true,
     };
@@ -2054,6 +2059,315 @@ static void run_micro_benchmark(const std::string& bench_path) {
     );
 }
 
+static void append_u32_le(std::vector<uint8_t>& buf, uint32_t v) {
+    uint32_t le = OIFS_TO_LE32(v);
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(&le);
+    buf.insert(buf.end(), p, p + 4);
+}
+
+static void append_u64_le(std::vector<uint8_t>& buf, uint64_t v) {
+    uint64_t le = OIFS_TO_LE64(v);
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(&le);
+    buf.insert(buf.end(), p, p + 8);
+}
+
+static uint32_t read_u32_le_at(const std::vector<uint8_t>& buf, size_t off) {
+    uint32_t v = 0;
+    std::memcpy(&v, buf.data() + off, sizeof(v));
+    return OIFS_FROM_LE32(v);
+}
+
+static int32_t read_i32_le_at(const std::vector<uint8_t>& buf, size_t off) {
+    uint32_t u = read_u32_le_at(buf, off);
+    int32_t v = 0;
+    std::memcpy(&v, &u, sizeof(v));
+    return v;
+}
+
+static uint64_t read_u64_le_at(const std::vector<uint8_t>& buf, size_t off) {
+    uint64_t v = 0;
+    std::memcpy(&v, buf.data() + off, sizeof(v));
+    return OIFS_FROM_LE64(v);
+}
+
+static std::vector<uint8_t> build_fuse_frame(
+    uint32_t opcode,
+    uint64_t unique,
+    uint64_t nodeid,
+    const std::vector<uint8_t>& payload
+) {
+    std::vector<uint8_t> frame;
+    frame.reserve(40 + payload.size());
+    append_u32_le(frame, static_cast<uint32_t>(40 + payload.size()));
+    append_u32_le(frame, opcode);
+    append_u64_le(frame, unique);
+    append_u64_le(frame, nodeid);
+    append_u32_le(frame, 0);  // uid
+    append_u32_le(frame, 0);  // gid
+    append_u32_le(frame, 0);  // pid
+    append_u32_le(frame, 0);  // padding
+    frame.insert(frame.end(), payload.begin(), payload.end());
+    return frame;
+}
+
+static void test_fuse_kernel_frame_dispatch(const std::string& fuse_img_path) {
+    constexpr uint32_t kFuseLookup = 1;
+    constexpr uint32_t kFuseGetattr = 3;
+    constexpr uint32_t kFuseUnlink = 10;
+    constexpr uint32_t kFuseOpen = 14;
+    constexpr uint32_t kFuseRead = 15;
+    constexpr uint32_t kFuseWrite = 16;
+    constexpr uint32_t kFuseRelease = 18;
+    constexpr uint32_t kFuseInit = 26;
+    constexpr uint32_t kFuseCreate = 35;
+    constexpr uint64_t kFuseRootId = 1;
+
+    uint64_t unique = 1;
+    const std::string payload = "Hello FUSE Kernel ABI v7.28 from C++ Native API!";
+    const std::string ro_seed_payload = "Persistent read-only FUSE payload!";
+
+    // 1. Read-write FUSE lifecycle through oifs::FileSystem::fuse_dispatch_frame
+    {
+        oifs::FileSystem fs = oifs::FileSystem::open_with_options(
+            fuse_img_path, 16ULL * 1024 * 1024, "", oifs::StorageMode::Mmap, true);
+
+        // Seed a file that will survive for the read-only FUSE test phase
+        (void)fs.create_file_with_data(
+            "ro_fuse.txt", oifs::ByteView(ro_seed_payload), oifs::WritePolicy::Raw, 0);
+
+        // Invalid C FFI arguments return -1
+        uint8_t tiny_resp[8] = {0};
+        OIFS_CHECK(oifs_fuse_dispatch_frame(nullptr, tiny_resp, sizeof(tiny_resp), tiny_resp, sizeof(tiny_resp)) == -1);
+        OIFS_CHECK(oifs_fuse_dispatch_frame(fs.raw(), nullptr, 40, tiny_resp, sizeof(tiny_resp)) == -1);
+        OIFS_CHECK(oifs_fuse_dispatch_frame(fs.raw(), tiny_resp, 0, tiny_resp, sizeof(tiny_resp)) == -1);
+
+        // FUSE_INIT (major=7, minor=28, max_readahead=131072, flags=0)
+        std::vector<uint8_t> init_payload;
+        append_u32_le(init_payload, 7);
+        append_u32_le(init_payload, 28);
+        append_u32_le(init_payload, 128 * 1024);
+        append_u32_le(init_payload, 0);
+        auto init_req = build_fuse_frame(kFuseInit, unique++, 0, init_payload);
+
+        // Insufficient resp_cap must fail cleanly with -1 / oifs::Error
+        OIFS_CHECK(oifs_fuse_dispatch_frame(
+            fs.raw(), init_req.data(), init_req.size(), tiny_resp, sizeof(tiny_resp)) == -1);
+        bool caught_small_buf = false;
+        try {
+            (void)fs.fuse_dispatch_frame(
+                oifs::ByteView(init_req), oifs::MutableByteSpan(tiny_resp, sizeof(tiny_resp)));
+        } catch (const oifs::Error&) {
+            caught_small_buf = true;
+        }
+        OIFS_CHECK(caught_small_buf);
+
+        auto init_resp = fs.fuse_dispatch_frame(oifs::ByteView(init_req));
+        OIFS_CHECK(init_resp.size() == 16 + 64);
+        OIFS_CHECK(read_u32_le_at(init_resp, 0) == static_cast<uint32_t>(init_resp.size()));
+        OIFS_CHECK(read_i32_le_at(init_resp, 4) == 0);
+        OIFS_CHECK(read_u32_le_at(init_resp, 16) == 7);   // major
+        OIFS_CHECK(read_u32_le_at(init_resp, 20) == 28);  // minor
+        OIFS_CHECK(read_u32_le_at(init_resp, 36) > 0);    // max_write
+
+        // FUSE_CREATE ("hello_fuse.txt")
+        std::vector<uint8_t> create_payload;
+#ifndef _WIN32
+        uint32_t create_flags = static_cast<uint32_t>(O_RDWR | O_CREAT);
+#else
+        uint32_t create_flags = 2;
+#endif
+        append_u32_le(create_payload, create_flags);
+        append_u32_le(create_payload, 0100644);  // mode
+        append_u32_le(create_payload, 0);        // umask
+        append_u32_le(create_payload, 0);        // padding
+        const std::string fname = "hello_fuse.txt";
+        create_payload.insert(create_payload.end(), fname.begin(), fname.end());
+        create_payload.push_back(0);
+
+        auto create_req = build_fuse_frame(kFuseCreate, unique++, kFuseRootId, create_payload);
+        auto create_resp = fs.fuse_dispatch_frame(oifs::ByteView(create_req));
+        // 16 (FuseOutHeader) + 128 (FuseEntryOut) + 16 (FuseOpenOut)
+        OIFS_CHECK(create_resp.size() == 16 + 128 + 16);
+        OIFS_CHECK(read_i32_le_at(create_resp, 4) == 0);
+        uint64_t created_nodeid = read_u64_le_at(create_resp, 16);
+        uint64_t created_fh = read_u64_le_at(create_resp, 16 + 128);
+        OIFS_CHECK(created_nodeid >= 2);
+        OIFS_CHECK(created_fh != 0);
+
+        // FUSE_WRITE using the persisted fh from FUSE_CREATE
+        std::vector<uint8_t> write_payload;
+        append_u64_le(write_payload, created_fh);
+        append_u64_le(write_payload, 0);  // offset
+        append_u32_le(write_payload, static_cast<uint32_t>(payload.size()));
+        append_u32_le(write_payload, 0);  // write_flags
+        append_u64_le(write_payload, 0);  // lock_owner
+        append_u32_le(write_payload, 0);  // flags
+        append_u32_le(write_payload, 0);  // padding
+        write_payload.insert(write_payload.end(), payload.begin(), payload.end());
+
+        auto write_req = build_fuse_frame(kFuseWrite, unique++, created_nodeid, write_payload);
+        auto write_resp = fs.fuse_dispatch_frame(oifs::ByteView(write_req));
+        OIFS_CHECK(write_resp.size() == 16 + 8);
+        OIFS_CHECK(read_i32_le_at(write_resp, 4) == 0);
+        OIFS_CHECK(read_u32_le_at(write_resp, 16) == static_cast<uint32_t>(payload.size()));
+
+        // FUSE_READ using the persisted fh via MutableByteSpan overload
+        std::vector<uint8_t> read_payload;
+        append_u64_le(read_payload, created_fh);
+        append_u64_le(read_payload, 0);     // offset
+        append_u32_le(read_payload, 4096);  // size
+        append_u32_le(read_payload, 0);     // read_flags
+        append_u64_le(read_payload, 0);     // lock_owner
+        append_u32_le(read_payload, 0);     // flags
+        append_u32_le(read_payload, 0);     // padding
+
+        auto read_req = build_fuse_frame(kFuseRead, unique++, created_nodeid, read_payload);
+        std::vector<uint8_t> read_span_buf(4096, 0);
+        size_t read_resp_len = fs.fuse_dispatch_frame(
+            oifs::ByteView(read_req), oifs::MutableByteSpan(read_span_buf));
+        OIFS_CHECK(read_resp_len == 16 + payload.size());
+        read_span_buf.resize(read_resp_len);
+        OIFS_CHECK(read_i32_le_at(read_span_buf, 4) == 0);
+        std::string read_back(
+            reinterpret_cast<const char*>(read_span_buf.data() + 16), payload.size());
+        OIFS_CHECK(read_back == payload);
+
+        // FUSE_GETATTR on created_nodeid
+        auto getattr_req = build_fuse_frame(kFuseGetattr, unique++, created_nodeid, {});
+        auto getattr_resp = fs.fuse_dispatch_frame(oifs::ByteView(getattr_req));
+        // 16 (FuseOutHeader) + 104 (FuseAttrOut: 16 header + 88 FuseAttr)
+        OIFS_CHECK(getattr_resp.size() == 16 + 104);
+        OIFS_CHECK(read_i32_le_at(getattr_resp, 4) == 0);
+        uint64_t attr_ino = read_u64_le_at(getattr_resp, 16 + 16);
+        uint64_t attr_size = read_u64_le_at(getattr_resp, 16 + 16 + 8);
+        OIFS_CHECK(attr_ino == created_nodeid);
+        OIFS_CHECK(attr_size == payload.size());
+
+        // FUSE_RELEASE
+        std::vector<uint8_t> rel_payload;
+        append_u64_le(rel_payload, created_fh);
+        append_u32_le(rel_payload, 0);
+        append_u32_le(rel_payload, 0);
+        append_u64_le(rel_payload, 0);
+        auto rel_req = build_fuse_frame(kFuseRelease, unique++, created_nodeid, rel_payload);
+        auto rel_resp = fs.fuse_dispatch_frame(oifs::ByteView(rel_req));
+        OIFS_CHECK(rel_resp.size() == 16);
+        OIFS_CHECK(read_i32_le_at(rel_resp, 4) == 0);
+
+        // FUSE_UNLINK ("hello_fuse.txt")
+        std::vector<uint8_t> unlink_payload(fname.begin(), fname.end());
+        unlink_payload.push_back(0);
+        auto unlink_req = build_fuse_frame(kFuseUnlink, unique++, kFuseRootId, unlink_payload);
+        auto unlink_resp = fs.fuse_dispatch_frame(oifs::ByteView(unlink_req));
+        OIFS_CHECK(unlink_resp.size() == 16);
+        OIFS_CHECK(read_i32_le_at(unlink_resp, 4) == 0);
+
+        // Subsequent FUSE_LOOKUP must return -ENOENT
+        auto lookup_req = build_fuse_frame(kFuseLookup, unique++, kFuseRootId, unlink_payload);
+        auto lookup_resp = fs.fuse_dispatch_frame(oifs::ByteView(lookup_req));
+        OIFS_CHECK(lookup_resp.size() == 16);
+#ifndef _WIN32
+        OIFS_CHECK(read_i32_le_at(lookup_resp, 4) == -ENOENT);
+#else
+        OIFS_CHECK(read_i32_le_at(lookup_resp, 4) < 0);
+#endif
+        fs.flush();
+    }
+
+    // 2. Read-only oifs::FileSystem: reads succeed, all mutating FUSE frames return -EROFS
+    {
+        oifs::FileSystem ro = oifs::FileSystem::open_read_only(
+            fuse_img_path, "", oifs::StorageMode::Mmap);
+        OIFS_CHECK(ro.is_read_only());
+
+        // FUSE_INIT
+        std::vector<uint8_t> init_payload;
+        append_u32_le(init_payload, 7);
+        append_u32_le(init_payload, 28);
+        append_u32_le(init_payload, 64 * 1024);
+        append_u32_le(init_payload, 0);
+        auto init_resp = ro.fuse_dispatch_frame(
+            oifs::ByteView(build_fuse_frame(kFuseInit, unique++, 0, init_payload)));
+        OIFS_CHECK(read_i32_le_at(init_resp, 4) == 0);
+
+        // FUSE_LOOKUP("ro_fuse.txt") + FUSE_OPEN(O_RDONLY) + FUSE_READ succeed
+        const std::string ro_name = "ro_fuse.txt";
+        std::vector<uint8_t> ro_name_payload(ro_name.begin(), ro_name.end());
+        ro_name_payload.push_back(0);
+        auto lookup_resp = ro.fuse_dispatch_frame(
+            oifs::ByteView(build_fuse_frame(kFuseLookup, unique++, kFuseRootId, ro_name_payload)));
+        OIFS_CHECK(read_i32_le_at(lookup_resp, 4) == 0);
+        uint64_t ro_nodeid = read_u64_le_at(lookup_resp, 16);
+        OIFS_CHECK(ro_nodeid >= 2);
+
+        std::vector<uint8_t> open_ro_payload;
+#ifndef _WIN32
+        append_u32_le(open_ro_payload, static_cast<uint32_t>(O_RDONLY));
+#else
+        append_u32_le(open_ro_payload, 0);
+#endif
+        append_u32_le(open_ro_payload, 0);
+        auto open_resp = ro.fuse_dispatch_frame(
+            oifs::ByteView(build_fuse_frame(kFuseOpen, unique++, ro_nodeid, open_ro_payload)));
+        OIFS_CHECK(read_i32_le_at(open_resp, 4) == 0);
+        uint64_t ro_fh = read_u64_le_at(open_resp, 16);
+        OIFS_CHECK(ro_fh != 0);
+
+        std::vector<uint8_t> read_ro_payload;
+        append_u64_le(read_ro_payload, ro_fh);
+        append_u64_le(read_ro_payload, 0);
+        append_u32_le(read_ro_payload, 4096);
+        append_u32_le(read_ro_payload, 0);
+        append_u64_le(read_ro_payload, 0);
+        append_u32_le(read_ro_payload, 0);
+        append_u32_le(read_ro_payload, 0);
+        auto read_ro_resp = ro.fuse_dispatch_frame(
+            oifs::ByteView(build_fuse_frame(kFuseRead, unique++, ro_nodeid, read_ro_payload)));
+        OIFS_CHECK(read_i32_le_at(read_ro_resp, 4) == 0);
+        OIFS_CHECK(read_ro_resp.size() == 16 + ro_seed_payload.size());
+        std::string ro_text(
+            reinterpret_cast<const char*>(read_ro_resp.data() + 16), ro_seed_payload.size());
+        OIFS_CHECK(ro_text == ro_seed_payload);
+
+        // Mutating FUSE_CREATE, FUSE_WRITE, and FUSE_UNLINK must all return -EROFS
+        std::vector<uint8_t> ro_create_payload;
+        append_u32_le(ro_create_payload, 2);
+        append_u32_le(ro_create_payload, 0100644);
+        append_u32_le(ro_create_payload, 0);
+        append_u32_le(ro_create_payload, 0);
+        const std::string blocked_name = "blocked_ro.txt";
+        ro_create_payload.insert(ro_create_payload.end(), blocked_name.begin(), blocked_name.end());
+        ro_create_payload.push_back(0);
+        auto ro_create_resp = ro.fuse_dispatch_frame(
+            oifs::ByteView(build_fuse_frame(kFuseCreate, unique++, kFuseRootId, ro_create_payload)));
+
+        std::vector<uint8_t> ro_write_payload;
+        append_u64_le(ro_write_payload, ro_fh);
+        append_u64_le(ro_write_payload, 0);
+        append_u32_le(ro_write_payload, 4);
+        append_u32_le(ro_write_payload, 0);
+        append_u64_le(ro_write_payload, 0);
+        append_u32_le(ro_write_payload, 0);
+        append_u32_le(ro_write_payload, 0);
+        ro_write_payload.insert(ro_write_payload.end(), {'n', 'o', 'p', 'e'});
+        auto ro_write_resp = ro.fuse_dispatch_frame(
+            oifs::ByteView(build_fuse_frame(kFuseWrite, unique++, ro_nodeid, ro_write_payload)));
+
+        auto ro_unlink_resp = ro.fuse_dispatch_frame(
+            oifs::ByteView(build_fuse_frame(kFuseUnlink, unique++, kFuseRootId, ro_name_payload)));
+
+#ifndef _WIN32
+        OIFS_CHECK(read_i32_le_at(ro_create_resp, 4) == -EROFS);
+        OIFS_CHECK(read_i32_le_at(ro_write_resp, 4) == -EROFS);
+        OIFS_CHECK(read_i32_le_at(ro_unlink_resp, 4) == -EROFS);
+#else
+        OIFS_CHECK(read_i32_le_at(ro_create_resp, 4) < 0);
+        OIFS_CHECK(read_i32_le_at(ro_write_resp, 4) < 0);
+        OIFS_CHECK(read_i32_le_at(ro_unlink_resp, 4) < 0);
+#endif
+    }
+}
+
 int main(int argc, char** argv) {
     OIFS_CHECK(OIFS_CHECK_VERSION() == OIFS_VERSION_COMPAT_OK);
 
@@ -2089,6 +2403,7 @@ int main(int argc, char** argv) {
     const std::string mt_mmap_img = join_path(data_dir, "cpp_mt_rw_mmap.img");
     const std::string mt_fio_img = join_path(data_dir, "cpp_mt_rw_fio.img");
     const std::string bench_img = join_path(data_dir, "cpp_bench.img");
+    const std::string fuse_img = join_path(data_dir, "cpp_fuse.img");
 
     test_pinnable_slice_zero_copy_and_fallbacks(mmap_img, file_io_img, enc_img);
     test_out_of_order_destruction_safety(mmap_img);
@@ -2097,6 +2412,7 @@ int main(int argc, char** argv) {
     test_raii_moves_and_edge_cases(edge_mmap_img, edge_fio_img, edge_enc_img);
     test_multi_process_and_multi_thread(
         argv[0], mp_plain_img, mp_enc_img, mt_mmap_img, mt_fio_img);
+    test_fuse_kernel_frame_dispatch(fuse_img);
     run_micro_benchmark(bench_img);
 
     std::cout << "ALL C++ NATIVE API (include/oifs.hpp) TESTS & BENCHMARKS PASSED!\n";
@@ -2362,4 +2678,57 @@ fn test_cli_read_only_mode() {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&img_path, std::fs::Permissions::from_mode(0o644));
     }
+}
+
+#[test]
+fn test_cli_mount_subcommand_args_and_validation() {
+    let bin_path = env!("CARGO_BIN_EXE_oifs");
+
+    // 1. Verify `oifs mount --help` exposes mountpoint, --foreground, and --allow-other
+    let help = Command::new(bin_path)
+        .args(["mount", "--help"])
+        .output()
+        .expect("cli mount --help");
+    assert!(
+        help.status.success(),
+        "oifs mount --help failed: {}",
+        String::from_utf8_lossy(&help.stderr)
+    );
+    let help_text = String::from_utf8_lossy(&help.stdout);
+    assert!(help_text.contains("--foreground"), "help: {help_text}");
+    assert!(help_text.contains("--allow-other"), "help: {help_text}");
+
+    // 2. Verify `oifs mount` rejects a nonexistent mountpoint cleanly (honoring --read-only & --no-mmap)
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let img_path = tmp_dir.path().join("cli_mount.img");
+    let img_str = img_path.to_str().unwrap();
+
+    let create_out = Command::new(bin_path)
+        .args(["-i", img_str, "create", "--size", "4"])
+        .output()
+        .expect("cli create");
+    assert!(create_out.status.success());
+
+    let missing_mp = tmp_dir.path().join("does_not_exist_mp");
+    let mount_out = Command::new(bin_path)
+        .args([
+            "--read-only",
+            "--no-mmap",
+            "-i",
+            img_str,
+            "mount",
+            "--foreground",
+            missing_mp.to_str().unwrap(),
+        ])
+        .output()
+        .expect("cli mount missing mountpoint");
+    assert!(
+        !mount_out.status.success(),
+        "expected mount on nonexistent mountpoint to fail"
+    );
+    let stderr = String::from_utf8_lossy(&mount_out.stderr);
+    assert!(
+        stderr.contains("mountpoint does not exist"),
+        "unexpected mount stderr: {stderr}"
+    );
 }

@@ -272,6 +272,17 @@ enum Commands {
         #[arg(short, long)]
         size: u64,
     },
+    /// Mount the OIFS image as a FUSE filesystem
+    Mount {
+        /// Directory where the filesystem will be mounted
+        mountpoint: PathBuf,
+        /// Run attached in the foreground and log mount details to stderr
+        #[arg(long)]
+        foreground: bool,
+        /// Allow other users to access the mounted filesystem (`allow_other`)
+        #[arg(long)]
+        allow_other: bool,
+    },
 }
 
 /// Helper function to read password securely from stdin (with terminal echo masked).
@@ -1544,6 +1555,77 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", json!({"ok": true, "path": path, "size": size}));
             } else {
                 println!("Truncated '{}' to {} bytes", path, size);
+            }
+            Ok(())
+        }
+        Commands::Mount {
+            mountpoint,
+            foreground,
+            allow_other,
+        } => {
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
+            }
+            let session = open_session(
+                image,
+                &cli.password,
+                &oifs::ipc::SessionMode::Standalone,
+                cli.json,
+                auto_defrag.as_ref(),
+                cli.read_only,
+            )?;
+            let dm = match session {
+                OifsSession::Direct { dm, .. } => dm,
+                OifsSession::Remote { .. } => {
+                    return Err("FUSE mount requires direct local access to the OIFS image".into());
+                }
+            };
+
+            let mut mount_opts = oifs::fuse::FuseMountOptions::for_host_kernel();
+            mount_opts.read_only = cli.read_only || dm.is_read_only();
+            mount_opts.allow_other = *allow_other;
+            if let Some(stem) = image.file_stem().and_then(|s| s.to_str())
+                && !stem.is_empty()
+                && !stem.contains(',')
+            {
+                mount_opts.volname = Some(stem.to_string());
+            }
+
+            let fuse_fs = oifs::fuse::OifsFuseFs::from_arc(std::sync::Arc::clone(&dm), mount_opts);
+
+            let mp_clone = mountpoint.clone();
+            let dm_clone = std::sync::Arc::clone(&dm);
+            let is_ro = fuse_fs.is_read_only();
+            set_interrupt_handler(move || {
+                let _ = oifs::fuse::unmount(&mp_clone);
+                if !is_ro {
+                    let _ = dm_clone.flush();
+                }
+                std::process::exit(0);
+            })?;
+
+            if *foreground && !cli.json {
+                eprintln!(
+                    "Mounting {:?} at {:?} (read_only={}, allow_other={})...",
+                    image, mountpoint, is_ro, allow_other
+                );
+            }
+
+            fuse_fs.mount(mountpoint)?;
+            if !is_ro {
+                dm.flush()?;
+            }
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "mountpoint": mountpoint.to_string_lossy(),
+                        "read_only": is_ro,
+                        "foreground": foreground,
+                        "allow_other": allow_other,
+                    })
+                );
             }
             Ok(())
         }

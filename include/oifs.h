@@ -338,6 +338,34 @@ int32_t oifs_create_file_with_data_async_cb(
 );
 
 /*
+ * FUSE Kernel Protocol (ABI v7.28) Frame Dispatcher
+ */
+
+/**
+ * Dispatches a raw FUSE Kernel ABI v7.28 request frame against `handle` and writes the
+ * serialized response frame into `resp_buf[..resp_len]`.
+ *
+ * Open FUSE file/directory handles (`fh`) persist across successive calls on the same
+ * `OIFSHandle`. Read-only handles automatically reject mutating opcodes with `-EROFS`.
+ *
+ * @param handle   OIFS filesystem handle
+ * @param req_buf  Pointer to the raw FUSE request frame (`fuse_in_header` + payload)
+ * @param req_len  Length of the request frame in bytes
+ * @param resp_buf Output buffer to receive the FUSE response frame (`fuse_out_header` + body)
+ * @param resp_cap Capacity of `resp_buf` in bytes
+ * @return Response byte length (`>= 16` for request/reply opcodes, `0` for one-way
+ *         notifications such as `FUSE_FORGET`), or `-1` on invalid arguments or insufficient
+ *         `resp_cap` (error message accessible via `oifs_last_error`).
+ */
+int64_t oifs_fuse_dispatch_frame(
+    OIFSHandle *handle,
+    const uint8_t *req_buf,
+    size_t req_len,
+    uint8_t *resp_buf,
+    size_t resp_cap
+);
+
+/*
  * Diagnostics and Error Handling
  */
 int32_t oifs_last_error(OIFSHandle *handle, char *buf, uint32_t buf_size);

@@ -11,6 +11,7 @@ use std::ptr;
 pub struct OIFSHandle {
     pub dm: DiskManager,
     pub last_error: std::sync::Mutex<Option<String>>,
+    pub fuse_state: std::sync::OnceLock<crate::fuse::OifsFuseState>,
 }
 
 impl OIFSHandle {
@@ -18,7 +19,18 @@ impl OIFSHandle {
         Self {
             dm,
             last_error: std::sync::Mutex::new(None),
+            fuse_state: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn fuse_state(&self) -> &crate::fuse::OifsFuseState {
+        self.fuse_state.get_or_init(|| {
+            let opts = crate::fuse::FuseMountOptions {
+                read_only: self.dm.is_read_only(),
+                ..crate::fuse::FuseMountOptions::default()
+            };
+            crate::fuse::OifsFuseState::new(opts)
+        })
     }
 
     pub fn set_last_error(&self, err: Option<String>) {
@@ -1969,6 +1981,85 @@ pub extern "C" fn oifs_create_file_with_data_async_cb(
         0
     }));
     res.unwrap_or(-1)
+}
+
+/// Dispatches a raw FUSE Kernel ABI v7.28 request frame against `handle` and copies the
+/// serialized response frame into `resp_buf[..resp_len]`.
+///
+/// File handles (`fh`) opened via `FUSE_OPEN` / `FUSE_CREATE` / `FUSE_OPENDIR` persist
+/// across successive calls on the same `OIFSHandle`, and read-only handles enforce
+/// `-EROFS` on all mutating opcodes.
+///
+/// Returns the response byte length (`>= 16` for request/reply opcodes, `0` for one-way
+/// notifications such as `FUSE_FORGET`), or `-1` on invalid arguments or insufficient `resp_cap`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_fuse_dispatch_frame(
+    handle: *mut OIFSHandle,
+    req_buf: *const u8,
+    req_len: usize,
+    resp_buf: *mut u8,
+    resp_cap: usize,
+) -> i64 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    if req_buf.is_null() || req_len == 0 {
+        handle_ref.set_last_error(Some("Invalid FUSE request buffer".to_string()));
+        return -1;
+    }
+
+    if resp_buf.is_null() && resp_cap > 0 {
+        handle_ref.set_last_error(Some("Null response buffer provided".to_string()));
+        return -1;
+    }
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let req_slice = unsafe { std::slice::from_raw_parts(req_buf, req_len) };
+        let fuse_state = handle_ref.fuse_state();
+        let resp = fuse_state.dispatch_frame(&handle_ref.dm, req_slice);
+
+        if resp.len() > resp_cap {
+            handle_ref.set_last_error(Some(format!(
+                "FUSE response buffer too small: need {} bytes, capacity is {}",
+                resp.len(),
+                resp_cap
+            )));
+            return -1;
+        }
+
+        if !resp.is_empty() {
+            if resp_buf.is_null() {
+                handle_ref.set_last_error(Some("Null response buffer provided".to_string()));
+                return -1;
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(resp.as_ptr(), resp_buf, resp.len());
+            }
+        }
+
+        handle_ref.set_last_error(None);
+        match i64::try_from(resp.len()) {
+            Ok(n) => n,
+            Err(_) => {
+                handle_ref.set_last_error(Some("FUSE response length overflow".to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some(
+                "Panic occurred during FUSE frame dispatch".to_string(),
+            ));
+            -1
+        }
+    }
 }
 
 #[cfg(kani)]

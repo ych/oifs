@@ -6,6 +6,7 @@ pub mod disk;
 pub mod encryption;
 pub mod ffi;
 pub mod filters;
+pub mod fuse;
 pub mod inode;
 pub mod inode_format;
 pub mod io_engine;
@@ -22,6 +23,7 @@ pub use disk::{
     ReadSession,
 };
 pub use filters::{FilterConfig, FilterPipeline, FilterType};
+pub use fuse::{FuseAttr, FuseDirEntry, FuseMountOptions, OifsFuseFs};
 pub use inode_format::INODE_FORMAT_V2;
 pub use io_engine::IoBackend;
 pub use ipc::{MasterInfo, SessionEvent, SessionMode};

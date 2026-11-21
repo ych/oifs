@@ -12,7 +12,7 @@
 use crate::BLOCK_SIZE;
 use crate::FxHashMap;
 use crate::superblock::SuperBlock;
-use memmap2::{MmapMut, MmapOptions};
+use memmap2::{Mmap, MmapMut, MmapOptions};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io;
@@ -541,6 +541,7 @@ impl DataPageCache {
 pub(crate) struct FileBacking {
     file: File,
     len: usize,
+    read_only: bool,
     inode_bitmap_off: u64,
     inode_bitmap: Vec<u8>,
     data_bitmap_off: u64,
@@ -556,9 +557,19 @@ impl FileBacking {
     /// Call [`Self::configure_regions`] once the `SuperBlock` is known so bitmaps and the
     /// optional journal ring are loaded into their write-through mirrors.
     pub(crate) fn new(file: File, len: usize) -> Self {
+        Self::with_read_only(file, len, false)
+    }
+
+    /// Opens a read-only `FileBacking` over a read-only `File` handle.
+    pub(crate) fn new_read_only(file: File, len: usize) -> Self {
+        Self::with_read_only(file, len, true)
+    }
+
+    fn with_read_only(file: File, len: usize, read_only: bool) -> Self {
         Self {
             file,
             len,
+            read_only,
             inode_bitmap_off: 0,
             inode_bitmap: Vec::new(),
             data_bitmap_off: 0,
@@ -917,14 +928,56 @@ impl Drop for JournalRegionMut<'_> {
     }
 }
 
-/// Unified container backing supporting either zero-copy `Mmap` or pure `pread`/`pwrite` `FileIo`.
+/// Classification of low-level storage operations for read-only policy enforcement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StorageOpKind {
+    Read,
+    Write,
+    BitmapRead,
+    BitmapWrite,
+    JournalRead,
+    JournalWrite,
+    Flush,
+}
+
+/// Returns `true` when `op` is permitted under the given `read_only` mount flag.
+///
+/// Read-only mounts permit reads and suppress/reject every mutating operation and flush.
+#[inline]
+pub(crate) const fn storage_op_permitted(read_only: bool, op: StorageOpKind) -> bool {
+    match op {
+        StorageOpKind::Read | StorageOpKind::BitmapRead | StorageOpKind::JournalRead => true,
+        StorageOpKind::Write
+        | StorageOpKind::BitmapWrite
+        | StorageOpKind::JournalWrite
+        | StorageOpKind::Flush => !read_only,
+    }
+}
+
+/// Returns `true` when zero-copy mmap slicing is available for `(mode, read_only)`.
+#[inline]
+pub(crate) const fn storage_mmap_zero_copy_permitted(mode: StorageMode, _read_only: bool) -> bool {
+    matches!(mode, StorageMode::Mmap)
+}
+
+/// Unified container backing supporting zero-copy read-write `Mmap`, `PROT_READ`
+/// `MmapReadOnly`, or pure `pread`/`pwrite` `FileIo`.
 pub(crate) enum ImageBacking {
     Mmap(MmapMut),
+    MmapReadOnly(Mmap),
     File(Box<FileBacking>),
 }
 
 impl ImageBacking {
-    /// Creates an [`ImageBacking`] for the requested [`StorageMode`].
+    #[inline]
+    fn read_only_error() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "filesystem is mounted read-only",
+        )
+    }
+
+    /// Creates a read-write [`ImageBacking`] for the requested [`StorageMode`].
     pub(crate) fn open(file: &File, mode: StorageMode) -> io::Result<Self> {
         match mode {
             StorageMode::Mmap => {
@@ -942,10 +995,43 @@ impl ImageBacking {
         }
     }
 
+    /// Creates a read-only [`ImageBacking`] for the requested [`StorageMode`].
+    ///
+    /// - Under [`StorageMode::Mmap`]: maps `file` with `PROT_READ` (`memmap2::Mmap`), working
+    ///   on `0444` read-only image files while keeping true zero-copy slicing intact.
+    /// - Under [`StorageMode::FileIo`]: opens a read-only `FileBacking` backed by `pread(2)`.
+    pub(crate) fn open_read_only(file: &File, mode: StorageMode) -> io::Result<Self> {
+        match mode {
+            StorageMode::Mmap => {
+                // SAFETY: caller holds shared advisory lock (`F_RDLCK`) on `file` and validates geometry.
+                let mmap = unsafe { MmapOptions::new().map(file)? };
+                Ok(Self::MmapReadOnly(mmap))
+            }
+            StorageMode::FileIo => {
+                let len = usize::try_from(file.metadata()?.len()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "image size overflows usize")
+                })?;
+                let cloned = file.try_clone()?;
+                Ok(Self::File(Box::new(FileBacking::new_read_only(
+                    cloned, len,
+                ))))
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_read_only(&self) -> bool {
+        match self {
+            Self::Mmap(_) => false,
+            Self::MmapReadOnly(_) => true,
+            Self::File(fb) => fb.read_only,
+        }
+    }
+
     #[inline]
     pub(crate) fn mode(&self) -> StorageMode {
         match self {
-            Self::Mmap(_) => StorageMode::Mmap,
+            Self::Mmap(_) | Self::MmapReadOnly(_) => StorageMode::Mmap,
             Self::File(_) => StorageMode::FileIo,
         }
     }
@@ -954,23 +1040,30 @@ impl ImageBacking {
     pub(crate) fn len(&self) -> usize {
         match self {
             Self::Mmap(m) => m.len(),
+            Self::MmapReadOnly(m) => m.len(),
             Self::File(f) => f.len,
         }
     }
 
     #[inline]
     pub(crate) fn as_mmap_slice(&self) -> Option<&[u8]> {
-        match self {
+        let slice = match self {
             Self::Mmap(m) => Some(&m[..]),
+            Self::MmapReadOnly(m) => Some(&m[..]),
             Self::File(_) => None,
-        }
+        };
+        debug_assert_eq!(
+            slice.is_some(),
+            storage_mmap_zero_copy_permitted(self.mode(), self.is_read_only())
+        );
+        slice
     }
 
     /// Configures write-through metadata mirrors (bitmaps + optional WAL) for [`StorageMode::FileIo`].
     /// No-op for [`StorageMode::Mmap`].
     pub(crate) fn configure_regions(&mut self, sb: &SuperBlock) -> io::Result<()> {
         match self {
-            Self::Mmap(_) => Ok(()),
+            Self::Mmap(_) | Self::MmapReadOnly(_) => Ok(()),
             Self::File(f) => f.configure_regions(sb),
         }
     }
@@ -980,7 +1073,7 @@ impl ImageBacking {
     #[inline]
     pub(crate) fn has_data_page_cache(&self) -> bool {
         match self {
-            Self::Mmap(_) => false,
+            Self::Mmap(_) | Self::MmapReadOnly(_) => false,
             Self::File(f) => f.data_cache.is_enabled(),
         }
     }
@@ -996,7 +1089,7 @@ impl ImageBacking {
     /// Returns the configured user-space data page cache budget in bytes (`0` for `Mmap` or disabled).
     pub(crate) fn data_cache_capacity_bytes(&self) -> usize {
         match self {
-            Self::Mmap(_) => 0,
+            Self::Mmap(_) | Self::MmapReadOnly(_) => 0,
             Self::File(f) => f.data_cache.capacity_bytes(),
         }
     }
@@ -1004,7 +1097,7 @@ impl ImageBacking {
     /// Returns the approximate number of bytes currently resident in the user-space data page cache.
     pub(crate) fn data_cache_used_bytes(&self) -> usize {
         match self {
-            Self::Mmap(_) => 0,
+            Self::Mmap(_) | Self::MmapReadOnly(_) => 0,
             Self::File(f) => f.data_cache.used_bytes(),
         }
     }
@@ -1047,6 +1140,10 @@ impl ImageBacking {
                 dst.copy_from_slice(&m[start..end]);
                 Some(Ok(()))
             }
+            Self::MmapReadOnly(m) => {
+                dst.copy_from_slice(&m[start..end]);
+                Some(Ok(()))
+            }
             Self::File(fb) => {
                 if !fb.data_cache.is_enabled() || dst.len() > DataPageCache::MAX_CACHED_EXTENT {
                     return None;
@@ -1081,18 +1178,19 @@ impl ImageBacking {
         if off + 8 > BLOCK_SIZE {
             return Some(0);
         }
-        match self {
-            Self::Mmap(m) => {
-                let start = usize::try_from(block_id)
-                    .ok()
-                    .and_then(|b| b.checked_mul(BLOCK_SIZE))
-                    .and_then(|b| b.checked_add(off))?;
-                if start + 8 > m.len() {
-                    return Some(0);
-                }
-                Some(u64::from_le_bytes(m[start..start + 8].try_into().unwrap()))
+        if let Some(m) = self.as_mmap_slice() {
+            let start = usize::try_from(block_id)
+                .ok()
+                .and_then(|b| b.checked_mul(BLOCK_SIZE))
+                .and_then(|b| b.checked_add(off))?;
+            if start + 8 > m.len() {
+                return Some(0);
             }
+            return Some(u64::from_le_bytes(m[start..start + 8].try_into().unwrap()));
+        }
+        match self {
             Self::File(fb) => fb.block_cache.read_u64_le(block_id, off),
+            Self::Mmap(_) | Self::MmapReadOnly(_) => unreachable!(),
         }
     }
 
@@ -1119,6 +1217,10 @@ impl ImageBacking {
         }
         match self {
             Self::Mmap(m) => {
+                dst.copy_from_slice(&m[start..end]);
+                Ok(())
+            }
+            Self::MmapReadOnly(m) => {
                 dst.copy_from_slice(&m[start..end]);
                 Ok(())
             }
@@ -1158,6 +1260,10 @@ impl ImageBacking {
     /// Reads an exact byte range `[offset..offset + dst.len()]`.
     #[inline]
     pub(crate) fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> io::Result<()> {
+        debug_assert!(storage_op_permitted(
+            self.is_read_only(),
+            StorageOpKind::Read
+        ));
         let start = usize::try_from(offset)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "read offset overflow"))?;
         let end = start
@@ -1174,6 +1280,10 @@ impl ImageBacking {
                 dst.copy_from_slice(&m[start..end]);
                 Ok(())
             }
+            Self::MmapReadOnly(m) => {
+                dst.copy_from_slice(&m[start..end]);
+                Ok(())
+            }
             Self::File(f) => file_read_exact_at(&f.file, offset, dst),
         }
     }
@@ -1181,6 +1291,9 @@ impl ImageBacking {
     /// Writes `src` at `offset`, keeping mirrors and metadata block cache coherent.
     #[inline]
     pub(crate) fn write_all_at(&mut self, offset: u64, src: &[u8]) -> io::Result<()> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Write) {
+            return Err(Self::read_only_error());
+        }
         let start = usize::try_from(offset)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "write offset overflow"))?;
         let end = start
@@ -1197,6 +1310,7 @@ impl ImageBacking {
                 m[start..end].copy_from_slice(src);
                 Ok(())
             }
+            Self::MmapReadOnly(_) => Err(Self::read_only_error()),
             Self::File(f) => {
                 file_write_all_at(&f.file, offset, src)?;
                 f.sync_mirrors_on_write(offset, src);
@@ -1208,6 +1322,9 @@ impl ImageBacking {
     /// Zeroes a single 4 KiB block in place.
     #[inline]
     pub(crate) fn zero_block(&mut self, block_id: u64) -> io::Result<()> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Write) {
+            return Err(Self::read_only_error());
+        }
         let start = usize::try_from(block_id)
             .ok()
             .and_then(|b| b.checked_mul(BLOCK_SIZE))
@@ -1226,6 +1343,7 @@ impl ImageBacking {
                 m[start..end].fill(0);
                 Ok(())
             }
+            Self::MmapReadOnly(_) => Err(Self::read_only_error()),
             Self::File(f) => {
                 file_write_all_at(&f.file, start as u64, &ZERO_BLOCK)?;
                 f.block_cache.invalidate(block_id);
@@ -1237,6 +1355,9 @@ impl ImageBacking {
 
     /// Copies one 4 KiB block to another 4 KiB block (used by in-place defragmentation).
     pub(crate) fn copy_block(&mut self, src_blk: u64, dst_blk: u64) -> io::Result<()> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Write) {
+            return Err(Self::read_only_error());
+        }
         if src_blk == dst_blk {
             return Ok(());
         }
@@ -1257,6 +1378,7 @@ impl ImageBacking {
                 m.copy_within(src_off..src_off + BLOCK_SIZE, dst_off);
                 Ok(())
             }
+            Self::MmapReadOnly(_) => Err(Self::read_only_error()),
             Self::File(f) => {
                 let mut buf = [0u8; BLOCK_SIZE];
                 file_read_exact_at(&f.file, src_off as u64, &mut buf)?;
@@ -1291,6 +1413,7 @@ impl ImageBacking {
         }
         match self {
             Self::Mmap(m) => Ok(f(&m[start..end])),
+            Self::MmapReadOnly(m) => Ok(f(&m[start..end])),
             Self::File(fb) => {
                 if let Some(arc_blk) = fb.block_cache.get(block_id) {
                     return Ok(f(&arc_blk[..]));
@@ -1315,6 +1438,9 @@ impl ImageBacking {
         block_id: u64,
         f: impl FnOnce(&mut [u8]) -> R,
     ) -> io::Result<R> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Write) {
+            return Err(Self::read_only_error());
+        }
         let start = usize::try_from(block_id)
             .ok()
             .and_then(|b| b.checked_mul(BLOCK_SIZE))
@@ -1330,6 +1456,7 @@ impl ImageBacking {
         }
         match self {
             Self::Mmap(m) => Ok(f(&mut m[start..end])),
+            Self::MmapReadOnly(_) => Err(Self::read_only_error()),
             Self::File(fb) => {
                 let mut buf = [0u8; BLOCK_SIZE];
                 if let Some(arc_blk) = fb.block_cache.get(block_id) {
@@ -1353,20 +1480,20 @@ impl ImageBacking {
         if off + 8 > BLOCK_SIZE {
             return 0;
         }
-        match self {
-            Self::Mmap(m) => {
-                let Some(start) = usize::try_from(block_id)
-                    .ok()
-                    .and_then(|b| b.checked_mul(BLOCK_SIZE))
-                    .and_then(|b| b.checked_add(off))
-                else {
-                    return 0;
-                };
-                if start + 8 > m.len() {
-                    return 0;
-                }
-                u64::from_le_bytes(m[start..start + 8].try_into().unwrap())
+        if let Some(m) = self.as_mmap_slice() {
+            let Some(start) = usize::try_from(block_id)
+                .ok()
+                .and_then(|b| b.checked_mul(BLOCK_SIZE))
+                .and_then(|b| b.checked_add(off))
+            else {
+                return 0;
+            };
+            if start + 8 > m.len() {
+                return 0;
             }
+            return u64::from_le_bytes(m[start..start + 8].try_into().unwrap());
+        }
+        match self {
             Self::File(fb) => {
                 if let Some(val) = fb.block_cache.read_u64_le(block_id, off) {
                     return val;
@@ -1376,12 +1503,16 @@ impl ImageBacking {
                 })
                 .unwrap_or(0)
             }
+            Self::Mmap(_) | Self::MmapReadOnly(_) => unreachable!(),
         }
     }
 
     /// Writes an 8-byte little-endian `u64` slot into a pointer block without whole-block RMW.
     #[inline]
     pub(crate) fn write_block_ptr(&mut self, block_id: u64, entry_idx: usize, ptr: u64) {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Write) {
+            return;
+        }
         let off_in_blk = entry_idx * 8;
         if off_in_blk + 8 > BLOCK_SIZE {
             return;
@@ -1401,6 +1532,7 @@ impl ImageBacking {
             Self::Mmap(m) => {
                 m[abs_off..abs_off + 8].copy_from_slice(&bytes);
             }
+            Self::MmapReadOnly(_) => {}
             Self::File(fb) => {
                 if file_write_all_at(&fb.file, abs_off as u64, &bytes).is_ok() {
                     fb.block_cache
@@ -1415,20 +1547,24 @@ impl ImageBacking {
     /// Reads the inode bitmap span as a contiguous slice.
     #[inline]
     pub(crate) fn inode_bitmap_slice(&self, sb: &SuperBlock) -> Option<&[u8]> {
-        match self {
-            Self::Mmap(m) => {
-                let start = usize::try_from(sb.inode_bitmap_block)
-                    .ok()?
-                    .checked_mul(BLOCK_SIZE)?;
-                let len = usize::try_from(sb.inode_bitmap_blocks())
-                    .ok()?
-                    .checked_mul(BLOCK_SIZE)?;
-                let end = start.checked_add(len)?;
-                if end > m.len() {
-                    return None;
-                }
-                Some(&m[start..end])
+        debug_assert!(storage_op_permitted(
+            self.is_read_only(),
+            StorageOpKind::BitmapRead
+        ));
+        if let Some(m) = self.as_mmap_slice() {
+            let start = usize::try_from(sb.inode_bitmap_block)
+                .ok()?
+                .checked_mul(BLOCK_SIZE)?;
+            let len = usize::try_from(sb.inode_bitmap_blocks())
+                .ok()?
+                .checked_mul(BLOCK_SIZE)?;
+            let end = start.checked_add(len)?;
+            if end > m.len() {
+                return None;
             }
+            return Some(&m[start..end]);
+        }
+        match self {
             Self::File(fb) => {
                 if fb.inode_bitmap.is_empty() {
                     None
@@ -1436,26 +1572,27 @@ impl ImageBacking {
                     Some(&fb.inode_bitmap)
                 }
             }
+            Self::Mmap(_) | Self::MmapReadOnly(_) => unreachable!(),
         }
     }
 
     /// Reads the data bitmap span as a contiguous slice.
     #[inline]
     pub(crate) fn data_bitmap_slice(&self, sb: &SuperBlock) -> Option<&[u8]> {
-        match self {
-            Self::Mmap(m) => {
-                let start = usize::try_from(sb.data_bitmap_block)
-                    .ok()?
-                    .checked_mul(BLOCK_SIZE)?;
-                let len = usize::try_from(sb.data_bitmap_blocks())
-                    .ok()?
-                    .checked_mul(BLOCK_SIZE)?;
-                let end = start.checked_add(len)?;
-                if end > m.len() {
-                    return None;
-                }
-                Some(&m[start..end])
+        if let Some(m) = self.as_mmap_slice() {
+            let start = usize::try_from(sb.data_bitmap_block)
+                .ok()?
+                .checked_mul(BLOCK_SIZE)?;
+            let len = usize::try_from(sb.data_bitmap_blocks())
+                .ok()?
+                .checked_mul(BLOCK_SIZE)?;
+            let end = start.checked_add(len)?;
+            if end > m.len() {
+                return None;
             }
+            return Some(&m[start..end]);
+        }
+        match self {
             Self::File(fb) => {
                 if fb.data_bitmap.is_empty() {
                     None
@@ -1463,12 +1600,16 @@ impl ImageBacking {
                     Some(&fb.data_bitmap)
                 }
             }
+            Self::Mmap(_) | Self::MmapReadOnly(_) => unreachable!(),
         }
     }
 
     /// Borrows the mutable inode bitmap span (auto-flushed via `pwrite` on drop under `FileIo`).
     #[inline]
     pub(crate) fn inode_bitmap_slice_mut(&mut self, sb: &SuperBlock) -> Option<BitmapSliceMut<'_>> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::BitmapWrite) {
+            return None;
+        }
         match self {
             Self::Mmap(m) => {
                 let start = usize::try_from(sb.inode_bitmap_block)
@@ -1487,6 +1628,7 @@ impl ImageBacking {
                     dirty_range: None,
                 })
             }
+            Self::MmapReadOnly(_) => None,
             Self::File(fb) => {
                 if fb.inode_bitmap.is_empty() {
                     return None;
@@ -1503,6 +1645,9 @@ impl ImageBacking {
     /// Borrows the mutable data bitmap span (auto-flushed via `pwrite` on drop under `FileIo`).
     #[inline]
     pub(crate) fn data_bitmap_slice_mut(&mut self, sb: &SuperBlock) -> Option<BitmapSliceMut<'_>> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::BitmapWrite) {
+            return None;
+        }
         match self {
             Self::Mmap(m) => {
                 let start = usize::try_from(sb.data_bitmap_block)
@@ -1521,6 +1666,7 @@ impl ImageBacking {
                     dirty_range: None,
                 })
             }
+            Self::MmapReadOnly(_) => None,
             Self::File(fb) => {
                 if fb.data_bitmap.is_empty() {
                     return None;
@@ -1542,6 +1688,12 @@ impl ImageBacking {
         let bs = sb.block_size as usize;
         let needed_u64 =
             crate::journal::JOURNAL_RESERVED_BLOCKS.saturating_mul(sb.block_size as u64);
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::JournalWrite) {
+            return Err(crate::journal::JournalError::RegionTooSmall {
+                needed: needed_u64,
+                available: 0,
+            });
+        }
         let available_u64 = self.len() as u64;
         let too_small = || crate::journal::JournalError::RegionTooSmall {
             needed: needed_u64,
@@ -1562,6 +1714,10 @@ impl ImageBacking {
                 slice: &mut m[start..end],
                 file_writeback: None,
                 writeback: JournalWriteback::Full,
+            }),
+            Self::MmapReadOnly(_) => Err(crate::journal::JournalError::RegionTooSmall {
+                needed: needed_u64,
+                available: 0,
             }),
             Self::File(fb) => {
                 if fb.journal_buf.len() != len {
@@ -1584,6 +1740,10 @@ impl ImageBacking {
         &self,
         sb: &SuperBlock,
     ) -> Result<&[u8], crate::journal::JournalError> {
+        debug_assert!(storage_op_permitted(
+            self.is_read_only(),
+            StorageOpKind::JournalRead
+        ));
         let bs = sb.block_size as usize;
         let needed_u64 =
             crate::journal::JOURNAL_RESERVED_BLOCKS.saturating_mul(sb.block_size as u64);
@@ -1604,6 +1764,7 @@ impl ImageBacking {
         }
         match self {
             Self::Mmap(m) => Ok(&m[start..end]),
+            Self::MmapReadOnly(m) => Ok(&m[start..end]),
             Self::File(fb) => {
                 if fb.journal_buf.len() != len {
                     return Err(crate::journal::JournalError::RegionTooSmall {
@@ -1616,6 +1777,22 @@ impl ImageBacking {
         }
     }
 
+    /// Inspects the WAL journal region strictly read-only (zero disk writes) and returns
+    /// `Ok(true)` if the journal has `0` pending transactions (or the image is non-journaled),
+    /// or `Ok(false)` if unrecovered pending transactions exist in the WAL ring.
+    pub(crate) fn is_journal_clean_read_only(
+        &self,
+        sb: &SuperBlock,
+    ) -> Result<bool, crate::disk::DiskManagerError> {
+        if !sb.has_journal_layout() {
+            return Ok(true);
+        }
+        let region = self.journal_region_ref(sb)?;
+        let mut snapshot = region.to_vec();
+        let ring = crate::journal::JournalRing::open(&mut snapshot, sb.block_size as u64)?;
+        Ok(ring.pending_transactions() == 0)
+    }
+
     /// Applies one committed [`crate::journal::MetadataOp`] directly to the backing store.
     ///
     /// - Under `Mmap`: delegates straight to [`crate::journal::apply_op_in_place`].
@@ -1626,8 +1803,12 @@ impl ImageBacking {
         sb: &SuperBlock,
         op: &crate::journal::MetadataOp,
     ) -> Result<(), crate::disk::DiskManagerError> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Write) {
+            return Err(Self::read_only_error().into());
+        }
         match self {
             Self::Mmap(m) => Ok(crate::journal::apply_op_in_place(m, sb, op)?),
+            Self::MmapReadOnly(_) => Err(Self::read_only_error().into()),
             Self::File(fb) => {
                 use crate::journal::{JournalError, MetadataOp};
                 let bs = sb.block_size as u64;
@@ -1863,8 +2044,12 @@ impl ImageBacking {
     /// Synchronously flushes the entire image to persistent storage.
     #[inline]
     pub(crate) fn flush(&self) -> io::Result<()> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Flush) {
+            return Ok(());
+        }
         match self {
             Self::Mmap(m) => m.flush(),
+            Self::MmapReadOnly(_) => Ok(()),
             Self::File(f) => f.file.sync_data(),
         }
     }
@@ -1872,17 +2057,24 @@ impl ImageBacking {
     /// Asynchronously schedules dirty pages for writeback.
     #[inline]
     pub(crate) fn flush_async(&self) -> io::Result<()> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Flush) {
+            return Ok(());
+        }
         match self {
             Self::Mmap(m) => m.flush_async(),
-            Self::File(_) => Ok(()),
+            Self::MmapReadOnly(_) | Self::File(_) => Ok(()),
         }
     }
 
     /// Synchronously flushes a byte range `[offset..offset + len]`.
     #[inline]
     pub(crate) fn flush_range(&self, offset: usize, len: usize) -> io::Result<()> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Flush) {
+            return Ok(());
+        }
         match self {
             Self::Mmap(m) => m.flush_range(offset, len),
+            Self::MmapReadOnly(_) => Ok(()),
             Self::File(f) => f.file.sync_data(),
         }
     }
@@ -1890,9 +2082,12 @@ impl ImageBacking {
     /// Asynchronously schedules a byte range `[offset..offset + len]` for writeback.
     #[inline]
     pub(crate) fn flush_async_range(&self, offset: usize, len: usize) -> io::Result<()> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Flush) {
+            return Ok(());
+        }
         match self {
             Self::Mmap(m) => m.flush_async_range(offset, len),
-            Self::File(_) => Ok(()),
+            Self::MmapReadOnly(_) | Self::File(_) => Ok(()),
         }
     }
 
@@ -1900,6 +2095,88 @@ impl ImageBacking {
     pub(crate) fn replace_file_for_test(&mut self, file: File) {
         if let Self::File(fb) = self {
             fb.file = file;
+        }
+    }
+}
+
+#[cfg(test)]
+mod read_only_backing_tests {
+    use super::*;
+    use std::fs::OpenOptions;
+
+    #[test]
+    fn read_only_backing_rejects_all_low_level_mutations() {
+        for mode in [StorageMode::Mmap, StorageMode::FileIo] {
+            let path = std::env::temp_dir().join(format!(
+                "oifs_ro_backing_{:?}_{}.img",
+                mode,
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+
+            let total_size = 2 * 1024 * 1024u64;
+            let sb = SuperBlock::new_journaled(total_size / BLOCK_SIZE as u64);
+            {
+                let f = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&path)
+                    .unwrap();
+                f.set_len(total_size).unwrap();
+                let mut rw = ImageBacking::open(&f, StorageMode::Mmap).unwrap();
+                let bytes = bincode::serialize(&sb).unwrap();
+                rw.write_all_at(0, &bytes).unwrap();
+                {
+                    let mut reg = rw.journal_region_mut(&sb).unwrap();
+                    crate::journal::JournalRing::create(&mut reg, sb.block_size as u64).unwrap();
+                }
+                rw.flush().unwrap();
+            }
+
+            let ro_file = OpenOptions::new().read(true).open(&path).unwrap();
+            let mut ro = ImageBacking::open_read_only(&ro_file, mode).unwrap();
+            assert!(ro.is_read_only());
+            assert_eq!(ro.mode(), mode);
+            assert_eq!(ro.as_mmap_slice().is_some(), mode == StorageMode::Mmap);
+            ro.configure_regions(&sb).unwrap();
+            assert!(ro.is_journal_clean_read_only(&sb).unwrap());
+
+            assert_eq!(
+                ro.write_all_at(0, &[1, 2, 3]).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                ro.zero_block(sb.data_block_start).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                ro.copy_block(sb.data_block_start, sb.data_block_start + 1)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                ro.with_block_mut(sb.data_block_start, |b| b[0] = 9)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert!(ro.inode_bitmap_slice_mut(&sb).is_none());
+            assert!(ro.data_bitmap_slice_mut(&sb).is_none());
+            assert!(ro.journal_region_mut(&sb).is_err());
+            let op = crate::journal::MetadataOp::SetInodeBitmap {
+                inode_id: 1,
+                allocated: true,
+            };
+            assert!(ro.apply_journal_op(&sb, &op).is_err());
+            assert!(ro.flush().is_ok());
+            assert!(ro.flush_async().is_ok());
+            assert!(ro.flush_range(0, BLOCK_SIZE).is_ok());
+            assert!(ro.flush_async_range(0, BLOCK_SIZE).is_ok());
+
+            let _ = std::fs::remove_file(&path);
         }
     }
 }
@@ -1989,5 +2266,64 @@ mod verification {
         if bytes >= MAX_FILE_IO_CACHE_BYTES {
             assert_eq!(per_shard, max_per_shard);
         }
+    }
+
+    /// Formally prove read-only storage access policy invariants across all operation kinds
+    /// and storage modes:
+    /// 1. When `read_only` is `true`, EVERY mutating operation (`Write`, `BitmapWrite`,
+    ///    `JournalWrite`, `Flush`) is strictly forbidden, while every read operation (`Read`,
+    ///    `BitmapRead`, `JournalRead`) remains permitted.
+    /// 2. Zero-copy mmap slicing depends strictly on `StorageMode::Mmap` and stays enabled
+    ///    under `MmapReadOnly` (`PROT_READ`), while remaining disabled under `StorageMode::FileIo`.
+    #[kani::proof]
+    fn proof_read_only_storage_access_invariants() {
+        let read_only: bool = kani::any();
+        let op_tag: u8 = kani::any();
+        kani::assume(op_tag < 7);
+        let op = match op_tag {
+            0 => StorageOpKind::Read,
+            1 => StorageOpKind::Write,
+            2 => StorageOpKind::BitmapRead,
+            3 => StorageOpKind::BitmapWrite,
+            4 => StorageOpKind::JournalRead,
+            5 => StorageOpKind::JournalWrite,
+            _ => StorageOpKind::Flush,
+        };
+
+        let allowed = storage_op_permitted(read_only, op);
+        let is_read_op = matches!(
+            op,
+            StorageOpKind::Read | StorageOpKind::BitmapRead | StorageOpKind::JournalRead
+        );
+        if read_only {
+            assert_eq!(
+                allowed, is_read_op,
+                "Read-only backing must allow all reads and reject all writes/flushes"
+            );
+        } else {
+            assert!(allowed, "Read-write backing must permit all operations");
+        }
+
+        let mode = if kani::any::<bool>() {
+            StorageMode::Mmap
+        } else {
+            StorageMode::FileIo
+        };
+        assert_eq!(
+            storage_mmap_zero_copy_permitted(mode, read_only),
+            mode == StorageMode::Mmap
+        );
+        kani::cover!(
+            read_only && mode == StorageMode::Mmap && !allowed,
+            "Read-only Mmap write rejected"
+        );
+        kani::cover!(
+            read_only && mode == StorageMode::Mmap && allowed,
+            "Read-only Mmap read permitted"
+        );
+        kani::cover!(
+            read_only && mode == StorageMode::FileIo && !allowed,
+            "Read-only FileIo write rejected"
+        );
     }
 }

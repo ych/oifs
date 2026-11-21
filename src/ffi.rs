@@ -273,6 +273,9 @@ pub extern "C" fn oifs_create_file(handle: *mut OIFSHandle, path: *const c_char)
 
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
             let (parent_id, name) = dm.resolve_parent(filename)?;
             dm.create_file(parent_id, &name)?;
             Ok(())
@@ -322,6 +325,9 @@ pub extern "C" fn oifs_create_or_open_file(handle: *mut OIFSHandle, path: *const
 
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
             let (parent_id, name) = dm.resolve_parent(filename)?;
             dm.create_or_open_file(parent_id, &name)?;
             Ok(())
@@ -373,6 +379,9 @@ pub extern "C" fn oifs_delete_file(handle: *mut OIFSHandle, path: *const c_char)
 
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
             let (parent_id, name) = dm.resolve_parent(filename)?;
             dm.delete_file(parent_id, &name)?;
             Ok(())
@@ -506,6 +515,9 @@ pub extern "C" fn oifs_write_file(
 
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
             let (parent_id, name) = dm.resolve_parent(filename_str)?;
             // A null buffer with a non-zero size is a caller error and
             // must not be silently treated as an empty write.
@@ -605,6 +617,9 @@ pub extern "C" fn oifs_write_file_with_policy(
 
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
             let (parent_id, name) = dm.resolve_parent(filename_str)?;
             let data = if buf.is_null() {
                 if buf_size > 0 {
@@ -678,6 +693,9 @@ pub extern "C" fn oifs_mkdir(handle: *mut OIFSHandle, path: *const c_char) -> i3
         };
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
             let (parent_id, name) = dm.resolve_parent(path_str)?;
             dm.create_directory(parent_id, &name)?;
             Ok(())
@@ -919,6 +937,9 @@ pub extern "C" fn oifs_truncate_file(
 
         let dm = &handle_ref.dm;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
             let (parent_id, name) = dm.resolve_parent(filename_str)?;
             let inode_id = dm.lookup(parent_id, &name)?;
             dm.truncate(inode_id, new_size)?;
@@ -1002,6 +1023,59 @@ pub extern "C" fn oifs_open_with_options(
         }
     }));
     res.unwrap_or(ptr::null_mut())
+}
+
+/// Opens an existing OIFS image in read-only mode (`0 = Mmap`, `1 = FileIo`).
+///
+/// Acquires a shared OS read lock (`F_RDLCK`), never opens the backing file for writing,
+/// and supports multiple concurrent read-only readers on `0444` images.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_open_read_only(
+    path: *const c_char,
+    password: *const c_char,
+    storage_mode: u8,
+) -> *mut OIFSHandle {
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if path.is_null() {
+            return ptr::null_mut();
+        }
+        let Ok(path_str) = (unsafe { CStr::from_ptr(path) }).to_str() else {
+            return ptr::null_mut();
+        };
+        let pwd_str = if password.is_null() {
+            None
+        } else {
+            match unsafe { CStr::from_ptr(password) }.to_str() {
+                Ok(s) if !s.is_empty() => Some(s),
+                Ok(_) => None,
+                Err(_) => return ptr::null_mut(),
+            }
+        };
+        let mode = if storage_mode == OIFS_STORAGE_MODE_FILE_IO {
+            crate::storage::StorageMode::FileIo
+        } else {
+            crate::storage::StorageMode::Mmap
+        };
+
+        match DiskManager::open_read_only_with_storage_mode(path_str, pwd_str, mode) {
+            Ok(dm) => Box::into_raw(Box::new(OIFSHandle::new(dm))),
+            Err(_) => ptr::null_mut(),
+        }
+    }));
+    res.unwrap_or(ptr::null_mut())
+}
+
+/// Returns `1` if `handle` is mounted read-only, `0` if read-write, or `-1` if `handle` is null.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_is_read_only(handle: *const OIFSHandle) -> i32 {
+    if handle.is_null() {
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        i32::from(handle_ref.dm.is_read_only())
+    }));
+    res.unwrap_or(-1)
 }
 
 #[unsafe(no_mangle)]
@@ -1124,6 +1198,9 @@ pub extern "C" fn oifs_create_file_with_data(
         };
         let dm = &handle_ref.dm;
         match (|| -> Result<u64, Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
             let (parent_id, name) = dm.resolve_parent(path_str)?;
             let id = dm.create_file_with_data(parent_id, &name, data, compression_mode)?;
             Ok(id)
@@ -1581,6 +1658,14 @@ pub extern "C" fn oifs_create_file_with_data_async(
     };
     let handle_ref = unsafe { &(*handle) };
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle_ref.dm.is_read_only() {
+            return Box::into_raw(Box::new(OIFSAsyncFuture {
+                task: Some(crate::disk::OifsAsyncTask::ready(Err(
+                    crate::disk::DiskManagerError::ReadOnly.to_string(),
+                ))),
+                last_error: None,
+            }));
+        }
         let Ok(path_str) = (unsafe { cstr_to_str(path) }).map(str::to_owned) else {
             return ptr::null_mut();
         };
@@ -1629,6 +1714,14 @@ pub extern "C" fn oifs_write_file_async(
     };
     let handle_ref = unsafe { &(*handle) };
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle_ref.dm.is_read_only() {
+            return Box::into_raw(Box::new(OIFSAsyncFuture {
+                task: Some(crate::disk::OifsAsyncTask::ready(Err(
+                    crate::disk::DiskManagerError::ReadOnly.to_string(),
+                ))),
+                last_error: None,
+            }));
+        }
         let Ok(path_str) = (unsafe { cstr_to_str(path) }).map(str::to_owned) else {
             return ptr::null_mut();
         };

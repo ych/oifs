@@ -46,6 +46,9 @@ impl DiskManager {
     /// safe to call again after an interrupted migration.
     pub fn migrate(&self) -> Result<MigrationStats, DiskManagerError> {
         let mut guard = self.inner.write().unwrap();
+        if guard.read_only {
+            return Err(DiskManagerError::ReadOnly);
+        }
         let from_version = guard.superblock.inode_record_version();
         if !guard.superblock.is_legacy_inode_format() {
             return Ok(MigrationStats {
@@ -275,6 +278,9 @@ impl DiskManager {
     /// Reloads the underlying image backing and locks after an external or safe-mode file replacement.
     pub(crate) fn reload_from_disk(&self, source_path: &str) -> Result<(), DiskManagerError> {
         let mut guard = self.inner.write().unwrap();
+        if guard.read_only {
+            return Err(DiskManagerError::ReadOnly);
+        }
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -443,6 +449,9 @@ impl DiskManager {
         mode: DefragMode,
         output_path: Option<&str>,
     ) -> Result<DefragStats, DiskManagerError> {
+        if self.is_read_only() {
+            return Err(DiskManagerError::ReadOnly);
+        }
         let backing = self.backing_path();
         let canonical_source = std::fs::canonicalize(source_path).map_err(DiskManagerError::Io)?;
         if canonical_source != backing {
@@ -694,6 +703,9 @@ impl DiskManager {
         inner: &Arc<RwLock<DiskManagerInner>>,
     ) -> Result<DefragStats, DiskManagerError> {
         let mut guard = inner.write().unwrap();
+        if guard.read_only {
+            return Err(DiskManagerError::ReadOnly);
+        }
         let stats_before = Self::analyze_fragmentation_internal(&guard)?;
 
         // Exact zero-fragmentation short-circuit when all allocated blocks occupy

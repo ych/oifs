@@ -34,13 +34,15 @@ fn get_dylib_path() -> PathBuf {
 
     let ffi_src = base.join("src/ffi.rs");
     let disk_src = base.join("src/disk.rs");
+    let storage_src = base.join("src/storage.rs");
     let needs_rebuild = match (
         target_dylib.metadata().and_then(|m| m.modified()),
         ffi_src.metadata().and_then(|m| m.modified()),
         disk_src.metadata().and_then(|m| m.modified()),
+        storage_src.metadata().and_then(|m| m.modified()),
     ) {
-        (Ok(dylib_time), Ok(ffi_time), Ok(disk_time)) => {
-            dylib_time < ffi_time || dylib_time < disk_time
+        (Ok(dylib_time), Ok(ffi_time), Ok(disk_time), Ok(storage_time)) => {
+            dylib_time < ffi_time || dylib_time < disk_time || dylib_time < storage_time
         }
         _ => true,
     };
@@ -101,6 +103,8 @@ fn test_cpp_native_zero_copy_async_and_benchmark() {
     let enc_img = tmp_dir.path().join("cpp_enc.img");
     let async_img = tmp_dir.path().join("cpp_async_strict.img");
     let bench_img = tmp_dir.path().join("cpp_bench.img");
+    let ro_img = tmp_dir.path().join("cpp_readonly.img");
+    let ro_enc_img = tmp_dir.path().join("cpp_readonly_enc.img");
 
     let cpp_code = format!(
         r#"
@@ -117,6 +121,9 @@ fn test_cpp_native_zero_copy_async_and_benchmark() {
 #include <string>
 #include <thread>
 #include <vector>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 static void test_pinnable_slice_zero_copy_and_fallbacks(
     const std::string& mmap_path,
@@ -526,6 +533,200 @@ static void run_micro_benchmark(const std::string& bench_path) {{
     );
 }}
 
+static void test_read_only_mode(const std::string& ro_path, const std::string& ro_enc_path) {{
+    // Null handle query must return -1
+    assert(oifs_is_read_only(nullptr) == -1);
+
+    // 1. Prepare a plain journaled image with a contiguous raw file (32 KiB = 8 direct blocks)
+    //    and a compressed file, flush/checkpoint cleanly, then close it
+    constexpr size_t kRawLen = 32 * 1024;
+    std::vector<uint8_t> raw_payload(kRawLen);
+    for (size_t i = 0; i < kRawLen; ++i) {{
+        raw_payload[i] = static_cast<uint8_t>((i * 13 + 5) & 0xFF);
+    }}
+    std::string comp_payload(32768, 'R');
+    for (size_t i = 0; i < comp_payload.size(); i += 32) {{
+        comp_payload[i] = 'O';
+    }}
+    uint64_t raw_inode = 0;
+    uint64_t comp_inode = 0;
+    {{
+        oifs::FileSystem rw = oifs::FileSystem::open_with_options(
+            ro_path, 16ULL * 1024 * 1024, "", oifs::StorageMode::Mmap, true);
+        assert(!rw.is_read_only());
+        assert(oifs_is_read_only(rw.raw()) == 0);
+        raw_inode = rw.create_file_with_data(
+            "weights_ro.raw", oifs::ByteView(raw_payload), oifs::WritePolicy::Raw, 0);
+        comp_inode = rw.create_file_with_data(
+            "comp_ro.zst", oifs::ByteView(comp_payload), oifs::WritePolicy::Stream, 3);
+        rw.flush();
+    }}
+
+    // Prepare an encrypted image as well
+    std::string enc_secret = "Encrypted 0444 read-only image payload verified via C++ API!";
+    {{
+        oifs::FileSystem rw_enc = oifs::FileSystem::open_with_options(
+            ro_enc_path, 16ULL * 1024 * 1024, "ro_secret_pwd", oifs::StorageMode::Mmap, true);
+        assert(!rw_enc.is_read_only());
+        (void)rw_enc.create_file_with_data(
+            "secret.txt", oifs::ByteView(enc_secret), oifs::WritePolicy::Raw, 0);
+        rw_enc.flush();
+    }}
+
+#ifndef _WIN32
+    assert(::chmod(ro_path.c_str(), 0444) == 0);
+    assert(::chmod(ro_enc_path.c_str(), 0444) == 0);
+#endif
+
+    // 2. Open TWO simultaneous C++ read-only instances (Mmap) plus a C FFI FileIo instance
+    {{
+        oifs::FileSystem ro1 = oifs::FileSystem::open_read_only(
+            ro_path, "", oifs::StorageMode::Mmap);
+        oifs::FileSystem ro2 = oifs::FileSystem::open_read_only(
+            ro_path, "", oifs::StorageMode::Mmap);
+        OIFSHandle* ro_c_fileio = oifs_open_read_only(
+            ro_path.c_str(), nullptr, OIFS_STORAGE_MODE_FILE_IO);
+        assert(ro_c_fileio != nullptr);
+
+        assert(ro1.is_read_only());
+        assert(ro2.is_read_only());
+        assert(oifs_is_read_only(ro1.raw()) == 1);
+        assert(oifs_is_read_only(ro2.raw()) == 1);
+        assert(oifs_is_read_only(ro_c_fileio) == 1);
+
+        // Verify 0-copy PinnableSlice on both simultaneous read-only Mmap instances
+        oifs::ReadSession s1 = ro1.begin_read();
+        oifs::ReadSession s2 = ro2.begin_read();
+        oifs::FileReadHandle fh1 = s1.open_file("weights_ro.raw");
+        oifs::FileReadHandle fh2 = s2.open_inode(raw_inode);
+        assert(fh1.size() == kRawLen);
+        assert(fh2.size() == kRawLen);
+
+        oifs::PinnableSlice slice1 = fh1.read_pinnable(0, kRawLen);
+        oifs::PinnableSlice slice2 = fh2.read_pinnable(4096, 8192);
+        assert(slice1.is_pinned());
+        assert(slice2.is_pinned());
+        assert(slice1.size() == kRawLen);
+        assert(std::memcmp(slice1.data(), raw_payload.data(), kRawLen) == 0);
+        assert(slice2.size() == 8192);
+        assert(std::memcmp(slice2.data(), raw_payload.data() + 4096, 8192) == 0);
+
+        // Compressed file on read-only Mmap falls back cleanly to 1-copy
+        oifs::FileReadHandle comp_fh = s1.open_inode(comp_inode);
+        oifs::PinnableSlice comp_slice = comp_fh.read_pinnable(0, comp_payload.size());
+        assert(!comp_slice.is_pinned());
+        assert(comp_slice.as_string_view() == comp_payload);
+
+        // C FFI FileIo read-only handle also reads exact bytes
+        std::vector<uint8_t> fio_buf(kRawLen, 0);
+        int64_t fio_n = oifs_read_at(
+            ro_c_fileio, "weights_ro.raw", 0, fio_buf.data(), fio_buf.size());
+        assert(fio_n == static_cast<int64_t>(kRawLen));
+        assert(std::memcmp(fio_buf.data(), raw_payload.data(), kRawLen) == 0);
+
+        // Verify read_at_async works on read-only Mmap handle (Inline Fast-Path)
+        std::vector<uint8_t> async_buf(4096, 0);
+        oifs::AsyncFuture r_fut = ro1.read_at_async(
+            raw_inode, 8192, oifs::MutableByteSpan(async_buf));
+        assert(r_fut.is_ready());
+        assert(r_fut.wait() == 4096);
+        assert(std::memcmp(async_buf.data(), raw_payload.data() + 8192, 4096) == 0);
+
+        // Release read sessions before testing mutating calls
+        fh1.close();
+        fh2.close();
+        comp_fh.close();
+        slice1.reset();
+        slice2.reset();
+        comp_slice.reset();
+        s1.close();
+        s2.close();
+
+        // 3. Exhaustively verify C++ and C FFI mutating calls fail cleanly with ReadOnly error
+        auto expect_ro_error = [](const std::string& msg) {{
+            assert(msg.find("read-only") != std::string::npos);
+        }};
+
+        std::string dummy = "must not be written";
+
+        bool caught_create = false;
+        try {{
+            (void)ro1.create_file_with_data("blocked.txt", oifs::ByteView(dummy));
+        }} catch (const oifs::Error& e) {{
+            expect_ro_error(e.what());
+            caught_create = true;
+        }}
+        assert(caught_create);
+
+        bool caught_write = false;
+        try {{
+            ro1.write_file("weights_ro.raw", oifs::ByteView(dummy));
+        }} catch (const oifs::Error& e) {{
+            expect_ro_error(e.what());
+            caught_write = true;
+        }}
+        assert(caught_write);
+
+        bool caught_async_create = false;
+        try {{
+            oifs::AsyncFuture bad_w = ro1.create_file_with_data_async(
+                "blocked_async.txt", oifs::ByteView(dummy));
+            (void)bad_w.wait();
+        }} catch (const oifs::Error& e) {{
+            expect_ro_error(e.what());
+            caught_async_create = true;
+        }}
+        assert(caught_async_create);
+
+        char err_buf[256] = {{0}};
+        assert(oifs_mkdir(ro1.raw(), "ro_dir") == -1);
+        assert(oifs_last_error(ro1.raw(), err_buf, sizeof(err_buf)) == 0);
+        expect_ro_error(err_buf);
+
+        std::memset(err_buf, 0, sizeof(err_buf));
+        assert(oifs_delete_file(ro1.raw(), "weights_ro.raw") == -1);
+        assert(oifs_last_error(ro1.raw(), err_buf, sizeof(err_buf)) == 0);
+        expect_ro_error(err_buf);
+
+        std::memset(err_buf, 0, sizeof(err_buf));
+        assert(oifs_truncate_file(ro1.raw(), "weights_ro.raw", 0) == -1);
+        assert(oifs_last_error(ro1.raw(), err_buf, sizeof(err_buf)) == 0);
+        expect_ro_error(err_buf);
+
+        oifs_close(ro_c_fileio);
+    }}
+
+    // 4. Encrypted 0444 read-only image: missing/wrong password fails, right password succeeds
+    {{
+        bool caught_no_pwd = false;
+        try {{
+            (void)oifs::FileSystem::open_read_only(ro_enc_path, "", oifs::StorageMode::Mmap);
+        }} catch (const oifs::Error&) {{
+            caught_no_pwd = true;
+        }}
+        assert(caught_no_pwd);
+
+        oifs::FileSystem enc_ro = oifs::FileSystem::open_read_only(
+            ro_enc_path, "ro_secret_pwd", oifs::StorageMode::Mmap);
+        oifs::FileSystem enc_ro_fio = oifs::FileSystem::open_read_only(
+            ro_enc_path, "ro_secret_pwd", oifs::StorageMode::FileIo);
+        assert(enc_ro.is_read_only());
+        assert(enc_ro_fio.is_read_only());
+
+        std::vector<uint8_t> dec1(enc_secret.size(), 0);
+        std::vector<uint8_t> dec2(enc_secret.size(), 0);
+        assert(enc_ro.read_at("secret.txt", 0, oifs::MutableByteSpan(dec1)) == enc_secret.size());
+        assert(enc_ro_fio.read_at("secret.txt", 0, oifs::MutableByteSpan(dec2)) == enc_secret.size());
+        assert(std::memcmp(dec1.data(), enc_secret.data(), enc_secret.size()) == 0);
+        assert(std::memcmp(dec2.data(), enc_secret.data(), enc_secret.size()) == 0);
+    }}
+
+#ifndef _WIN32
+    assert(::chmod(ro_path.c_str(), 0644) == 0);
+    assert(::chmod(ro_enc_path.c_str(), 0644) == 0);
+#endif
+}}
+
 int main() {{
     assert(OIFS_CHECK_VERSION() == OIFS_VERSION_COMPAT_OK);
 
@@ -536,6 +737,7 @@ int main() {{
     );
     test_out_of_order_destruction_safety("{mmap_img}");
     test_batch_read_async_futures_and_callbacks("{async_img}");
+    test_read_only_mode("{ro_img}", "{ro_enc_img}");
     run_micro_benchmark("{bench_img}");
 
     std::cout << "ALL C++ NATIVE API (include/oifs.hpp) TESTS & BENCHMARKS PASSED!\n";
@@ -547,6 +749,8 @@ int main() {{
         enc_img = enc_img.to_str().unwrap(),
         async_img = async_img.to_str().unwrap(),
         bench_img = bench_img.to_str().unwrap(),
+        ro_img = ro_img.to_str().unwrap(),
+        ro_enc_img = ro_enc_img.to_str().unwrap(),
     );
 
     std::fs::write(&cpp_src_path, &cpp_code).expect("write C++ source");
@@ -615,5 +819,232 @@ int main() {{
             status_cpp20.success(),
             "C++20 compilation against include/oifs.hpp failed"
         );
+    }
+}
+
+#[test]
+fn test_cli_read_only_mode() {
+    let bin_path = env!("CARGO_BIN_EXE_oifs");
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let img_path = tmp_dir.path().join("cli_ro.img");
+    let img_str = img_path.to_str().unwrap();
+
+    // 1. Create a journaled image and populate it with a directory and files
+    let out = Command::new(bin_path)
+        .args(["-i", img_str, "create", "--size", "4", "--journal"])
+        .output()
+        .expect("cli create");
+    assert!(
+        out.status.success(),
+        "cli create failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = Command::new(bin_path)
+        .args(["-i", img_str, "mkdir", "docs"])
+        .output()
+        .expect("cli mkdir");
+    assert!(out.status.success());
+
+    let host_plain = tmp_dir.path().join("plain.txt");
+    let plain_bytes = b"Hello from a 0444 read-only OIFS image!\n";
+    std::fs::write(&host_plain, plain_bytes).expect("write plain.txt");
+
+    let out = Command::new(bin_path)
+        .args([
+            "-i",
+            img_str,
+            "put",
+            "--no-compress",
+            host_plain.to_str().unwrap(),
+            "docs/plain.txt",
+        ])
+        .output()
+        .expect("cli put");
+    assert!(
+        out.status.success(),
+        "cli put failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 2. Mark image 0444 (read-only) and snapshot exact bytes
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&img_path, std::fs::Permissions::from_mode(0o444))
+            .expect("chmod 0444");
+    }
+    let snapshot_before = std::fs::read(&img_path).expect("snapshot image before");
+
+    // 3. Hold an active read-only DiskManager (F_RDLCK) in this process while running
+    //    CLI --read-only commands in child processes (verifies cross-process shared locks).
+    let _held_ro =
+        oifs::disk::DiskManager::open_read_only(&img_path).expect("open_read_only in parent");
+
+    for extra_args in [&[][..], &["--no-mmap"][..]] {
+        let mut base = vec!["--read-only"];
+        base.extend_from_slice(extra_args);
+        base.extend_from_slice(&["-i", img_str]);
+
+        // ls -r
+        let out = Command::new(bin_path)
+            .args(&base)
+            .args(["ls", "-r"])
+            .output()
+            .expect("cli ls");
+        assert!(
+            out.status.success(),
+            "cli ls failed ({:?}): {}",
+            extra_args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let ls_stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            ls_stdout.contains("docs/plain.txt"),
+            "ls output: {ls_stdout}"
+        );
+
+        // get
+        let exported = tmp_dir.path().join(format!(
+            "exported_{}.txt",
+            if extra_args.is_empty() {
+                "mmap"
+            } else {
+                "fileio"
+            }
+        ));
+        let out = Command::new(bin_path)
+            .args(&base)
+            .args(["get", "docs/plain.txt", exported.to_str().unwrap()])
+            .output()
+            .expect("cli get");
+        assert!(
+            out.status.success(),
+            "cli get failed ({:?}): {}",
+            extra_args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            std::fs::read(&exported).expect("read exported"),
+            plain_bytes
+        );
+
+        // cat
+        let out = Command::new(bin_path)
+            .args(&base)
+            .args(["cat", "docs/plain.txt"])
+            .output()
+            .expect("cli cat");
+        assert!(
+            out.status.success(),
+            "cli cat failed ({:?}): {}",
+            extra_args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.stdout, plain_bytes);
+
+        // info (text + --json)
+        let out = Command::new(bin_path)
+            .args(&base)
+            .args(["info"])
+            .output()
+            .expect("cli info");
+        assert!(
+            out.status.success(),
+            "cli info failed ({:?}): {}",
+            extra_args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let info_stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            info_stdout.contains("Read-Only:      true"),
+            "info output: {info_stdout}"
+        );
+
+        let out = Command::new(bin_path)
+            .args(&base)
+            .args(["--json", "info"])
+            .output()
+            .expect("cli info json");
+        assert!(out.status.success());
+        let info_json: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("parse info json");
+        assert_eq!(info_json["ok"], true);
+        assert_eq!(info_json["read_only"], true);
+        assert_eq!(info_json["journaled"], true);
+
+        // stat (text + --json)
+        let out = Command::new(bin_path)
+            .args(&base)
+            .args(["--json", "stat", "docs/plain.txt"])
+            .output()
+            .expect("cli stat json");
+        assert!(
+            out.status.success(),
+            "cli stat failed ({:?}): {}",
+            extra_args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stat_json: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("parse stat json");
+        assert_eq!(stat_json["ok"], true);
+        assert_eq!(stat_json["kind"], "file");
+        assert_eq!(stat_json["size"], plain_bytes.len() as u64);
+
+        // fsck
+        let out = Command::new(bin_path)
+            .args(&base)
+            .args(["fsck"])
+            .output()
+            .expect("cli fsck");
+        assert!(
+            out.status.success(),
+            "cli fsck failed ({:?}): {}",
+            extra_args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains("CLEAN"));
+    }
+
+    // 4. Verify mutating subcommands fail cleanly under --read-only
+    let mutating_cmds: &[&[&str]] = &[
+        &["put", host_plain.to_str().unwrap(), "blocked.txt"],
+        &["mkdir", "blocked_dir"],
+        &["rm", "docs/plain.txt"],
+        &["truncate", "docs/plain.txt", "--size", "0"],
+        &["append", "docs/plain.txt", "extra"],
+    ];
+    for args in mutating_cmds {
+        let out = Command::new(bin_path)
+            .args(["--read-only", "-i", img_str])
+            .args(*args)
+            .output()
+            .expect("cli mutating cmd");
+        assert!(
+            !out.status.success(),
+            "expected {:?} to fail in --read-only mode",
+            args
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.to_lowercase().contains("read-only"),
+            "expected read-only error for {:?}, got stderr: {stderr}",
+            args
+        );
+    }
+
+    drop(_held_ro);
+
+    // 5. Assert 100% byte-for-byte immutability of the 0444 image
+    let snapshot_after = std::fs::read(&img_path).expect("snapshot image after");
+    assert_eq!(
+        snapshot_before, snapshot_after,
+        "0444 image was modified during --read-only CLI operations"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&img_path, std::fs::Permissions::from_mode(0o644));
     }
 }

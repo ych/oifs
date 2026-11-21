@@ -715,6 +715,29 @@ public:
         return FileSystem(h);
     }
 
+    /**
+     * Opens an existing OIFS image in read-only mode (shared F_RDLCK lock, zero writes).
+     * Works on 0444 images and allows concurrent read-only mounts across processes.
+     */
+    static FileSystem open_read_only(const std::string& path,
+                                     const std::string& password = "",
+                                     StorageMode mode = StorageMode::Mmap) {
+        const char* pwd_ptr = password.empty() ? nullptr : password.c_str();
+        OIFSHandle* h = oifs_open_read_only(
+            path.c_str(), pwd_ptr, static_cast<uint8_t>(mode));
+        if (h == nullptr) {
+            throw Error("oifs_open_read_only failed for path: " + path);
+        }
+        return FileSystem(h);
+    }
+
+    /**
+     * Returns true if this filesystem handle is mounted in read-only mode.
+     */
+    bool is_read_only() const noexcept {
+        return handle_ != nullptr && oifs_is_read_only(handle_) == 1;
+    }
+
     std::string last_error() const {
         if (handle_ == nullptr) {
             return "Closed FileSystem handle";

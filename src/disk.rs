@@ -48,6 +48,8 @@ pub enum DiskManagerError {
     DecryptionFailed,
     /// Superblock bounds or layout geometry invalid
     CorruptedSuperblock(&'static str),
+    /// Mutation attempted on a read-only mount
+    ReadOnly,
 }
 
 impl std::fmt::Display for DiskManagerError {
@@ -73,6 +75,7 @@ impl std::fmt::Display for DiskManagerError {
             Self::CorruptedSuperblock(msg) => {
                 write!(f, "Corrupted superblock layout or invalid bounds: {msg}")
             }
+            Self::ReadOnly => write!(f, "Filesystem is mounted read-only"),
         }
     }
 }
@@ -314,6 +317,8 @@ pub(crate) struct DiskManagerInner {
     pub(crate) async_drain_ready: Arc<std::sync::atomic::AtomicBool>,
     /// Payload-block read engine
     io_engine: IoEngine,
+    /// Whether this mount is strictly read-only (`F_RDLCK`, zero disk writes)
+    pub(crate) read_only: bool,
 }
 
 impl DiskManagerInner {
@@ -488,7 +493,7 @@ impl DiskManagerInner {
     const RANGE_ASYNC_FALLBACK_INLINE_OPS: usize = 256;
 
     pub(crate) fn flush_async_batch(&self, batch: &[(usize, usize)]) {
-        if batch.is_empty() {
+        if self.read_only || batch.is_empty() {
             return;
         }
         // Preserve WAL-before-metadata writeback ordering when draining a RangeAsync batch.
@@ -530,6 +535,9 @@ impl DiskManagerInner {
     /// and drained in coalesced batches outside `inner.write()`, eliminating per-op
     /// `msync(MS_ASYNC)` syscall overhead while holding the exclusive write lock.
     pub fn sync_mutation_ranges(&self, ranges: &[(usize, usize)]) -> Result<(), DiskManagerError> {
+        if self.read_only {
+            return Ok(());
+        }
         match self.durability_mode() {
             DurabilityMode::Lazy => Ok(()),
             DurabilityMode::RangeAsync => {
@@ -645,6 +653,17 @@ impl DiskManagerInner {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
     }
+    /// Decides whether `Drop` should flush `(journal_region, backing)`.
+    ///
+    /// A read-only mount must never issue any disk write or flush on drop.
+    #[inline]
+    pub(crate) const fn should_sync_on_drop(read_only: bool, has_journal: bool) -> (bool, bool) {
+        if read_only {
+            (false, false)
+        } else {
+            (has_journal, true)
+        }
+    }
 }
 
 /// Batched dirty-range state for `DurabilityMode::RangeAsync`.
@@ -657,9 +676,11 @@ pub(crate) struct PendingAsyncRanges {
 
 impl Drop for DiskManagerInner {
     fn drop(&mut self) {
+        let (flush_journal, flush_backing) =
+            Self::should_sync_on_drop(self.read_only, self.superblock.has_journal_layout());
         // The journal region goes out first: on shutdown the log describing pending
         // metadata must not lag behind the metadata itself.
-        if self.superblock.has_journal_layout() {
+        if flush_journal {
             let bs = self.superblock.block_size as u64;
             if let Some(start) = DiskManager::journal_region_start(&self.superblock) {
                 let len = DiskManager::journal_region_len(bs)
@@ -668,7 +689,9 @@ impl Drop for DiskManagerInner {
             }
         }
         // Flush any pending changes to disk when dropped
-        let _ = self.backing.flush();
+        if flush_backing {
+            let _ = self.backing.flush();
+        }
     }
 }
 
@@ -1241,6 +1264,148 @@ impl DiskManager {
         Self::init_or_open_with_key(path, total_size, None, key, false, false, mode)
     }
 
+    /// Open an existing OIFS image in strictly read-only mode using the default [`StorageMode`].
+    ///
+    /// Acquires a shared advisory file lock (`F_RDLCK`), allowing multiple concurrent read-only
+    /// processes on the same `.img` while preventing concurrent read-write mounts (`F_WRLCK`).
+    /// Works on `0444` read-only image files and performs zero disk writes.
+    pub fn open_read_only<P: AsRef<Path>>(path: P) -> Result<Self, DiskManagerError> {
+        Self::open_read_only_with_storage_mode(path, None, Self::default_storage_mode())
+    }
+
+    /// Open an existing (plain or encrypted) OIFS image in strictly read-only mode using the
+    /// default [`StorageMode`].
+    pub fn open_read_only_with_password<P: AsRef<Path>>(
+        path: P,
+        password: Option<&str>,
+    ) -> Result<Self, DiskManagerError> {
+        Self::open_read_only_with_storage_mode(path, password, Self::default_storage_mode())
+    }
+
+    /// Open an existing OIFS image in strictly read-only mode with an explicit [`StorageMode`].
+    ///
+    /// - Opens the image with read-only permissions (`O_RDONLY`), so `0444` files succeed.
+    /// - Acquires a shared file lock (`F_RDLCK`), enabling multiple simultaneous readers across
+    ///   processes while rejecting concurrent exclusive writers (`F_WRLCK`).
+    /// - Under [`StorageMode::Mmap`], maps the image `PROT_READ` (`MmapReadOnly`) with full
+    ///   zero-copy [`FileReadHandle::mmap_slice`] support.
+    /// - On journaled images, verifies with zero disk writes that `0` unrecovered transactions
+    ///   remain pending in the WAL ring.
+    pub fn open_read_only_with_storage_mode<P: AsRef<Path>>(
+        path: P,
+        password: Option<&str>,
+        mode: StorageMode,
+    ) -> Result<Self, DiskManagerError> {
+        let path = path.as_ref();
+        let file = OpenOptions::new().read(true).open(path)?;
+
+        // Acquire shared non-blocking lock (`F_RDLCK`).
+        Self::try_lock_whole_file_shared(&file)?;
+
+        let mut backing = ImageBacking::open_read_only(&file, mode)?;
+        if backing.len() < BLOCK_SIZE {
+            return Err(DiskManagerError::FileTooSmall);
+        }
+        let mut sb_buf = [0u8; BLOCK_SIZE];
+        backing.read_exact_at(0, &mut sb_buf)?;
+        let superblock: SuperBlock = bincode::deserialize(&sb_buf)?;
+        if superblock.magic != SuperBlock::MAGIC {
+            return Err(DiskManagerError::InvalidMagic);
+        }
+        superblock
+            .validate(backing.len())
+            .map_err(DiskManagerError::CorruptedSuperblock)?;
+
+        let encryption_key = if superblock.encrypted {
+            let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
+            Some(crate::encryption::derive_key(
+                pwd,
+                &superblock.encryption_salt,
+            )?)
+        } else {
+            if password.is_some() {
+                return Err(DiskManagerError::NotEncrypted);
+            }
+            None
+        };
+
+        // Load read-only bitmap & journal mirrors for `StorageMode::FileIo` (no-op for `MmapReadOnly`).
+        backing.configure_regions(&superblock)?;
+
+        // Verify journal cleanliness with zero disk writes.
+        if superblock.has_journal_layout() {
+            let clean = backing.is_journal_clean_read_only(&superblock)?;
+            let pending = usize::from(!clean);
+            if !Self::validate_read_only_journal_state(true, pending) {
+                return Err(DiskManagerError::Io(std::io::Error::other(
+                    "Journal has unrecovered transactions; open read-write first to recover",
+                )));
+            }
+        }
+
+        let backing_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let free_block_hint = superblock.data_block_start;
+        let async_drain_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let requested_io_backend = match mode {
+            StorageMode::Mmap => IoBackend::from_env().unwrap_or_default(),
+            StorageMode::FileIo => match IoBackend::from_env() {
+                Some(IoBackend::IoUring) => IoBackend::IoUring,
+                _ => IoBackend::Pread,
+            },
+        };
+        let inner = DiskManagerInner {
+            file,
+            backing_path,
+            backing,
+            superblock,
+            encryption_key,
+            free_block_hint,
+            free_inode_hint: 0,
+            inode_cache: BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY),
+            dir_cache: ShardedDirCache::new(),
+            chunk_read_cache: RwLock::new(ChunkReadCache::default()),
+            decoded_blob_cache: Mutex::new(DecodedBlobCache::default()),
+            durability_mode: std::sync::atomic::AtomicU8::new(DurabilityMode::Lazy as u8),
+            pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
+            async_drain_ready: async_drain_ready.clone(),
+            io_engine: IoEngine::new(requested_io_backend),
+            read_only: true,
+        };
+
+        let inner = Arc::new(RwLock::new(inner));
+        Ok(Self {
+            inner: inner.clone(),
+            sync_mutex: Arc::new(Mutex::new(())),
+            async_drain_ready,
+            auto_defrag: Arc::new(crate::auto_defrag::AutoDefragController::new(&inner)),
+        })
+    }
+
+    /// Returns `true` when this [`DiskManager`] was mounted in read-only mode.
+    pub fn is_read_only(&self) -> bool {
+        self.inner.read().unwrap().read_only
+    }
+
+    /// Returns `true` if a read-only mount is allowed given `(has_journal, pending_txs)`.
+    #[inline]
+    pub(crate) const fn validate_read_only_journal_state(
+        has_journal: bool,
+        pending_txs: usize,
+    ) -> bool {
+        !has_journal || pending_txs == 0
+    }
+
+    /// Returns `true` when opening a path with `mode` requires write permission given
+    /// whether the entry already exists.
+    #[inline]
+    pub(crate) const fn open_mode_requires_write(mode: OpenMode, entry_exists: bool) -> bool {
+        match mode {
+            OpenMode::OpenExisting => false,
+            OpenMode::CreateNew => true,
+            OpenMode::CreateOrOpen => !entry_exists,
+        }
+    }
+
     /// Returns the active low-level storage backing mode (`Mmap` or `FileIo`).
     pub fn storage_mode(&self) -> StorageMode {
         self.inner.read().unwrap().backing.mode()
@@ -1436,6 +1601,7 @@ impl DiskManager {
             pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
             async_drain_ready: async_drain_ready.clone(),
             io_engine: IoEngine::new(requested_io_backend),
+            read_only: false,
         };
 
         let inner = Arc::new(RwLock::new(inner));
@@ -1496,6 +1662,27 @@ impl DiskManager {
         // SAFETY: `flock` is a plain C struct; all-zero is a valid initial value.
         let mut lock = unsafe { std::mem::zeroed::<libc::flock>() };
         lock.l_type = libc::F_WRLCK as _;
+        lock.l_whence = libc::SEEK_SET as _;
+        lock.l_start = 0;
+        lock.l_len = 0; // Whole file
+        // SAFETY: the descriptor is owned by `file` and `lock` outlives the call.
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) };
+        if rc == -1 {
+            return Err(DiskManagerError::Locking(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    /// Take a non-blocking shared `fcntl(F_SETLK)` read lock (`F_RDLCK`) on the whole file.
+    ///
+    /// Allows multiple concurrent read-only processes to hold the lock simultaneously while
+    /// failing with [`DiskManagerError::Locking`] when another process holds an exclusive
+    /// write lock (`F_WRLCK`).
+    pub(crate) fn try_lock_whole_file_shared(file: &File) -> Result<(), DiskManagerError> {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: `flock` is a plain C struct; all-zero is a valid initial value.
+        let mut lock = unsafe { std::mem::zeroed::<libc::flock>() };
+        lock.l_type = libc::F_RDLCK as _;
         lock.l_whence = libc::SEEK_SET as _;
         lock.l_start = 0;
         lock.l_len = 0; // Whole file
@@ -1689,6 +1876,9 @@ impl DiskManager {
     pub fn write_inode(&self, inode_id: u64, inode: &Inode) -> Result<(), DiskManagerError> {
         let res = {
             let mut guard = self.inner.write().unwrap();
+            if guard.read_only {
+                return Err(DiskManagerError::ReadOnly);
+            }
             Self::write_inode_internal(&mut guard, inode_id, inode)?;
             let range = guard.inode_byte_range(inode_id);
             guard.sync_mutation_ranges(&[range])
@@ -1796,6 +1986,9 @@ impl DiskManager {
     /// defragmentation pass whenever the configured threshold is exceeded.
     /// Disabling it stops the thread and waits for the current pass to finish.
     pub fn set_auto_defrag(&self, config: crate::auto_defrag::AutoDefragConfig) {
+        if self.is_read_only() && config.enabled {
+            return;
+        }
         self.auto_defrag.set_config(config);
     }
 
@@ -2610,6 +2803,9 @@ impl DiskManager {
     /// Returns the number of transactions discarded.
     pub fn checkpoint_journal_now(&self) -> Result<usize, DiskManagerError> {
         let mut guard = self.inner.write().unwrap();
+        if guard.read_only {
+            return Err(DiskManagerError::ReadOnly);
+        }
         let sb = guard.superblock;
         if !sb.has_journal_layout() {
             return Ok(0);
@@ -2871,6 +3067,9 @@ impl DiskManager {
         name: &str,
         file_type: crate::inode::FileType,
     ) -> Result<u64, DiskManagerError> {
+        if self.is_read_only() {
+            return Err(DiskManagerError::ReadOnly);
+        }
         crate::directory::validate_filename(name).map_err(|e| {
             DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -3084,6 +3283,9 @@ impl DiskManager {
         compression_mode: CompressionMode,
         filter_config: crate::filters::FilterConfig,
     ) -> Result<u64, DiskManagerError> {
+        if self.is_read_only() {
+            return Err(DiskManagerError::ReadOnly);
+        }
         crate::directory::validate_filename(name).map_err(|e| {
             DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -3636,6 +3838,25 @@ impl DiskManager {
         parent_inode_id: u64,
         name: &str,
     ) -> Result<u64, DiskManagerError> {
+        if self.is_read_only() {
+            return match self.lookup(parent_inode_id, name) {
+                Ok(inode_id) => {
+                    debug_assert!(!Self::open_mode_requires_write(
+                        OpenMode::CreateOrOpen,
+                        true
+                    ));
+                    Ok(inode_id)
+                }
+                Err(DiskManagerError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    debug_assert!(Self::open_mode_requires_write(
+                        OpenMode::CreateOrOpen,
+                        false
+                    ));
+                    Err(DiskManagerError::ReadOnly)
+                }
+                Err(e) => Err(e),
+            };
+        }
         match self.create_file(parent_inode_id, name) {
             Ok(inode_id) => Ok(inode_id),
             Err(DiskManagerError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -5451,6 +5672,9 @@ impl DiskManager {
         compression_mode: CompressionMode,
         filter_config: crate::filters::FilterConfig,
     ) -> Result<(), DiskManagerError> {
+        if self.is_read_only() {
+            return Err(DiskManagerError::ReadOnly);
+        }
         // --- STAGE 1: Single Shared Read-Lock Inspection ---
         // Merges seekable routing + Stage 1 preparation under ONE `inner.read()` lock.
         enum Stage1Prep<'a> {
@@ -6409,6 +6633,9 @@ impl DiskManager {
     }
 
     pub fn flush(&self) -> Result<(), DiskManagerError> {
+        if self.is_read_only() {
+            return Ok(());
+        }
         // 1. Ensure only 1 flush operation performs msync at any given time (prevents redundant writeback storms)
         let _sync_guard = crate::lock_unpoisoned(&self.sync_mutex);
 
@@ -6482,6 +6709,9 @@ impl DiskManager {
 
     /// Asynchronously flushes dirty pages in background without blocking concurrent readers.
     pub fn flush_async(&self) -> Result<(), DiskManagerError> {
+        if self.is_read_only() {
+            return Ok(());
+        }
         let _sync_guard = crate::lock_unpoisoned(&self.sync_mutex);
         let guard = self.inner.read().unwrap();
         {
@@ -6508,6 +6738,9 @@ impl DiskManager {
     /// Legacy flush using exclusive write lock (for performance comparison benchmarks).
     #[doc(hidden)]
     pub fn flush_exclusive_legacy(&self) -> Result<(), DiskManagerError> {
+        if self.is_read_only() {
+            return Ok(());
+        }
         let guard = self.inner.write().unwrap();
         guard.backing.flush().map_err(DiskManagerError::Io)
     }
@@ -6683,6 +6916,9 @@ impl DiskManager {
     }
 
     pub fn delete_file(&self, parent_inode_id: u64, name: &str) -> Result<(), DiskManagerError> {
+        if self.is_read_only() {
+            return Err(DiskManagerError::ReadOnly);
+        }
         crate::directory::validate_filename(name).map_err(|e| {
             DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -6912,6 +7148,9 @@ impl DiskManager {
     pub fn truncate(&self, inode_id: u64, new_size: u64) -> Result<(), DiskManagerError> {
         let res = {
             let mut guard = self.inner.write().unwrap();
+            if guard.read_only {
+                return Err(DiskManagerError::ReadOnly);
+            }
             Self::truncate_internal(&mut guard, inode_id, new_size)
         };
         if res.is_ok() {
@@ -6922,6 +7161,9 @@ impl DiskManager {
 
     /// Truncates or extends a file by its path.
     pub fn truncate_path(&self, path: &str, new_size: u64) -> Result<(), DiskManagerError> {
+        if self.is_read_only() {
+            return Err(DiskManagerError::ReadOnly);
+        }
         let inode_id = self.resolve_path(path)?;
         self.truncate(inode_id, new_size)
     }
@@ -6940,6 +7182,9 @@ impl DiskManager {
     /// Allocates a contiguous run of `count` free data blocks.
     pub fn allocate_contiguous_blocks(&self, count: usize) -> Result<u64, DiskManagerError> {
         let mut guard = self.inner.write().unwrap();
+        if guard.read_only {
+            return Err(DiskManagerError::ReadOnly);
+        }
         Self::allocate_contiguous_blocks_internal(&mut guard, count)
     }
 
@@ -6950,6 +7195,9 @@ impl DiskManager {
         count: usize,
     ) -> Result<(), DiskManagerError> {
         let mut guard = self.inner.write().unwrap();
+        if guard.read_only {
+            return Err(DiskManagerError::ReadOnly);
+        }
         Self::free_contiguous_blocks_internal(&mut guard, start_blk, count)
     }
 
@@ -6958,6 +7206,9 @@ impl DiskManager {
         inode_id: u64,
         new_size: u64,
     ) -> Result<(), DiskManagerError> {
+        if guard.read_only {
+            return Err(DiskManagerError::ReadOnly);
+        }
         let mut inode = Self::read_inode_internal(guard, inode_id)?;
         if inode.mode != crate::inode::FileType::File {
             return Err(DiskManagerError::Io(std::io::Error::other(
@@ -8540,6 +8791,9 @@ impl DiskManager {
         data: Vec<u8>,
         compression_mode: CompressionMode,
     ) -> OifsAsyncTask<Result<u64, DiskManagerError>> {
+        if self.is_read_only() {
+            return OifsAsyncTask::ready(Err(DiskManagerError::ReadOnly));
+        }
         let state = AsyncTaskState::new_pending();
         let state_done = Arc::clone(&state);
         submit_group_write_op(
@@ -8559,6 +8813,9 @@ impl DiskManager {
         data: Vec<u8>,
         compression_mode: CompressionMode,
     ) -> OifsAsyncTask<Result<(), DiskManagerError>> {
+        if self.is_read_only() {
+            return OifsAsyncTask::ready(Err(DiskManagerError::ReadOnly));
+        }
         let state = AsyncTaskState::new_pending();
         let state_done = Arc::clone(&state);
         submit_group_write_op(
@@ -8574,6 +8831,9 @@ impl DiskManager {
 
     /// Asynchronously flushes dirty data and checkpoints the WAL on the background pool.
     pub fn flush_async_task(&self) -> OifsAsyncTask<Result<(), DiskManagerError>> {
+        if self.is_read_only() {
+            return OifsAsyncTask::ready(Ok(()));
+        }
         let dm = self.clone();
         OifsAsyncTask::spawn(move || dm.flush())
     }
@@ -9002,6 +9262,71 @@ mod verification {
                 "Multi-block contiguous zero-copy slice"
             );
         }
+    }
+
+    /// Formally prove read-only mount, drop, and open-mode invariants:
+    /// 1. `validate_read_only_journal_state` rejects every journaled image with `pending_txs > 0`
+    ///    and accepts non-journaled or clean (`pending_txs == 0`) journaled images.
+    /// 2. `should_sync_on_drop` unconditionally suppresses both journal and backing flushes when
+    ///    `read_only == true` (zero disk writes on drop).
+    /// 3. `open_mode_requires_write` permits `OpenExisting` unconditionally, rejects `CreateNew`
+    ///    unconditionally, and permits `CreateOrOpen` iff the entry already exists.
+    #[kani::proof]
+    fn proof_read_only_mount_drop_and_open_mode_invariants() {
+        let has_journal: bool = kani::any();
+        let pending_txs: usize = kani::any();
+        let allowed = DiskManager::validate_read_only_journal_state(has_journal, pending_txs);
+        if has_journal && pending_txs > 0 {
+            assert!(!allowed, "Dirty WAL must be rejected on read-only mount");
+        } else {
+            assert!(
+                allowed,
+                "Non-journaled or clean WAL must be mountable read-only"
+            );
+        }
+
+        let read_only: bool = kani::any();
+        let (flush_journal, flush_backing) =
+            DiskManagerInner::should_sync_on_drop(read_only, has_journal);
+        if read_only {
+            assert!(!flush_journal, "Read-only drop must never flush journal");
+            assert!(!flush_backing, "Read-only drop must never flush backing");
+        } else {
+            assert_eq!(flush_journal, has_journal);
+            assert!(flush_backing);
+        }
+
+        let mode_tag: u8 = kani::any();
+        kani::assume(mode_tag < 3);
+        let mode = match mode_tag {
+            0 => OpenMode::OpenExisting,
+            1 => OpenMode::CreateNew,
+            _ => OpenMode::CreateOrOpen,
+        };
+        let entry_exists: bool = kani::any();
+        let needs_write = DiskManager::open_mode_requires_write(mode, entry_exists);
+        match mode {
+            OpenMode::OpenExisting => {
+                assert!(!needs_write);
+            }
+            OpenMode::CreateNew => {
+                assert!(needs_write);
+            }
+            OpenMode::CreateOrOpen => {
+                assert_eq!(needs_write, !entry_exists);
+            }
+        }
+
+        kani::cover!(has_journal && pending_txs > 0, "Dirty WAL rejected");
+        kani::cover!(has_journal && pending_txs == 0, "Clean WAL accepted");
+        kani::cover!(
+            read_only && has_journal,
+            "Read-only journaled drop suppressed"
+        );
+        kani::cover!(
+            mode == OpenMode::CreateOrOpen && !entry_exists && needs_write,
+            "CreateOrOpen on missing entry requires write"
+        );
     }
 }
 

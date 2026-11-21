@@ -22,6 +22,9 @@ impl DiskManager {
         data: &[u8],
         level: i32,
     ) -> Result<(), DiskManagerError> {
+        if self.is_read_only() {
+            return Err(DiskManagerError::ReadOnly);
+        }
         self.write_chunked_64k_pipeline(inode_id, file_offset, data, level)
     }
 

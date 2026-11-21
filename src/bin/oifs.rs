@@ -149,6 +149,10 @@ struct Cli {
     #[arg(long = "no-mmap", global = true)]
     no_mmap: bool,
 
+    /// Open the image in read-only mode (shared F_RDLCK lock, zero writes, works on 0444 images)
+    #[arg(long = "read-only", global = true)]
+    read_only: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -212,6 +216,18 @@ enum Commands {
         remote_name: String,
         /// Destination path on host (optional, defaults to remote filename)
         host_path: Option<PathBuf>,
+    },
+    /// Print file contents from the image to stdout
+    Cat {
+        /// Filename in OIFS
+        remote_name: String,
+    },
+    /// Display filesystem superblock and configuration information
+    Info,
+    /// Display inode metadata for a file or directory
+    Stat {
+        /// Path in OIFS
+        path: String,
     },
     /// Append content to a file in the image
     Append {
@@ -308,29 +324,76 @@ fn open_session(
     mode: &oifs::ipc::SessionMode,
     json_mode: bool,
     auto_defrag: Option<&AutoDefragConfig>,
+    read_only: bool,
 ) -> Result<OifsSession, Box<dyn std::error::Error>> {
+    let resolve_password = || -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
+        let password = if let Some(pwd) = password_arg {
+            Zeroizing::new(pwd.clone())
+        } else if let Ok(env_pwd) = std::env::var("OIFS_PASSWORD") {
+            Zeroizing::new(env_pwd)
+        } else if json_mode {
+            return Err(
+                "Encrypted filesystem requires --password or OIFS_PASSWORD env in --json mode"
+                    .into(),
+            );
+        } else {
+            read_password("🔒 Encrypted filesystem detected. Enter password: ")?
+        };
+
+        if password.is_empty() {
+            return Err("Password cannot be empty".into());
+        }
+        Ok(password)
+    };
+
+    if read_only {
+        let storage_mode = oifs::storage::default_storage_mode();
+        let dm = match oifs::disk::DiskManager::open_read_only_with_storage_mode(
+            image_path,
+            None,
+            storage_mode,
+        ) {
+            Ok(dm) => dm,
+            Err(oifs::disk::DiskManagerError::PasswordRequired) => {
+                let password = resolve_password()?;
+                oifs::disk::DiskManager::open_read_only_with_storage_mode(
+                    image_path,
+                    Some(&password),
+                    storage_mode,
+                )?
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let session = OifsSession::Direct {
+            dm: std::sync::Arc::new(dm),
+            server: None,
+            event_rx: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            mode: oifs::ipc::SessionMode::Standalone,
+        };
+
+        if !json_mode && session.needs_migration()? {
+            eprintln!(
+                "⚠️  This image uses the legacy inode format (v1). It is fully supported, but \
+                 run `oifs -i {} migrate` to upgrade to v{}.",
+                image_path.display(),
+                oifs::superblock::SuperBlock::FORMAT_VERSION_FIXED_INODE
+            );
+        }
+
+        if auto_defrag.is_some() && !json_mode {
+            eprintln!("⚠️  Background auto-defragmentation disabled in --read-only mode");
+        }
+
+        return Ok(session);
+    }
+
     let session = match OifsSession::open_with_mode(image_path, 0, mode.clone(), None, false) {
         Ok(s) => s,
         Err(oifs::session::SessionError::DiskManager(
             oifs::disk::DiskManagerError::PasswordRequired,
         )) => {
-            let password = if let Some(pwd) = password_arg {
-                Zeroizing::new(pwd.clone())
-            } else if let Ok(env_pwd) = std::env::var("OIFS_PASSWORD") {
-                Zeroizing::new(env_pwd)
-            } else if json_mode {
-                return Err(
-                    "Encrypted filesystem requires --password or OIFS_PASSWORD env in --json mode"
-                        .into(),
-                );
-            } else {
-                read_password("🔒 Encrypted filesystem detected. Enter password: ")?
-            };
-
-            if password.is_empty() {
-                return Err("Password cannot be empty".into());
-            }
-
+            let password = resolve_password()?;
             OifsSession::open_with_mode(image_path, 0, mode.clone(), Some(&password), false)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
         }
@@ -513,6 +576,9 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             encrypt,
             journal,
         } => {
+            if cli.read_only {
+                return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
             if image.exists() {
                 return Err(format!("Image {:?} already exists.", image).into());
             }
@@ -616,6 +682,9 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             filter,
             typesize,
         } => {
+            if cli.read_only {
+                return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
@@ -656,6 +725,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
             )?;
 
             let dm_clone = dm.clone();
@@ -691,6 +761,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             dm.write_data_with_filters(inode_id, 0, &content, compression_mode, filter_config)?;
+            dm.flush()?;
 
             if cli.json {
                 println!(
@@ -707,6 +778,9 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             content,
             no_newline,
         } => {
+            if cli.read_only {
+                return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
@@ -716,6 +790,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
             )?;
 
             let dm_clone = dm.clone();
@@ -738,6 +813,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             dm.write_data(inode_id, 0, &existing, CompressionMode::Auto)?;
+            dm.flush()?;
 
             if cli.json {
                 println!(
@@ -766,6 +842,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
             )?;
             let inode_id = dm.resolve_path(remote_name)?;
             let data = dm.read_data(inode_id)?;
@@ -814,7 +891,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(())
         }
-        Commands::Mkdir { dir_name } => {
+        Commands::Cat { remote_name } => {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
@@ -824,6 +901,138 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
+            )?;
+            let inode_id = dm.resolve_path(remote_name)?;
+            let data = dm.read_data(inode_id)?;
+            if cli.json {
+                let text = String::from_utf8_lossy(&data);
+                println!(
+                    "{}",
+                    json!({"ok": true, "path": remote_name, "bytes": data.len(), "content": text})
+                );
+            } else {
+                use std::io::Write;
+                let mut stdout = std::io::stdout().lock();
+                stdout.write_all(&data)?;
+                stdout.flush()?;
+            }
+            Ok(())
+        }
+        Commands::Info => {
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
+            }
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+                cli.read_only,
+            )?;
+            let sb = dm.superblock()?;
+            let total_bytes = sb.block_count.saturating_mul(sb.block_size as u64);
+            let journaled = sb.has_journal_layout();
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "image": image.to_string_lossy(),
+                        "block_size": sb.block_size,
+                        "block_count": sb.block_count,
+                        "total_bytes": total_bytes,
+                        "inode_count": sb.inode_count,
+                        "data_block_start": sb.data_block_start,
+                        "format_version": sb.inode_record_version(),
+                        "encrypted": sb.encrypted,
+                        "journaled": journaled,
+                        "read_only": cli.read_only,
+                    })
+                );
+            } else {
+                println!("=== OIFS Image Information ===");
+                println!("Image:          {}", image.display());
+                println!("Block Size:     {} bytes", sb.block_size);
+                println!("Total Blocks:   {} ({} bytes)", sb.block_count, total_bytes);
+                println!("Inode Capacity: {}", sb.inode_count);
+                println!("Format Version: v{}", sb.inode_record_version());
+                println!("Encrypted:      {}", sb.encrypted);
+                println!("Journaled:      {}", journaled);
+                println!("Read-Only:      {}", cli.read_only);
+            }
+            Ok(())
+        }
+        Commands::Stat { path } => {
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
+            }
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+                cli.read_only,
+            )?;
+            let inode_id = if path == "/" || path.is_empty() {
+                dm.superblock()?.root_inode
+            } else {
+                dm.resolve_path(path)?
+            };
+            let inode = dm.read_inode(inode_id)?;
+            let kind = if inode.mode == FileType::Directory {
+                "directory"
+            } else {
+                "file"
+            };
+            let seekable = (inode.flags & oifs::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+            let created = format_local_timestamp(inode.created_at);
+            let modified = format_local_timestamp(inode.modified_at);
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "path": path,
+                        "inode": inode_id,
+                        "kind": kind,
+                        "size": inode.size,
+                        "compressed_size": inode.compressed_size,
+                        "encrypted": inode.encrypted,
+                        "seekable_64k": seekable,
+                        "created": created,
+                        "modified": modified,
+                    })
+                );
+            } else {
+                println!("Path:            {}", path);
+                println!("Inode:           {}", inode_id);
+                println!("Type:            {}", kind);
+                println!("Size:            {} bytes", inode.size);
+                println!("Compressed Size: {} bytes", inode.compressed_size);
+                println!("Encrypted:       {}", inode.encrypted);
+                println!("Seekable 64K:    {}", seekable);
+                println!("Created:         {}", created);
+                println!("Modified:        {}", modified);
+            }
+            Ok(())
+        }
+        Commands::Mkdir { dir_name } => {
+            if cli.read_only {
+                return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
+            }
+            let dm = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+                cli.read_only,
             )?;
             let (parent_id, filename) = dm.resolve_parent(dir_name)?;
 
@@ -832,6 +1041,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let dir_id = dm.create_directory(parent_id, &filename)?;
+            dm.flush()?;
             if cli.json {
                 println!("{}", json!({"ok": true, "inode": dir_id}));
             } else {
@@ -840,6 +1050,9 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Rm { path, recursive } => {
+            if cli.read_only {
+                return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
@@ -849,6 +1062,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
             )?;
             let (parent_id, filename) = dm.resolve_parent(path)?;
 
@@ -922,6 +1136,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             dm.delete_file(parent_id, &filename)?;
+            dm.flush()?;
             if cli.json {
                 println!(
                     "{}",
@@ -942,6 +1157,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
             )?;
 
             let target_inode_id = if let Some(p) = path.as_ref() {
@@ -1081,6 +1297,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
             )?;
             let stats = dm.analyze_fragmentation()?;
 
@@ -1132,6 +1349,9 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Defrag { mode } => {
+            if cli.read_only {
+                return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
@@ -1161,6 +1381,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
             )?;
             match dm.defragment(image_path, defrag_mode, None) {
                 Ok(stats) => {
@@ -1199,6 +1420,9 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Migrate => {
+            if cli.read_only {
+                return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
@@ -1208,6 +1432,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
             )?;
 
             if dm.migration_in_progress()? {
@@ -1254,6 +1479,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
             )?;
             match dm.verify_integrity() {
                 Ok(report) => {
@@ -1298,6 +1524,9 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Truncate { path, size } => {
+            if cli.read_only {
+                return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
@@ -1307,8 +1536,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                cli.read_only,
             )?;
             dm.truncate_path(path, *size)?;
+            dm.flush()?;
             if cli.json {
                 println!("{}", json!({"ok": true, "path": path, "size": size}));
             } else {

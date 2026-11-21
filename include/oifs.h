@@ -91,6 +91,31 @@ OIFSHandle* oifs_open_with_options(
     uint8_t storage_mode,
     uint8_t journaled
 );
+
+/**
+ * Opens an existing OIFS image in read-only mode (shared F_RDLCK lock, zero writes).
+ *
+ * Works on read-only (0444) images and permits multiple concurrent read-only processes
+ * to inspect the same image simultaneously.
+ *
+ * @param path Path to an existing OIFS image file
+ * @param password Password for encrypted images, or NULL/empty for unencrypted images
+ * @param storage_mode Storage engine mode (OIFS_STORAGE_MODE_MMAP or OIFS_STORAGE_MODE_FILE_IO)
+ * @return Handle on success, or NULL on error
+ */
+OIFSHandle* oifs_open_read_only(
+    const char *path,
+    const char *password,
+    uint8_t storage_mode
+);
+
+/**
+ * Queries whether an OIFS handle was opened in read-only mode.
+ *
+ * @return 1 if read-only, 0 if read-write, -1 if handle is NULL
+ */
+int32_t oifs_is_read_only(const OIFSHandle *handle);
+
 OIFSHandle* oifs_get_or_open(const char *path, uint64_t size);
 OIFSHandle* oifs_get_or_open_with_password(const char *path, uint64_t size, const char *password);
 void oifs_close(OIFSHandle *handle);

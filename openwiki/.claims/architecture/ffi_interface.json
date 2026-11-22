@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2d1e0be3cc335f2e1d7c4c08e03369c2d4290df35b3299fa3f292cdb7f2ba117",
+  "pageVersion": "sha256:c8c763bb652f287239426987e39c4f3f58dd7d9d5dc3c3e5cbf178849d895931",
   "claims": [
     {
       "id": "claim_fcdf169ecf30441490a469666b5102dc",
-      "statement": "OIFSHandle is an opaque struct wrapping a DiskManager and a last_error string, exported as an unmangled C pointer for foreign callers.",
+      "statement": "OIFSHandle is an opaque struct wrapping a DiskManager, a thread-local last_error Mutex<Option<String>>, and a lazily-initialized OnceLock<OifsFuseState> for the FUSE frame dispatcher, exported as an unmangled C pointer for foreign callers.",
       "evidence": [
         {
-          "resource": "repo://src/ffi.rs#L11-L68",
-          "version": "repo-lines-v1:sha256:8f27500c658fe6be4d9007d1722c4643b2dbee8d407a956de94943d9197d638b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxN2JiNzQ5ZTdjYzlmNmEyZDUxZWJkZmYxMjQ2OGQ0NmVlYzNkYmUzY2I5YzM0OTk5ZGUxMGEwNzc5NGRlMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjMDk3OWMwNWQ5NTVkMDBlNzAxM2M5NDMxZTBjYzc0MDU4MDY2MDQxY2Y1MjI0MzEyZDhiMjczNmU0Nzk2M2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmZWI5OGIzNzE4OTg5OWRjNTY0MTljYTlkM2Q3MzE1MDMwMWYwZWY0MjQ4MzA2Mjc2OGE4ZDJkZjQzZDdlZTkifQ"
+          "resource": "repo://src/ffi.rs#L11-L25",
+          "version": "repo-lines-v1:sha256:5836e5e798eb88329ba621f9f9432866d50cd8317254becc2a5873d809b699bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxN2JiNzQ5ZTdjYzlmNmEyZDUxZWJkZmYxMjQ2OGQ0NmVlYzNkYmUzY2I5YzM0OTk5ZGUxMGEwNzc5NGRlMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjMDk3OWMwNWQ5NTVkMDBlNzAxM2M5NDMxZTBjYzc0MDU4MDY2MDQxY2Y1MjI0MzEyZDhiMjczNmU0Nzk2M2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVmMjdjMDlkYmI0MzRjMjY1YTZiMjYzNDQ3M2Q4ZjM3ZjllMjJlMGU1MmM1YWExYzg2NmJmODU4ODI3YWI0NTcifQ"
         }
       ]
     },
@@ -17,7 +17,7 @@
       "statement": "The C FFI provides oifs_open and oifs_open_with_password for direct image opening, and oifs_get_or_open and oifs_get_or_open_with_password to reuse existing process-level sessions through OifsSession.",
       "evidence": [
         {
-          "resource": "repo://src/ffi.rs#L49-L175",
+          "resource": "repo://src/ffi.rs#L61-L187",
           "version": "repo-lines-v1:sha256:612f375e8f7d219aab10e34bc3e1df12ed6f0cf8d919f4e41dc420bf9b816bcb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0OTgxM2RiZTAyZDRiYjM3MjQyOWM3YjZlNWY5NWFhYzU1Njg4OWQ4OWY5NmY1ZGU2YjE3ZmQxNTU4MzZmNGY2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzNjMwYmVhZDg3MzhkZGRlMDEwYjcxMjlmNjQ0ZWM0MDk0YzRlMTQ5MzNhNGQwNTQ0ZjgyZWQ2NzM5ZGRmNDdhIn0"
         }
       ]
@@ -27,34 +27,8 @@
       "statement": "oifs_ls uses a C-compatible ListCallback function pointer (name, size, mtime, user_data) with user_data context to stream directory entries, reporting entry names, file sizes, and modification timestamps.",
       "evidence": [
         {
-          "resource": "repo://src/ffi.rs#L187-L250",
+          "resource": "repo://src/ffi.rs#L199-L262",
           "version": "repo-lines-v1:sha256:854fa7b3ec02a5a9e474169600fc0f12d6b97f270025100bb22168f1534659e3:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwNWRjZTM4MWY0MjIyNDk4YzIzODZkMDVhYjEyZGFjMzQ4NmIyN2E1NzIxYzJhMGYxOGJhODcwYzVhMjE0YjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFkNDI1Zjc0YWQ0MDRhMmJmMWYxMzg2MzhlZGFhMTJhZDU4ZDM2ZTJhOWU5MDk4NmU5YzYyZjY2NDdkMjYwOGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzZjQ0MDU3ZGQwYTc3YTVlYjBmOGMwMjI0ZjU5MDFjNmZhYjZmYTJmYzUwYWZlMzg0MDM1MDU0ZmRhZjk5ZTMifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_9f0b6352b41c48789f8dd9a4174f7887",
-      "statement": "oifs_read_at, oifs_read_file, oifs_write_file, oifs_create_file, and oifs_delete_file expose file I/O over C pointers with zero-copy reads (via slice from raw parts) and auto-compression writes.",
-      "evidence": [
-        {
-          "resource": "repo://src/ffi.rs#L334-L390",
-          "version": "repo-lines-v1:sha256:bd3f295dac80a28074cbb7959f0703c2b4625cf2789d390e9715d00b05437c20:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlNjI4ODRkYTE3MGFkZDE1MTg5YWZhYzZkZDgxMzRiYjlhNmNmMGVhZGJkM2Q3NzM4NjYxMjk4YmNmOGNiODIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUzODE0OWFhYmE3NGFiNjYzNTJiYmVlNjBkODRmNjc0YzRiYmU1NzEzZmJhZjc2NWRiODMzYzY0ODM2YTMwMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU3NjIzMjFlOTliOTJlZThhMDA1NTczMTdkMGVhMjlkYmYzYjI3YTQ3MWE5ZThhY2U3ZjZiODExZDEyZWVjMGYifQ"
-        },
-        {
-          "resource": "repo://src/ffi.rs#L451-L505",
-          "version": "repo-lines-v1:sha256:b8a7770b11aed38b9d9c0203d96a27a59f76eb9100a40f76d3899574b6e182b3:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1Y2RlZjgwODVhZTc0YWI2MzZkNjQ1OWY1YzZkNWZiZmIwZGIyNjRmMWIwZDc1YmFjNTE5YzliM2Y2NzE3YWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdjNmUyMzY5Yzg5NDExODBiYjVlZjFhMTM1YmU0YTQyOTQ1MDVkMzVmNzVlMTYxZjliNzZhMDJlZTQzOTZkNGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlkYWEyYTEyYjRkYzE0ZGRjYjFiMmE3ZmE5ODgyZmNlN2QxYzVkNzhiMmNkNzQyNzZjYTE1OGJiZTdhNDg5ZmYifQ"
-        },
-        {
-          "resource": "repo://src/ffi.rs#L508-L571",
-          "version": "repo-lines-v1:sha256:e68b9755f15fbafa007804e900a16636985c2f07b49559e3ce6a0b7b81325968:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0YTZmYjFlNGM4MmIwZWNhZWQ1OGExM2U3ZjU3NmQ4NTJjZmEwNTlhOGVlNGIzOTQxNzE1OTMxYTc3ZTdjOTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1OGQyOWZhZjNmZjBjOWY4ZjdkYzVmZWYzNzIyZDQwYzljMGRlN2Q3NzZkMzZhNDI4ZmQ0ZWRlOGNhODgwZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyYWIxYTI2NTAwZjE0MGFlNTZjYWE2NGI1YTM1ODIzYmVkYzM2YjM5MjI2MTJmMzNhMjljOTI0OGNjOWJmZGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVhMDA2MjJlOWI1NGQ0NDU4MTdkOTdlZjRiNGE5MTdjOWQwZjNjYzBiZTk3ZmM2Y2JlMzI4NGY1MjUyYWQ3MTAifQ"
-        },
-        {
-          "resource": "repo://src/ffi.rs#L574-L576",
-          "version": "repo-lines-v1:sha256:8ea3c7c932fe0714a9816c3d58929818b6bb4a8a1746f0d41564c1290606f56f:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTYyNjM4MThlNzEyYjVkZGE4MDljYzk2Mzk1N2RhMmEyNzM3YjFmZTM2NjBhMjEwZTFiMjI3MmUwNDBmNTg5YSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDdiNzQ4OGU3N2QzNTBiMTExYTllNDI0NThkOGIwYzNkMzQ5YmVmZGZiNDA2N2I5YjI2MjUwNDZhMGEwOTdlOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWE3MWEwZDgzMzRhMDhmZjc0NDQyYzdkNTNhNTBmNTc3MzA2YTY5ZmEyZGZlNWQ0NjE0ZDNmZDAyYWVlNTQ0NiJ9"
-        },
-        {
-          "resource": "repo://src/ffi.rs#L579-L657",
-          "version": "repo-lines-v1:sha256:cd66a818822b1e986630267c28ae8fe91cb05b50f5697d56b0933634d8db0342:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2ODQ5N2ZiZmYwZWRhYjE2YjkyYjI2NDVjMzk3OTJiZTVjYjdjZWRkZjM5ZjJhMjFiZmYwYzFjNzVhY2E2MjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiYjYxYmExODdkYjA1MzlmNzYyZWRkNDBlZGYyMmFkODE2MTVjYzc0MDRiZWE4ZmIyNGI1NmVhMjgzNTI2OGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZmMzY5YmI4OTdkNmIzNjAwMDZhNDIyZDE1NjBjOTI4MDkzZjNlNzExNDM3YjE3OWNjNzI0MzFjMmZjNTVhNGEifQ"
         }
       ]
     },
@@ -63,15 +37,15 @@
       "statement": "All FFI functions validate against null pointers. For non-UTF-8 strings, constructor functions return NULL without setting last_error, while other functions set last_error and return -1. Functions that return an error code export detailed error messages via oifs_last_error with guaranteed null-termination.",
       "evidence": [
         {
-          "resource": "repo://src/ffi.rs#L109-L165",
+          "resource": "repo://src/ffi.rs#L121-L177",
           "version": "repo-lines-v1:sha256:3c8fd5d16a417dedd91ee17753223ce366ce25e1f300d7eaa73433458ffcf450:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1Y2RlZjgwODVhZTc0YWI2MzZkNjQ1OWY1YzZkNWZiZmIwZGIyNjRmMWIwZDc1YmFjNTE5YzliM2Y2NzE3YWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiZjI0YThjM2Q1YzI3ODZiY2FmZjdiMDVlYWQ2MDA5MGNiZGVkZTUxY2UwMWViOWRmNGUxMWUyYjk4NGNhNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmYzk1Y2YxNjk2MjYxYTgwMjI5MTQ2MGRkZjA0MzM4MGFjZWE1ZTE0ZGYxMGI0YTVmMDQ2MjYzMDRmOWNmNjEifQ"
         },
         {
-          "resource": "repo://src/ffi.rs#L745-L791",
+          "resource": "repo://src/ffi.rs#L795-L841",
           "version": "repo-lines-v1:sha256:e5d95068d7064502233658b289aa978ba05867117f5a9b16e6485717aa48aad4:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjYjhjYjQxYzJlMjg1OWRmNWFkNzI0MWU2MDkyZGEwNjNmMmMwYWUxNzFkZTMyZDlkZWUxNTIzNDM1MzY3MGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4YmJlY2M4N2NmOTAwYTcwYWFjMDdjMWEzY2UzMjU3M2UzZmRhZTBhMDBiOTc1YWI4NTM1OWE1YTdjODE4ZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNiNjg2ZmVmYzNhMTgzNjYxMGJlZGZiM2M5ZjllOWRhY2VlNTM0MDA2ODI5MGVjM2JhZmMwNWZmN2ZjZmM4MTEifQ"
         },
         {
-          "resource": "repo://src/ffi.rs#L75-L106",
+          "resource": "repo://src/ffi.rs#L87-L118",
           "version": "repo-lines-v1:sha256:459b14dd10aa61e89d596f5dbb726663821168aff55d2e1e0ea8f2f7f813c110:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU0YWE1ZDJiNDA0YjMxNGQ5NjEzNjRiMDAyZWMwNzFiZGJjMjJlMjEyNDc5N2YzNDgxODAzYTYzYTMxYTg0OWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI4NTFkZmY2YWQ3MzY5NzlmMTA5MDI4ZmUwYjQ4YzFhYTE2YTA4MTJlZWUzYzJkNzVhNmY4NWI4ZWQxYTc4OGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmNzlkZWVhMDg3ODlmMTg1OTQ1YTExMTFlM2UzMjRhZTFlNDNmNzI0ZjcwOTkwMDVmZDBkZDlmZGZlNjgwOWIifQ"
         }
       ]
@@ -81,7 +55,7 @@
       "statement": "oifs_set_io_backend and oifs_get_io_backend expose runtime I/O engine configuration to foreign C callers, converting backend discriminants and returning the effective backend after automatic fallback.",
       "evidence": [
         {
-          "resource": "repo://src/ffi.rs#L794-L825",
+          "resource": "repo://src/ffi.rs#L844-L875",
           "version": "repo-lines-v1:sha256:4c5f9d58a6e6e1ffb58ce33019311679be42c573262e03904015a0df069396f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ5ODEzZGJlMDJkNGJiMzcyNDI5YzdiNmU1Zjk1YWFjNTU2ODg5ZDg5Zjk2ZjVkZTZiMTdmZDE1NTgzNmY0ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiYmQ5Y2NiOWMzMTUzNDQyNzdmNzkyYjg2MGJkYTJjZGJmNDY2MzEzZjIxZjNlOGIwMDM4NGI0YmE2ODUwN2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhNmNjOGFjZTY5NWViYTQ1NzM5ZjZkNTRiOGJjMTQ4NDZjMjMwNGMwZmMyODBkYzExMGY2ZTgwZWQxN2NjNzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIyZTA4ZmE1ZjMwYjkxMDM0M2ViZTY3YmNiYmM5ZTdiMzBjY2NkNTRmNmJiMzQwZTliMmUzMWEwM2I2NGJkM2EifQ"
         }
       ]
@@ -91,7 +65,7 @@
       "statement": "The C FFI exposes version handshake functions: oifs_version_major, oifs_version_minor, oifs_version_patch, oifs_version_code, oifs_version_string, and oifs_check_version to allow host programs to verify compatibility with the loaded dynamic library.",
       "evidence": [
         {
-          "resource": "repo://src/ffi.rs#L828-L901",
+          "resource": "repo://src/ffi.rs#L878-L951",
           "version": "repo-lines-v1:sha256:3d59aee7ce14fff9b4613f25109d285709d6d94de1eb7bc212908c615cc134aa:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMWU4YjYyZTMzYmM0ODQxYzg2YTUyYmJmZDQyNGFlNDFlMGJiZWE4MjQyMmQxMGUwZDIwYjlmMzA1ZmI0MGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0YTZmYjFlNGM4MmIwZWNhZWQ1OGExM2U3ZjU3NmQ4NTJjZmEwNTlhOGVlNGIzOTQxNzE1OTMxYTc3ZTdjOTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjNDhhZjNmNjE5NmE3N2JlMzBjYzQ4NGFjZWE1YzhiMzU4ZGE3MmM5NzVkMDUxMTBiMDAzYmEzNTYyYmY3Y2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliMWJkMDM5MTQwZWU0NDE0Y2NjZWI2YjQ2ZTc0MWYzZDQ5NGM5Mjk0NzRhMTVlMTBhNzdkYWFiYmUyNTJlMTkifQ"
         }
       ]
@@ -99,6 +73,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-20T22:07:36.625Z"
+    "at": "2026-11-22T10:29:12.696Z"
   }
 }

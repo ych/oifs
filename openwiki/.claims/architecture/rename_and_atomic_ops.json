@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:ac672ed7e48d83c676594dca13a654b6fe165fa62215cccbf4c64977c89f0a02",
+  "claims": [
+    {
+      "id": "claim_4240674eefe249339b66289673b2e37b",
+      "statement": "FUSE_RENAME (legacy opcode) is handled with macOS-specific 16-byte header parsing that extracts optional flags from payload bytes 8-15.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L3427-L3450",
+          "version": "repo-lines-v1:sha256:bb5d5e7ceb84b5b92d36e6356925392a89587059af94bac852283841cc7ec797:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwYzQ0ZTg4MDUwZWFlM2ZhYTJhYzQxMTBlNTE4ZWQ2OThmNzU2ZDNkMjdhMTIzZjBlZDk2M2RiZGY4ZTM5OTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNjQ3OWNjMjMwNDQwZmQ0MWU4MjI0MjE4Njc5Njk4NTU5ZDI4OTNiZDY3YjQzODBhZmFiODExYjM4YTU1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhMTI5NzE2OGRiMzc5Y2I2MWYyYzlkYWJjMTZmOWU1ODVjNmFiZDdhMGM3ZDExYjlmMmNhMzk3ZjNhMzI0NGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1ZWFhNDcxNzEzMjQzZTg3N2Q2YmNiMDgxZmYxMDgwM2I0NWEzMDFiM2M4MWZlNTc0OTliNDdiNmY2OTFhMGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eef971d51d7540b8a0aee01f51250394",
+      "statement": "FUSE_RENAME2 (modern opcode) uses a fixed 16-byte header (newdir:u64, flags:u32, padding:u32) followed by two NUL-terminated names, and only FUSE_RENAME_NOREPLACE flag is supported.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L182-L182",
+          "version": "repo-lines-v1:sha256:e657002e03099e4b7c8af14d7ea7ad91684ee0cf064fb6d579f2e46941de4a4e:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTY1NzAwMmUwMzA5OWU0YjdjOGFmMTRkN2VhN2FkOTE2ODRlZTBjZjA2NGZiNmQ1NzlmMmU0Njk0MWRlNGE0ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTY1NzAwMmUwMzA5OWU0YjdjOGFmMTRkN2VhN2FkOTE2ODRlZTBjZjA2NGZiNmQ1NzlmMmU0Njk0MWRlNGE0ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTllYTkwYTY2ZjdiMGUxYTk1MDJmN2NmMDlkZmIyYTc3OTJhMzFiYTE3YmYxNDZiYjg3ZjdkM2Y0MzUzNmM4NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDY1YjVhMTlmZGRjZGVmNmM2YThjOTE5MTY1NWIyZTMyODJhMDI0NWVkZDM3MmRjMjc3MjkyNzUyY2FkM2NhYiJ9"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L2844-L2853",
+          "version": "repo-lines-v1:sha256:1e8aa089556ac142ccf94cbfb2942cdfc4e2c02e6876ac247f3affc9768b964d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmYWNiOGNjYzk0NmNiYjY4YWE5ODU0NWViMGJjNGUyNWM1YzM2YjkxY2U1YzQ3Y2VlNTViYTEyZDdjYjJjOTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiMTUxYWJmNDk5N2Q3YjIzY2Q5MDllZDA4Mzc4ZGNkMDc0ZmM3MTQ0NWFkMWYxMGE1NDVlNWI1YzRmMmM5ZmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjExMDA2ZWVlMTRlYjRkOTQ0Yjg2ZjNkYjYyNWMwOTczNzcyNDYzNjk2OTdjOTFiNzk0NzQ5YmRjZGUyMWU3NTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjExOGJiZWI4Y2U5NjQwNGI5YTE3ZDQ3NGE4YjUzM2UzMTkzNGMxYzEyYmU5ZGI2YTBkNzg4M2YzNDUxZWQzMjMifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L3452-L3465",
+          "version": "repo-lines-v1:sha256:a50b10be5276ca9486060ada79e5cb4163108e38cdca6b0c96904ff3645acc05:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1ZDA4OWJjNDc2NjMxMGEyNjE4MmM2YjlkZDU4ZjlkOGNlNjM5NDI1ZmQwYjA1MDVmOWVjMDQ5Y2YxZjAxZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0OTI3YWMzMDZlMTk2MjI2ODhkNWY0OTJlZTYxYjNjYjFmMTFiY2M4MzI4Yzg3ZGE1NzU5MDEwYTU5MTBmOWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhMTI5NzE2OGRiMzc5Y2I2MWYyYzlkYWJjMTZmOWU1ODVjNmFiZDdhMGM3ZDExYjlmMmNhMzk3ZjNhMzI0NGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM0ZGI3MzZlZjIyMDZmZThhYmY3ZGE1MDU1NDExNDFkMzhkM2Y2MDlhMDVkM2RiYmNhNjliZjQxZTkyZWM4NzUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ad6bfabf12984399aefc3b8cfbde3284",
+      "statement": "MetadataOp enum has five variants (SetInodeBitmap, SetDataBitmap, SetDataBitmapRange, WriteInode, WriteBlockSlice) — no Rename or LinkCount variant exists; renames are composed from primitive operations.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L308-L337",
+          "version": "repo-lines-v1:sha256:91b3348bb074bdfeb102e458401c9cabf8a7a61a65942689d4d2959f2c14a57d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxOTViNDMzZjEzNmU2Nzg5NzgxMDE4NDhiYzFiZTVjYWRiMTcwMDIzYWY4MjQwYjMzNGQ0N2JlOTI2NGRlYjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4NjU3YmJhMmY3YTQwMWU1NTM3ZjIzYjg5OTdhODk2MTE1NDI4Y2Y3YzExZjA0NjA1YmNlNjYwOWY1MmVlOGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3NjRkMjZmZTJjNjFhMjIwMTVmYzQ3YmRlZjFiYThjZWNhYmI5M2U2ZGI3OTM3Y2UzMDQ3NzMwYzg4NDFmZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEyNDA0MDk1NjU2NWE1ZjE5YmU4YmM0MTdiZjRkZjBkZTQwZDY4Zjk3MGQyMTgyZGUzZmI0ZGZlOTc0NWFlNGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8454ece9bc8d4dd387d2161c256010bf",
+      "statement": "DiskManager::rename performs the entire rename under the inner write lock and commits a single atomic WAL transaction on journaled images containing SetInodeBitmap/SetDataBitmapRange for overwritten destination, WriteBlockSlice for modified directory blocks, and WriteInode for both parent directories.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L7222-L7330",
+          "version": "repo-lines-v1:sha256:100f44e52aa07a8247ec5928a30f56b26919453b43b73eec796348ffa590897f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5Y2IxZmMwZmU5NTQ0MzIzMDE4ZDc1YTdiMTNkZmM0MDdkYmY5ZDU0ZmFkMWRiY2E3ZmVjNWJhMjVkMjA1ZDIwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwZjcxYTIxNTQ3M2Q1YmZhMGI3MzQ4ODE3MjE1MjIyZjRmOWYwNjZjZjMyMWVkYTY2MDllYzg4ZjVjYWVkNGE5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3ZGFmYzY0ZGJmY2ZjODhjNWRiNDI0MmFmMThlNWI1M2Q2MzQyNTFjNjliOTE4ZTJhNjBjNTEwNDkxNzVhNWUxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkMjVmYmQ5NDc4YWRkMGY5YzUzNDcwYjVlMmY3NmY0YWI0M2RjMTI5OWJlNzU2ZTdlZDE4MGQ0NTVkMWU1NWI1In0"
+        },
+        {
+          "resource": "repo://src/disk.rs#L7336-L7385",
+          "version": "repo-lines-v1:sha256:029fb5b4a2e52fb6164b4ef05a2bf89c3999fce1f5e048d6c5c5305b76d1db93:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3YjUzNmM4NjQ5ZWQxNDYwZDU3MjE3ZTVjYzBiMmVkNjEyNDdmMmUwMDE0MjI2NGZhN2EwMjFiY2Q4MDU5OGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1ZWU0OGYzYWQwYmQ4MDAzMTJiYmJkOWZmYWM5OWI4NGJjZmNiZmRiZGE1ZGUzMDE0OWU3NWZmZTRmZDFkNjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRiYmQ4ZWExNDY5MjZiZjYzZDU5MDg2OTQwOWYzNzBiNzgzYTJhMTJlOGQzNzNhN2U3YTA5YmFiYWE4ODU2NGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlNjQxMDRhOGFkZGExODFiNThhNTVkYjc0MWVmMjc4YWU2YWUyZjQ2NmQ3ZDJjYTZiY2QzZGEzYTBkNjhlNGMifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L7434-L7485",
+          "version": "repo-lines-v1:sha256:81408760b942474b89f54c20deb2decca64488afd281e04a95085f96b44d7e93:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjMDZiZGEyODNjNTAyYzBmY2ZhZTAyYWNlYTMzZGMxYWFkNWNiYTQ1NjM0ZTc3OTNkMGJhNTViYTJjZjZkMTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmNTJhNjE3YjAxNmI5MjcwOWFkOTg0ZTUzMjM0NjUxY2I4NzQyYmQ2OWY4MTQ2OTAyMGJlYzU2ZTQzNDJjZTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU2Y2FhYWRiYTA0NjEzOTU4YTMyY2MyM2FjODcyNDUwZDg1OGU3ZDcwOGVkZTA1MTczMDFhZTIwMmI1NTg5NjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUwMTcwZDVjNWFkZTNmZGFkYjQ0MmUzMzcwZjNhNGUwZDYyMjc3MTY0NGE1N2MzZDYzNGZlMTUwZDQ3ZDc0N2UifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2c19d98ad40548b6887e07481527c847",
+      "statement": "On encrypted filesystems, cross-directory moves require SIV filename re-encryption because the SIV nonce binds parent_inode_id; stored_filename() recomputes the ciphertext for the new parent directory while payload blocks remain unchanged (bound to inode_id).",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L2126-L2143",
+          "version": "repo-lines-v1:sha256:0a6a642d4ca4211f3d30b82ab511ae9ca5c70d5bf8c958821d0e310f652a6f43:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2MDFkMGQwNzA4YjQ5MGMzZmFiMGZkNDllMGMyYmU1NmE4MTA3MmNkNzE2MDIxNWQ3ZjYxYzg1NWIyMzc4NzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0ZDBiNThjNWFlNDIxODUxMzllNTIyMzcwOTVmN2RjMmE2ZTc1MTZlNDMyZDEwNDc1ZDEyMTRmMDExNDhjZjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczNWQ4ZjY1MDY2MTk5N2NmOGRjZjYxOWM2OWI5NjVlZDdlNTVlYjQyZGZmYjMyNTBjM2FjYjAwM2Y4ZTY3MzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRmMjU3NzNiNTJlNzYwOTcwNjk0ZWJkMzk0YmZkZGIxMGZlNDljMjE0M2Y4NDZkZmZhZTEwMWIwNzYyYmQzOWEifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L7286-L7287",
+          "version": "repo-lines-v1:sha256:7fca33641663d9dc1b6c72b4380866355fff6e2158cc87c814cd606b60b6f38b:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzQ0YWE4OGRlNjY3Y2Y4NDYzMDM5N2MyN2YyYjNjZGZiNzA5N2MyZDk5NjMyNWQxN2QzMzFjNTQ4Y2RlYWU5OSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjE5ZmRlZGFlZjhjODA2NTQyOGM3YmI5MDQzYWI0ZGM5MmVkNDAxM2ZhODUzMjY2YTEzYzUxNDE3MTc2OGIyNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDlhNGVjNjBkODgxZGIwZGU3NWM4Nzg5Y2E0NmQyMjg3ZTQ2MWE1ODU5MGM3N2JlZDcwNzY4Nzc2MTVlYmEwMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDQ3ODkwMzk4MzFiYjQ1ZGE2YmY4YThlYmE2ZmJmMWY5MDc4NDQ3MDQ5OGI0MDVjZTlmNTI0MjY5NTQwN2JjYyJ9"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L653-L720",
+          "version": "repo-lines-v1:sha256:78eef0c5035a20ed2abcee2c6129c8302bdb70df2c045eaaa89d4c6027791a2b:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4ZmYxZGI5MWM3NzQwNGJkMmY2YjdlM2I4YjIzMzMwNjBiZGE1ZDhmZjk0NThkODMyNTU4ZWY3Y2E1NTFlZGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ZmZlOTAyZGI4YzgxM2ZhNzJhMmU5NGMxNjQ0ZjlhMWEyMGIzOGQ3MDUzODgzOTZmMWEyMjQ3NWQ5YTI3NDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlMDc4MDFlOTRiNmY5MWQzYjdhZWQwYmZlYjI5ZGMzMjhkN2I5MWM0OGQxMTlkNWU2YjQ1YTc3NzExMmUzNGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhmNjU3NmE5Y2MwNDRjMTQwODViZjc3YWEwZjQ3MjZkMzkwMzBlYzg5MTE2Y2FmOGFiMTVjNTc3NjFiZTY3NDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9f099b44368e4092956eacb2e2731bf6",
+      "statement": "create_file_with_data is a single WAL transaction under DurabilityMode::Strict, staging SetInodeBitmap, payload blocks (inlined as WriteBlockSlice for <=8 KiB), directory entry WriteBlockSlice, and WriteInode for new inode and parent directory, all committed with one fsync barrier.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L3572-L3750",
+          "version": "repo-lines-v1:sha256:fede00223ccc1412cfa23591ba046261826b620ac562698e4986ec9e20e13ff3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTc5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNGU0NWY3MGQ1NTNiYjk3Y2Q3NjRjZTJjN2U5YTk3OGUwYWVlMTI0NDIyYjZjODJlMjdjMTRmNDgyNjJjOGU2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjNWNkZWY4MDg1YWU3NGFiNjM2ZDY0NTlmNWM2ZDVmYmZiMGRiMjY0ZjFiMGQ3NWJhYzUxOWM5YjNmNjcxN2FjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NjczMjNjZDBjMzczZDhiZGZkNWY5N2FlOWNiY2IyNGQ1ODYyYWUzNzg1Y2VhNjU5NzYyZjc3MmNiNmQxMTc3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkMjhiZWU2MTJlZDdhMWFmNjk1NTNiYzNhZGQxZTlmNGZmNzk3NzlhYzI3MjFhYTVlZDJhN2Q3YjVhYjU2YjA5In0"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-22T10:29:12.696Z"
+  }
+}

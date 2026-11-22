@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:6019be6d78bb4b0972bea81b60bdaf052bcefdb697fa73ad5a1517c5d7877433",
+  "pageVersion": "sha256:e8447644b35dabe258cd4c9676d675e10742ef5ff7750b84a272e1d19e4d05d5",
   "claims": [
     {
       "id": "claim_9973979c3dfb48d4a130186fe2d11d8f",
@@ -77,7 +77,7 @@
       "statement": "Two encryption scheme versions exist: legacy (ENCRYPTION_SCHEME_LEGACY=1) uses empty associated data; context-bound (ENCRYPTION_SCHEME_CONTEXT_BOUND=2) uses structured AAD binding file inode_id (20 bytes), seekable chunk inode_id+chunk_idx+flags (29 bytes), or filename parent_inode (20 bytes) with domain separator 'OIFS-AAD-v1'. Stack-allocated helpers (file_aad_for_scheme_stack, chunk_aad_for_scheme_stack) avoid heap allocations on the hot path.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1194-L1201",
+          "resource": "repo://src/disk.rs#L1528-L1535",
           "version": "repo-lines-v1:sha256:2e2536d37a30b945a5b6f0274fb0ec2bee3c889c0b5bb72d7358b529c2418f0c:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzZlNzg0YTM1ZTFjMjU4MGI4NjY5NDRlYjJmMzUzZjU4Zjc0MDg3OTJmODliNGVkODY1OGExMzYxZDVjNzFmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzZlNzg0YTM1ZTFjMjU4MGI4NjY5NDRlYjJmMzUzZjU4Zjc0MDg3OTJmODliNGVkODY1OGExMzYxZDVjNzFmMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDAzN2UyYTgwOGQzZWVkZTU1MTc0NGRlMDUzZTU5ODhhZmRkMDBiOWU2ODJlNjJmYzViNWU2OTZmZTgyNDAxMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTI4Njg0ODliNDlmNDA1Y2FmZWNlMDdmN2Q4OTIxNjc1MGNkYWJjZGYyYzFmN2NhOThhYzVhOWRmMmI5MDE3YyJ9"
         },
         {
@@ -101,8 +101,8 @@
       "statement": "Seekable 64 KiB chunks (INODE_FLAG_SEEKABLE_64K) are encrypted independently with per-chunk 24-byte nonces and AAD binding inode_id, chunk_idx, and chunk flags (FLAG_EMPTY=0, FLAG_COMPRESSED=1, FLAG_RAW=2). Chunk ciphertext layout is [nonce | ciphertext | tag] stored in the chunk's block run. Decryption verifies AAD before returning plaintext, preventing chunk reordering, rollback, or cross-file injection.",
       "evidence": [
         {
-          "resource": "repo://src/disk/chunked.rs#L247-L400",
-          "version": "repo-lines-v1:sha256:b04c91b7b0f198f84efbe05247c7b811809ed67eebe6c7ad1274f59e87aaf32c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmMjQwOTViNzdhZWQ1NTk1N2VjODI4ODYwZGFjZTVkNDFlODY5MTVjNmUxMTkwYWVlMDY3OTk3YTlkMWMxY2U5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmMzk5ZjQ2MGRlMjdlNjYxZWU3ZDI0NjBhM2M1MjczMDU3MGNiZmU1NTYxZWQzOWZlNmZhMGYwOGRmNDcwMzZkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3YzhkYzkxYzZlMTU1OTkzOTk3YzVmNDk5ZmU4MzJjN2VkYzMxM2UxMjU1MGIwYmU4MGFkYTcxMjMzM2E0MDMwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4ZmY1YWQ0ZmI2OTc3Y2FkY2I0ZjU0YWIzMmY4ZTA0MDk1YzQwYjZhYTI5ZjljOTE1ODhlZGVlYWM0NDE4NmM0In0"
+          "resource": "repo://src/disk/chunked.rs#L288-L441",
+          "version": "repo-lines-v1:sha256:80a740ced7e9069d6f6b8a200600665243aafe76822ede2ae4259186662ab118:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmMjQwOTViNzdhZWQ1NTk1N2VjODI4ODYwZGFjZTVkNDFlODY5MTVjNmUxMTkwYWVlMDY3OTk3YTlkMWMxY2U5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmMzk5ZjQ2MGRlMjdlNjYxZWU3ZDI0NjBhM2M1MjczMDU3MGNiZmU1NTYxZWQzOWZlNmZhMGYwOGRmNDcwMzZkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3YzhkYzkxYzZlMTU1OTkzOTk3YzVmNDk5ZmU4MzJjN2VkYzMxM2UxMjU1MGIwYmU4MGFkYTcxMjMzM2E0MDMwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4ZmY1YWQ0ZmI2OTc3Y2FkY2I0ZjU0YWIzMmY4ZTA0MDk1YzQwYjZhYTI5ZjljOTE1ODhlZGVlYWM0NDE4NmM0In0"
         },
         {
           "resource": "repo://src/encryption.rs#L368-L385",
@@ -117,10 +117,62 @@
           "version": "repo-lines-v1:sha256:2b7653250587c950fda2daa681acc75baa73a17fa15272740a6e5418d6a8a466:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4ZDQ3NTRmMDVhNmEwZDI2MzI2ZmZjMjBiZTRjOGFhMTdjNGNjY2YxMWYwZGZhOTc1YzI3MzBjNGYwOWJmZjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YjBmNDgwOTZiOTBmMThkZmM3ZTQyNTIyY2EwMzRlYTQ1NWI4MTdmZDM4YzMxN2U5YjYyYTVkZDdlMTVkNjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlOTBmOWI0ZmYyZmRkZDU2YWZkOTQ4NjZlYjUyODYwYmQxMGNkMTZiOTY5YTM0NWY0YjA4ZjVlZDNhODNhYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwNzdlZGNmNjI1ZmZiZWMxZWE2ZmQ4ZDc0Y2JhNmE4ZGY3YTgyYTVhOGEzNjhlNDZjMDZiYzAyYWQ5MGZkODYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_ef49af581bf24235aaed9bb18894fa42",
+      "statement": "IPC challenge-response authentication uses the dedicated `ipc_auth_key` subkey (BLAKE2b domain-separated with context `oifs.kdf.v2.ipc.auth.blake2b`) for mutual authentication. The protocol exchanges 32-byte nonces, computes BLAKE2b-MAC tags over a transcript including direction byte, both nonces, and the filesystem salt. For encrypted images, the client derives the key from the password + salt; for unencrypted images, the client uses a 32-byte session secret published in the `.image.master` rendezvous file. The password never travels on the wire. Direction byte (0/1) in the transcript prevents tag reflection. A 10-second handshake timeout prevents Slowloris attacks. Authenticated streams are pooled to avoid repeated handshakes.",
+      "evidence": [
+        {
+          "resource": "repo://src/encryption.rs#L104-L105",
+          "version": "repo-lines-v1:sha256:c0bb10056f225c4731226f2f3336d34483b9dde2c6d6595f3956ce29e1d67307:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2Q0N2M4OWE4MWU3Y2Q3MWI5ZDc0MjNjOWE1ZGIyNTMyYzE3NWU4YjhkNDI4OTJlMjYwMzMyMmM5ODJkNjg3MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWI4YWM3NjQ5YzBlYTcyOGQ1ZWUzMjJlYjk2MzQ4NTRjZGM5NDRmNzAxMmVjN2Q3ZjFkY2UwNjlmMTRjYWM3ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMWQ2ZTg0ZTBkYmQ0Y2QwYjg4Yjc0MGNlMzZjNjQ0MGY5NGI5YjIzODMwYjkyYjQ5N2E2YTZmN2RmZDgwMjQ0NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTllNzYzNTVjZjExOTk0ODBjM2Y5OTgzNmIxNDg2Yzg0MWQ4OTFmYWFkOTA0YzYwOGUwOTMwMjJkMzc1N2FlZSJ9"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L59-L75",
+          "version": "repo-lines-v1:sha256:0a8b866af70bb6a49a131a9cfa042fc361a2e6db4577bcef6667eceb15ec9926:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1YjQ2YjAxZDMwMjIxM2Q5MDgwMmE2Y2EyM2FkZTZlMWY2ZWY5MjE4MzI0NTMyNDQyYjQ2ZjU4NjkyZTExYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3YTJmMDhlZTFlMWI4YmFjYWQzNTI2MWE5MzU4MDEyMzM5NGUxYzA5NWRhMjdiOTlmNTFlNDFhYTc3MGRhYWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0ZmRjMTQ0ZDRkNmE2MDkxODZhZGQwMjRjMzgwYWExMmE4MTJjZmY3YTIxY2RjMmIyMTZkMTBlNDAzMTRjZmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgifQ"
+        },
+        {
+          "resource": "repo://src/ipc.rs#L1130-L1160",
+          "version": "repo-lines-v1:sha256:39b826d2aebe26317fbd862d7c40d83f2c591d3222facb02b87c1a6c3179266f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzYzNiOWJkNGE3ZmNjMmM2MGQzNGY2ODhmN2E2Y2IyMmRiMDUxMGQ3OGVjN2Y3MjNhMmY1Y2UxMzdkNDU1OWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkYjMzOWMxN2Q0Y2M1NGU3MGM0ZmNmZWNiNjExYmI5ZTdkMzYzZjI1YjE4ZTA5MjNhMWQzMDZjYzk1OTI0ZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU2NDVhNDUzZjUwZjJkNDQ4MWUzYmM0Y2ViMzFkMjNiYjE1ZDM2YzgzNTRjMGExYzBiZDY3MzVhMTExZmMzN2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZjMzNmNzY5YWFjOWM0MzllYzYyZDIyMzQ0YjY0NDkzM2U2OGJlNGUyZTE5M2NiYTc5ZGQ4ZjRkNjVmODRmOTAifQ"
+        },
+        {
+          "resource": "repo://src/ipc.rs#L1560-L1600",
+          "version": "repo-lines-v1:sha256:fbfb293777ca68547d4fbf66c95e1f1428ca8295219823b12505bb1aaffcd691:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmMjIzNTE2NTRmMDc3NGJmNWJmMDJiNDcxNjhjN2MyZjc3ODYwZmQ1NmM4N2MyN2E4YjY3N2YxN2VjOTU2OTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkNjljOThhZGY2MDU4NTk2NDgyODlhZTU0OWJkZmI1MTcwNjVmZWU5Y2I1ZTZlNzJlN2M5MWI4ODM0Nzc2ZjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg5YzI1ZDExYTAzNTM0MmE3YzllZjM4ZDFmOGNjMDhjYjkwZTJkYzI5ZjM0NTE2MjNjNzYyNDY5YzUwOTFjZWYifQ"
+        },
+        {
+          "resource": "repo://src/ipc.rs#L279-L335",
+          "version": "repo-lines-v1:sha256:542994a8740930d00761b85ded248051938f682c03e77c66a92401deb2ac9026:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NGUyMTRjN2NmMzMzZTUzMzMwZDlmZjA1YmY5YzczNGFlNDBkNzJiMjg5ODljN2JhOGUxOWQ0NzhlYTY4MzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNmNTc0YmMwNDMwZDcwYWZhY2U4YTgzMWE0NGVjZTYzOWZjMzE2NzJiYWVhMmExNTUxZjEwZjYxZTgzYWRlMmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmZjI2MDdkMGIyZTQ2M2IxNzBhYzU2ZTNhNDQ3ZDhkYWUxNjQ3NzA4ZWQ2Y2Y5MDNjOTI2ODVkYzNhY2ZhZWYifQ"
+        },
+        {
+          "resource": "repo://src/ipc.rs#L355-L375",
+          "version": "repo-lines-v1:sha256:9b58105b72b3c27ec030ad5df66db9ce8d99c9de4c5ec0502768db62df24a4bb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3NjA1NGZkNDgxNDE0ZDhjMzE0NjlkODQxN2Q3ZDc2YjEzZTVlMjU3Njk3OWRjZTc3Y2FkOGIyYTQzMTYwYTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3MGUxNjNkNGE2MDZiYmUyOTVkYThkY2ZmOGVmM2M4N2FkMGM4NjAyYzVmZDE2MDE3ZmI2M2EyMmJjMjJkNjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZhMjFhZWQ2OTE0ZTFhZjllMTU0YWVjNzhlOTRiNGIxN2NhNzdhMmY1ZTAzYjM0NmVjNzhhM2EzZGRmNmNlZmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3NzkwYjhiNmI3ZTA1OGM5Nzc5OTJlNzJiNjg2YzE4MzhiZjU3NGMxMDliZjdmM2E3ZTAxZjk1ZTc3NTRkMTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0a3b7192aaf645cebbbf0f7c608fae04",
+      "statement": "SuperBlock::encryption_version records the encryption scheme: 0 = unencrypted (ignored), 1 = ENCRYPTION_SCHEME_LEGACY (empty AAD), 2 = ENCRYPTION_SCHEME_CONTEXT_BOUND (structured AAD binding inode_id/chunk_idx/flags). New encrypted images always write version 2. Validation rejects unencrypted images with non-zero version, and encrypted images with unknown version. The AAD helpers return empty AAD for scheme < 2, preserving legacy read compatibility.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L1528-L1535",
+          "version": "repo-lines-v1:sha256:2e2536d37a30b945a5b6f0274fb0ec2bee3c889c0b5bb72d7358b529c2418f0c:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzZlNzg0YTM1ZTFjMjU4MGI4NjY5NDRlYjJmMzUzZjU4Zjc0MDg3OTJmODliNGVkODY1OGExMzYxZDVjNzFmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzZlNzg0YTM1ZTFjMjU4MGI4NjY5NDRlYjJmMzUzZjU4Zjc0MDg3OTJmODliNGVkODY1OGExMzYxZDVjNzFmMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDAzN2UyYTgwOGQzZWVkZTU1MTc0NGRlMDUzZTU5ODhhZmRkMDBiOWU2ODJlNjJmYzViNWU2OTZmZTgyNDAxMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTI4Njg0ODliNDlmNDA1Y2FmZWNlMDdmN2Q4OTIxNjc1MGNkYWJjZGYyYzFmN2NhOThhYzVhOWRmMmI5MDE3YyJ9"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L412-L440",
+          "version": "repo-lines-v1:sha256:f8214a482579da3b4f036a4daab0cc7d3af233972968e3edef5aabbaeba4d4f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQyMDBlN2NiZjIwYzM1NGUxYjliODUzYTU2MWZlM2E2ZWZiM2I3ZmFjZjNkMWNhZTU3YjFiMGU0MTc0ZThlMGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgzMTEzZjdkZmJiNzQwMWJjYzFjY2UxNDExODE1ZWMyYTNkY2I5YzdiNGE2MzlmNDljNTMwNGQzMzU2NDZiY2YifQ"
+        },
+        {
+          "resource": "repo://src/superblock.rs#L461-L466",
+          "version": "repo-lines-v1:sha256:4e366f8fc2c53dc71f973a2147e113eb72a30567b5472d2e8bd1bac68125725f:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzE4ZjAyOTU3ZTU1YTFkZmU4ODgwODRhM2RmMDFlZGI1Nzk4ODY0NGU3MmIwNmIwMjRlYmQ5ZWM5YTk1OWYyNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDcxMTI3ZWQ0MjYyNjA4ZGNkNDkxYmZiMDE0NWRkZWRhZTcwNTFkMGVjMjA0N2RlMDhmMmQ1MGUxOTJjMTY5ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGQwZDUxMjlkYmI4MTUxODJjNTk4MTgxYjk0N2Q2ZWMyMzAyMzRkNzQxNDA4MGFjMDA3YjhkZWUyZGViZTMxMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjc1YjBjYWY3NjRmY2U5ZjU3NWM2NjQ4ZWQ1YTA3NTdjYjYzNTA1YTllMDdkOGExZTkxOGRjZGU3MWQxYTM1NiJ9"
+        },
+        {
+          "resource": "repo://src/superblock.rs#L47-L47",
+          "version": "repo-lines-v1:sha256:54ebf8665903eb00d1c8aca99860726ee803a9510539d506d2f23515f6966c78:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTRlYmY4NjY1OTAzZWIwMGQxYzhhY2E5OTg2MDcyNmVlODAzYTk1MTA1MzlkNTA2ZDJmMjM1MTVmNjk2NmM3OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTRlYmY4NjY1OTAzZWIwMGQxYzhhY2E5OTg2MDcyNmVlODAzYTk1MTA1MzlkNTA2ZDJmMjM1MTVmNjk2NmM3OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGM5MjI5OTg3ZDYyMGY1MWRhNjQyNTFiNTM3MjQ5YjFjMGQ4NzQxZGVjYmYwMDk3Mzg5MjdmMDk5MjFjNTljOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjZjZDhlOTYxYjBiODQ2MDVkNDAwYjZlMzlhZTZmM2ZiNDFmM2MwNmMzYjQyYzM2NWUwODljZjk0NTk2Mzg4ZiJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-20T22:07:36.625Z"
+    "at": "2026-11-22T10:29:12.696Z"
   }
 }

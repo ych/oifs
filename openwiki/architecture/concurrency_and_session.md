@@ -5,19 +5,23 @@ description: The OifsSession abstraction with three modes — Standalone (direct
 tags: [ipc, master-proxy, session, concurrency, uds, tcp, failover, rwlock, openmode, cow, authentication]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-22T10:29:12.696Z
 sources:
   - id: openwiki-source-466dba2e8868026185b26560
     resource: repo://src/auto_defrag.rs
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
+  - id: openwiki-source-fd65460dcd62d8e13b82908b
+    resource: repo://src/disk/caches.rs
+  - id: openwiki-source-062270e1dcd4de6ec5011c98
+    resource: repo://src/fuse.rs
   - id: openwiki-source-ef0afc6eaf5c925c9975314d
     resource: repo://src/ipc.rs
   - id: openwiki-source-ed8bf05e307c6278442542c2
     resource: repo://src/lib.rs
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
 ---
 
 ## Responsibility and ownership
@@ -212,7 +216,7 @@ sequenceDiagram
 
 - **Lock-free fast path**: `has_fallback: AtomicBool` checked before acquiring `dm_fallback` mutex (`src/session.rs#L773-L779`).
 - **Fallback promotion**: When a Remote process wins election, it pins a local `DiskManager` as `dm_fallback` and continues serving locally — the session **becomes Direct** transparently.
-- **Password persistence**: Remote session stores the password in a `Zeroizing<String>` for automatic reconnection (`src/session.rs#L75-L76`).
+- **Password persistence**: Remote session stores the password in a `Zeroizing<String>` for automatic reconnection (`src/session.rs#L75-L76`, `#L664`).
 
 ## Reader parallelism and lock hierarchy
 
@@ -228,7 +232,7 @@ inner: Arc<RwLock<DiskManagerInner>>,   // guards all on-disk metadata
 sync_mutex: Arc<Mutex<()>>,              // serializes msync only
 ```
 
-## Poison-recovered locks: `lock_unpoisoned` / `read_unpoisoned`
+## Poison-recovered locks: `lock_unpoisoned` / `read_unpoisoned` / `write_unpoisoned`
 
 Some mutexes guard **reconstructible in-memory state** (registries, caches, coordination flags) where a panic mid-critical-section cannot leave the data inconsistent. For these, propagating poison would permanently brick the subsystem — one unrelated panic anywhere would make every later acquisition fail.
 
@@ -241,18 +245,114 @@ pub(crate) fn lock_unpoisoned<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) fn read_unpoisoned<T>(r: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     r.read().unwrap_or_else(PoisonError::into_inner)
 }
-// write_unpoisoned exists for symmetry but has no call sites yet
+pub(crate) fn write_unpoisoned<T>(r: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    r.write().unwrap_or_else(PoisonError::into_inner)
+}
 ```
 
-**Where used**:
+**Where used** (recover from poison):
+
 - `SESSION_REGISTRY` mutex (`src/session.rs#L285`, `#L304`, `#L311`)
 - `IpcClient` connection pool mutex (`src/ipc.rs#L1443`, `#L1454`, `#L1480`, `#L1618`, `#L1646`, `#L1758`)
-- Auto-defrag config/stats/worker mutexes (`src/auto_defrag.rs`)
+- Auto-defrag config/stats/worker mutexes (`src/auto_defrag.rs#L187-L215`)
 - Async flush pending ranges (`src/disk.rs#L555`, `#L580`, `#L1563`, `#L5428`, `#L5471`)
-- Decoded blob cache (`src/disk.rs#L3756`, `#L3761`)
+- Decoded blob cache (`src/disk.rs#L3756`, `#L3761`, `#L4840`, `#L4845`, `#L9088`, `#L9221`)
+- FUSE handle map, parent map (`src/fuse.rs#L2242-L2272`, `#L2665-L#2670`)
+- Sharded directory cache: `read_shard`/`write_shard`/`for_each_mut` (`src/disk/caches.rs#L233`, `#L241`, `#L251`, `#L257`)
 
 **Where NOT used** (poison propagates, as required for on-disk consistency):
 - `DiskManagerInner` RwLock — guards bitmap, inode tables, block allocation. A panic here could leave on-disk structures inconsistent; the process must fail fast.
+- Inode cache shards use `.unwrap()` directly (`src/disk/caches.rs#L398`, `#L403`, `#L408`, `#L416`, `#L422`)
+
+## 32-shard lock striping for caches
+
+Both the inode cache and directory cache use **32 shards** with **Fibonacci hashing** (`0x517cc1b727220a95`) for uniform distribution, eliminating lock contention across concurrent accesses to different inodes/directories.
+
+### BoundedInodeCache (`src/disk/caches.rs#L354-L423`)
+
+- **32 shards** (`NUM_INODE_CACHE_SHARDS`), each with independent `RwLock<InodeCacheShard>`.
+- **Second-Chance (Clock) eviction**: each entry has an atomic `referenced` bit. On cache hit under shared lock, bit is set (`Relaxed`). Eviction walks the queue, gives referenced entries a second chance (clears bit, re-queues), evicts unreferenced.
+- **Fibonacci shard index**: `(inode_id * 0x517cc1b727220a95) & 31` — consecutive inode IDs never map to the same shard.
+- **Capacity**: `INODE_CACHE_CAPACITY = 2048` total, ~64 per shard.
+- **Single-entry eviction**: Reaching capacity evicts only one entry (old behavior wiped entire cache).
+
+### ShardedDirCache (`src/disk/caches.rs#L201-L260`)
+
+- **32 shards** (`NUM_DIR_CACHE_SHARDS`), each `RwLock<FxHashMap<u64, DirIndex>>`.
+- **Same Fibonacci hashing**: `(dir_inode_id * 0x517cc1b727220a95) & 31`.
+- **DirIndex** caches positive lookups; promotes to `complete` after `DIR_INDEX_BUILD_AFTER_SCANS = 8` cold scans or a negative lookup.
+- On encrypted filesystems, maintains both `stored` (ciphertext names) and `plain` (plaintext names) maps to skip re-encryption.
+- **Lock striping** ensures `create_file`/`delete_file` on one directory never stalls `lookup`/`resolve_path`/`list_dir` on another.
+
+### FxHasher (`src/lib.rs#L101-L164`)
+
+```rust
+const K: usize = 0x517cc1b727220a95usize;
+```
+Fast non-cryptographic hash for integer keys; processes 8/4/2/1 bytes at a time with rotate-xor-multiply.
+
+## Out-of-lock pipeline: filter → compress → encrypt
+
+Write operations split into three stages so CPU-bound work happens **without holding filesystem locks** (`src/disk.rs#L5671-L5850`):
+
+### Stage 1 — Shared Read Lock (inspection)
+- Acquires `inner.read()`.
+- Determines write case (FullOverwrite / CompressedAppend / Recompress / Raw).
+- Reads existing decompressed content if needed for splice/recompress.
+- **Drops read lock immediately** after collecting all metadata.
+
+### Stage 2 — Zero Locks (CPU-bound processing)
+- **Filter**: `apply_filters_cow` / `unapply_filters_in_place` (Delta, Shuffle, Bitshuffle).
+- **Compress**: Zstd multi-frame via pooled `CCtx` (seekable 64K) or single frame (stream).
+- **Encrypt**: XChaCha20-Poly1305 with per-file AAD (inode_id + scheme) — stack-staged, zero allocation.
+- Produces a `WritePlan` with final bytes, new sizes, encryption nonce, physical offset.
+
+### Stage 3 — Exclusive Write Lock (commit)
+- Acquires `inner.write()`.
+- Verifies inode unchanged since Stage 1 (re-plans if raced).
+- Allocates/frees blocks, writes payload at `phys_off`.
+- Updates inode metadata (size, compressed_size, nonce, filter flags).
+- Flushes via `sync_mutex` (range-based or full) **after dropping write lock**.
+
+This three-stage design means:
+- Concurrent readers never block on compression/encryption CPU.
+- Only the short metadata commit phase holds the exclusive lock.
+- `sync_mutex` serializes `msync` without blocking readers.
+
+## Zero-allocation path resolution: `resolve_path_iter` + `resolve_parent`
+
+Path resolution avoids heap allocation by iterating over `&str` slices directly (`src/disk.rs#L6437-L6620`):
+
+```rust
+fn resolve_path_iter<'a>(
+    guard: &DiskManagerInner,
+    parts: impl Iterator<Item = &'a str>,
+) -> Result<u64, DiskManagerError> {
+    let mut curr = guard.superblock.root_inode;
+    for part in parts {
+        // validation, '..' rejection
+        curr = Self::dir_lookup(guard, curr, part)? ...
+    }
+    Ok(curr)
+}
+
+pub fn resolve_path(&self, path: &str) -> Result<u64, DiskManagerError> {
+    let guard = self.inner.read().unwrap();
+    Self::resolve_path_iter(
+        &guard,
+        path.split('/').filter(|s| !s.is_empty() && *s != "."),
+    )
+}
+
+pub fn resolve_parent(&self, path: &str) -> Result<(u64, String), DiskManagerError> {
+    // splits once via rsplit_once('/'), then delegates to resolve_path_iter
+}
+```
+
+- **No allocation**: `split('/')` yields `&str` views into the original string.
+- **Single read lock**: entire resolution holds one `inner.read()` guard.
+- **~11.9M lookups/sec** on typical hardware (benchmark: `cargo bench resolve_path`).
+- `resolve_parent` reuses the same iterator for the parent portion, returning the final component as an owned `String` only for the filename.
 
 ## POSIX OpenMode and race safety
 

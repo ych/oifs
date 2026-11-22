@@ -1,11 +1,11 @@
 ---
 type: architecture
 title: Block & Inode Allocation
-description: Describes the two-bitmap allocator (inode bitmap, data bitmap), the search-hint optimization (free_block_hint, free_inode_hint), the AllocSim used by journaled operations to simulate allocations against bitmap copies, and the contiguous-run allocator for seekable chunked files.
-tags: [allocation, bitmap, indirect-blocks, hint, alloc-sim, contiguous, journaling]
+description: Documents the sequential hint-based block and inode allocator (SimpleBlockAllocator), multi-block bitmap layout (v3), hardware-accelerated tzcnt scanning, BitmapSliceMut write-through mirrors for FileIo mode, and allocation rollback on WAL failure.
+tags: [allocation, bitmap, indirect-blocks, hint, alloc-sim, contiguous, journaling, v3-layout]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-22T10:29:12.696Z
 sources:
   - id: openwiki-source-57692e9ab78d05d0aeba3e7c
     resource: repo://src/allocator.rs
@@ -21,34 +21,36 @@ sources:
     resource: repo://src/journal.rs
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
 ---
 
 ## Responsibility and ownership
 
-Block and inode allocation is centralized in `SimpleBlockAllocator` (`src/allocator.rs`) operating on 4 KB bitmap slices. The `DiskManagerInner` (`src/disk.rs`) owns the actual bitmap slices in the mmapped image and drives allocation through cached search hints stored in `free_block_hint` and `free_inode_hint`. Every allocation, deallocation, directory write, and indirect-block expansion on the write path goes through this machinery, so it is the single authority over which physical blocks are free or in use.
+Block and inode allocation is centralized in `SimpleBlockAllocator` (`src/allocator.rs`) operating on 4 KB bitmap slices. The `DiskManagerInner` (`src/disk.rs`) owns the actual bitmap slices in the mmapped image (or in-memory mirrors under `FileIo` mode) and drives allocation through cached search hints stored in `free_block_hint` and `free_inode_hint`. Every allocation, deallocation, directory write, and indirect-block expansion on the write path goes through this machinery, so it is the single authority over which physical blocks are free or in use.
 
 For journaled images, allocation is first simulated against in-memory bitmap copies via `AllocSim` (`src/journal.rs`) before any on-disk metadata is mutated. `AllocSim` mirrors `SimpleBlockAllocator` semantics exactly (same hint handling, same "first free bit at or after hint" rule), so the IDs it predicts are the IDs the real allocator will hand out when the transaction is applied.
 
-## On-disk bitmap representation
+## On-disk bitmap representation (v3 multi-block layout)
 
-A bitmap is a flat bit array stored in one or more 4 KB blocks. Bit `0` means free and bit `1` means allocated. `SuperBlock` (`src/superblock.rs`) records where each bitmap lives:
+A bitmap is a flat bit array stored in one or more 4 KB blocks. Bit `0` means free and bit `1` means allocated. `SuperBlock` (`src/superblock.rs`) records where each bitmap lives and how many blocks each spans:
 
-- Inode bitmap at `inode_bitmap_block` (block 1 in legacy layout; spans `inode_bitmap_blocks` blocks in v3 layout), tracking inodes from block 0.
-- Data bitmap at `data_bitmap_block` (block 2 in legacy; spans `data_bitmap_blocks` blocks in v3), tracking data blocks starting at `data_block_start`.
+- Inode bitmap starts at `inode_bitmap_block` (block 1 in legacy layout; spans `inode_bitmap_blocks()` blocks in v3), tracking inodes from ID 0.
+- Data bitmap starts at `data_bitmap_block` (block 2 in legacy; spans `data_bitmap_blocks()` blocks in v3), tracking data blocks starting at `data_block_start`.
 
-Bit index mapping: for the data bitmap, the bit index for a given `block_id` is `block_id - data_block_start`. The inode bitmap uses a direct 0-based index (inode ID == bit index).
+The v3 layout computes `inode_bitmap_blocks = inode_count.div_ceil(BITMAP_BLOCK_BITS).max(1)` and `data_bitmap_blocks` derived from the recorded `data_block_start` and `inode_table_block` offsets. Bit index mapping: for the data bitmap, the bit index for a given `block_id` is `block_id - data_block_start`. The inode bitmap uses a direct 0-based index (inode ID == bit index).
 
 Two views wrap the raw bytes:
 
 - `BitmapRef` (`src/bitmap.rs`) — read-only view used for analysis, scanning, and fsck.
 - `Bitmap` (`src/bitmap.rs`) — mutable view that forwards `set`/`clear` and delegates search helpers to a `BitmapRef`.
 
-## 64-bit word scanning and hardware population count
+Under `StorageMode::FileIo`, the on-disk bitmaps are mirrored in memory (`FileBacking.inode_bitmap` / `data_bitmap` in `src/storage.rs`). Mutable access is provided through `BitmapSliceMut` (see below).
+
+## 64-bit word scanning and hardware `tzcnt`
 
 The bitmap deliberately processes 64 bits (8 bytes) per CPU word instead of bit by bit. The key operations in `BitmapRef` all use `chunks_exact(8)`:
 
-- `find_first_free_from` masks out bits before the search start with `(1u64 << bit_in_chunk) - 1`, then locates the first zero bit using `(!masked_word).trailing_zeros()` — a single hardware `tzcnt` instruction.
+- `find_first_free_from` masks out bits before the search start with `(1u64 << bit_in_chunk) - 1`, then locates the first zero bit using `(!masked_word).trailing_zeros()` — a single hardware `tzcnt` instruction on x86/ARM.
 - `for_each_set_bit` (used by fsck, defragmentation, and `analyze_fragmentation`) iterates set bits with `word &= word - 1` to clear the lowest set bit each cycle, yielding only as many iterations as there are allocated blocks.
 - `analyze_fragmentation` (`src/disk.rs`) additionally special-cases whole words equal to `0` (all free) or `u64::MAX` (all used) so densely packed regions are scanned in constant time.
 
@@ -71,13 +73,33 @@ Seekable 64 KiB chunked files (`INODE_FLAG_SEEKABLE_64K`) require each chunk to 
 
 The write path (`commit_prepared_chunked_write` in `src/disk/chunked.rs`) stages through `AllocSim`:
 
-1. For each chunk, `sim.alloc_contiguous(mmap, prepared.blocks_needed)` reserves a contiguous run in the simulator's data-bitmap copy.
+1. For each chunk, `sim.alloc_contiguous(backing, prepared.blocks_needed)` reserves a contiguous run in the simulator's data-bitmap copy.
 2. The run is recorded in the WAL via `SetDataBitmapRange { start_block, count, allocated: true }` (coalesced from individual `SetDataBitmap` ops).
 3. Payload bytes are written into the newly allocated blocks in the mmap.
 4. Old chunk blocks (if any) are freed via `sim.free_contiguous` and `SetDataBitmapRange { allocated: false }`.
 5. The inode's chunk-entry pointer is updated to point at the new run (`sim_set_logical_chunk_entry` emits a `WriteBlockSlice` for the pointer table entry).
 
 This guarantees that every seekable chunk maps to a single contiguous physical extent, eliminating intra-chunk seeks.
+
+## BitmapSliceMut: write-through mirrors for FileIo mode
+
+Under `StorageMode::FileIo` there is no mmap; the filesystem image is accessed via `pread`/`pwrite`. To keep bitmap mutations coherent, `DiskManagerInner` provides mutable access through `BitmapSliceMut` (`src/storage.rs`):
+
+```rust
+pub(crate) struct BitmapSliceMut<'a> {
+    slice: &'a mut [u8],
+    file_writeback: Option<(&'a File, u64)>,  // (file handle, file offset of bitmap start)
+    dirty_range: Option<(usize, usize)>,     // narrowed byte range [start..end)
+}
+```
+
+- `inode_bitmap_slice_mut()` and `data_bitmap_slice_mut()` on `ImageBacking` return a `BitmapSliceMut` borrowing the in-memory mirror.
+- `DerefMut` allows direct byte mutation (`slice[byte] |= mask`).
+- `set_dirty_range(byte_start, byte_end)` and `set_dirty_bits(start_bit, bit_count)` narrow the flush range.
+- On `Drop`, `flush_writeback()` is called automatically: under `FileIo` it issues a `pwrite` of the dirty range to the bitmap's file offset; under `Mmap` it is a no-op (the mmap is already coherent).
+- Explicit `flush_writeback()` is also available for callers that need synchronous persistence before the guard drops.
+
+This design makes bitmap writes under `FileIo` as cheap as mmap writes (single `pwrite` of the modified span on drop) while guaranteeing the on-disk bitmap is updated before the mutating function returns.
 
 ## AllocSim: WAL-first allocation simulation
 
@@ -96,7 +118,7 @@ Allocation operations against `AllocSim` emit `MetadataOp` entries that are late
 - Contiguous run: `SetDataBitmapRange { start_block, count, allocated: true }` (after coalescing)
 - Free: same ops with `allocated: false`
 
-## Journal interaction: SetDataBitmap and SetDataBitmapRange
+## Journal interaction: commit, apply, and allocation rollback
 
 The journal encodes bitmap mutations as two operation types:
 
@@ -104,6 +126,21 @@ The journal encodes bitmap mutations as two operation types:
 - `SetDataBitmapRange { start_block, count, allocated }` — contiguous run set/clear.
 
 `coalesce_ops` (`src/journal.rs`) merges adjacent `SetDataBitmap` ops of the same polarity into `SetDataBitmapRange`, shrinking WAL frame sizes for multi-block operations by orders of magnitude. The canonical phase order in a committed transaction is: `SetInodeBitmap` → `SetDataBitmapRange` → `WriteBlockSlice` → `WriteInode`. During replay, applying a `SetDataBitmap` or `SetDataBitmapRange` is strictly idempotent (Kani-verified), so redo is safe.
+
+### Commit point and rollback on WAL failure
+
+`commit_journal_tx` (`src/disk.rs`) is the **commit point**: it appends the transaction to the WAL ring buffer and calls `JournalRegionMut::flush_writeback()` to force the frame (and updated journal header) to stable storage. If `flush_writeback` fails:
+
+```rust
+if let Err(e) = region.flush_writeback() {
+    region[..hdr_len].copy_from_slice(&prev_hdr[..hdr_len]); // restore old header
+    return Err(e.into());
+}
+```
+
+The previous journal header is restored in-memory, the error propagates up, and **the transaction is not applied**. Because the hints (`free_block_hint`, `free_inode_hint`) are only advanced *after* both `commit_journal_tx` and `apply_journal_ops` succeed (see `write_data_journaled`), a WAL flush failure leaves the hints unchanged — the simulated allocations in `AllocSim` are effectively discarded. This is the allocation rollback mechanism: the simulator's predicted block IDs are never committed to the real bitmap, and the allocator's hints do not advance, so a subsequent retry will allocate the same physical blocks again.
+
+On success, `apply_journal_ops` mutates the in-memory bitmap (through `BitmapSliceMut` or mmap) and the block payloads. Under `FileIo`, the `BitmapSliceMut` guards created during `apply_journal_ops` will flush their dirty ranges on drop, persisting the bitmap updates.
 
 ## Indirect block addressing scheme
 

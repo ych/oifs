@@ -1,11 +1,11 @@
 ---
 type: architecture
 title: Online Defragmentation
-description: How OIFS analyzes filesystem fragmentation using 64-bit bitmap scanning and performs both safe (out-of-place rebuild with atomic rename) and WAL-atomic in-place defragmentation, including ChunkEntry relocation for seekable files and a background auto-defrag coordinator.
-tags: [defragmentation, fragmentation, atomic-rename, wal, chunkentry, auto-defrag, contiguous-allocation, filters]
+description: How OIFS analyzes filesystem fragmentation using 64-bit bitmap scanning and performs both safe (out-of-place rebuild with atomic rename) and WAL-atomic in-place defragmentation, including ChunkEntry relocation for seekable files, shift_table_collapse for chunk table compaction, and a background auto-defrag coordinator.
+tags: [defragmentation, fragmentation, atomic-rename, wal, chunkentry, auto-defrag, contiguous-allocation, filters, shift-table-collapse]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-22T10:29:12.696Z
 sources:
   - id: openwiki-source-466dba2e8868026185b26560
     resource: repo://src/auto_defrag.rs
@@ -15,7 +15,7 @@ sources:
     resource: repo://src/disk/maintenance.rs
   - id: openwiki-source-a249d539653d0c5ebcb1b76c
     resource: repo://tests/defrag_seekable_chunk_test.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
 ---
 
 ## Responsibility and ownership
@@ -135,7 +135,7 @@ The replacement uses a crash-safe three-step rename protocol ([`defragment_safe`
 [`defragment_inplace_legacy`](repo://src/disk/maintenance.rs#L754-L975) uses a cycle-aware block permutation algorithm:
 
 1. **Target layout planning** — computes contiguous target locations for all blocks (`old_to_new` map) starting from `data_block_start`. Directories first, then regular files (including `ChunkEntry` runs expanded to individual blocks), then indirect blocks (SIB, DIB, TIB).
-2. **ChunkEntry handling** — for seekable 64K files, `collect_inode_block_layout` expands packed `ChunkEntry` values into their constituent contiguous block runs ([`collect_inode_block_layout`](repo://src/disk/maintenance.rs#L170-L200)). A parallel `old_entry_to_new` map rewrites the packed pointer values after relocation.
+2. **ChunkEntry handling** — for seekable 64K files, `collect_inode_block_layout` expands packed `ChunkEntry` values into their constituent contiguous block runs ([`collect_inode_block_layout`](repo://src/disk/maintenance.rs#L170-L200)). A parallel `old_entry_to_new` map rewrites the packed pointer values after permutation.
 3. **Cycle-aware permutation** — moves blocks using a scratch buffer only when cycles are detected; free targets are consumed first to avoid unnecessary copies ([`defragment_inplace_legacy`](repo://src/disk/maintenance.rs#L900-L960)).
 4. **Pointer updates** — inode direct/SIB/DIB/TIB slots and indirect block pointer tables are rewritten to new locations via `lookup_new` ([`defragment_inplace_legacy`](repo://src/disk/maintenance.rs#L962-L1010)).
 5. **Bitmap rebuild** — data bitmap is cleared and `set_range(0, total_used)` marks the new contiguous prefix as allocated ([`defragment_inplace_legacy`](repo://src/disk/maintenance.rs#L1012-L1020)).
@@ -179,7 +179,7 @@ sequenceDiagram
    - `SetDataBitmapRange` ops: allocate destination run, free source run
    - `WriteInode` ops: post-image inodes for all touched inodes (with updated direct/SIB/DIB/TIB pointers)
    - `WriteBlockSlice` ops: updated pointer slots in indirect blocks (using new indirect block addresses from `round_ind_new_block`)
-   - `ChunkEntry` values are rewritten with new `start_block` while preserving `block_count`, `flags`, `compressed_len` ([`defragment_inplace_journaled_cow`](repo://src/disk/maintenance.rs#L1157-L1215)).
+   - `ChunkEntry` values are rewritten with new `start_block` while preserving `block_count`, `flags`, `compressed_len` ([`defragment_inplace_journaled_cow`](repo://src/disk/maintenance.rs#L1175-L1182)).
 5. **Commit & apply** — `commit_journal_tx` (WAL durability), then `apply_journal_ops` (in-place metadata apply). Both are idempotent redo operations.
 6. **In-memory state advance** — Updates `alloc_bm_bytes` (clear old, set new), advances `units[idx].curr_start = dst_start`, rewrites `chunk_entry` if present, updates `indirect_blocks[ind_idx]` for self-moved indirect blocks ([`defragment_inplace_journaled_cow`](repo://src/disk/maintenance.rs#L1217-L1240)).
 7. **Metadata sync & WAL retirement** — `sync_mutation_ranges` per `DurabilityMode`; `JournalRing::checkpoint()` retires the ring so the next round reuses the full capacity ([`defragment_inplace_journaled_cow`](repo://src/disk/maintenance.rs#L1242-L1255)).
@@ -199,11 +199,55 @@ Seekable 64K chunked files store packed `ChunkEntry` values in pointer slots ins
 - **In-place legacy**: `collect_inode_block_layout` expands entries for target planning. `old_entry_to_new` map rewrites the packed value with new `start_block` after permutation.
 - **In-place journaled**: `RelocUnit` carries the original `ChunkEntry`. During WAL staging, a new `ChunkEntry` is constructed with `dst_start` as `start_block` while preserving `block_count`, `flags`, `compressed_len` ([`defragment_inplace_journaled_cow`](repo://src/disk/maintenance.rs#L1175-L1182)). The `WriteInode` or `WriteBlockSlice` op installs the updated packed value.
 
-This ensures that after defragmentation, the seekable file's logical chunk boundaries, compression, and flags are unchanged — only the physical start block shifts to the new contiguous location.
+### `collect_inode_block_layout` — handling `ChunkEntry` vs raw pointers
+
+[`collect_inode_block_layout`](repo://src/disk/maintenance.rs#L317-L410) is the central routine that decodes an inode's block graph into two lists: `payload_blocks` (data/directory blocks in logical order) and `indirect_blocks` (SIB/DIB/TIB pointer tables). Its logic for seekable files:
+
+```rust
+let is_seekable = inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0;
+
+let push_leaf = |raw: u64, payload_blocks: &mut Vec<u64>| {
+    if raw == 0 { return; }
+    if is_seekable {
+        let entry = crate::inode::ChunkEntry(raw);
+        if entry.is_empty() { return; }
+        let start = entry.start_block() as u64;
+        let count = entry.block_count() as u64;
+        for i in 0..count {
+            payload_blocks.push(start + i);
+        }
+    } else {
+        payload_blocks.push(raw);
+    }
+};
+```
+
+For each direct slot (0..9), SIB, DIB, TIB, the routine expands `ChunkEntry` into the actual contiguous block runs they reference, ensuring defragmentation relocates the *physical payload blocks* rather than treating the packed `ChunkEntry` value as a block ID. This is used by both legacy and journaled in-place paths for target layout planning.
+
+### `shift_table_collapse` — seekable chunk table compaction
+
+For seekable 64K files, the logical chunk table (stored in indirect blocks) may develop holes when chunks are deleted or overwritten. [`shift_table_collapse`](repo://src/disk/transfer.rs#L381-L431) compacts these tables by removing a range of entries and shifting trailing entries left, returning the removed non-zero `ChunkEntry` values so their physical blocks can be freed.
+
+```rust
+pub fn shift_table_collapse(
+    table: &mut Vec<u64>,
+    start_unit: usize,
+    remove_units: usize,
+) -> Vec<u64>
+```
+
+- Operates on the slice of packed `ChunkEntry` values (`u64` each).
+- Removes `[start_unit .. start_unit + remove_units)`.
+- Shifts remaining entries left, truncates the table.
+- Returns the freed entries (non-zero) for subsequent bitmap deallocation.
+- Zero-allocation slice core `shift_table_collapse_slice` is used internally for performance ([`shift_table_collapse_slice`](repo://src/disk/transfer.rs#L387-L419)).
+- Proven bijection in Kani proofs ([`shift_table_collapse`](repo://tests/chunked_test.rs#L3663-L3697)).
+
+While not directly invoked during the defragmentation passes themselves, `shift_table_collapse` is the canonical mechanism for compacting seekable file chunk tables during truncation and hole-punching, keeping the logical chunk index dense. Defragmentation's block-level relocation makes the physical layout contiguous, while `shift_table_collapse` ensures the logical index remains compact.
 
 ## Auto-defrag coordinator (background daemon)
 
-[`AutoDefragController`](repo://src/auto_defrag.rs#L235-L310) is a daemon thread that periodically measures fragmentation and runs in-place defragmentation when it exceeds a configured threshold.
+[`AutoDefragController`](repo://src/auto_defrag.rs#L235-L310) is a daemon thread that periodically measures fragmentation and runs in-place defragmentation when it exceeds a configured threshold. It runs **only on the Master** `DiskManager` instance and is **disabled in read-only mode** (returns `ReadOnly` error if attempted).
 
 ### Configuration
 
@@ -217,7 +261,7 @@ This ensures that after defragmentation, the seekable file's logical chunk bound
 | `min_free_blocks` | `0` | Skip if fewer free blocks (guards near-full images) |
 | `allow_journaled` | `true` | Allow on WAL-enabled images |
 
-`sanitized()` normalizes the config: clamps threshold, replaces `NaN` with default, raises sub-minimum intervals ([`AutoDefragConfig::sanitized`](repo://src/auto_defrag.rs#L84-L100)).
+`sanitized()` normalizes the config: clamps threshold, replaces `NaN` with default, raises sub-minimum intervals ([`AutoDefragConfig::sanitized`](repo://src/auto_defrag.rs#L84-L100)). The fragmentation threshold uses the same formula as `analyze_fragmentation`: `(free_runs - 1) / (free_blocks - 1)`.
 
 ### Worker lifecycle
 
@@ -276,6 +320,7 @@ Both safe and in-place defragmentation return [`DefragStats`](repo://src/disk.rs
 - **Large transaction spanning WAL ring** — [`test_journaled_defragment_large_exceeding_wal_ring`](repo://tests/journal_test.rs#L1961-L2004) validates multi-round COW with thousands of files.
 - **Auto-defrag integration** — [`test_journaled_defragment_inplace_and_redo_replay`](repo://tests/journal_test.rs#L1791-L1860) covers full redo replay after defrag commit.
 - **Path injection defense** — [`test_defragment_path_injection_defense`](repo://tests/defrag_test.rs#L418-L445) rejects output paths that escape or overwrite the source.
+- **`shift_table_collapse` proofs** — Kani proofs verify bijection between original and collapsed entries ([`shift_table_collapse`](repo://tests/chunked_test.rs#L3663-L3697)).
 
 ## Relationships to other subsystems
 

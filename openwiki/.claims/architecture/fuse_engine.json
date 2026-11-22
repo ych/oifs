@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:dd6d5d39a1611f43f9a309f525208f9559a17012575ee837d721a745f39e8883",
+  "claims": [
+    {
+      "id": "claim_37ac175985ba4adba3a529d7b515969e",
+      "statement": "The FUSE engine implements FUSE kernel ABI v7.28 (major 7, minor 28) with explicit little-endian wire serialization for all structures.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L1-L50",
+          "version": "repo-lines-v1:sha256:49a70eb2934f51bafa884c1bc15eba6f71bf8c96433009f85c7ec026954fd49c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlMjY2ZjAyZmQ0ZTg4OTI2ZTZhYWQxMmFhZTY4ZjU4MGIzNGVjZGUzOTM1MjM1YWQ5M2NhNDdhZjBjNTk4MGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyZTJjOTNjMmM2NTIzMzAxNTMxZmMzMjI0ZjFhM2M2OTMyMTJiMWMzMDk5NzZmMzk4Yzg0ZmQwNDY4M2ZmMzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZjYzc0NjNjMGRmNmFhNjI4MDRmMjVjNGM2ZWU4YzMwMTRmZjFlNWQwMTdmM2U4N2FkOTI2N2ZjNjNlOGYwYjEifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L50-L120",
+          "version": "repo-lines-v1:sha256:712cefd2c4c9798897fd90dcb680ee584ea662a8a8674138f92bfde0a520e747:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyZTJjOTNjMmM2NTIzMzAxNTMxZmMzMjI0ZjFhM2M2OTMyMTJiMWMzMDk5NzZmMzk4Yzg0ZmQwNDY4M2ZmMzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1NTFlMmE5OGFlMzI5ODA2MGUwMzFmODQ4MjYzNjJmNjg1ZTZlZGM0ODRhMjgwODdjMmM5NTllZDYwNTNjMDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhYzgwNmYxNThmNWI5ZTMwZDZlYzRmNTg5OWM4ZGI3ODhhNWUzODJjYTNiOGIyMDMxYzUxZDQxMWY0NmQ3OGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBjOTBmNzE0ODQ2Mzc4MGQwNDkxNTk2NzhkMDMzMzg3N2Y4YTI2NjJmNzc1ZWQ0NDhkZTE0ZWFkOTViNDk5OGEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d11898b5aada47f79167ad7315cd639d",
+      "statement": "The engine supports dual ABI layouts: Linux 88-byte FuseAttr / 128-byte FuseEntryOut / 104-byte FuseAttrOut, and macOS 104-byte FuseAttr / 144-byte FuseEntryOut / 120-byte FuseAttrOut with crtime/crtimensec/flags extensions.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L120-L200",
+          "version": "repo-lines-v1:sha256:154220048cf988baa9c3785c2133e292d8bfbf3e004daf839f212b870985631b:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1NTFlMmE5OGFlMzI5ODA2MGUwMzFmODQ4MjYzNjJmNjg1ZTZlZGM0ODRhMjgwODdjMmM5NTllZDYwNTNjMDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyNzYxYWY5NmY3OTliODgxNTE4NzJjYjRmYjlmZjdiZGFlNTNjNDFmN2JiOTgwMDNjZjM2NTk0ZTQwNWY5Y2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmZGU3OGQwMWEwZGIwYWM2MDM5YjNhMzJkYWZiMDJlNDQ3ZjU5YTM4NzJjYTczN2NmZTkwZGQwNTA1MjFlNzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ3NjRhYmM5OWUwYjJlYjUyOWIzZWZkNDFhZjNlZGE4ZWUzMTBjOWZlYjQ4OTAxNDhiY2YwMmViMDAwNjIzNGIifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L900-L1100",
+          "version": "repo-lines-v1:sha256:ad521cb1c5939ee4ce603d0bf2e14c6d56eba0d8a35064a754a5c22f538b43d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3MjlhNDU4YTIzZTU1MjFhNTQzMTlkNTRmNzNhYjQxMzVlZDlkODZhMjlhZDUyMzI2Zjg3YjNhZWI1ZTBlMzgxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NjU1N2U5ZjdiZmJjZmQxZmUzMTBhYWRmNWRjMjBlODQ0MWVkZDNmYzJkZGE1ZTY2MTlmMDMxZGY3MGY3Mjk3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4ZGE3NmY0NDJhMjJjZTBkZTU1MDBjYjg1MzA1ZGZiNjY4ZWMzZTQ2MzFkY2M0Y2NhNWVkODM2ZjZhYzFiZTJjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1ZDEzOGM3ODIzMTQxYzU1NzE1NjJiMmRjYWQ5MTc3ODVmN2NkNGZlZDZmMjFkODdlZGM2ODdiY2RhYzJiOWIwIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_6213cd35a56e4fb39b9aeb85d79e4046",
+      "statement": "The FuseHandleTable multiplexes thousands of FUSE file handles (fh) over the single underlying OIFS image file descriptor owned by DiskManager.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L2100-L2200",
+          "version": "repo-lines-v1:sha256:fb35433da6d1ce40f30b8186e2d3a356cc995d59e66a627b167ac7e3ae0832cf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4YzRlNTk3MGYwMzYxYjc3OTI2YzdlMjc5NTgxMmQxYzY2ZWE1YjVmZTk4MmFmYzBiNTAzMjUzNTJhOWFiOTkwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NWNjNjJmN2VlYWZkMGYxZjk2ZWRjNDQ3NWFhZWIwN2JkMmI2OGViYmFhYTIwYmYyNTY1Nzk4MjY2YjI0Zjg0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5N2JmZTVjNzY1MzdmYTM3Mjg2ZDA1ZGViMTY2Y2MyNTA5M2NhNDMyZjNkNTU1MzBiNjQxZmQyOGRlY2E4NTk0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlNWE1NDYzNTc2ZDMwYmIzYjI5ZTIzMDQwOGU2ODBmNzQwNTUxNDUzZThhZmVjMDRkYTA4YjQyNjUyODg5ZjBhIn0"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L2200-L2300",
+          "version": "repo-lines-v1:sha256:f124cbde08281d3e8a38ca9ed7679491e5a23367a308928a4159244ad5c1eda0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0NWNjNjJmN2VlYWZkMGYxZjk2ZWRjNDQ3NWFhZWIwN2JkMmI2OGViYmFhYTIwYmYyNTY1Nzk4MjY2YjI0Zjg0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3NDgyZDAzZjBjYzYyNTczNTY3YzEyYTZlYWNjOTk4YjFiYzVlZTc5NDhlYjU5YWE3Y2M1YThiZjQwOGJjMjU2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhMDdlNmE3ZTA3MGM5NDZhZTk2ZDgwMzI3Y2ZjYWNiNTY1ZDc0ZGNhM2VjNWU3MDQxYzUxOTZmMGE3YTc1ODBmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkZGUzMDM4MTFhZjM4NTFjNTIzNjg3OTA1Yjc4N2I5MjRjZmUxYjAyMmE2YTUwYjljN2I1NTUyMTQ2ODc0MWIwIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_34b1dc5bd5d54f72adad7340c15afde6",
+      "statement": "Read-only enforcement returns -EROFS on all mutating operations when either DiskManager::is_read_only() or FuseMountOptions::read_only is true, with zero disk writes.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L1390-L1400",
+          "version": "repo-lines-v1:sha256:3f1ea49d217f30b9d0b086ee567290d77944800ae9e517d00f37deb6d9c08d7f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkYzA4ODc1MTFkMjY3ZGQwNmVkODcwYTIzOTkyYWJlZGUyZTRlOGJlZDRlNjkxMjIzYmY5MmQxOTg2NGZmOTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0MjRiODA5NDJiOGY5MWRhYTJmZThkMzAzZmZhNDQ0NmExMjRiOWQ1MmJmYzAxMjM1MjczODg4Nzc0MjgyMzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3NDc3NmE2YTQ4YjEzNWQ4MmQ4ZmMwMzdmYmMxMzg0ZTRiZmQ1OGU1OWFmMjBiNWFkNGU1ZDQ1Mjc0YWQ1YWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjYTUzYjg2ODQzZDQ1YTBkMjQ4YzY1NzhjMTQyYTIxYWZmOTc4ZmM0Yzc2NDIyNDhhNmYyMmU1ZTczYmZmYzMifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L2620-L2630",
+          "version": "repo-lines-v1:sha256:56860cc8e4e3444ca8a37b35a909a4ef74decc6a723c6870faf2eacc007014a6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3ODBmMGJjOTRjOWYwYTA4OGZjM2VlMGY5OTRmMTEyNjYyNjYzMWUyOGY1MDExNDQ0YTdlYjllY2UxZjI1MDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkMTYxZWMxYmIwZTdlZGU2NTBhOWNkZGU0ZDA2MDNlZjY3NzAxMDdkM2Y3ZDg2NWQxNzFlZTlmMTBkMDc4ZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlYzM4MWJkZWFiMWZiNzVhM2IwMGQ3ZWYyMjMwNzQ1MDRmM2UyYmIwNzFlOTkwYzQ5ZmY5YTFlYTc3NTJjOWMifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L2750-L2760",
+          "version": "repo-lines-v1:sha256:b5eb1be53e7917a888455abcbd312eeddc3ff80ff62f85bc7357b94ee018fb3c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwMmRkOWZjYjlkODU2MTJjMWUxNGM2YWU3Y2I2MGYyOTQ1NWQxMTMxMTI0ZjI1YTQ0ZjRkNGM5OTc3NDIwN2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4NjlhYmU4ODFiNTg5MmY0NjAzYTM5NjM1MjdlN2MyY2FjNWRlMTY0NzczYWJjOTZiYjViZGE0NGY0OTVlN2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRjMWU2ODY5NTY1YjgxMDc1ZDFiOThjYTkyNzEwZWJjMGQxMjI4YzJiYTNkOTIzODcxYjcxMTU3NTk5MDRhNGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA2ZGU0YjNhMTU1MzBhYjM4Njc5NmUxNThjOWQ4NzVmYzU5MzE0YTg1MjU3ZDIyYjBmNDQ2ZWU2Mzg2MGI1NjYifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L2770-L2780",
+          "version": "repo-lines-v1:sha256:a7515971cbf54b5b3991865716d025e6e94d6bc088416619352174f090a03210:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYzE2YzMzN2Q4NTg0YWY4MDk0ZTFhYWE3NjRjZDQ2YzAyYjM4NWQ1NjhiYTI0ZmViZWFkYjZjNjViOTc0ODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE0YzM1MmZmMTBlZDc1MWZiMmY5MjkxYzBjZmMzNjBmMzJhMThiYThlMjJkMDQyMTk4YTBhNzVjZDU2NTVjMWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU5YjJiNmJhOGFhNTM2MjdjNjU2NTVmMjBjOTBiZDkzMjllYjc4Mzc3Yjg5NGNiOTBhOWM3Nzk4YWRjMTllODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1MWNiZDcyNmFlZjliZmE0MjRmZWMwYmJkNTE3YWU5MTViNDdmYTEzMTZkNzllYTdjZWE2YjIzNWM2N2E5ZjEifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L2840-L2850",
+          "version": "repo-lines-v1:sha256:a82e01b126e824bc12d19a647fa7c444de010d89d9df3867fe1018f21dd0997e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzNmFiYzg0NDEwMjExOWY0MGY2MTgzYzFhZTM1N2NkMWU4NDc1MjgxY2I1OTllNmVkNjA5MjdlZDMzN2FlNmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlMGM1NmE2OWZjNmZkNTc1NjQ3ZmI4MmRhNDQ4NWFhYmYzMTc4NTRkNzUyN2NmMjExMWUyYmM0MmY3ZmI0YzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjZDI3ZmVhNGVhZTg5ZmQ2ZjYyMDU1ZDZjOGYxNWIwZDQyMzc0MDMzN2Q5MGE3ZTczYmM1ZmViODQ2YWRmYzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImExNTI4MzA5ZWIwZDA2NzI4M2Q1ZDg5NjEwYjQ1MzIzMTNkNmNhOTNmMGIwMzIyYThhNTU0YjliM2Q4Zjg2NWYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9aee2e3c790f49b7b1b36d3baa02b872",
+      "statement": "Dynamic max_write negotiation clamps to kernel capabilities: 128 KiB on Linux < 4.20 (no FUSE_MAX_PAGES), 1 MiB on Linux 4.20-6.12, up to 4 MiB on Linux 6.13+ via /sys/module/fuse/parameters/max_pages_limit (default 256, max 1024 pages).",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L100-L150",
+          "version": "repo-lines-v1:sha256:f69554b31e335190416bd963ce81d6683dbc08a7509ab8662e83208beea9d9eb:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyYWIzMThkOTk0NGNhOGY3MzdmYmQwOTkxYjMwNGU2OWZmZjg4MjE0NjEzMzNmMTQ3M2YxZWE2ODliYTAwNWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwMTgwZWNhZjY2Njg3NjBiNjQ4YzIyZGQxOTA5YzZiMWZlMDBjMzMwYzJlYWExNWExOWQwMTg0NzgzMjQyNmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwZjQ1ZWQ4NTU2MGNhY2E4NWRiYzMzY2EzNDM2ZDNlOTVlOTk0NGYzYWVkY2E4ZmE2MjZkNTk5ZWJiYjhhNjkifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L2000-L2100",
+          "version": "repo-lines-v1:sha256:9e89c5c932ed878475bb807dd4ac57e4c2664bd9210746b8de665f5dedddc2f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2NzJmNmY0MjI1NzdmNzdjZDBkN2ViZTYzOWRhYWU5MjYzMzdiNmRiMTdlNjYwMDcwZTQ3OTI0MjFmOTFmODU2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4YzRlNTk3MGYwMzYxYjc3OTI2YzdlMjc5NTgxMmQxYzY2ZWE1YjVmZTk4MmFmYzBiNTAzMjUzNTJhOWFiOTkwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0ZTIyODU0MWZlM2U5NDNjN2FkNWIyOGQzOWY5ZWM2ZDU5ODA3MTE3ZTlhMzk2YzMyYzI5MWEwYTc4MjhlY2NhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyNmJiODZiYzhkOTQ3ZDNhODJiOTUxOGMyMTIzNmZkYjdiYTYzNDdhZmU3OGU1OTBhNTEyNTc4OWVhYmVhZGMyIn0"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L2100-L2200",
+          "version": "repo-lines-v1:sha256:fb35433da6d1ce40f30b8186e2d3a356cc995d59e66a627b167ac7e3ae0832cf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4YzRlNTk3MGYwMzYxYjc3OTI2YzdlMjc5NTgxMmQxYzY2ZWE1YjVmZTk4MmFmYzBiNTAzMjUzNTJhOWFiOTkwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NWNjNjJmN2VlYWZkMGYxZjk2ZWRjNDQ3NWFhZWIwN2JkMmI2OGViYmFhYTIwYmYyNTY1Nzk4MjY2YjI0Zjg0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5N2JmZTVjNzY1MzdmYTM3Mjg2ZDA1ZGViMTY2Y2MyNTA5M2NhNDMyZjNkNTU1MzBiNjQxZmQyOGRlY2E4NTk0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlNWE1NDYzNTc2ZDMwYmIzYjI5ZTIzMDQwOGU2ODBmNzQwNTUxNDUzZThhZmVjMDRkYTA4YjQyNjUyODg5ZjBhIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_ef16b426a8af40bdabcef54c41abe1f6",
+      "statement": "macOS mount uses SCM_RIGHTS fd passing via socketpair with _FUSE_CALL_BY_LIB=1, _FUSE_COMMFD, _FUSE_COMMVERS=2, and _FUSE_DAEMON_PATH environment variables for macFUSE/osxfuse mount helpers.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L2300-L2400",
+          "version": "repo-lines-v1:sha256:22fb3de8ca23abb70a8173a6c3840fec7f04f3c1fc3dfeb8d2c70d1e3f138b51:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3NDgyZDAzZjBjYzYyNTczNTY3YzEyYTZlYWNjOTk4YjFiYzVlZTc5NDhlYjU5YWE3Y2M1YThiZjQwOGJjMjU2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmODhhN2IyYmRmMGFhOTFjMGNmMzhiMzRmYjQ0NTY5ZTQwNmY0NDgyYzAzNDFkYWFkZGFlNTM0OTI0MGYwYWZmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NjZkNDczMTkwYjY2ODI1YWZjMTAyMzhmY2E3ZjkyM2NkYzZlMjc5MGIxYjYwMjExZWZmNmUwYjA0MWUyZDY5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2MGU2N2I5MGI4OWM3YzhmMGI2ZDZmZmRiMzk1OTQ0NWJmNzg2NjliMmMzMGMzODU4NWI5ZjJlZTgxMGZhY2NiIn0"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L4100-L4200",
+          "version": "repo-lines-v1:sha256:5bac6b5cbefc0f76916b7cf9e269fd57f25665cb0c0e179d15c65d20b9feef53:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzZThiZTUxYjA0ZGJkNDQzMGQwNjcxYzdiZjRiNDM1ZTZlOWY0NTVhZjFmNGE5NjE5NzZhODM3NDZkMjI0YmNiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MjJmMzkwNzQzZWI3MTk5NTAzOGNkOWM2YWU5NmE0NjJhYzU2MzQwYWFhYTk4NjA0MjZkNDAxYTQxNjUwNWFkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzZTE0Y2ZiMzIzZTNmYThmZGUwMjYzMDRiZTFiODE4MDgzNWU1YzJiYzI5NmIyZDYxYmE4ZDZkYjMwMTFjMWUwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4OGE5ZmViMzBiZDg2MjQ1NTAyMTg2NzY3MmI2Y2UzODMzOTcyYjYwZTVmMTc3YTJhOTA3ZDZmMTcxMmI0ODIzIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_e8d1b0717f69488c968ceae50b1516c7",
+      "statement": "Linux mount uses fusermount3/fusermount with _FUSE_COMMFD SCM_RIGHTS handshake, falling back to direct /dev/fuse + mount(2) for privileged containers.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L4190-L4250",
+          "version": "repo-lines-v1:sha256:aa94b3ebd160fe58ad16caa1bc2e680bbb8014c6ad6cdecd80702e5e892bd8d5:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MDU2YTE4YzMwZDExZjMzYWMxM2ViYTk2YmUxZWU5YWViMWEyOTQ0ZTQ3MzEwZWU4MzAzMmVkNDAxMmRhMzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmMWRkYmI1MDczZjQ5YTkxMGNlNmY4ZmJlNGZlM2I0NmNlY2VkZTcwN2M1MWM0ZDAyNjRhZGZiZWI3YjQ3YWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFlZmI1NmY3NWQ4ZDQ0ZjdiM2VlZGZhY2EzOWY5OWNlMWQ0N2M0ODIyYWJjNDQyNjJhODkxNzE1MjYwOWU3NjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxNjUzODY5MTc4Yjk3MDQzZWZjNDFhNjBkODg4NDNmNjNhNTNlNTM0NjQzYmVhMmI2N2Y1YTYyZTFiZWY3NzkifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L4250-L4330",
+          "version": "repo-lines-v1:sha256:dbba265ac46c47161ca4b89f0f1a528fdac755ef660059970d8cd7d4e20ceafd:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmMWRkYmI1MDczZjQ5YTkxMGNlNmY4ZmJlNGZlM2I0NmNlY2VkZTcwN2M1MWM0ZDAyNjRhZGZiZWI3YjQ3YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZmZjU3YTVmYWZlYzNlNTdhNDhlNDI2YTQ3Yjc0OTAxOGQzNDEwODAyZjc2NzdkMzJhMmQ2NmEyZWZlNzIzMWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM3OTRkMDJhODEyMTk0NGQxNzZkMjY1ZTliYjljYzU5ZjZhYjg5MGJjYWRmOGFlZmRlYmRiYmI0ZjJlYTg0NDQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ce5be27f36b24bd0843247f981a3b5f5",
+      "statement": "UTF-8 NFD to NFC normalization is implemented in pure Rust with zero-allocation fast path for ASCII/already-composed strings, supporting Hangul Jamo algorithmic composition, Japanese Kana dakuten/handakuten, and Latin/Cyrillic combining diacritics.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L500-L700",
+          "version": "repo-lines-v1:sha256:d25ef67e7aac902755db6a99bc0e22a6b90d5f947a25361a31e0257d08f09d5d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0YWYzMzVlZGE0OTBmMjgzNTg5ODhjNzIxMTc4NzlkNTJiNmNiNTA2ODJmYTNhM2IyMDk0ZGQ4YzQzMWY2MTUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1ZjYzZDQ5ZmEzMDA2ZTZmNTg1Njk4ODUzY2M1YjNhNDNkYmI2N2IxNTBkZGU3YjQ5MWQ3MjQ1OTQ5NmI2Njk2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyNzI0ODI4NzQ0YmFkMmYwNTkyNGMwYWE3ZDc4YTQyZTFjZGI5YzlhODIxMGM0YTY1MTc3ODg3YTZiNjU1ZjVlIn0"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L700-L900",
+          "version": "repo-lines-v1:sha256:a8df614faf3ff243d7bfcdf918decabd8ad1df6a577400f8758bdaea92ad6c46:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3MjlhNDU4YTIzZTU1MjFhNTQzMTlkNTRmNzNhYjQxMzVlZDlkODZhMjlhZDUyMzI2Zjg3YjNhZWI1ZTBlMzgxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5MGExNmU5ZDU2NDk1YTYwMzkzYjA1NWM2Yjk0YTY4YmE1OGVjMzMzMGZkNzNiODIyOGY0MGUyOGNiODE2ZDZlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_dee351386d4c42efacb2d9ce76cd1a3a",
+      "statement": "macOS Finder metadata storm protection rejects .DS_Store, ._*, .Spotlight-V100, .Trashes, .fseventsd, .TemporaryItems with -ENOENT at lookup, and returns -ENOTSUP (not -ENOSYS/-EINVAL) for all xattr operations to stop Finder retry loops.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L3220-L3260",
+          "version": "repo-lines-v1:sha256:2eb6b369aaaad200196bad512eb044fbdeaf206ef3127947f6ea52433ec48d0c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiNjVlZDRmZTE5NjA0MzFmOTc5OTgwMzNkMDNjZTc5MTNiMWYzZTMzN2QzOTQ0ODU4ZThiMDc3MzliOGNjNTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlZjg1NjgwN2JmZTgyNDgxOWEzMmE5ZjFlZmU2ODRlMWM2N2IxNTU5ODFlM2ZmZWE2NDYyOWJhMzI1ZTcwMTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlNGNlZWEwNmY4ZDZhZjNjMjg1NzIyODgzYjQ4NDg0MzNhZTg0MGJlYzE3MDAxMjMyMWZjOTQ4Nzg0Y2UzOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljODk3ZDEwMzU4ODMxZjhjZTE0ZmE2NTc3ZjllOTgwNWI4YmM0NDk0MmY2Y2IyNTYwNTk2YjQxZDkyMDE3MzQifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L500-L550",
+          "version": "repo-lines-v1:sha256:8ece49b573bb674298619cc95bfdcb3ad91acb587ef90da9daaad13544cd9ad1:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhZjMzNWVkYTQ5MGYyODM1ODk4OGM3MjExNzg3OWQ1MmI2Y2I1MDY4MmZhM2EzYjIwOTRkZDhjNDMxZjYxNTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwZDc0NDFkM2ZiYjU2NjEzMGQwMWU5NDI0YzY3YmUzNzQ3YTdjMDlkYjk4YTJjZmQ2YTY2NGU2NzcyZjUyMWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVmNjNkNDlmYTMwMDZlNmY1ODU2OTg4NTNjYzViM2E0M2RiYjY3YjE1MGRkZTdiNDkxZDcyNDU5NDk2YjY2OTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwYjhhMzc4Zjk3YmE0MjBiNDJlNGU3N2IyMDQxMjc2MzgwNmQyN2E4M2M3ZWMyOGZhMjM1Yjc3OGEyYzk2YjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fdf0a5de24004f959a6b1c9ca8b063c8",
+      "statement": "The frame dispatcher (dispatch_frame_for_platform) validates every header and payload boundary, never panics on truncated or malformed input, and returns empty Vec for one-way notifications (FORGET, BATCH_FORGET).",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L3300-L3400",
+          "version": "repo-lines-v1:sha256:c601657b38fb71f7742b9b7d5c563c2ba62f4ded36fd7402ea9a4823c521aecc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhZDBkMGE3ZGZjZTkzNjM0ZTkzZDg1ZGQ4YTg0ZDA1NTY1NDllMjYxZTllNGEwOTEzNGY1M2E5NjE2NmVkYzQ0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjOTVlYjg0MWFjYzk5MWE1YTAwZGVhYWVkNTE3N2VhZGUzZGI3ODc4OGEyMjc1OTdjYmZkOTNkNjI3ODU3Yjk5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkY2VhZTlmM2FhNzFmNTkwZjdlMWExOTM0Y2NkMWVlZmYzNjkzZjI2MTYzOTM1M2I1Mzg0MzkxYjhkYTFjYzdhIn0"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L3400-L3500",
+          "version": "repo-lines-v1:sha256:1c382a780b210c3c8ff3e86aa277ce656f2e2e09be424f879dd75bd61e24f474:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZDBkMGE3ZGZjZTkzNjM0ZTkzZDg1ZGQ4YTg0ZDA1NTY1NDllMjYxZTllNGEwOTEzNGY1M2E5NjE2NmVkYzQ0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkZjE4NTdhYTg2OTkyNjVlNjE0NDAxZDQ1MjhiNmU4Mzg5MTVhODA1NTcxZWFlZDY4NTUxYzQzMmMxNzNhMzQ2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1NWI3ODE0OTFkZmNlMDBiMzRiNGM3Y2E2YjUxZGJjNWJjMjgxMmM0YjFkZDAxNDhiOWJjMWE3ZGY5MDllZmVkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkZDQwMGNhMTgwZWIxNzhmM2ZjNzIyNzNiYmE1NTA5MjAyYjkyNGM3OTg5ZTM3MmVjZmRkNzNmNGFiNDk4YTc3In0"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L3500-L3700",
+          "version": "repo-lines-v1:sha256:b1d00d1aad9ea0b70692c83c71e9e6928d64d033bc3ee94d7d77441c97ee77e3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkZjE4NTdhYTg2OTkyNjVlNjE0NDAxZDQ1MjhiNmU4Mzg5MTVhODA1NTcxZWFlZDY4NTUxYzQzMmMxNzNhMzQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1OGIxODdjNDQ3OTk3YTdiODYzNGIzYTI3MWNiMTgyNmRhOTJiMDNlMTJjYTQ5MTgxMjhlMDg1NDYxMTUwOTk4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhMzVhODQ5NTM5MjE0NTBiZTM1ZThiYWU0YjZmMGYxMDNlOTgyNTQ3MjZhYmI5MGYxOGVmMzYyYjYxYWFiNDE5In0"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-22T10:29:12.696Z"
+  }
+}

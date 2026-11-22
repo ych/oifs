@@ -1,26 +1,28 @@
 ---
 type: "Reference"
-title: "Superblock and layout"
-openwiki_generated: true
+title: "Superblock and On-Disk Layout"
+description: "Comprehensive documentation of the OIFS superblock structure, format versioning (v1/v2/v3), block layout geometry, journal region placement, encryption fields, and migration cursor mechanics for in-place format upgrades."
+tags: ["superblock", "on-disk-format", "layout", "journal", "encryption", "migration", "fsck"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-22T10:29:12.696Z
 sources:
+  - id: openwiki-source-115024023ade9f243c6b4ec3
+    resource: repo://src/disk/maintenance.rs
   - id: openwiki-source-88657ea41344918d5e874716
     resource: repo://src/encryption.rs
   - id: openwiki-source-813113339610c0170804687f
     resource: repo://src/journal.rs
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
 ---
-
 
 ## Responsibility and ownership
 
 The superblock subsystem ([`src/superblock.rs`](../../src/superblock.rs)) defines the foundational on-disk geometry and physical layout of an OIFS image.
 
-The [`SuperBlock`](../../src/superblock.rs#L21-L72) resides at **Block 0** (byte offset `0..4096`) of the container image. It acts as the root configuration header, storing filesystem identification, block metrics, physical offsets to metadata regions (bitmaps and inode tables), encryption parameters, and root directory references.
+The [`SuperBlock`](../../src/superblock.rs#L21-L72) resides at **Block 0** (byte offset `0..4096`) of the container image. It acts as the root configuration header, storing filesystem identification, block metrics, physical offsets to metadata regions (bitmaps and inode tables), encryption parameters, root directory references, and format versioning state.
 
 ## The SuperBlock structure
 
@@ -77,7 +79,7 @@ The filesystem is identified by a 4-byte magic number ([`SuperBlock::MAGIC = 0x4
 | 0 (from zero padding) | — | Pre-versioning image; treated as legacy |
 | 1 | `FORMAT_VERSION_LEGACY` | Legacy `bincode` inode encoding, single-block bitmaps |
 | 2 | `FORMAT_VERSION_FIXED_INODE` | Fixed 256-byte inode records, single-block bitmaps |
-| 3 | `FORMAT_VERSION_V3_LAYOUT` | **v3 layout** — multi-block bitmaps sized to image, 256-byte inode records |
+| 3 | `FORMAT_VERSION_V3_LAYOUT` | **v3 layout** — multi-block bitmaps sized to image, 256-byte inode records, optional journal region |
 
 The `format_version` field is **appended last** so that pre-versioning images (which lack this field entirely) decode with `format_version == 0` from zero padding, which correctly classifies them as legacy. Adding the field in the middle would shift every subsequent field and silently corrupt every existing image.
 
@@ -95,199 +97,203 @@ pub fn inode_record_version_for(&self, inode_id: u64) -> u32 {
 }
 ```
 
+This per-inode dispatch means a mixed-format image is **safe and resumable**, not corrupt.
+
 ## Encryption schemes
 
-Two encryption schemes are supported, identified by `encryption_version`:
+Two encryption schemes are supported, identified by `encryption_version` ([`src/encryption.rs`](../../src/encryption.rs#L335-L342)):
 
-| Version | Constant | Description |
-|---------|----------|-------------|
-| 1 | `ENCRYPTION_SCHEME_LEGACY` | XChaCha20-Poly1305 **without associated data**. Every file shares the same master key; nothing but the nonce distinguishes ciphertexts. An attacker with write access could swap or roll back chunks undetected. |
-| 2 | `ENCRYPTION_SCHEME_CONTEXT_BOUND` | XChaCha20-Poly1305 **with associated data (AAD)** binding ciphertext to file/chunk/filename context. AAD includes a domain separator (`"OIFS-AAD-v1"`), a kind byte (`FILE=0x01`, `CHUNK=0x02`, `FILENAME=0x03`), the inode ID, and for chunks the chunk index and flags. A chunk cannot be moved to another file, reordered, or rolled back without authentication failure. |
+| Value | Constant | Scheme |
+|-------|----------|--------|
+| 0 | — | Unencrypted (default) |
+| 1 | `ENCRYPTION_SCHEME_LEGACY` | XChaCha20-Poly1305 **without** associated data |
+| 2 | `ENCRYPTION_SCHEME_CONTEXT_BOUND` | XChaCha20-Poly1305 **with** associated data (AAD) binding ciphertext to inode ID, chunk index, and flags |
 
-When `encrypted == false`, `encryption_version` must be `0`. When `encrypted == true`, `encryption_version` must be `1` or `2`. Unknown versions are rejected by validation.
+When `encrypted == true`, `encryption_version` must be either 1 or 2. When `encrypted == false`, `encryption_version` must be 0. The 16-byte `encryption_salt` is used by Argon2id to derive the master key from the user password.
 
-## On-disk layout variants
+**Context-bound encryption (v2)** prevents whole-file or chunk ciphertexts from being swapped, reordered, or rolled back without the AEAD authentication failing. The associated data (AAD) includes a domain separator (`"OIFS-AAD-v1"`), a kind byte (`0x01` file / `0x02` chunk / `0x03` filename), the target inode ID, and for chunks the chunk index and flags.
 
-OIFS supports three layout families distinguished by `format_version` and geometry:
+## Block layout geometry
 
-### 1. Legacy layout (`format_version < 3`, non-journaled)
+The physical layout varies by format version and journaling mode.
 
-Fixed single-block bitmaps, 128-byte logical inode sizing (historical):
+### Legacy layout (v1/v2, non-journaled)
 
-```
-┌──────────────┬──────────────┬──────────────┬────────────────────────────┬────────────────────────────┐
-│ Block 0      │ Block 1      │ Block 2      │ Blocks 3 .. 1026           │ Blocks 1027 .. N           │
-│ SuperBlock   │ Inode Bitmap │ Data Bitmap  │ Inode Table (1024 blocks)  │ Data Blocks                │
-│ (4 KB)       │ (4 KB)       │ (4 KB)       │ (32,768 slots @ 128 B)     │ (File & Directory Content) │
-└──────────────┴──────────────┴──────────────┴────────────────────────────┴────────────────────────────┘
-```
-
-### 2. v3 layout (`format_version == 3`, non-journaled)
-
-Multi-block bitmaps sized to image capacity, 256-byte inode records (16 inodes/block). The inode table keeps the historical 1024-block maximum, yielding 16,384 inodes. Bitmaps grow as needed:
-
-```
-┌──────────────┬──────────────┬──────────────┬──────────────┬────────────────────────────┬────────────────────────────┐
-│ Block 0      │ Block 1..    │ Block ..     │ Block ..     │ Blocks ..                  │ Blocks ..                  │
-│ SuperBlock   │ Inode Bitmap │ Data Bitmap  │ Inode Table  │ Data Blocks                │                            │
-│ (4 KB)       │ (variable)   │ (variable)   │ (≤1024 blks) │ (File & Directory Content) │                            │
-└──────────────┴──────────────┴──────────────┴──────────────┴────────────────────────────┴────────────────────────────┘
-          ↑
-     inode_bitmap_block=1
+```text
+[Block 0: SuperBlock]
+[Block 1: Inode Bitmap (1 block = 32,768 bits)]
+[Block 2: Data Bitmap (1 block = 32,768 bits)]
+[Block 3..3+T-1: Inode Table (T blocks, max 1024 = 32,768 inodes @ 128 bytes)]
+[Block 3+T..N-1: Data Blocks]
 ```
 
-The v3 layout computes bitmap spans in a single pass (no iterative fixed-point to keep CBMC tractable):
+- Fixed single-block bitmaps cap the data area at **32,768 blocks (128 MiB)** and inodes at **32,768**.
+- Inode table maximum is 1024 blocks for backward compatibility.
+
+### Journaled layout (v1/v2 with journal)
+
+```text
+[Block 0: SuperBlock]
+[Block 1: Inode Bitmap]
+[Block 2: Data Bitmap]
+[Block 3: Journal Header (magic "JRNL")]
+[Block 4..35: Journal Ring (32 blocks = 128 KiB)]
+[Block 36..36+T-1: Inode Table (T blocks)]
+[Block 36+T..N-1: Data Blocks]
+```
+
+- Journal region reserves **33 blocks** (1 header + 32 ring) = **132 KiB**.
+- Detected by [`is_journaled_layout`](../../src/journal.rs#L1619): `inode_table_block >= 36` (`JOURNAL_INODE_TABLE_BLOCK`).
+
+### v3 layout (format_version = 3)
+
+The v3 layout introduces **multi-block bitmaps** sized to the image capacity, removing the 128 MiB / 32K inode caps.
+
+```text
+[Block 0: SuperBlock]
+[Block 1..1+I-1: Inode Bitmap (I blocks = ceil(inode_count / 32768))]
+[Block 1+I..1+I+D-1: Data Bitmap (D blocks = ceil(data_blocks / 32768))]
+[Block 1+I+D..1+I+D+J-1: Journal Region (J = 33 if journaled, else 0)]
+[Block 1+I+D+J..1+I+D+J+T-1: Inode Table (T blocks, max 1024 = 16,384 inodes @ 256 bytes)]
+[Block 1+I+D+J+T..N-1: Data Blocks]
+```
+
+Key v3 constants ([`src/superblock.rs`](../../src/superblock.rs#L348-L355)):
 
 ```rust
-let metadata_blocks = 1 + 1 + 1 + journal_blocks; // superblock + inode_bmp + data_bmp + journal
-let inode_table_blocks = if total_blocks > metadata_blocks + 1024 {
-    1024
-} else {
-    (total_blocks - metadata_blocks - 1) / 4
-};
-let inode_count = inode_table_blocks * 16; // 256-byte slots
-let inode_bitmap_blocks = inode_count.div_ceil(32768).max(1);
-let data_blocks = total_blocks - 1 - inode_bitmap_blocks - 1 - journal_blocks - inode_table_blocks;
-let data_bitmap_blocks = data_blocks.div_ceil(32768).max(1);
+pub const FORMAT_VERSION_V3_LAYOUT: u32 = 3;
+pub const BITMAP_BLOCK_BITS: u64 = 4096 * 8;  // 32,768 bits per bitmap block
 ```
 
-### 3. Journaled layout (`format_version == 3`, journaled)
+- **Inode bitmap blocks** = `ceil(inode_count / 32768)`, minimum 1
+- **Data bitmap blocks** = `ceil(data_blocks / 32768)`, minimum 1
+- Inode table: 1024 blocks max → 16,384 inodes (256-byte records)
+- The historical table size is preserved; only the *reported* inode count changes to match actual capacity
+- Bitmap spans are **implicit** in the recorded block offsets; `validate()` verifies they fit exactly
 
-Identical to v3 but reserves **33 blocks** (1 header + 32 ring) for the metadata WAL between the data bitmap and inode table. The journal header lives at `data_bitmap_block + data_bitmap_blocks`, and the inode table starts at `journal_header_block + 33`. Detected via `inode_table_block >= 36` (i.e., `3 + JOURNAL_RESERVED_BLOCKS`).
+#### Journal detection in v3
 
-```
-┌──────────────┬──────────────┬──────────────┬──────────────┬──────────────────────┬──────────────────────┬──────────────────────┐
-│ Block 0      │ Block 1..    │ Block ..     │ Block ..     │ Blocks ..            │ Blocks ..            │ Blocks ..            │
-│ SuperBlock   │ Inode Bitmap │ Data Bitmap  │ Journal Hdr  │ Journal Ring (32 blks)│ Inode Table         │ Data Blocks          │
-│ (4 KB)       │ (variable)   │ (variable)   │ (1 block)    │ (32 blocks = 128 KB) │ (≤1024 blocks)      │ (File & Directory)   │
-└──────────────┴──────────────┴──────────────┴──────────────┴──────────────────────┴──────────────────────┴──────────────────────┘
-```
-
-The journaled layout is **100% backward compatible**: the `SuperBlock` struct is unchanged; a journaled image is distinguished purely by its geometry (`inode_table_block >= 36`) plus the magic word `0x4A52_4E4C` (`"JRNL"`) inside the journal header block. Non-journaled images behave exactly as before.
-
-### Mermaid block diagram: layout comparison
-
-```mermaid
-flowchart TD
-    subgraph LEGACY["Legacy / v2 Layout (format_version < 3)"]
-        L0["Block 0: SuperBlock"]
-        L1["Block 1: Inode Bitmap (1 block)"]
-        L2["Block 2: Data Bitmap (1 block)"]
-        L3["Blocks 3-1026: Inode Table (1024 blocks, 32,768 inodes @ 128 B)"]
-        L4["Blocks 1027+: Data Area"]
-        L0 --> L1 --> L2 --> L3 --> L4
-    end
-
-    subgraph V3["v3 Layout (format_version = 3, non-journaled)"]
-        V0["Block 0: SuperBlock"]
-        V1["Block 1+: Inode Bitmap (variable, ≥1 block)"]
-        V2["Block ...: Data Bitmap (variable, ≥1 block)"]
-        V3["Block ...: Inode Table (≤1024 blocks, 16,384 inodes @ 256 B)"]
-        V4["Block ...: Data Area"]
-        V0 --> V1 --> V2 --> V3 --> V4
-    end
-
-    subgraph JOURNALED["Journaled v3 Layout (format_version = 3, journaled)"]
-        J0["Block 0: SuperBlock"]
-        J1["Block 1+: Inode Bitmap (variable)"]
-        J2["Block ...: Data Bitmap (variable)"]
-        J3["Block ...: Journal Header (1 block, magic=JRNL)"]
-        J4["Blocks ...: Journal Ring (32 blocks = 128 KB)"]
-        J5["Block ...: Inode Table (≤1024 blocks)"]
-        J6["Block ...: Data Area"]
-        J0 --> J1 --> J2 --> J3 --> J4 --> J5 --> J6
-    end
-
-    classDef region fill:#f9f9f9,stroke:#333,stroke-width:1px;
-    class LEGACY,V3,JOURNALED region;
-```
-
-**Caption:** Physical block layout comparison. Legacy uses fixed 1-block bitmaps and 128-byte logical inodes. v3 introduces variable-size bitmaps and 256-byte fixed inode records. Journaled inserts a 33-block WAL region (1 header + 32 ring) between the data bitmap and inode table.
-
-## Sizing rules and layout calculation
-
-Layout calculation is handled deterministically in [`SuperBlock::new_v3`](../../src/superblock.rs#L152-L204) (v3) and [`SuperBlock::new_with_layout`](../../src/superblock.rs#L206-L250) (legacy entry point used by journaled builder).
-
-### Minimum size constraint
-
-A valid OIFS filesystem requires at least **5 blocks**: Block 0 (superblock), Block 1 (inode bitmap), Block 2 (data bitmap), 1 inode table block, and 1 data block. Journaled images require at least `3 + JOURNAL_RESERVED_BLOCKS + 2 = 37` blocks for the same minimum metadata plus the journal region.
-
-### Inode table capacity
-
-- **Legacy**: 128 bytes/inode → 32 inodes/block → 1024 blocks = 32,768 inodes
-- **v3**: 256 bytes/inode → 16 inodes/block → 1024 blocks = 16,384 inodes
-
-The `inode_count` field reports the logical count; `inode_table_capacity()` returns the physical slots that fit between `inode_table_block` and `data_block_start`. `usable_inode_count()` bounds by the smaller of `inode_count`, table capacity, and `MAX_TRACKED_INODES (32,768)`.
-
-### Data area sizing
-
-`data_block_start = inode_table_block + inode_table_blocks`. The data bitmap spans enough blocks to cover `data_blocks = block_count - data_block_start`.
-
-## SuperBlock validation logic
-
-[`SuperBlock::validate`](../../src/superblock.rs#L430-L500) performs exhaustive bounds, geometry, and alignment checks against the mapped image size. It is called during `DiskManager::open` before any metadata is trusted.
-
-### Validation checklist
-
-| Check | Error message |
-|-------|---------------|
-| Magic number equals `0x4F494653` | "Invalid filesystem magic number" |
-| Block size equals 4096 | "Invalid block size (must be 4096)" |
-| Total blocks ≥ 5 | "Total block count too small (minimum 5 blocks)" |
-| `block_count * 4096` fits in mapped file | "Filesystem block count exceeds mapped file image size" |
-| `inode_bitmap_block == 1` | "Invalid inode bitmap block (must be block 1)" |
-| `data_bitmap_block == 2` | "Invalid data bitmap block (must be block 2)" |
-| `inode_table_block > data_bitmap_block` | "Inode table block overlaps bitmaps or superblock" |
-| `inode_table_block ≤ data_block_start` | "Inode table block start exceeds data block start" |
-| `data_block_start ≤ block_count` | "Data block start exceeds total block count" |
-| `data_block_start < block_count` | "No data blocks available in filesystem" |
-| `inode_count > 0` | "Inode count cannot be zero" |
-| `inode_count ≤ 32,768` | "Inode count exceeds the capacity of the inode bitmap" |
-| Inode table fits before data area (`table_end ≤ data_block_start`) | "Inode table does not fit before the data area" |
-| `root_inode < usable_inode_count()` | "Root inode ID exceeds the usable inode count" |
-| `format_version ≤ 3` | "Unsupported filesystem format version" |
-| `migration_cursor ≤ usable_inode_count()` | "Migration cursor exceeds usable inode count" |
-| If encrypted: `encryption_version ∈ {1,2}` | "Unsupported encryption scheme version" |
-| If not encrypted: `encryption_version == 0` | "Unencrypted filesystem has non-zero encryption version" |
-| **v3-specific**: `data_bitmap_block == inode_bitmap_block + inode_bitmap_blocks()` | "Data bitmap does not follow the inode bitmap" |
-| **v3-specific**: `inode_table_block == data_bitmap_block + data_bitmap_blocks() + journal_blocks` | "Inode table does not follow the data bitmap" |
-
-The v3-specific checks derive `inode_bitmap_blocks()` and `data_bitmap_blocks()` from the recorded counts and verify the implicit layout matches the explicit offsets. This guarantees that a corrupted or hand-crafted superblock cannot claim a v3 layout while actually using legacy geometry.
-
-## Journal layout detection
-
-A journaled image is identified by geometry, not by a superblock flag:
+The journal header block moves with the data bitmap span:
 
 ```rust
-pub fn has_journal_layout(&self) -> bool {
+pub fn journal_header_block(&self) -> u64 {
     if self.is_v3_layout() {
-        let without_journal = 1 + self.inode_bitmap_blocks() + self.data_bitmap_blocks();
-        self.inode_table_block == without_journal + JOURNAL_RESERVED_BLOCKS
+        self.data_bitmap_block + self.data_bitmap_blocks()
     } else {
-        crate::journal::is_journaled_layout(self) // legacy: inode_table_block >= 36
+        crate::journal::JOURNAL_HEADER_BLOCK  // fixed 3
     }
 }
 ```
 
-The journal header block is at `data_bitmap_block + data_bitmap_blocks()` for v3, or fixed Block 3 for legacy. The ring comprises 32 blocks (128 KB) following the header.
+Both layouts are distinguished purely by geometry — the `SuperBlock` struct itself is unchanged. A v3 image with `data_bitmap_blocks() == 1` and no journal has identical offsets to a legacy image.
 
-## Formal verification with Kani
+## Migration cursor mechanics
 
-`src/superblock.rs` includes automated mathematical proofs verified with the AWS Kani Rust Verifier ([`kani_proofs` module](../../src/superblock.rs#L600-L680)):
+The `migration_cursor` field ([`src/superblock.rs`](../../src/superblock.rs#L72)) enables **crash-safe in-place format upgrades** from legacy (v1) to fixed inode format (v2/v3).
 
-| Proof | Property verified |
-|-------|-------------------|
-| `proof_superblock_layout_ordering` | Across any filesystem size 5..1,000,000 blocks: magic is correct, regions never overlap, physical ordering preserved, ≥1 data block guaranteed |
-| `proof_v3_layout_keeps_the_legacy_geometry` | `SuperBlock::new` and `new_with_layout(..., 3)` produce identical geometry for non-journaled images; `has_journal_layout` is false |
-| `proof_journaled_layout_non_overlapping` | Journaled layout: journal header at Block 3, ring after it, inode table ≥ Block 36, bitmaps before journal, all regions within image bounds |
-| `proof_journaled_shifts_data_start` | Journaled image of same size has strictly larger `data_block_start` than legacy, same `inode_count` (capacity unchanged, only placement moves) |
-| `proof_superblock_validate_soundness` | Validly initialized superblocks (both standard and journaled) always pass `validate()` |
+### Why a cursor is needed
 
-## Backward compatibility and format stability
+A `bincode` v1 record and a fixed 256-byte v2 record are **not reliably distinguishable by inspection**. The superblock's single `format_version` cannot describe a mixed state. Without the cursor, reading a v1 record with the v2 decoder (or "successfully" with garbage values) would corrupt the mount.
 
-1. **Fixed structural offsets**: In standard non-journaled images (≥ 1028 blocks ≈ 4.1 MB), `inode_table_block` is always 3 and `data_block_start` is always 1027. Legacy tools and images maintain identical offsets.
-2. **Deterministic bincode serialization**: `SuperBlock` uses fixed-width integer fields (`u32`, `u64`, `[u8; 16]`). Serialization length is invariant across runs and compiler releases.
-3. **Appended-only fields**: `format_version` and `migration_cursor` are appended at the end. Pre-versioning images decode with zero padding → `format_version == 0` → legacy classification. Adding fields in the middle would shift offsets and corrupt every existing image.
-4. **Decoupled indirect indexing**: Large file support up to 513 GB (via single, double, and triple indirect blocks) was introduced without modifying `SuperBlock` or on-disk geometry; it utilized previously reserved block pointer fields in the `Inode` struct.
-5. **Journaling is opt-in geometry**: The `SuperBlock` struct is unchanged. A journaled image is distinguished by `inode_table_block ≥ 36` plus the `JRNL` magic in the journal header. Non-journaled images behave exactly as before.
-6. **Migration cursor**: During in-place format migration (v1 → v2 inode encoding), `migration_cursor` tracks progress. Slots below the cursor use the new format; slots at or above use the old format. A crash leaves a cleanly readable mixed image. `format_version` remains legacy until migration completes, then flips to current.
+### How it works
+
+- `migration_cursor == 0` → no migration in progress
+- During migration: `format_version` still reads `1` (legacy), but inode IDs `< migration_cursor` hold v2 records
+- Readers use [`inode_record_version_for(inode_id)`](../../src/superblock.rs#L114) to select the correct decoder per slot
+- Cursor is persisted every 256 inodes (see [`DiskManager::migrate`](../../src/disk/maintenance.rs#L72-L98))
+- On completion: `format_version` updated to `2` (`FORMAT_VERSION_FIXED_INODE`), `migration_cursor` cleared to `0`
+
+### Migration algorithm
+
+1. **Checkpoint journal first** — a pending `WriteInode` op in old format would corrupt rewritten slots on replay
+2. Snapshot inode bitmap to know which slots are allocated
+3. For each allocated inode `cursor..inode_count`:
+   - Decode with outgoing (v1) format
+   - Encode with current (v2) format
+   - Write back to same slot
+4. Periodically persist `migration_cursor` + superblock + flush
+5. On finish: update `format_version`, clear cursor, flush, clear caches
+
+The process is **idempotent** — safe to call on already-current images and safe to resume after interruption.
+
+### Validation
+
+`SuperBlock::validate()` enforces:
+- `migration_cursor <= usable_inode_count()`
+- If `format_version >= 3` (v3 layout), bitmap spans must match recorded block offsets exactly
+- Journal region placement must match `has_journal_layout()`
+
+## Journal region
+
+The metadata WAL (Write-Ahead Log) uses a fixed 33-block region (1 header + 32 ring blocks = 132 KiB).
+
+### Journal header (Block 3 in legacy, variable in v3)
+
+40-byte persistent state ([`JournalState`](../../src/journal.rs#L220-L247)):
+- `head` / `tail`: ring cursor offsets
+- `tx_seq`: monotonically increasing transaction sequence
+- `cleanly_unmounted`: clean shutdown flag
+- Magic `"JRNL"` (`0x4A524E4C`), version `1`, ring blocks `32`
+
+### Ring buffer
+
+- Circular buffer of checksummed frames
+- Each frame: magic `"WALT"`, CRC32C, tx_seq, payload_len, payload, commit marker `0xDEADBEEF`
+- CRC32C (Castagnoli) detects any torn write
+- Operations are **absolute post-image assignments** (idempotent redo)
+
+### Journal layout constants
+
+```rust
+JOURNAL_HEADER_BLOCK: u64 = 3;
+JOURNAL_RING_BLOCKS: u64 = 32;
+JOURNAL_RESERVED_BLOCKS: u64 = 33;
+JOURNAL_INODE_TABLE_BLOCK: u64 = 36;
+```
+
+### Journal detection
+
+```rust
+pub fn is_journaled_layout(sb: &SuperBlock) -> bool {
+    sb.inode_table_block >= JOURNAL_INODE_TABLE_BLOCK
+}
+```
+
+In v3, the journal region sits **between the data bitmap and the inode table**, so the inode table block is `data_bitmap_block + data_bitmap_blocks() + JOURNAL_RESERVED_BLOCKS`. The superblock's `has_journal_layout()` checks both legacy and v3 geometries.
+
+## On-disk format validation
+
+`SuperBlock::validate(mmap_len)` ([`src/superblock.rs`](../../src/superblock.rs#L430-L500)) enforces:
+
+- Magic number matches
+- Block size = 4096
+- Minimum 5 blocks total
+- Block count fits in mapped file
+- Bitmap blocks at fixed positions (1 and 2 in legacy; sequential in v3)
+- Inode table after bitmaps, before data area
+- Data area non-empty
+- Inode count within bitmap capacity (32,768 legacy; `bitmap_blocks * 32768` v3)
+- Usable inodes fit in table (256-byte slots)
+- Root inode within usable range
+- Format version ≤ 3
+- Migration cursor within usable range
+- Encryption version consistent with `encrypted` flag
+- v3 layout: bitmap spans and journal placement match recorded offsets exactly
+
+## Summary of key invariants
+
+| Invariant | Enforced by |
+|-----------|-------------|
+| Superblock at block 0 | `DiskManager::open` |
+| Magic = `0x4F494653` | `validate()` |
+| Block size = 4096 | `validate()` / `BLOCK_SIZE` const |
+| `inode_bitmap_block = 1` (legacy) | `validate()` |
+| `data_bitmap_block = 2` (legacy) | `validate()` |
+| Inode table after bitmaps | `validate()` |
+| Data area non-empty | `validate()` |
+| Inode count ≤ bitmap capacity | `validate()` / `usable_inode_count()` |
+| Usable inodes fit in table | `validate()` / `inode_table_capacity()` |
+| Format version monotonic (appended last) | Source code structure |
+| Migration cursor ≤ usable inodes | `validate()` |
+| Journal region non-overlapping | `is_journaled_layout()` / `validate()` |
+| v3 bitmap spans match offsets | `validate()` |

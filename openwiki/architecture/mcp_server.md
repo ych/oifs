@@ -3,18 +3,18 @@ type: architecture
 title: MCP Server Integration
 description: How the oifs_mcp binary exposes the OIFS storage engine as Model Context Protocol (MCP) tools over stdio, providing AI agents with an isolated, single-file virtual filesystem for persistent memory.
 tags: [mcp, rmcp, ai-agents, cursor, claude-desktop, sandbox, stdio, json-schema]
+verified:
+  - by: openwiki/0.9.0
+    at: 2026-11-22T10:29:12.696Z
 sources:
   - id: openwiki-source-1d8ff572dc201d9ae2619645
     resource: repo://src/bin/oifs_mcp.rs
-verified:
-  - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
 ---
 
 ## Responsibility and ownership
 
-The [`oifs_mcp`](../../../src/bin/oifs_mcp.rs) binary exposes the OIFS filesystem engine to AI agents (such as Claude Desktop, Cursor, and autonomous agent loops) via the **Model Context Protocol (MCP)**.
+The [`oifs_mcp`](repo://src/bin/oifs_mcp.rs) binary exposes the OIFS filesystem engine to AI agents (such as Claude Desktop, Cursor, and autonomous agent loops) via the **Model Context Protocol (MCP)**.
 
 Rather than giving AI agents unrestricted access to the host operating system filesystem, `oifs_mcp` provisions a self-contained, sandboxed `.img` container. All file operations, directory hierarchies, append logs, and storage metrics are fully confined within this single file image.
 
@@ -282,6 +282,31 @@ The `main` function ([`repo://src/bin/oifs_mcp.rs#L356-L421`](repo://src/bin/oif
 5. Serves over `rmcp::transport::stdio()` and awaits `service.waiting()`.
 
 Logging to stderr: `[oifs-mcp] image=<path> size=<MB> encrypted=<bool>`.
+
+## Feature-gated compilation
+
+The MCP server is gated behind the `mcp` feature flag in `Cargo.toml` ([`repo://Cargo.toml#L42-L45`](repo://Cargo.toml#L42-L45)):
+
+```toml
+# Optional: MCP server stack. Only pulled in when the `mcp` feature is on,
+# which keeps the CLI binary buildable on older rustc toolchains.
+rmcp = { version = "0.16", features = ["server", "macros", "transport-async-rw", "transport-io"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-std"], optional = true }
+schemars = { version = "1", optional = true }
+
+[features]
+default = ["mcp", "io_uring"]
+mcp = ["dep:rmcp", "dep:tokio", "dep:schemars"]
+```
+
+```toml
+[[bin]]
+name = "oifs_mcp"
+path = "src/bin/oifs_mcp.rs"
+required-features = ["mcp"]
+```
+
+This design keeps the core `oifs` CLI binary lightweight and buildable without pulling in the async MCP runtime dependencies.
 
 ## Testing
 

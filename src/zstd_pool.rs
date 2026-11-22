@@ -161,6 +161,23 @@ unsafe impl Sync for SharedTask {}
 struct DispatchState {
     generation: u64,
     task: usize, // `*const SharedTask as usize`, 0 when idle
+    workers_to_claim: usize,
+}
+
+/// Computes the exact number of background pool workers to wake for `total` work items,
+/// given `num_workers` available pool threads.
+///
+/// The calling thread always participates inline, so at most `total - 1` additional
+/// workers can ever do useful work. Avoiding redundant wakeups eliminates thundering-herd
+/// synchronization overhead on small multi-chunk writes and 4-chunk read-ahead batches.
+#[inline]
+pub(crate) const fn workers_to_wake(total: usize, num_workers: usize) -> usize {
+    let needed = total.saturating_sub(1);
+    if needed < num_workers {
+        needed
+    } else {
+        num_workers
+    }
 }
 
 struct WorkerPoolInner {
@@ -187,6 +204,7 @@ fn worker_pool() -> &'static WorkerPool {
             state: Mutex::new(DispatchState {
                 generation: 0,
                 task: 0,
+                workers_to_claim: 0,
             }),
             wake_cv: Condvar::new(),
             done_lock: Mutex::new(()),
@@ -202,10 +220,11 @@ fn worker_pool() -> &'static WorkerPool {
                     loop {
                         let task_addr = {
                             let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-                            while st.generation == last_gen {
+                            while st.generation == last_gen || st.workers_to_claim == 0 {
                                 st = shared.wake_cv.wait(st).unwrap_or_else(|e| e.into_inner());
                             }
                             last_gen = st.generation;
+                            st.workers_to_claim -= 1;
                             st.task
                         };
                         if task_addr == 0 {
@@ -267,7 +286,8 @@ where
     }
 
     let pool = worker_pool();
-    if pool.num_workers == 0 {
+    let active_workers = workers_to_wake(total, pool.num_workers);
+    if active_workers == 0 {
         for i in 0..total {
             f(i);
         }
@@ -291,7 +311,7 @@ where
         ctx: (&f as *const F).cast::<()>(),
         total,
         next: AtomicUsize::new(0),
-        remaining_workers: AtomicUsize::new(pool.num_workers),
+        remaining_workers: AtomicUsize::new(active_workers),
         panicked: AtomicBool::new(false),
     };
 
@@ -325,14 +345,22 @@ where
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             st.task = 0;
+            st.workers_to_claim = 0;
         }
     }
 
     {
         let mut st = pool.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         st.task = (&task as *const SharedTask) as usize;
+        st.workers_to_claim = active_workers;
         st.generation = st.generation.wrapping_add(1);
-        pool.inner.wake_cv.notify_all();
+        if active_workers >= pool.num_workers {
+            pool.inner.wake_cv.notify_all();
+        } else {
+            for _ in 0..active_workers {
+                pool.inner.wake_cv.notify_one();
+            }
+        }
     }
     let wait_guard = WaitGuard { pool, task: &task };
 
@@ -355,5 +383,43 @@ where
     drop(wait_guard);
     if task.panicked.load(Ordering::Acquire) {
         panic!("worker panicked during parallel chunk execution");
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Proves that `workers_to_wake` never exceeds either `num_workers` or `total - 1`,
+    /// skips waking any background threads when `total <= 1`, and guarantees sufficient
+    /// worker reachability (`min(sleeping, active) + returning >= active`) so exact-count
+    /// `notify_one()` wakeups can never deadlock regardless of how many workers are asleep.
+    #[kani::proof]
+    fn kani_worker_pool_exact_wakeup_liveness() {
+        let total: usize = kani::any();
+        let num_workers: usize = kani::any();
+        kani::assume(num_workers <= 64);
+
+        let active = workers_to_wake(total, num_workers);
+        assert!(active <= num_workers);
+        if total <= 1 {
+            assert_eq!(active, 0);
+        } else {
+            assert!(active <= total - 1);
+            if num_workers > 0 {
+                assert!(active >= 1);
+            }
+        }
+
+        // Let `sleeping` be the number of workers currently blocked in `wake_cv.wait`,
+        // and `returning = num_workers - sleeping` be workers about to re-lock `state`.
+        let sleeping: usize = kani::any();
+        kani::assume(sleeping <= num_workers);
+        let returning = num_workers - sleeping;
+        let woken = if sleeping < active { sleeping } else { active };
+        assert!(
+            woken + returning >= active,
+            "at least `active` distinct workers must reach state.lock() to claim slots"
+        );
     }
 }

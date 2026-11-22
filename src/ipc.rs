@@ -269,7 +269,9 @@ pub fn is_tcp_master_alive(addr_str: &str) -> bool {
     };
 
     for addr in addrs {
-        if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+        if let Ok(mut stream) =
+            crate::retry_eintr(|| TcpStream::connect_timeout(&addr, Duration::from_millis(500)))
+        {
             let _ = stream.set_nodelay(true);
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
             let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
@@ -792,7 +794,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
 
             if socket_path.exists() {
                 for attempt in 0..10 {
-                    match UnixStream::connect(&socket_path) {
+                    match crate::retry_eintr(|| UnixStream::connect(&socket_path)) {
                         Ok(stream) => {
                             return Ok(MasterOrClient::Client {
                                 stream: IpcStream::Unix(stream),
@@ -824,7 +826,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                 }
                 Err(e) if is_addr_in_use(&e) => {
                     for attempt in 0..15 {
-                        match UnixStream::connect(&socket_path) {
+                        match crate::retry_eintr(|| UnixStream::connect(&socket_path)) {
                             Ok(stream) => {
                                 return Ok(MasterOrClient::Client {
                                     stream: IpcStream::Unix(stream),
@@ -854,7 +856,8 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                             }))
                         }
                         Err(_) => {
-                            let stream = UnixStream::connect(&socket_path)?;
+                            let stream =
+                                crate::retry_eintr(|| UnixStream::connect(&socket_path))?;
                             Ok(MasterOrClient::Client {
                                 stream: IpcStream::Unix(stream),
                                 target_path: socket_path,
@@ -874,7 +877,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                 if let Ok(content) = fs::read_to_string(&master_path)
                     && let Ok(info) = serde_json::from_str::<MasterInfo>(&content)
                     && is_tcp_master_alive(&info.addr)
-                    && let Ok(stream) = TcpStream::connect(&info.addr)
+                    && let Ok(stream) = crate::retry_eintr(|| TcpStream::connect(&info.addr))
                 {
                     let _ = stream.set_nodelay(true);
                     return Ok(MasterOrClient::Client {
@@ -932,7 +935,8 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                     for attempt in 0..10 {
                         if let Ok(content) = fs::read_to_string(&master_path)
                             && let Ok(info) = serde_json::from_str::<MasterInfo>(&content)
-                            && let Ok(stream) = TcpStream::connect(&info.addr)
+                            && let Ok(stream) =
+                                crate::retry_eintr(|| TcpStream::connect(&info.addr))
                         {
                             let _ = stream.set_nodelay(true);
                             return Ok(MasterOrClient::Client {
@@ -948,7 +952,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                     let content = fs::read_to_string(&master_path)?;
                     let info: MasterInfo = serde_json::from_str(&content)
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-                    let stream = TcpStream::connect(&info.addr)?;
+                    let stream = crate::retry_eintr(|| TcpStream::connect(&info.addr))?;
                     let _ = stream.set_nodelay(true);
                     Ok(MasterOrClient::Client {
                         stream: IpcStream::Tcp(stream),
@@ -1043,7 +1047,9 @@ impl IpcServer {
                                         auth_secret,
                                     );
                                 }
-                                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                                Err(ref e)
+                                    if e.kind() == io::ErrorKind::WouldBlock
+                                        || e.kind() == io::ErrorKind::Interrupted => {}
                                 Err(_) => break,
                             }
                         }
@@ -1069,7 +1075,9 @@ impl IpcServer {
                                         auth_secret,
                                     );
                                 }
-                                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                                Err(ref e)
+                                    if e.kind() == io::ErrorKind::WouldBlock
+                                        || e.kind() == io::ErrorKind::Interrupted => {}
                                 Err(_) => break,
                             }
                         }
@@ -1577,15 +1585,17 @@ impl IpcClient {
 
     fn open_secondary_stream(&self) -> Result<IpcStream, io::Error> {
         let connect_res = match self.transport {
-            ClientTransport::Unix => UnixStream::connect(&self.target_path).map(IpcStream::Unix),
+            ClientTransport::Unix => {
+                crate::retry_eintr(|| UnixStream::connect(&self.target_path)).map(IpcStream::Unix)
+            }
             ClientTransport::Tcp { peer_addr } => {
                 let tcp_res = if let Some(addr) = peer_addr {
-                    TcpStream::connect(addr)
+                    crate::retry_eintr(|| TcpStream::connect(addr))
                 } else {
                     let content = fs::read_to_string(&self.target_path)?;
                     let info: MasterInfo = serde_json::from_str(&content)
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-                    TcpStream::connect(&info.addr)
+                    crate::retry_eintr(|| TcpStream::connect(&info.addr))
                 };
                 tcp_res.map(|s| {
                     let _ = s.set_nodelay(true);

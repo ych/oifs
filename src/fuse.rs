@@ -2310,11 +2310,17 @@ pub fn send_fd_scm_rights(sock_fd: RawFd, fd: RawFd) -> std::io::Result<()> {
             std::mem::size_of::<RawFd>(),
         );
 
-        let sent = libc::sendmsg(sock_fd, &msg, 0);
-        if sent < 0 {
-            return Err(std::io::Error::last_os_error());
+        loop {
+            let sent = libc::sendmsg(sock_fd, &msg, 0);
+            if sent >= 0 {
+                return Ok(());
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
         }
-        Ok(())
     }
 }
 
@@ -2339,9 +2345,17 @@ pub fn recv_fd_scm_rights(sock_fd: RawFd) -> std::io::Result<OwnedFd> {
         msg.msg_control = cmsg_buf.as_mut_ptr().cast();
         msg.msg_controllen = cmsg_buf.len() as _;
 
-        let n = libc::recvmsg(sock_fd, &mut msg, 0);
-        if n < 0 {
-            return Err(std::io::Error::last_os_error());
+        loop {
+            msg.msg_controllen = cmsg_buf.len() as _;
+            let n = libc::recvmsg(sock_fd, &mut msg, 0);
+            if n >= 0 {
+                break;
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
         }
 
         let mut cmsg = libc::CMSG_FIRSTHDR(&msg);

@@ -79,6 +79,24 @@ pub(crate) fn write_unpoisoned<T>(r: &std::sync::RwLock<T>) -> std::sync::RwLock
     r.write().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Retries a fallible I/O operation whenever it fails with `ErrorKind::Interrupted` (`EINTR`).
+///
+/// Ensures library callers embedded in host processes with frequent signals (e.g., `SIGALRM`,
+/// `SIGPROF`, `SIGVTALRM`, `SIGUSR1` without `SA_RESTART`) never observe spurious `EINTR`
+/// failures from syscalls such as `msync`, `fdatasync`, `fcntl`, `fstat`, or `connect`.
+#[inline]
+pub(crate) fn retry_eintr<T, F>(mut f: F) -> std::io::Result<T>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    loop {
+        match f() {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            other => return other,
+        }
+    }
+}
+
 /// Fast non-cryptographic Fibonacci hasher (`0x517cc1b727220a95`) for integer-keyed
 /// and internal in-memory hash tables (`FxHashMap` / `FxHashSet`).
 pub mod fx_hash {

@@ -1675,12 +1675,18 @@ impl DiskManager {
         lock.l_whence = libc::SEEK_SET as _;
         lock.l_start = 0;
         lock.l_len = 0; // Whole file
-        // SAFETY: the descriptor is owned by `file` and `lock` outlives the call.
-        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) };
-        if rc == -1 {
-            return Err(DiskManagerError::Locking(std::io::Error::last_os_error()));
+        loop {
+            // SAFETY: the descriptor is owned by `file` and `lock` outlives the call.
+            let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) };
+            if rc != -1 {
+                return Ok(());
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(DiskManagerError::Locking(err));
         }
-        Ok(())
     }
 
     /// Take a non-blocking shared `fcntl(F_SETLK)` read lock (`F_RDLCK`) on the whole file.
@@ -1696,12 +1702,18 @@ impl DiskManager {
         lock.l_whence = libc::SEEK_SET as _;
         lock.l_start = 0;
         lock.l_len = 0; // Whole file
-        // SAFETY: the descriptor is owned by `file` and `lock` outlives the call.
-        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) };
-        if rc == -1 {
-            return Err(DiskManagerError::Locking(std::io::Error::last_os_error()));
+        loop {
+            // SAFETY: the descriptor is owned by `file` and `lock` outlives the call.
+            let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) };
+            if rc != -1 {
+                return Ok(());
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(DiskManagerError::Locking(err));
         }
-        Ok(())
     }
 
     /// Record a clean-shutdown marker in the journal header.

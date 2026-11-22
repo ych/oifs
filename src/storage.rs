@@ -2048,9 +2048,9 @@ impl ImageBacking {
             return Ok(());
         }
         match self {
-            Self::Mmap(m) => m.flush(),
+            Self::Mmap(m) => crate::retry_eintr(|| m.flush()),
             Self::MmapReadOnly(_) => Ok(()),
-            Self::File(f) => f.file.sync_data(),
+            Self::File(f) => crate::retry_eintr(|| f.file.sync_data()),
         }
     }
 
@@ -2061,7 +2061,7 @@ impl ImageBacking {
             return Ok(());
         }
         match self {
-            Self::Mmap(m) => m.flush_async(),
+            Self::Mmap(m) => crate::retry_eintr(|| m.flush_async()),
             Self::MmapReadOnly(_) | Self::File(_) => Ok(()),
         }
     }
@@ -2073,9 +2073,9 @@ impl ImageBacking {
             return Ok(());
         }
         match self {
-            Self::Mmap(m) => m.flush_range(offset, len),
+            Self::Mmap(m) => crate::retry_eintr(|| m.flush_range(offset, len)),
             Self::MmapReadOnly(_) => Ok(()),
-            Self::File(f) => f.file.sync_data(),
+            Self::File(f) => crate::retry_eintr(|| f.file.sync_data()),
         }
     }
 
@@ -2086,7 +2086,7 @@ impl ImageBacking {
             return Ok(());
         }
         match self {
-            Self::Mmap(m) => m.flush_async_range(offset, len),
+            Self::Mmap(m) => crate::retry_eintr(|| m.flush_async_range(offset, len)),
             Self::MmapReadOnly(_) | Self::File(_) => Ok(()),
         }
     }

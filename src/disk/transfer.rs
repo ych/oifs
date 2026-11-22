@@ -533,12 +533,18 @@ pub fn coalesce_logical_runs(blocks: &[(usize, u64)]) -> Vec<LogicalRun> {
 pub fn canonical_file_id(fd: RawFd) -> std::io::Result<(u64, u64)> {
     // SAFETY: `libc::stat` is a plain C struct; `fstat` initializes it on success.
     let mut st = unsafe { std::mem::zeroed::<libc::stat>() };
-    // SAFETY: `fd` is an open file descriptor and `st` is a valid out-pointer.
-    let rc = unsafe { libc::fstat(fd, &mut st) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error());
+    loop {
+        // SAFETY: `fd` is an open file descriptor and `st` is a valid out-pointer.
+        let rc = unsafe { libc::fstat(fd, &mut st) };
+        if rc == 0 {
+            return Ok((st.st_dev as u64, st.st_ino as u64));
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(err);
     }
-    Ok((st.st_dev as u64, st.st_ino as u64))
 }
 
 /// Best-effort host-OS hole punch on freed physical block extents so CoW refcounts drop
@@ -557,16 +563,23 @@ pub fn punch_host_file_blocks(fd: RawFd, start_block: u64, block_count: u64) {
         let Some(len) = block_count.checked_mul(BLOCK_SIZE as u64) else {
             return;
         };
-        // SAFETY: `fd` is a valid open file descriptor; `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`
-        // preserves the `.img` container's logical file size while releasing backing extents.
-        let _ = unsafe {
-            libc::fallocate(
-                fd,
-                libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
-                offset as libc::off_t,
-                len as libc::off_t,
-            )
-        };
+        loop {
+            // SAFETY: `fd` is a valid open file descriptor; `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`
+            // preserves the `.img` container's logical file size while releasing backing extents.
+            let rc = unsafe {
+                libc::fallocate(
+                    fd,
+                    libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+                    offset as libc::off_t,
+                    len as libc::off_t,
+                )
+            };
+            if rc == 0
+                || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                break;
+            }
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -929,9 +942,15 @@ impl DiskManager {
                 CString::new(src.as_os_str().as_bytes()),
                 CString::new(dst.as_os_str().as_bytes()),
             ) {
-                // SAFETY: `c_src` and `c_dst` are valid NUL-terminated paths.
-                if unsafe { clonefile(c_src.as_ptr(), c_dst.as_ptr(), 0) } == 0 {
-                    return Ok(CloneMethod::ApfsClonefile);
+                loop {
+                    // SAFETY: `c_src` and `c_dst` are valid NUL-terminated paths.
+                    let rc = unsafe { clonefile(c_src.as_ptr(), c_dst.as_ptr(), 0) };
+                    if rc == 0 {
+                        return Ok(CloneMethod::ApfsClonefile);
+                    }
+                    if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                        break;
+                    }
                 }
             }
         }
@@ -946,10 +965,16 @@ impl DiskManager {
                 .create_new(true)
                 .mode(0o600)
                 .open(dst)?;
-            // SAFETY: both descriptors are valid open regular files.
-            if unsafe { libc::ioctl(dst_file.as_raw_fd(), FICLONE, src_file.as_raw_fd()) } == 0 {
-                dst_file.sync_data()?;
-                return Ok(CloneMethod::LinuxFiclone);
+            loop {
+                // SAFETY: both descriptors are valid open regular files.
+                let rc = unsafe { libc::ioctl(dst_file.as_raw_fd(), FICLONE, src_file.as_raw_fd()) };
+                if rc == 0 {
+                    crate::retry_eintr(|| dst_file.sync_data())?;
+                    return Ok(CloneMethod::LinuxFiclone);
+                }
+                if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                    break;
+                }
             }
             let len = src_file.metadata()?.len();
             if len > 0
@@ -959,7 +984,7 @@ impl DiskManager {
                 let _ = std::fs::remove_file(dst);
                 return Err(e.into());
             }
-            dst_file.sync_data()?;
+            crate::retry_eintr(|| dst_file.sync_data())?;
             return Ok(CloneMethod::StandardCopy);
         }
 
@@ -976,7 +1001,7 @@ impl DiskManager {
                 let _ = std::fs::remove_file(dst);
                 return Err(e.into());
             }
-            dst_file.sync_data()?;
+            crate::retry_eintr(|| dst_file.sync_data())?;
             Ok(CloneMethod::StandardCopy)
         }
     }
@@ -1572,7 +1597,7 @@ impl DiskManager {
                 if tracker.used_kernel_extent_op
                     || (physical_bytes > 0 && dst_guard.durability_mode() == DurabilityMode::Strict)
                 {
-                    dst_guard.file.sync_data()?;
+                    crate::retry_eintr(|| dst_guard.file.sync_data())?;
                 }
 
                 // Append directory entry to `dst_parent_inode`.
@@ -1828,7 +1853,7 @@ impl DiskManager {
                         || (physical_bytes > 0
                             && dst_guard.durability_mode() == DurabilityMode::Strict)
                     {
-                        dst_guard.file.sync_data()?;
+                        crate::retry_eintr(|| dst_guard.file.sync_data())?;
                     }
 
                     Self::write_inode_internal(&mut dst_guard, dst_ino, &new_inode)?;
@@ -2302,7 +2327,7 @@ impl DiskManager {
                     if tracker.used_kernel_extent_op
                         || (b_phys > 0 && dst_guard.durability_mode() == DurabilityMode::Strict)
                     {
-                        dst_guard.file.sync_data()?;
+                        crate::retry_eintr(|| dst_guard.file.sync_data())?;
                     }
 
                     cur_dst.size = cur_dst
@@ -2449,7 +2474,7 @@ impl DiskManager {
                     if tracker.used_kernel_extent_op
                         || (b_phys > 0 && dst_guard.durability_mode() == DurabilityMode::Strict)
                     {
-                        dst_guard.file.sync_data()?;
+                        crate::retry_eintr(|| dst_guard.file.sync_data())?;
                     }
 
                     for (idx, entry) in pending_chunks {

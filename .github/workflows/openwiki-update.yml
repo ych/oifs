@@ -92,6 +92,10 @@ jobs:
         run: |
           openwiki code --update --print
           openwiki visualize openwiki --export docs/openwiki-visualizer
+          # Preserve Google Search Console verification file if visualizer export cleans output dir
+          if [ -f docs/googledcf9a288fe2b6689.html ]; then
+            cp -f docs/googledcf9a288fe2b6689.html docs/openwiki-visualizer/googledcf9a288fe2b6689.html
+          fi
         env:
           NODE_OPTIONS: "--require ${{ github.workspace }}/.github/scripts/openrouter-rate-limit.cjs"
           OPENWIKI_PROVIDER: openrouter

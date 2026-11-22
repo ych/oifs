@@ -8,8 +8,8 @@ on:
         required: false
         default: "nvidia/nemotron-3-ultra-550b-a55b:free"
   schedule:
-    # Twice weekly (Mon & Thu 08:00 UTC) so commits batch before spending API quota
-    - cron: "0 8 * * 1,4"
+    # Three times weekly (Tue, Thu & Sat 08:00 UTC) so commits batch before spending API quota
+    - cron: "0 8 * * 2,4,6"
 
 permissions:
   contents: write

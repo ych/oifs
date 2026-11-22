@@ -32,7 +32,8 @@ Use this map to go directly to the source of truth for any subsystem:
 | Optional Metadata WAL (33-block journal, CRC32C, redo recovery, checkpointing) | `src/journal.rs`, `docs/metadata_wal_design.md` |
 | Pre-compression SIMD filters (Delta, Shuffle, BitShuffle, TruncPrecision) & Zstd worker/context pool | `src/filters.rs`, `src/zstd_pool.rs` |
 | Encryption (Argon2id, BLAKE2b-512 subkeys, XChaCha20-Poly1305 AEAD, 192-bit SIV filenames) | `src/encryption.rs` |
-| Pure-Rust cross-platform FUSE ABI v7.28 engine (Linux & macOS macFUSE) | `src/fuse.rs`, `docs/nfs_mount_design.md` |
+| Pure-Rust cross-platform FUSE ABI v7.28 engine (Linux & macOS macFUSE) | `src/fuse.rs` |
+| Pure-Rust local loopback NFSv3 Server (zero-kext macOS/Linux mounting, ONC RPC v2/XDR, MOUNT v3 + NFS v3) | `src/nfs.rs`, `docs/nfs_mount_design.md` |
 | Multi-process Master-Proxy sessions & hardened IPC | `src/session.rs`, `src/ipc.rs` |
 | C FFI & Modern C++17/C++20 header-only API | `src/ffi.rs`, `include/oifs.h`, `include/oifs.hpp` |
 | CLI & MCP server | `src/bin/oifs.rs`, `src/bin/oifs_mcp.rs` |

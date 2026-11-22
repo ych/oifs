@@ -317,10 +317,16 @@ enum Commands {
     Mount {
         /// Directory where the filesystem will be mounted
         mountpoint: PathBuf,
+        /// Mount backend: `auto` (macOS: nfs, Linux: fuse), `nfs` (built-in local NFSv3, zero kext), or `fuse`
+        #[arg(long, default_value = "auto")]
+        backend: String,
+        /// Loopback TCP port for NFSv3 backend (0 = OS-assigned ephemeral port)
+        #[arg(long, default_value_t = 0)]
+        port: u16,
         /// Run attached in the foreground and log mount details to stderr
         #[arg(long)]
         foreground: bool,
-        /// Allow other users to access the mounted filesystem (`allow_other`)
+        /// Allow other users to access the mounted filesystem (`allow_other`, FUSE backend)
         #[arg(long)]
         allow_other: bool,
     },
@@ -1658,12 +1664,36 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Mount {
             mountpoint,
+            backend,
+            port,
             foreground,
             allow_other,
         } => {
             if !image.exists() {
                 return Err(format!("Image {:?} does not exist.", image).into());
             }
+            let resolved_backend = match backend.as_str() {
+                "auto" => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        "nfs"
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        "fuse"
+                    }
+                }
+                "nfs" => "nfs",
+                "fuse" => "fuse",
+                other => {
+                    return Err(format!(
+                        "Invalid --backend '{}': expected auto, nfs, or fuse",
+                        other
+                    )
+                    .into());
+                }
+            };
+
             let session = open_session(
                 image,
                 &cli.password,
@@ -1675,12 +1705,64 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let dm = match session {
                 OifsSession::Direct { dm, .. } => dm,
                 OifsSession::Remote { .. } => {
-                    return Err("FUSE mount requires direct local access to the OIFS image".into());
+                    return Err("Mount requires direct local access to the OIFS image".into());
                 }
             };
 
+            let is_ro = cli.read_only || dm.is_read_only();
+
+            if resolved_backend == "nfs" {
+                let nfs_opts = oifs::nfs::NfsMountOptions {
+                    read_only: is_ro,
+                    port: *port,
+                    ..oifs::nfs::NfsMountOptions::default()
+                };
+                let shutdown_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let shutdown_sig = std::sync::Arc::clone(&shutdown_flag);
+                let mp_clone = mountpoint.clone();
+                let dm_clone = std::sync::Arc::clone(&dm);
+                let _interrupt_guard = set_interrupt_handler(move || {
+                    shutdown_sig.store(true, std::sync::atomic::Ordering::Release);
+                    let _ = oifs::fuse::unmount(&mp_clone);
+                    if !is_ro {
+                        let _ = dm_clone.flush();
+                    }
+                    std::process::exit(0);
+                })?;
+
+                if *foreground && !cli.json {
+                    eprintln!(
+                        "Mounting {:?} at {:?} via local NFSv3 (read_only={}, port={})...",
+                        image, mountpoint, is_ro, port
+                    );
+                }
+
+                oifs::nfs::mount_and_serve_nfs(
+                    std::sync::Arc::clone(&dm),
+                    mountpoint,
+                    nfs_opts,
+                    Some(shutdown_flag),
+                )?;
+                if !is_ro {
+                    dm.flush()?;
+                }
+                if cli.json {
+                    println!(
+                        "{}",
+                        json!({
+                            "ok": true,
+                            "backend": "nfs",
+                            "mountpoint": mountpoint.to_string_lossy(),
+                            "read_only": is_ro,
+                            "foreground": foreground,
+                        })
+                    );
+                }
+                return Ok(());
+            }
+
             let mut mount_opts = oifs::fuse::FuseMountOptions::for_host_kernel();
-            mount_opts.read_only = cli.read_only || dm.is_read_only();
+            mount_opts.read_only = is_ro;
             mount_opts.allow_other = *allow_other;
             if let Some(stem) = image.file_stem().and_then(|s| s.to_str())
                 && !stem.is_empty()
@@ -1693,7 +1775,6 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             let mp_clone = mountpoint.clone();
             let dm_clone = std::sync::Arc::clone(&dm);
-            let is_ro = fuse_fs.is_read_only();
             let _interrupt_guard = set_interrupt_handler(move || {
                 let _ = oifs::fuse::unmount(&mp_clone);
                 if !is_ro {
@@ -1704,7 +1785,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             if *foreground && !cli.json {
                 eprintln!(
-                    "Mounting {:?} at {:?} (read_only={}, allow_other={})...",
+                    "Mounting {:?} at {:?} via FUSE (read_only={}, allow_other={})...",
                     image, mountpoint, is_ro, allow_other
                 );
             }
@@ -1718,6 +1799,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     "{}",
                     json!({
                         "ok": true,
+                        "backend": "fuse",
                         "mountpoint": mountpoint.to_string_lossy(),
                         "read_only": is_ro,
                         "foreground": foreground,

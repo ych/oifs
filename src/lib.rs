@@ -12,6 +12,7 @@ pub mod inode_format;
 pub mod io_engine;
 pub mod ipc;
 pub mod journal;
+pub mod nfs;
 pub mod session;
 pub mod storage;
 pub mod superblock;
@@ -35,6 +36,7 @@ pub use inode_format::INODE_FORMAT_V2;
 pub use io_engine::IoBackend;
 pub use ipc::{MasterInfo, SessionEvent, SessionMode};
 pub use journal::{JournalState, MetadataOp, Transaction};
+pub use nfs::{NfsFileHandle, NfsMountOptions, OifsNfsFs, OifsNfsServer};
 pub use session::{OifsSession, SessionError};
 pub use storage::StorageMode;
 

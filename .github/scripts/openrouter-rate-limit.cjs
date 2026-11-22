@@ -5,6 +5,9 @@ const origFetch = globalThis.fetch;
 
 // 3.3 seconds minimum between requests = max ~18.2 requests/minute (safe under 20 RPM limit)
 const MIN_INTERVAL_MS = 3300;
+// Never sleep longer than 2 minutes on a 429; longer reset windows indicate a daily
+// RPD quota exhaustion rather than a per-minute RPM limit and would hit the 6h CI timeout.
+const MAX_RETRY_WAIT_MS = 120000;
 let lastRequestTime = 0;
 let queue = Promise.resolve();
 
@@ -71,6 +74,13 @@ globalThis.fetch = async function (input, init) {
                     resetTime > 1e11 ? resetTime : resetTime * 1000;
                   waitMs = Math.max(3000, resetMs - Date.now() + 1000);
                 }
+              }
+              if (waitMs > MAX_RETRY_WAIT_MS) {
+                console.log(
+                  `[RateLimiter] OpenRouter 429 reset is ${(waitMs / 1000).toFixed(1)}s away (> ${MAX_RETRY_WAIT_MS / 1000}s; likely daily quota). Aborting retry so partial progress can be saved.`
+                );
+                resolve(res);
+                return;
               }
               console.log(
                 `[RateLimiter] OpenRouter 429 received. Waiting ${(waitMs / 1000).toFixed(1)}s before retry (attempt ${attempts}/${maxAttempts})...`

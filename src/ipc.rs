@@ -95,6 +95,15 @@ impl Write for IpcStream {
     }
 }
 
+impl AsRawFd for IpcStream {
+    fn as_raw_fd(&self) -> RawFd {
+        match self {
+            IpcStream::Unix(s) => s.as_raw_fd(),
+            IpcStream::Tcp(s) => s.as_raw_fd(),
+        }
+    }
+}
+
 impl IpcStream {
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         match self {
@@ -1011,14 +1020,14 @@ impl IpcServer {
                     revents: 0,
                 };
                 let ret = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-                ret > 0 && (pfd.revents & libc::POLLIN) != 0
+                ret > 0 && (pfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0
             }
 
             match listener {
                 IpcListener::Unix { listener, .. } => {
                     let _ = listener.set_nonblocking(true);
                     let raw_fd = listener.as_raw_fd();
-                    while !shutdown_clone.load(Ordering::Relaxed) {
+                    while !shutdown_clone.load(Ordering::Acquire) {
                         client_threads.retain(|h| !h.is_finished());
                         if wait_for_fd_readable(raw_fd, 50) {
                             match listener.accept() {
@@ -1029,6 +1038,7 @@ impl IpcServer {
                                         &event_tx,
                                         &peer_counter_clone,
                                         &active_peers_clone,
+                                        &shutdown_clone,
                                         &mut client_threads,
                                         auth_secret,
                                     );
@@ -1042,7 +1052,7 @@ impl IpcServer {
                 IpcListener::Tcp { listener, .. } => {
                     let _ = listener.set_nonblocking(true);
                     let raw_fd = listener.as_raw_fd();
-                    while !shutdown_clone.load(Ordering::Relaxed) {
+                    while !shutdown_clone.load(Ordering::Acquire) {
                         client_threads.retain(|h| !h.is_finished());
                         if wait_for_fd_readable(raw_fd, 50) {
                             match listener.accept() {
@@ -1054,6 +1064,7 @@ impl IpcServer {
                                         &event_tx,
                                         &peer_counter_clone,
                                         &active_peers_clone,
+                                        &shutdown_clone,
                                         &mut client_threads,
                                         auth_secret,
                                     );
@@ -1081,12 +1092,14 @@ impl IpcServer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_client_worker(
         mut stream: IpcStream,
         dm: &Arc<DiskManager>,
         event_tx: &Option<SyncSender<SessionEvent>>,
         peer_counter: &Arc<AtomicUsize>,
         active_peers: &Arc<AtomicUsize>,
+        shutdown_signal: &Arc<AtomicBool>,
         client_threads: &mut Vec<JoinHandle<()>>,
         auth_secret: [u8; AUTH_SECRET_LEN],
     ) {
@@ -1108,6 +1121,7 @@ impl IpcServer {
         let dm_worker = dm.clone();
         let tx_worker = event_tx.clone();
         let active_peers_worker = active_peers.clone();
+        let shutdown_worker = shutdown_signal.clone();
 
         let handle = thread::spawn(move || {
             let _ = stream.set_nonblocking(false);
@@ -1128,8 +1142,37 @@ impl IpcServer {
 
             let mut authenticated = false;
             let mut challenge: Option<([u8; AUTH_NONCE_LEN], [u8; AUTH_NONCE_LEN])> = None;
+            let handshake_start = std::time::Instant::now();
+            let raw_fd = stream.as_raw_fd();
 
-            while let Ok(req) = read_framed::<_, IpcRequest>(&mut stream) {
+            loop {
+                // Poll between requests so `IpcServer::drop` can cleanly close
+                // idle peer connections without ever aborting an in-flight RPC.
+                let mut pfd = libc::pollfd {
+                    fd: raw_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let poll_ret = unsafe { libc::poll(&mut pfd, 1, 50) };
+                if poll_ret == 0 {
+                    if shutdown_worker.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if !authenticated && handshake_start.elapsed() >= AUTH_HANDSHAKE_TIMEOUT {
+                        break;
+                    }
+                    continue;
+                }
+                if poll_ret < 0 {
+                    if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    break;
+                }
+
+                let Ok(req) = read_framed::<_, IpcRequest>(&mut stream) else {
+                    break;
+                };
                 // The name is only materialized when there is an
                 // event listener; `req.name()` is a `&'static str`.
                 let short_name = req.name();

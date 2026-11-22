@@ -32,7 +32,7 @@ fn format_local_timestamp(secs: u64) -> String {
 static INTERRUPT_PIPE_WR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 extern "C" fn on_interrupt_signal(_sig: libc::c_int) {
-    let fd = INTERRUPT_PIPE_WR.load(std::sync::atomic::Ordering::Relaxed);
+    let fd = INTERRUPT_PIPE_WR.load(std::sync::atomic::Ordering::Acquire);
     if fd >= 0 {
         let byte = 1u8;
         // SAFETY: `write(2)` is async-signal-safe; the result is intentionally ignored.
@@ -42,11 +42,40 @@ extern "C" fn on_interrupt_signal(_sig: libc::c_int) {
     }
 }
 
+/// RAII guard for the process interrupt-handler thread.
+///
+/// Dropping this guard closes the self-pipe write end and joins the signal thread so
+/// any `OifsSession` / `Arc<DiskManager>` captured by the cleanup closure is released
+/// *before* the command's own session drops (ensuring `IpcServer::drop` drains peers
+/// cleanly instead of leaking until process exit).
+struct InterruptGuard {
+    wr_fd: libc::c_int,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        INTERRUPT_PIPE_WR.store(-1, std::sync::atomic::Ordering::Release);
+        if self.wr_fd >= 0 {
+            // SAFETY: `wr_fd` is owned exclusively by this guard; closing it wakes
+            // the signal thread's blocking `read(2)` with EOF (`0`).
+            unsafe {
+                libc::close(self.wr_fd);
+            }
+            self.wr_fd = -1;
+        }
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Runs `handler` on a dedicated thread when the process receives SIGINT or SIGTERM.
 ///
 /// The signal handler itself only writes one byte into a self-pipe (async-signal-safe);
 /// the cleanup closure (which may take locks and `msync`) runs on a normal thread.
-fn set_interrupt_handler<F>(handler: F) -> std::io::Result<()>
+/// Hold the returned [`InterruptGuard`] for the lifetime of the guarded operation.
+fn set_interrupt_handler<F>(handler: F) -> std::io::Result<InterruptGuard>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -60,9 +89,9 @@ where
         // SAFETY: `fd` was just returned by `pipe(2)`.
         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
-    INTERRUPT_PIPE_WR.store(wr, std::sync::atomic::Ordering::Relaxed);
+    INTERRUPT_PIPE_WR.store(wr, std::sync::atomic::Ordering::Release);
 
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("oifs-signal".into())
         .spawn(move || {
             let mut byte = 0u8;
@@ -70,12 +99,16 @@ where
                 // SAFETY: reads at most one byte into a valid stack buffer.
                 let n = unsafe { libc::read(rd, (&mut byte as *mut u8).cast(), 1) };
                 if n == 1 {
+                    // SAFETY: `rd` is owned exclusively by this thread.
+                    unsafe { libc::close(rd) };
                     handler();
                     return;
                 }
                 if n == 0
                     || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
                 {
+                    // SAFETY: `rd` is owned exclusively by this thread.
+                    unsafe { libc::close(rd) };
                     return;
                 }
             }
@@ -89,11 +122,19 @@ where
             action.sa_flags = libc::SA_RESTART;
             libc::sigemptyset(&mut action.sa_mask);
             if libc::sigaction(sig, &action, std::ptr::null_mut()) != 0 {
-                return Err(std::io::Error::last_os_error());
+                let err = std::io::Error::last_os_error();
+                let _guard = InterruptGuard {
+                    wr_fd: wr,
+                    thread: Some(thread),
+                };
+                return Err(err);
             }
         }
     }
-    Ok(())
+    Ok(InterruptGuard {
+        wr_fd: wr,
+        thread: Some(thread),
+    })
 }
 
 #[derive(Parser)]
@@ -797,7 +838,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             )?;
 
             let dm_clone = dm.clone();
-            set_interrupt_handler(move || {
+            let _interrupt_guard = set_interrupt_handler(move || {
                 let _ = dm_clone.flush();
                 std::process::exit(1);
             })?;
@@ -862,7 +903,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             )?;
 
             let dm_clone = dm.clone();
-            set_interrupt_handler(move || {
+            let _interrupt_guard = set_interrupt_handler(move || {
                 let _ = dm_clone.flush();
                 std::process::exit(1);
             })?;
@@ -1653,7 +1694,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let mp_clone = mountpoint.clone();
             let dm_clone = std::sync::Arc::clone(&dm);
             let is_ro = fuse_fs.is_read_only();
-            set_interrupt_handler(move || {
+            let _interrupt_guard = set_interrupt_handler(move || {
                 let _ = oifs::fuse::unmount(&mp_clone);
                 if !is_ro {
                     let _ = dm_clone.flush();

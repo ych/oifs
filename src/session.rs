@@ -882,6 +882,9 @@ impl OifsSession {
             {
                 self.lookup(parent_inode_id, name)
             }
+            Err(SessionError::Remote(msg)) if msg.contains("already exists") => {
+                self.lookup(parent_inode_id, name)
+            }
             Err(e) => Err(e),
         }
     }

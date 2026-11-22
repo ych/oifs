@@ -521,3 +521,50 @@ fn test_standalone_session_mode_default() {
     drop(session);
     let _ = fs::remove_file(img_path);
 }
+
+#[test]
+fn test_remote_create_or_open_file_existing() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("remote_create_or_open.img");
+
+    let master = OifsSession::open_local(&img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let client = OifsSession::open_local(&img_path, 0).expect("Client open failed");
+    assert!(!client.is_direct());
+
+    let root = client.resolve_path(".").unwrap();
+    let id1 = client.create_or_open_file(root, "shared.txt").unwrap();
+    let id2 = client.create_or_open_file(root, "shared.txt").unwrap();
+    assert_eq!(
+        id1, id2,
+        "Remote create_or_open_file must open existing file"
+    );
+
+    drop(client);
+    drop(master);
+}
+
+#[test]
+fn test_master_drop_with_idle_remote_client_fails_over_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("master_drop_idle_client.img");
+
+    let master = OifsSession::open_local(&img_path, 10 * 1024 * 1024).expect("Master open failed");
+    let client = OifsSession::open_local(&img_path, 0).expect("Client open failed");
+    assert!(!client.is_direct());
+
+    let root = client.resolve_path(".").unwrap();
+    let fid = client.create_file(root, "handover.txt").unwrap();
+    client
+        .write_data(fid, 0, b"survives master shutdown", CompressionMode::Auto)
+        .unwrap();
+
+    // Drop master while the remote client is still connected and idle:
+    // IpcServer::drop must return after the grace period without deadlocking.
+    drop(master);
+
+    // Subsequent RPC on the remote client must seamlessly fail over and succeed.
+    let data = client
+        .read_data(fid)
+        .expect("Client read after master drop must fail over");
+    assert_eq!(data, b"survives master shutdown");
+}

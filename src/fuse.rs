@@ -3786,98 +3786,100 @@ impl OifsFuseFs {
         let backend = discover_macos_fuse_backend();
         let opts = self.build_mount_options_for_os("macos").join(",");
 
-        // Find the first openable /dev/macfuse0..15 or /dev/osxfuse0..15 character device.
-        let mut dev_file = None;
-        for prefix in ["/dev/macfuse", "/dev/osxfuse"] {
-            for idx in 0..16 {
-                let candidate = format!("{prefix}{idx}");
-                if !Path::new(&candidate).exists() {
-                    continue;
-                }
-                if let Ok(file) = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&candidate)
-                {
-                    dev_file = Some(file);
-                    break;
-                }
+        let Some(mount_helper) = (match backend {
+            Some(MacOsFuseBackend::MacFuse(p)) | Some(MacOsFuseBackend::OsxFuse(p)) => Some(p),
+            Some(MacOsFuseBackend::FuseT(p)) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    format!(
+                        "FUSE-T detected at {}, which uses an NFSv4 userspace daemon rather than /dev/macfuse*",
+                        p.display()
+                    ),
+                ));
             }
-            if dev_file.is_some() {
-                break;
-            }
-        }
-
-        let Some(dev_file) = dev_file else {
-            // Try `fusermount` in PATH if provided (e.g. custom wrapper / FUSE-T shim).
+            None => None,
+        }) else {
+            // Try `fusermount` in PATH if provided (e.g. custom wrapper).
             if let Ok(fuse_fd) = self.spawn_fusermount_scm_rights(mountpoint, &opts) {
                 let res =
                     self.serve_fuse_fd_with_platform(fuse_fd.as_raw_fd(), FuseAbiPlatform::MacOs);
                 let _ = unmount(mountpoint);
                 return res;
             }
-            let detail = match backend {
-                Some(MacOsFuseBackend::FuseT(p)) => format!(
-                    "FUSE-T detected at {}, which uses an NFSv4 userspace daemon rather than /dev/macfuse*",
-                    p.display()
-                ),
-                Some(MacOsFuseBackend::MacFuse(p)) | Some(MacOsFuseBackend::OsxFuse(p)) => format!(
-                    "mount helper found at {}, but no /dev/macfuse* or /dev/osxfuse* kernel device is available",
-                    p.display()
-                ),
-                None => {
-                    "neither FUSE-T nor macFUSE/osxfuse is installed on this macOS host".to_string()
-                }
-            };
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 format!(
-                    "kernel FUSE mount at {} failed ({detail}); install FUSE-T or macFUSE, or use \
-                     OifsFuseFs::serve_fuse_fd, OifsFuseFs::serve_stream, or OifsFuseFs::dispatch_frame \
-                     for unprivileged userspace FUSE v7.28 access",
+                    "kernel FUSE mount at {} failed (neither FUSE-T nor macFUSE/osxfuse is installed \
+                     on this macOS host); install macFUSE, or use OifsFuseFs::serve_fuse_fd, \
+                     OifsFuseFs::serve_stream, or OifsFuseFs::dispatch_frame for unprivileged userspace \
+                     FUSE v7.28 access",
                     mountpoint.display()
                 ),
             ));
         };
 
-        let mount_helper = match backend {
-            Some(MacOsFuseBackend::MacFuse(p)) | Some(MacOsFuseBackend::OsxFuse(p)) => p,
-            _ => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "macFUSE/osxfuse device found, but mount_macfuse/mount_osxfuse helper binary is missing",
-                ));
-            }
-        };
+        // macFUSE (`mount_macfuse` / `mount_osxfuse`) uses `socketpair` + `SCM_RIGHTS` via
+        // `_FUSE_CALL_BY_LIB=1`, `_FUSE_COMMFD=<fd>`, `_FUSE_COMMVERS=2`, `_FUSE_DAEMON_PATH=<exe>`,
+        // and `-o <opts> <mountpoint>` (no positional device fd argument).
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: `fds` is a valid two-element buffer for `socketpair(2)`.
+        if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: both descriptors were freshly created by `socketpair(2)`.
+        let parent_sock = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+        let child_sock = unsafe { OwnedFd::from_raw_fd(fds[1]) };
 
-        let fd = dev_file.as_raw_fd();
-        // SAFETY: clearing FD_CLOEXEC so `mount_macfuse`/`mount_osxfuse` inherits the opened device FD.
+        let child_fd = child_sock.as_raw_fd();
+        // SAFETY: clearing FD_CLOEXEC so `mount_macfuse` inherits `_FUSE_COMMFD`.
         unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFD);
+            let flags = libc::fcntl(child_fd, libc::F_GETFD);
             if flags >= 0 {
-                libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                libc::fcntl(child_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
         }
 
-        let status = std::process::Command::new(&mount_helper)
-            .env("MOUNT_FUSEFS_CALL_BY_LIB", "")
+        let mut child = std::process::Command::new(&mount_helper)
+            .env("_FUSE_CALL_BY_LIB", "1")
+            .env("_FUSE_COMMFD", child_fd.to_string())
+            .env("_FUSE_COMMVERS", "2")
             .env(
-                "MOUNT_FUSEFS_DAEMON_PATH",
+                "_FUSE_DAEMON_PATH",
                 std::env::current_exe().unwrap_or_default(),
             )
             .arg("-o")
             .arg(&opts)
-            .arg(format!("{fd}"))
             .arg(mountpoint)
-            .status()?;
-        if !status.success() {
-            return Err(std::io::Error::other(format!(
-                "{} failed with status {status}",
-                mount_helper.display()
-            )));
-        }
+            .spawn()?;
 
-        let res = self.serve_fuse_fd_with_platform(fd, FuseAbiPlatform::MacOs);
+        // Close parent's copy of child_sock before reading from parent_sock.
+        drop(child_sock);
+
+        let fuse_fd = match recv_fd_scm_rights(parent_sock.as_raw_fd()) {
+            Ok(fd) => fd,
+            Err(e) => {
+                let st = child.wait();
+                return match st {
+                    Ok(status) if !status.success() => Err(std::io::Error::other(format!(
+                        "{} exited with status {status} ({e})",
+                        mount_helper.display()
+                    ))),
+                    _ => Err(e),
+                };
+            }
+        };
+        drop(parent_sock);
+
+        // `mount_macfuse` calls `mount(2)` in the kernel *after* passing `fuse_fd` over
+        // `_FUSE_COMMFD`, and `mount(2)` blocks until we answer `FUSE_INIT` on `fuse_fd`.
+        // Reap `child` on a background thread so we enter `serve_fuse_fd_with_platform`
+        // immediately without deadlocking on `child.wait()`.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+
+        let res = self.serve_fuse_fd_with_platform(fuse_fd.as_raw_fd(), FuseAbiPlatform::MacOs);
+        drop(fuse_fd);
         let _ = unmount(mountpoint);
         res
     }

@@ -156,6 +156,7 @@ pub const FUSE_SETATTR: u32 = 4;
 pub const FUSE_MKDIR: u32 = 9;
 pub const FUSE_UNLINK: u32 = 10;
 pub const FUSE_RMDIR: u32 = 11;
+pub const FUSE_RENAME: u32 = 12;
 pub const FUSE_OPEN: u32 = 14;
 pub const FUSE_READ: u32 = 15;
 pub const FUSE_WRITE: u32 = 16;
@@ -176,6 +177,9 @@ pub const FUSE_ACCESS: u32 = 34;
 pub const FUSE_CREATE: u32 = 35;
 pub const FUSE_DESTROY: u32 = 38;
 pub const FUSE_BATCH_FORGET: u32 = 42;
+pub const FUSE_RENAME2: u32 = 45;
+/// `renameat2(2)` flag: fail with `EEXIST` if destination already exists.
+pub const FUSE_RENAME_NOREPLACE: u32 = 1 << 0;
 
 // Standard POSIX mode & dirent file type constants (portable values).
 const POSIX_S_IFDIR: u32 = 0o040000;
@@ -295,6 +299,7 @@ pub enum FuseOpcode {
     Mkdir = FUSE_MKDIR,
     Unlink = FUSE_UNLINK,
     Rmdir = FUSE_RMDIR,
+    Rename = FUSE_RENAME,
     Open = FUSE_OPEN,
     Read = FUSE_READ,
     Write = FUSE_WRITE,
@@ -315,6 +320,7 @@ pub enum FuseOpcode {
     Create = FUSE_CREATE,
     Destroy = FUSE_DESTROY,
     BatchForget = FUSE_BATCH_FORGET,
+    Rename2 = FUSE_RENAME2,
 }
 
 impl FuseOpcode {
@@ -329,6 +335,7 @@ impl FuseOpcode {
             FUSE_MKDIR => Some(Self::Mkdir),
             FUSE_UNLINK => Some(Self::Unlink),
             FUSE_RMDIR => Some(Self::Rmdir),
+            FUSE_RENAME => Some(Self::Rename),
             FUSE_OPEN => Some(Self::Open),
             FUSE_READ => Some(Self::Read),
             FUSE_WRITE => Some(Self::Write),
@@ -349,6 +356,7 @@ impl FuseOpcode {
             FUSE_CREATE => Some(Self::Create),
             FUSE_DESTROY => Some(Self::Destroy),
             FUSE_BATCH_FORGET => Some(Self::BatchForget),
+            FUSE_RENAME2 => Some(Self::Rename2),
             _ => None,
         }
     }
@@ -2493,6 +2501,14 @@ fn parse_fuse_name(bytes: &[u8]) -> Result<&str, i32> {
     std::str::from_utf8(raw).map_err(|_| -libc::EINVAL)
 }
 
+fn parse_fuse_two_names(bytes: &[u8]) -> Result<(&str, &str), i32> {
+    let first_nul = bytes.iter().position(|&b| b == 0).ok_or(-libc::EINVAL)?;
+    let old_name = parse_fuse_name(&bytes[..first_nul])?;
+    let rest = bytes.get(first_nul + 1..).ok_or(-libc::EINVAL)?;
+    let new_name = parse_fuse_name(rest)?;
+    Ok((old_name, new_name))
+}
+
 fn count_bitmap_bits_used(bitmap: &[u8], total_bits: usize) -> u64 {
     let bits_to_scan = total_bits.min(bitmap.len() * 8);
     let full_words = bits_to_scan / 64;
@@ -2810,6 +2826,54 @@ impl OifsFuseState {
         dm.delete_file(parent_inode, name.as_ref())
             .map_err(|e| disk_error_to_errno(&e))?;
         self.forget_parent(target_inode_id);
+        Ok(())
+    }
+
+    pub fn rename(
+        &self,
+        dm: &DiskManager,
+        parent: u64,
+        name: &str,
+        newparent: u64,
+        newname: &str,
+        flags: u32,
+    ) -> Result<(), i32> {
+        if self.is_read_only(dm) {
+            return Err(-libc::EROFS);
+        }
+        if flags != 0 && flags != FUSE_RENAME_NOREPLACE {
+            return Err(-libc::EINVAL);
+        }
+        let name = self.normalize_name(name);
+        let newname = self.normalize_name(newname);
+        self.reject_if_macos_metadata(name.as_ref())?;
+        self.reject_if_macos_metadata(newname.as_ref())?;
+        let old_parent_inode = nodeid_to_inode(parent).ok_or(-libc::ENOENT)?;
+        let new_parent_inode = nodeid_to_inode(newparent).ok_or(-libc::ENOENT)?;
+        if flags == FUSE_RENAME_NOREPLACE && dm.lookup(new_parent_inode, newname.as_ref()).is_ok() {
+            return Err(-libc::EEXIST);
+        }
+        let moved_inode_id = dm
+            .lookup(old_parent_inode, name.as_ref())
+            .map_err(|e| disk_error_to_errno(&e))?;
+        let overwritten_inode_id = dm.lookup(new_parent_inode, newname.as_ref()).ok();
+        dm.rename(
+            old_parent_inode,
+            name.as_ref(),
+            new_parent_inode,
+            newname.as_ref(),
+        )
+        .map_err(|e| disk_error_to_errno(&e))?;
+        if let Some(dst_id) = overwritten_inode_id
+            && dst_id != moved_inode_id
+        {
+            self.forget_parent(dst_id);
+        }
+        if let Ok(inode) = dm.read_inode(moved_inode_id)
+            && inode.mode == FileType::Directory
+        {
+            self.record_parent(moved_inode_id, new_parent_inode);
+        }
         Ok(())
     }
 
@@ -3360,6 +3424,49 @@ impl OifsFuseState {
                     Err(e) => FuseOutHeader::error_frame(unique, e),
                 }
             }
+            FuseOpcode::Rename => {
+                let Some(newdir) = read_u64_le(payload, 0) else {
+                    return FuseOutHeader::error_frame(unique, -libc::EINVAL);
+                };
+                // On Linux, `fuse_rename_in` is 8 bytes (`newdir: u64`).
+                // On macOS (macFUSE 4.x/5.x), `fuse_rename_in` may be 16 bytes
+                // (`newdir: u64, flags: u32, padding: u32`) when `FUSE_RENAME` carries flags.
+                let (flags, names_slice) = if platform == FuseAbiPlatform::MacOs
+                    && payload.len() > 16
+                    && payload[12..16] == [0, 0, 0, 0]
+                    && (payload[8] == 0 || payload[9..12] == [0, 0, 0])
+                {
+                    (read_u32_le(payload, 8).unwrap_or(0), &payload[16..])
+                } else {
+                    (0, &payload[8..])
+                };
+                let (old_name, new_name) = match parse_fuse_two_names(names_slice) {
+                    Ok(pair) => pair,
+                    Err(e) => return FuseOutHeader::error_frame(unique, e),
+                };
+                match self.rename(dm, hdr.nodeid, old_name, newdir, new_name, flags) {
+                    Ok(()) => FuseOutHeader::ok_frame(unique, &[]),
+                    Err(e) => FuseOutHeader::error_frame(unique, e),
+                }
+            }
+            FuseOpcode::Rename2 => {
+                let (Some(newdir), Some(flags)) =
+                    (read_u64_le(payload, 0), read_u32_le(payload, 8))
+                else {
+                    return FuseOutHeader::error_frame(unique, -libc::EINVAL);
+                };
+                if payload.len() < 16 {
+                    return FuseOutHeader::error_frame(unique, -libc::EINVAL);
+                }
+                let (old_name, new_name) = match parse_fuse_two_names(&payload[16..]) {
+                    Ok(pair) => pair,
+                    Err(e) => return FuseOutHeader::error_frame(unique, e),
+                };
+                match self.rename(dm, hdr.nodeid, old_name, newdir, new_name, flags) {
+                    Ok(()) => FuseOutHeader::ok_frame(unique, &[]),
+                    Err(e) => FuseOutHeader::error_frame(unique, e),
+                }
+            }
             FuseOpcode::Open => {
                 let Some(open_in) = FuseOpenIn::parse(payload) else {
                     return FuseOutHeader::error_frame(unique, -libc::EINVAL);
@@ -3631,6 +3738,18 @@ impl OifsFuseFs {
 
     pub fn rmdir(&self, parent: u64, name: &str) -> Result<(), i32> {
         self.state.rmdir(&self.dm, parent, name)
+    }
+
+    pub fn rename(
+        &self,
+        parent: u64,
+        name: &str,
+        newparent: u64,
+        newname: &str,
+        flags: u32,
+    ) -> Result<(), i32> {
+        self.state
+            .rename(&self.dm, parent, name, newparent, newname, flags)
     }
 
     pub fn open(&self, nodeid: u64, flags: u32) -> Result<FuseOpenOut, i32> {

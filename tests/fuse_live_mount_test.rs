@@ -276,6 +276,23 @@ fn test_live_fuse_mount_rw_lifecycle_large_file_dirs_and_macos_unicode() {
     fs::remove_dir(&temp_dir).expect("rmdir ephemeral");
     assert!(!temp_dir.exists());
 
+    // 3b. Atomic POSIX rename (same-dir, cross-dir, and overwrite) via live kernel FUSE.
+    let rename_src = guard.path().join("rename_src.txt");
+    let rename_mid = guard.path().join("rename_mid.txt");
+    let rename_dst_dir = guard.path().join("rename_dir");
+    fs::create_dir(&rename_dst_dir).expect("mkdir rename_dir");
+    let rename_dst = rename_dst_dir.join("rename_final.txt");
+    fs::write(&rename_src, b"atomic rename payload").expect("write rename_src");
+    fs::write(&rename_dst, b"old victim payload").expect("write victim");
+    fs::rename(&rename_src, &rename_mid).expect("same-dir live FUSE rename");
+    assert!(!rename_src.exists());
+    fs::rename(&rename_mid, &rename_dst).expect("cross-dir overwrite live FUSE rename");
+    assert!(!rename_mid.exists());
+    assert_eq!(
+        fs::read(&rename_dst).expect("read renamed file"),
+        b"atomic rename payload"
+    );
+
     // 4. UTF-8 accented + CJK filename (NFC creation & NFD lookup on macOS).
     let nfc_name = "caf\u{00E9}_測試.txt";
     let nfc_path = guard.path().join(nfc_name);

@@ -7139,6 +7139,475 @@ impl DiskManager {
         Ok(())
     }
 
+    /// Returns `true` if `target_id` is `ancestor_id` or lies inside any subdirectory
+    /// reachable from `ancestor_id` (used to prevent directory cycles during `rename`).
+    fn is_ancestor_dir(
+        guard: &DiskManagerInner,
+        ancestor_id: u64,
+        target_id: u64,
+    ) -> Result<bool, DiskManagerError> {
+        if ancestor_id == target_id {
+            return Ok(true);
+        }
+        let mut visited = crate::FxHashSet::default();
+        let mut queue = std::collections::VecDeque::new();
+        visited.insert(ancestor_id);
+        queue.push_back(ancestor_id);
+
+        while let Some(dir_id) = queue.pop_front() {
+            let dir_inode = Self::read_inode_internal(guard, dir_id)?;
+            if dir_inode.mode != crate::inode::FileType::Directory {
+                continue;
+            }
+            let num_blocks = Self::dir_num_blocks(&dir_inode);
+            for blk_idx in 0..num_blocks {
+                let phys_blk = Self::resolve_logical_block_id(&guard.backing, &dir_inode, blk_idx);
+                if !guard.is_data_block(phys_blk) {
+                    continue;
+                }
+                let child_ids: Vec<u64> = guard
+                    .backing
+                    .with_block(phys_blk, |slice| {
+                        let mut ids = Vec::new();
+                        let mut cursor = std::io::Cursor::new(slice);
+                        while let Ok(Some(entry)) =
+                            crate::directory::DirectoryEntry::deserialize_from(&mut cursor)
+                        {
+                            ids.push(entry.inode);
+                        }
+                        ids
+                    })
+                    .unwrap_or_default();
+                for child_id in child_ids {
+                    if child_id == target_id {
+                        return Ok(true);
+                    }
+                    if visited.insert(child_id)
+                        && let Ok(child_inode) = Self::read_inode_internal(guard, child_id)
+                        && child_inode.mode == crate::inode::FileType::Directory
+                    {
+                        queue.push_back(child_id);
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Atomically renames or moves a file or directory within the filesystem.
+    ///
+    /// - **Metadata-only**: Never reads, decrypts, re-compresses, or copies file payload blocks.
+    ///   On encrypted images, only the directory entry's SIV-encrypted filename is recomputed
+    ///   for `(new_parent_inode_id, new_name)` because payload AEAD is bound to `inode_id`.
+    /// - **POSIX overwrite semantics**:
+    ///   - Replacing an existing regular file with a regular file atomically unlinks the target
+    ///     and frees its blocks/inode.
+    ///   - Replacing an existing empty directory with a directory atomically removes the empty
+    ///     target directory; replacing a non-empty directory fails with `"Directory is not empty"`.
+    ///   - Mismatched file/directory overwrites fail with `"Is a directory"` / `"Not a directory"`.
+    ///   - Moving a directory into itself or any of its descendants is rejected (`InvalidInput`).
+    /// - **Crash safety**: On journaled images, the entire rename (source unlink, optional target
+    ///   overwrite + block/inode release, destination link, and parent inode updates) is committed
+    ///   in a single atomic CRC32C WAL transaction.
+    pub fn rename(
+        &self,
+        old_parent_inode_id: u64,
+        old_name: &str,
+        new_parent_inode_id: u64,
+        new_name: &str,
+    ) -> Result<(), DiskManagerError> {
+        if self.is_read_only() {
+            return Err(DiskManagerError::ReadOnly);
+        }
+        for name in [old_name, new_name] {
+            crate::directory::validate_filename(name).map_err(|e| {
+                DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    e.to_string(),
+                ))
+            })?;
+        }
+
+        let mut guard = self.inner.write().unwrap();
+        if guard.read_only {
+            return Err(DiskManagerError::ReadOnly);
+        }
+        let res = Self::rename_internal(
+            &mut guard,
+            old_parent_inode_id,
+            old_name,
+            new_parent_inode_id,
+            new_name,
+        );
+        drop(guard);
+        if res.is_ok() {
+            self.maybe_drain_async_ranges();
+        }
+        res
+    }
+
+    fn rename_internal(
+        guard: &mut DiskManagerInner,
+        old_parent_inode_id: u64,
+        old_name: &str,
+        new_parent_inode_id: u64,
+        new_name: &str,
+    ) -> Result<(), DiskManagerError> {
+        let mut old_parent = Self::read_inode_internal(guard, old_parent_inode_id)?;
+        if old_parent.mode != crate::inode::FileType::Directory {
+            return Err(DiskManagerError::Io(std::io::Error::other(
+                "Not a directory",
+            )));
+        }
+
+        let same_parent = old_parent_inode_id == new_parent_inode_id;
+        let mut new_parent_opt = if same_parent {
+            None
+        } else {
+            let np = Self::read_inode_internal(guard, new_parent_inode_id)?;
+            if np.mode != crate::inode::FileType::Directory {
+                return Err(DiskManagerError::Io(std::io::Error::other(
+                    "Not a directory",
+                )));
+            }
+            Some(np)
+        };
+
+        let old_stored = Self::stored_filename(guard, old_parent_inode_id, old_name)?.into_owned();
+        let new_stored = Self::stored_filename(guard, new_parent_inode_id, new_name)?.into_owned();
+        crate::directory::validate_filename(&new_stored).map_err(|e| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                e.to_string(),
+            ))
+        })?;
+        let old_hash = crate::directory::hash_filename(&old_stored);
+        let new_hash = crate::directory::hash_filename(&new_stored);
+
+        let (src_inode_id, src_phys_blk) =
+            Self::locate_entry_in_dir(&guard.backing, &old_parent, &old_stored, old_hash)
+                .ok_or_else(|| {
+                    DiskManagerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "File not found",
+                    ))
+                })?;
+
+        // POSIX no-op: renaming an entry onto itself succeeds without mutating anything.
+        if same_parent && old_name == new_name {
+            return Ok(());
+        }
+
+        let src_inode = Self::read_inode_internal(guard, src_inode_id)?;
+
+        // Prevent moving a directory into itself or any of its descendants.
+        if src_inode.mode == crate::inode::FileType::Directory
+            && Self::is_ancestor_dir(guard, src_inode_id, new_parent_inode_id)?
+        {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Cannot move a directory into itself or its subdirectory",
+            )));
+        }
+
+        // Check whether destination already exists.
+        let dst_loc = {
+            let np_ref = new_parent_opt.as_ref().unwrap_or(&old_parent);
+            Self::locate_entry_in_dir(&guard.backing, np_ref, &new_stored, new_hash)
+        };
+        let dst_info = if let Some((dst_inode_id, dst_phys_blk)) = dst_loc {
+            if dst_inode_id == src_inode_id {
+                return Ok(());
+            }
+            let dst_inode = Self::read_inode_internal(guard, dst_inode_id)?;
+            match (src_inode.mode, dst_inode.mode) {
+                (crate::inode::FileType::Directory, m)
+                    if m != crate::inode::FileType::Directory =>
+                {
+                    return Err(DiskManagerError::Io(std::io::Error::other(
+                        "Not a directory",
+                    )));
+                }
+                (m, crate::inode::FileType::Directory)
+                    if m != crate::inode::FileType::Directory =>
+                {
+                    return Err(DiskManagerError::Io(std::io::Error::other(
+                        "Is a directory",
+                    )));
+                }
+                (crate::inode::FileType::Directory, crate::inode::FileType::Directory)
+                    if !Self::is_dir_empty(guard, &dst_inode)? =>
+                {
+                    return Err(DiskManagerError::Io(std::io::Error::other(
+                        "Directory is not empty",
+                    )));
+                }
+                _ => {}
+            }
+            let dst_blocks = Self::collect_inode_blocks(&guard.backing, &dst_inode);
+            Some((dst_inode_id, dst_phys_blk, dst_blocks))
+        } else {
+            None
+        };
+
+        // ---- Stage directory block post-images in memory ----
+        // Using a BTreeMap ensures that if `src_phys_blk == dst_phys_blk` or if the new
+        // entry is inserted into the same block we just compacted, all mutations compose
+        // cleanly onto the same 4 KiB post-image.
+        let mut modified_blocks: std::collections::BTreeMap<u64, Vec<u8>> =
+            std::collections::BTreeMap::new();
+        fn load_block_mut<'a>(
+            backing: &ImageBacking,
+            map: &'a mut std::collections::BTreeMap<u64, Vec<u8>>,
+            blk: u64,
+        ) -> Result<&'a mut Vec<u8>, DiskManagerError> {
+            match map.entry(blk) {
+                std::collections::btree_map::Entry::Occupied(e) => Ok(e.into_mut()),
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    let bytes = backing.with_block(blk, |s| s.to_vec()).map_err(|_| {
+                        DiskManagerError::Io(std::io::Error::other("Directory block not found"))
+                    })?;
+                    Ok(e.insert(bytes))
+                }
+            }
+        }
+
+        // 1. Remove old directory entry from `src_phys_blk`.
+        {
+            let blk_buf = load_block_mut(&guard.backing, &mut modified_blocks, src_phys_blk)?;
+            crate::directory::remove_entry_in_block_bytes(blk_buf, &old_stored, old_hash);
+        }
+
+        // 2. If overwriting an existing destination, remove its entry from `dst_phys_blk`.
+        if let Some((_, dst_phys_blk, _)) = &dst_info {
+            let blk_buf = load_block_mut(&guard.backing, &mut modified_blocks, *dst_phys_blk)?;
+            crate::directory::remove_entry_in_block_bytes(blk_buf, &new_stored, new_hash);
+        }
+
+        // 3. Serialize the new directory entry pointing to `src_inode_id`.
+        let new_entry = crate::directory::DirectoryEntry {
+            inode: src_inode_id,
+            hash: new_hash,
+            name: new_stored,
+        };
+        let mut entry_bytes = Vec::with_capacity(20 + new_entry.name.len());
+        {
+            let mut cursor = std::io::Cursor::new(&mut entry_bytes);
+            new_entry
+                .serialize_into(&mut cursor)
+                .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
+        }
+        let needed_space = 20 + new_entry.name.len();
+
+        // 4. Find a free slot in `new_parent`'s existing blocks (accounting for staged removals).
+        let journaled = guard.superblock.has_journal_layout();
+        let mut journal_ops: Vec<crate::journal::MetadataOp> = Vec::new();
+        let mut sim_opt: Option<crate::journal::AllocSim> = None;
+
+        let target_slot = {
+            let np_ref = new_parent_opt.as_ref().unwrap_or(&old_parent);
+            let num_blocks = Self::dir_num_blocks(np_ref);
+            let mut found: Option<(u64, usize)> = None;
+            for blk_idx in 0..num_blocks {
+                let phys_blk = Self::resolve_logical_block_id(&guard.backing, np_ref, blk_idx);
+                if !guard.is_data_block(phys_blk) {
+                    continue;
+                }
+                let insert_offset = if let Some(staged) = modified_blocks.get(&phys_blk) {
+                    crate::directory::find_insert_offset_in_block(staged)
+                } else {
+                    guard
+                        .backing
+                        .with_block(phys_blk, crate::directory::find_insert_offset_in_block)
+                        .unwrap_or(BLOCK_SIZE)
+                };
+                if insert_offset + needed_space <= BLOCK_SIZE {
+                    found = Some((phys_blk, insert_offset));
+                    break;
+                }
+            }
+            found
+        };
+
+        if let Some((phys_blk, insert_offset)) = target_slot {
+            let blk_buf = load_block_mut(&guard.backing, &mut modified_blocks, phys_blk)?;
+            blk_buf[insert_offset..insert_offset + entry_bytes.len()].copy_from_slice(&entry_bytes);
+            // Zero-terminate trailing header bytes if room remains so scans stop cleanly.
+            let end = insert_offset + entry_bytes.len();
+            if end + 18 <= BLOCK_SIZE {
+                blk_buf[end..end + 18].fill(0);
+            }
+        } else {
+            // Grow `new_parent` by one directory block.
+            let np_mut = new_parent_opt.as_mut().unwrap_or(&mut old_parent);
+            let new_blk_idx = Self::dir_num_blocks(np_mut);
+            let new_phys_blk = if journaled {
+                let sim = sim_opt.insert(crate::journal::AllocSim::new_data_only(
+                    guard,
+                    guard.free_inode_hint,
+                    guard.free_block_hint,
+                )?);
+                crate::journal::sim_get_or_alloc_block(
+                    &guard.backing,
+                    np_mut,
+                    new_blk_idx,
+                    sim,
+                    &mut journal_ops,
+                )?
+            } else {
+                Self::get_or_alloc_block(guard, np_mut, new_blk_idx, true)?
+            };
+            let mut block_image = vec![0u8; BLOCK_SIZE];
+            block_image[..entry_bytes.len()].copy_from_slice(&entry_bytes);
+            modified_blocks.insert(new_phys_blk, block_image);
+            np_mut.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        old_parent.modified_at = now;
+        if let Some(np) = new_parent_opt.as_mut() {
+            np.modified_at = now;
+        }
+
+        if journaled {
+            if let Some((dst_inode_id, _, ref dst_blocks)) = dst_info {
+                journal_ops.push(crate::journal::MetadataOp::SetInodeBitmap {
+                    inode_id: dst_inode_id,
+                    allocated: false,
+                });
+                for &blk in dst_blocks {
+                    crate::journal::push_data_bitmap_op(&mut journal_ops, blk, 1, false);
+                }
+            }
+            for (&blk_id, blk_data) in &modified_blocks {
+                journal_ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                    block_id: blk_id,
+                    offset: 0,
+                    data: blk_data.clone(),
+                });
+            }
+            let old_parent_img =
+                Self::build_inode_post_image(guard, old_parent_inode_id, &old_parent)?;
+            journal_ops.push(crate::journal::MetadataOp::WriteInode {
+                inode_id: old_parent_inode_id,
+                inode_bytes: Box::new(old_parent_img),
+            });
+            if let Some(ref np) = new_parent_opt {
+                let new_parent_img = Self::build_inode_post_image(guard, new_parent_inode_id, np)?;
+                journal_ops.push(crate::journal::MetadataOp::WriteInode {
+                    inode_id: new_parent_inode_id,
+                    inode_bytes: Box::new(new_parent_img),
+                });
+            }
+            let ops = if crate::journal::is_already_coalesced(&journal_ops) {
+                journal_ops
+            } else {
+                crate::journal::coalesce_ops(journal_ops)
+            };
+
+            Self::commit_journal_tx(guard, &ops)?;
+            Self::apply_journal_ops(guard, &ops)?;
+
+            if let Some(sim) = sim_opt {
+                guard.free_block_hint = sim.free_block_hint;
+            }
+            if let Some((dst_inode_id, _, ref dst_blocks)) = dst_info {
+                if let Some(min_freed) = dst_blocks.iter().copied().min()
+                    && min_freed < guard.free_block_hint
+                {
+                    guard.free_block_hint = min_freed;
+                }
+                if dst_inode_id < guard.free_inode_hint {
+                    guard.free_inode_hint = dst_inode_id;
+                }
+            }
+        } else {
+            for (&blk_id, blk_data) in &modified_blocks {
+                guard.backing.with_block_mut(blk_id, |slice| {
+                    slice.copy_from_slice(blk_data);
+                })?;
+            }
+            Self::write_inode_internal(guard, old_parent_inode_id, &old_parent)?;
+            if let Some(ref np) = new_parent_opt {
+                Self::write_inode_internal(guard, new_parent_inode_id, np)?;
+            }
+            if let Some((dst_inode_id, _, ref dst_blocks)) = dst_info {
+                let mut min_freed_blk = u64::MAX;
+                let mut max_freed_blk = 0u64;
+                {
+                    let db_start = guard.superblock.data_block_start;
+                    let mut slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
+                    })?;
+                    let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
+                    for &blk in dst_blocks {
+                        da.free(blk)?;
+                        min_freed_blk = min_freed_blk.min(blk);
+                        max_freed_blk = max_freed_blk.max(blk);
+                    }
+                    if min_freed_blk <= max_freed_blk && min_freed_blk >= db_start {
+                        let start_bit = (min_freed_blk - db_start) as usize;
+                        let bit_count = (max_freed_blk - min_freed_blk + 1) as usize;
+                        slice.set_dirty_bits(start_bit, bit_count);
+                    } else {
+                        slice.set_dirty_bits(0, 0);
+                    }
+                }
+                if min_freed_blk < guard.free_block_hint {
+                    guard.free_block_hint = min_freed_blk;
+                }
+                {
+                    let mut slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
+                    })?;
+                    let mut ia = SimpleBlockAllocator::new(&mut slice, 0);
+                    ia.free(dst_inode_id)?;
+                    slice.set_dirty_bits(dst_inode_id as usize, 1);
+                }
+                if dst_inode_id < guard.free_inode_hint {
+                    guard.free_inode_hint = dst_inode_id;
+                }
+            }
+        }
+
+        // Refresh in-memory caches for parents and any overwritten destination.
+        guard.inode_cache.insert(old_parent_inode_id, old_parent);
+        guard.dir_cache.remove(old_parent_inode_id);
+        if let Some(np) = new_parent_opt {
+            guard.inode_cache.insert(new_parent_inode_id, np);
+            guard.dir_cache.remove(new_parent_inode_id);
+        }
+        if let Some((dst_inode_id, _, _)) = dst_info {
+            guard.inode_cache.remove(dst_inode_id);
+            guard.dir_cache.remove(dst_inode_id);
+            guard.invalidate_payload_caches(dst_inode_id);
+        }
+
+        if guard.durability_mode().is_range_based() {
+            let mut ranges = vec![
+                guard.inode_bitmap_byte_range(),
+                guard.data_bitmap_byte_range(),
+                guard.inode_byte_range(old_parent_inode_id),
+            ];
+            if !same_parent {
+                ranges.push(guard.inode_byte_range(new_parent_inode_id));
+            }
+            for &blk_id in modified_blocks.keys() {
+                ranges.push(guard.block_byte_range(blk_id));
+            }
+            guard.sync_mutation_ranges(&ranges)?;
+        } else if guard.durability_mode() == DurabilityMode::LegacyWholeMmapAsync {
+            guard.sync_mutation_ranges(&[])?;
+        }
+        if journaled {
+            Self::maybe_checkpoint(guard)?;
+        }
+        Ok(())
+    }
+
     /// Truncates or extends a file to the specified size in bytes.
     ///
     /// If `new_size` is less than current size, excess data is discarded and

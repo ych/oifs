@@ -108,10 +108,20 @@ pub const FUSE_GETXATTR_OUT_SIZE: usize = 8;
 
 /// Maximum FUSE request frame accepted over a stream (16 MiB).
 pub const FUSE_MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
-/// Default negotiated `max_write` payload size (128 KiB).
-pub const FUSE_DEFAULT_MAX_WRITE: u32 = 128 * 1024;
-/// Default negotiated `max_readahead` size (128 KiB).
-pub const FUSE_DEFAULT_MAX_READAHEAD: u32 = 128 * 1024;
+/// Minimum valid negotiated `max_write` payload size (4 KiB).
+pub const FUSE_MIN_MAX_WRITE: u32 = 4096;
+/// Legacy Linux (< 4.20, without `FUSE_MAX_PAGES`) maximum `max_write` payload size (128 KiB).
+pub const FUSE_LEGACY_MAX_WRITE: u32 = 128 * 1024;
+/// Default negotiated `max_write` payload size (1 MiB).
+///
+/// Dynamically capped on Linux based on kernel `FUSE_MAX_PAGES` support and
+/// `/sys/module/fuse/parameters/max_pages_limit` (128 KiB on Linux < 4.20,
+/// 1 MiB on Linux 4.20–6.12, up to 4 MiB on Linux 6.13+ when configured).
+pub const FUSE_DEFAULT_MAX_WRITE: u32 = 1024 * 1024;
+/// Upper bound for configurable `max_write` (4 MiB, matching Linux 6.13+ `max_pages_limit = 1024`).
+pub const FUSE_MAX_SUPPORTED_WRITE: u32 = 4 * 1024 * 1024;
+/// Default negotiated `max_readahead` size (1 MiB, clamped by kernel `init_in.max_readahead`).
+pub const FUSE_DEFAULT_MAX_READAHEAD: u32 = 1024 * 1024;
 
 // FUSE_SETATTR valid bitmask flags.
 pub const FATTR_MODE: u32 = 1 << 0;
@@ -2005,6 +2015,13 @@ pub struct FuseMountOptions {
     pub normalize_nfc: bool,
     /// Optional volume display name on macOS (`volname=<name>`). Ignored on Linux.
     pub volname: Option<String>,
+    /// Requested maximum single `FUSE_WRITE` payload size in bytes (default: 1 MiB).
+    ///
+    /// Automatically clamped to `[4 KiB, 4 MiB]` and dynamically negotiated with the
+    /// host kernel during `FUSE_INIT` (e.g. capped to 128 KiB on Linux < 4.20 without
+    /// `FUSE_MAX_PAGES`, or to `max_pages_limit * page_size` on Linux 4.20+/6.13+).
+    /// On macOS, also emitted as `-o iosize=<bytes>`.
+    pub max_write: u32,
 }
 
 impl Default for FuseMountOptions {
@@ -2023,6 +2040,7 @@ impl Default for FuseMountOptions {
             reject_macos_metadata: true,
             normalize_nfc: true,
             volname: None,
+            max_write: FUSE_DEFAULT_MAX_WRITE,
         }
     }
 }
@@ -2037,14 +2055,24 @@ impl FuseMountOptions {
         }
     }
 
+    /// Returns `self.max_write` clamped to `[FUSE_MIN_MAX_WRITE, FUSE_MAX_SUPPORTED_WRITE]`
+    /// and aligned down to a 4 KiB block boundary.
+    pub fn effective_max_write(&self) -> u32 {
+        let clamped = self
+            .max_write
+            .clamp(FUSE_MIN_MAX_WRITE, FUSE_MAX_SUPPORTED_WRITE);
+        (clamped / BLOCK_SIZE as u32) * BLOCK_SIZE as u32
+    }
+
     /// Builds OS-filtered FUSE mount option strings (`-o ...`) for `target_os` (`"linux"` or `"macos"`).
     ///
     /// - Always includes `fsname=oifs` and `default_permissions`, plus `ro` when `read_only`
     ///   and `allow_other` when requested.
-    /// - On `"macos"`, adds `noappledouble`, `noapplexattr`, `local`, and `volname=<name>`.
+    /// - On `"macos"`, adds `noappledouble`, `noapplexattr`, `local`, `iosize=<max_write>`,
+    ///   and `volname=<name>`.
     /// - On `"linux"`, adds `subtype=oifs` and strips macOS-only options (`noappledouble`,
-    ///   `noapplexattr`, `volname`, `local`) so `fusermount3`/`fusermount` never fail with
-    ///   `unknown option`.
+    ///   `noapplexattr`, `volname`, `local`, `iosize`) so `fusermount3`/`fusermount` never
+    ///   fail with `unknown option`.
     pub fn build_mount_options_for_os(
         &self,
         target_os: &str,
@@ -2062,6 +2090,7 @@ impl FuseMountOptions {
                 opts.push("noappledouble".to_string());
                 opts.push("noapplexattr".to_string());
                 opts.push("local".to_string());
+                opts.push(format!("iosize={}", self.effective_max_write()));
                 let name = self
                     .volname
                     .as_deref()
@@ -2076,6 +2105,88 @@ impl FuseMountOptions {
         }
         opts
     }
+}
+
+/// Detects the Linux kernel FUSE `max_pages_limit` parameter dynamically.
+///
+/// - On Linux 6.13+, reads `/sys/module/fuse/parameters/max_pages_limit` (which defaults
+///   to 256 and can be raised by administrators up to 1024).
+/// - On Linux 4.20–6.12 (where the sysfs parameter does not exist) or non-Linux hosts,
+///   returns the standard kernel `FUSE_MAX_MAX_PAGES` value (`256`).
+pub fn detect_linux_fuse_max_pages_limit() -> u32 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(raw) = std::fs::read_to_string("/sys/module/fuse/parameters/max_pages_limit")
+            && let Ok(parsed) = raw.trim().parse::<u32>()
+        {
+            return parsed.clamp(32, 1024);
+        }
+    }
+    256
+}
+
+/// Returns the host OS memory page size in bytes (falling back to 4096 if unavailable).
+pub fn host_page_size() -> u32 {
+    // SAFETY: `sysconf(_SC_PAGESIZE)` has no preconditions and is thread-safe.
+    let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if ps > 0 && ps <= (1024 * 1024) {
+        ps as u32
+    } else {
+        4096
+    }
+}
+
+/// Dynamically negotiates `(max_write, max_pages)` for a `FUSE_INIT` handshake based on
+/// the requested size, kernel-advertised `init_in.flags`, target ABI platform, host page
+/// size, and Linux kernel `max_pages_limit`.
+pub fn negotiate_max_write(
+    requested: u32,
+    init_flags: u32,
+    platform: FuseAbiPlatform,
+    page_size: u32,
+    linux_max_pages_limit: u32,
+) -> (u32, u16) {
+    let page_size = page_size.max(4096);
+    let requested = (requested.clamp(FUSE_MIN_MAX_WRITE, FUSE_MAX_SUPPORTED_WRITE)
+        / BLOCK_SIZE as u32)
+        * BLOCK_SIZE as u32;
+
+    match platform {
+        FuseAbiPlatform::Linux => {
+            if (init_flags & FUSE_MAX_PAGES) == 0 {
+                // Linux < 4.20 (no FUSE_MAX_PAGES): kernel hard-caps FUSE requests at 32 pages (128 KiB on 4K pages).
+                let legacy_cap = 32u32.saturating_mul(page_size).max(FUSE_LEGACY_MAX_WRITE);
+                let max_write = requested.min(legacy_cap);
+                (max_write, 0)
+            } else {
+                // Linux 4.20+ (with FUSE_MAX_PAGES): cap by `max_pages_limit * page_size`.
+                let limit_pages = linux_max_pages_limit.clamp(32, 1024);
+                let kernel_cap = limit_pages.saturating_mul(page_size);
+                let max_write = requested.min(kernel_cap);
+                let max_pages = max_write.div_ceil(page_size).clamp(1, limit_pages) as u16;
+                (max_write, max_pages)
+            }
+        }
+        FuseAbiPlatform::MacOs => {
+            if (init_flags & FUSE_BIG_WRITES) == 0 {
+                (FUSE_MIN_MAX_WRITE, 0)
+            } else {
+                let max_pages = if (init_flags & FUSE_MAX_PAGES) != 0 {
+                    max_write_to_pages(requested, page_size)
+                } else {
+                    0
+                };
+                (requested, max_pages)
+            }
+        }
+    }
+}
+
+#[inline]
+fn max_write_to_pages(max_write: u32, page_size: u32) -> u16 {
+    max_write
+        .div_ceil(page_size.max(4096))
+        .clamp(1, u16::MAX as u32) as u16
 }
 
 /// Active open file or directory handle inside [`FuseHandleTable`].
@@ -3079,7 +3190,11 @@ impl OifsFuseState {
         Err(-libc::ENOTSUP)
     }
 
-    fn handle_init(&self, init_in: FuseInitIn) -> Result<FuseInitOut, i32> {
+    fn handle_init(
+        &self,
+        init_in: FuseInitIn,
+        platform: FuseAbiPlatform,
+    ) -> Result<FuseInitOut, i32> {
         if init_in.major < FUSE_KERNEL_VERSION {
             return Err(-libc::EPROTO);
         }
@@ -3095,8 +3210,13 @@ impl OifsFuseState {
         let supported_flags =
             FUSE_ASYNC_READ | FUSE_BIG_WRITES | FUSE_ATOMIC_O_TRUNC | FUSE_MAX_PAGES;
         let negotiated_flags = init_in.flags & supported_flags;
-        let max_write = FUSE_DEFAULT_MAX_WRITE;
-        let max_pages = (max_write / BLOCK_SIZE as u32) as u16;
+        let (max_write, max_pages) = negotiate_max_write(
+            self.options.effective_max_write(),
+            init_in.flags,
+            platform,
+            host_page_size(),
+            detect_linux_fuse_max_pages_limit(),
+        );
         self.max_write.store(max_write, Ordering::Release);
         self.initialized.store(true, Ordering::Release);
         self.destroyed.store(false, Ordering::Release);
@@ -3152,7 +3272,7 @@ impl OifsFuseState {
                 let Some(init_in) = FuseInitIn::parse(payload) else {
                     return FuseOutHeader::error_frame(unique, -libc::EINVAL);
                 };
-                match self.handle_init(init_in) {
+                match self.handle_init(init_in, platform) {
                     Ok(out) => FuseOutHeader::ok_frame(unique, &out.to_bytes()),
                     Err(e) => FuseOutHeader::error_frame(unique, e),
                 }
@@ -3640,7 +3760,9 @@ impl OifsFuseFs {
         fd: RawFd,
         platform: FuseAbiPlatform,
     ) -> std::io::Result<()> {
-        let mut buf = vec![0u8; FUSE_DEFAULT_MAX_WRITE as usize + 4096];
+        let buf_len = (self.options().effective_max_write() as usize + 4096)
+            .clamp(FUSE_LEGACY_MAX_WRITE as usize + 4096, FUSE_MAX_FRAME_LEN);
+        let mut buf = vec![0u8; buf_len];
         loop {
             // SAFETY: `buf` is a valid writable buffer of `buf.len()` bytes.
             let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };

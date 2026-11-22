@@ -1388,6 +1388,7 @@ fn test_fuse_macos_metadata_storm_xattr_nfc_and_os_mount_options() {
     assert!(macos_opts.contains(&"noappledouble".to_string()));
     assert!(macos_opts.contains(&"noapplexattr".to_string()));
     assert!(macos_opts.contains(&"local".to_string()));
+    assert!(macos_opts.contains(&"iosize=1048576".to_string()));
     assert!(macos_opts.contains(&"volname=OifsVol".to_string()));
     assert!(!macos_opts.contains(&"ro".to_string()));
 
@@ -1395,14 +1396,89 @@ fn test_fuse_macos_metadata_storm_xattr_nfc_and_os_mount_options() {
     assert!(linux_opts.contains(&"default_permissions".to_string()));
     assert!(linux_opts.contains(&"allow_other".to_string()));
     assert!(linux_opts.contains(&"subtype=oifs".to_string()));
-    for forbidden in ["noappledouble", "noapplexattr", "local", "volname=OifsVol"] {
+    for forbidden in [
+        "noappledouble",
+        "noapplexattr",
+        "local",
+        "iosize=1048576",
+        "volname=OifsVol",
+    ] {
         assert!(
             !linux_opts
                 .iter()
-                .any(|o| o == forbidden || o.starts_with("volname=")),
+                .any(|o| o == forbidden || o.starts_with("volname=") || o.starts_with("iosize=")),
             "Linux mount options must not include macOS-only option {forbidden}: {linux_opts:?}"
         );
     }
+
+    // 8g. Dynamic Linux / macOS max_write negotiation based on kernel capabilities.
+    use oifs::fuse::{FUSE_DEFAULT_MAX_WRITE, FUSE_LEGACY_MAX_WRITE, negotiate_max_write};
+    // Linux < 4.20 (no FUSE_MAX_PAGES): automatically capped at 128 KiB, max_pages = 0.
+    assert_eq!(
+        negotiate_max_write(
+            FUSE_DEFAULT_MAX_WRITE,
+            FUSE_BIG_WRITES,
+            FuseAbiPlatform::Linux,
+            4096,
+            256
+        ),
+        (FUSE_LEGACY_MAX_WRITE, 0)
+    );
+    // Linux 4.20-6.12 (FUSE_MAX_PAGES, limit=256, 4K page): 1 MiB, 256 pages.
+    assert_eq!(
+        negotiate_max_write(
+            FUSE_DEFAULT_MAX_WRITE,
+            FUSE_BIG_WRITES | FUSE_MAX_PAGES,
+            FuseAbiPlatform::Linux,
+            4096,
+            256
+        ),
+        (1024 * 1024, 256)
+    );
+    // Linux 4.20-6.12 requesting 4 MiB still capped to kernel limit 256 * 4K = 1 MiB.
+    assert_eq!(
+        negotiate_max_write(
+            4 * 1024 * 1024,
+            FUSE_BIG_WRITES | FUSE_MAX_PAGES,
+            FuseAbiPlatform::Linux,
+            4096,
+            256
+        ),
+        (1024 * 1024, 256)
+    );
+    // Linux 6.13+ (max_pages_limit=1024, 4K page) requesting 4 MiB -> 4 MiB, 1024 pages.
+    assert_eq!(
+        negotiate_max_write(
+            4 * 1024 * 1024,
+            FUSE_BIG_WRITES | FUSE_MAX_PAGES,
+            FuseAbiPlatform::Linux,
+            4096,
+            1024
+        ),
+        (4 * 1024 * 1024, 1024)
+    );
+    // Linux ARM64 16K page requesting 1 MiB -> 1 MiB, 64 pages.
+    assert_eq!(
+        negotiate_max_write(
+            1024 * 1024,
+            FUSE_BIG_WRITES | FUSE_MAX_PAGES,
+            FuseAbiPlatform::Linux,
+            16384,
+            256
+        ),
+        (1024 * 1024, 64)
+    );
+    // macOS macFUSE with FUSE_BIG_WRITES -> 1 MiB even without FUSE_MAX_PAGES.
+    assert_eq!(
+        negotiate_max_write(
+            1024 * 1024,
+            FUSE_BIG_WRITES,
+            FuseAbiPlatform::MacOs,
+            16384,
+            256
+        ),
+        (1024 * 1024, 0)
+    );
 
     // Read-only flag emits "ro" on both OSes
     let ro_opts = FuseMountOptions::default().build_mount_options_for_os("linux", true);

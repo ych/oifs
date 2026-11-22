@@ -2,11 +2,260 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="refresh" content="0; url=openwiki-visualizer/">
-  <link rel="canonical" href="openwiki-visualizer/">
-  <title>Redirecting to OpenWiki Visualizer...</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OIFS — High-Performance Single-File POSIX Filesystem in Rust</title>
+  <meta name="description" content="OIFS (O's Inode File System) is a high-performance single-file POSIX filesystem in Rust with XChaCha20-Poly1305 encryption, SIMD Zstd compression, metadata WAL, FUSE/NFSv3 mounting, C/C++ zero-copy API, 113 Kani formal proofs, and an AI MCP server.">
+  <meta name="keywords" content="OIFS, Rust filesystem, single-file filesystem, embedded storage, POSIX, FUSE, NFSv3, XChaCha20-Poly1305, Zstd, SIMD, Delta BitShuffle, WAL, Kani formal verification, MCP server">
+  <link rel="canonical" href="https://ych.github.io/oifs/">
+
+  <!-- Open Graph / Social -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="OIFS — High-Performance Single-File POSIX Filesystem in Rust">
+  <meta property="og:description" content="Single-file containerized POSIX filesystem in Rust featuring encryption, SIMD numeric compression, crash-safe WAL, zero-kext NFSv3 &amp; FUSE mounting, C/C++ zero-copy API, and MCP server.">
+  <meta property="og:url" content="https://ych.github.io/oifs/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="OIFS — Single-File POSIX Filesystem in Rust">
+  <meta name="twitter:description" content="High-performance single-file POSIX filesystem in Rust with encryption, SIMD compression, FUSE/NFSv3, and MCP server.">
+
+  <!-- Structured Data for Search Engines -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "name": "OIFS (O's Inode File System)",
+    "description": "High-performance single-file POSIX filesystem in Rust with XChaCha20-Poly1305 encryption, SIMD compression, crash-safe metadata WAL, FUSE/NFSv3 mounting, C/C++ zero-copy API, and MCP server.",
+    "url": "https://ych.github.io/oifs/",
+    "codeRepository": "https://github.com/ych/oifs",
+    "programmingLanguage": ["Rust", "C", "C++"],
+    "runtimePlatform": ["Linux", "macOS"],
+    "license": "https://www.apache.org/licenses/LICENSE-2.0",
+    "version": "1.4.0",
+    "keywords": "rust, filesystem, posix, embedded-storage, encryption, zstd, wal, fuse, nfsv3, mcp-server, formal-verification, kani"
+  }
+  </script>
+
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-hover: #79c0ff;
+      --code-bg: #0b0f14;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --surface: #f6f8fa;
+        --border: #d0d7de;
+        --text: #1f2328;
+        --muted: #59636e;
+        --accent: #0969da;
+        --accent-hover: #0550ae;
+        --code-bg: #f6f8fa;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 4rem;
+    }
+    header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 2rem;
+      margin-bottom: 2.5rem;
+    }
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+      font-size: 0.85rem;
+    }
+    .badge {
+      padding: 0.2rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--muted);
+    }
+    h1 {
+      font-size: clamp(2rem, 4vw, 2.75rem);
+      margin: 0 0 0.75rem;
+      letter-spacing: -0.02em;
+    }
+    .lead {
+      font-size: 1.15rem;
+      color: var(--muted);
+      margin: 0 0 1.5rem;
+      max-width: 72ch;
+    }
+    .cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+    .btn {
+      display: inline-block;
+      padding: 0.65rem 1.15rem;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      color: var(--text);
+      background: var(--surface);
+    }
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+    .btn:hover { opacity: 0.9; }
+    h2 {
+      margin-top: 2.25rem;
+      font-size: 1.45rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.4rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.1rem 1.2rem;
+    }
+    .card h3 {
+      margin: 0 0 0.4rem;
+      font-size: 1.05rem;
+    }
+    .card p {
+      margin: 0;
+      font-size: 0.94rem;
+      color: var(--muted);
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.15rem;
+      overflow-x: auto;
+      font-size: 0.9rem;
+    }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    a { color: var(--accent); }
+    a:hover { color: var(--accent-hover); }
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.9rem;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+  </style>
 </head>
 <body>
-  <p>Redirecting to <a href="openwiki-visualizer/">OpenWiki Visualizer</a>...</p>
+  <main>
+    <header>
+      <div class="badge-row">
+        <span class="badge">Rust Edition 2024</span>
+        <span class="badge">Apache-2.0</span>
+        <span class="badge">113 Kani Proofs</span>
+        <span class="badge">C &amp; C++17/20 Native API</span>
+        <span class="badge">FUSE &amp; Zero-Kext NFSv3</span>
+      </div>
+      <h1>OIFS — O's Inode File System</h1>
+      <p class="lead">
+        A high-performance, single-file containerized POSIX filesystem written in Rust.
+        Pack directories, compressed scientific arrays, encrypted agent workspaces, or application assets into a single portable <code>.img</code> file with crash-safe WAL, multi-process concurrency, and native OS mounting.
+      </p>
+      <div class="cta-row">
+        <a class="btn primary" href="openwiki-visualizer/">Explore Interactive Architecture Wiki</a>
+        <a class="btn" href="https://github.com/ych/oifs">View on GitHub</a>
+        <a class="btn" href="https://github.com/ych/oifs/releases">Download Releases</a>
+      </div>
+    </header>
+
+    <section>
+      <h2>Core Capabilities</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>Dual Storage Engine (Mmap &amp; FileIo)</h3>
+          <p>Zero-copy <code>mmap</code> (48–51 GB/s cached reads) plus an opt-in 100% <code>mmap</code>-free positional <code>pread</code>/<code>pwrite</code> engine with 64-shard page caching and <code>io_uring</code> support.</p>
+        </article>
+        <article class="card">
+          <h3>Zero-Kext NFSv3 &amp; Pure-Rust FUSE</h3>
+          <p>Mount any <code>.img</code> natively on macOS without third-party kexts via the built-in loopback NFSv3 server, or via pure-Rust FUSE ABI v7.28 on Linux and macFUSE.</p>
+        </article>
+        <article class="card">
+          <h3>SIMD Compression &amp; Seekable 64K</h3>
+          <p>NEON/SSE2 Delta, Byte Shuffle, BitShuffle, and TruncPrecision pre-filters paired with pooled Zstd for up to 390&times; scientific telemetry compression and random <code>read_at</code>.</p>
+        </article>
+        <article class="card">
+          <h3>Authenticated Encryption &amp; WAL</h3>
+          <p>Hardened Argon2id KDF, context-bound XChaCha20-Poly1305 AEAD, 192-bit SIV filename encryption, and optional CRC32C metadata Write-Ahead Logging with automatic recovery.</p>
+        </article>
+        <article class="card">
+          <h3>Cross-Image CoW Clone &amp; Fast Transfer</h3>
+          <p>O(1) whole-image clones (<code>clonefile</code> / <code>FICLONE</code>) and a 3-tier cross-image transfer &amp; sub-range splice pipeline (<code>FICLONERANGE</code> &rarr; <code>copy_file_range</code> &rarr; raw block copy).</p>
+        </article>
+        <article class="card">
+          <h3>C/C++ Zero-Copy API &amp; AI MCP Server</h3>
+          <p>Header-only Modern C++17/20 wrapper (<code>oifs.hpp</code> with C++20 <code>co_await</code> &amp; <code>PinnableSlice</code>), C FFI (<code>oifs.h</code>), built-in MCP server, and 113 Kani formal verification proofs.</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Quick Start</h2>
+      <pre><code># Install CLI directly from GitHub
+cargo install --git https://github.com/ych/oifs --tag 1.4.0
+
+# Create a crash-safe journaled image and store files
+oifs -i workspace.img create --size 100 --journal
+oifs -i workspace.img put ./data.bin /datasets/data.bin --chunked --filter bitshuffle
+
+# Mount natively (macOS uses built-in zero-kext NFSv3; Linux uses FUSE)
+oifs -i workspace.img mount ./mnt --foreground</code></pre>
+    </section>
+
+    <section>
+      <h2>Documentation &amp; Architecture</h2>
+      <ul>
+        <li><a href="openwiki-visualizer/">Interactive OpenWiki Architecture Graph &amp; Deep Dives</a></li>
+        <li><a href="https://github.com/ych/oifs/blob/master/README.md">Project README (English)</a> &middot; <a href="https://github.com/ych/oifs/blob/master/README_zh.md">繁體中文說明</a></li>
+        <li><a href="https://github.com/ych/oifs/blob/master/docs/nfs_mount_design.md">Pure-Rust Local NFSv3 Server Design</a></li>
+        <li><a href="https://github.com/ych/oifs/blob/master/docs/cross_image_reflink_design.md">Cross-Image Fast Transfer &amp; CoW Reflink Design</a></li>
+        <li><a href="https://github.com/ych/oifs/blob/master/docs/cpp_and_async_api_design.md">C/C++ Zero-Copy &amp; Async API Design</a></li>
+        <li><a href="https://github.com/ych/oifs/blob/master/docs/metadata_wal_design.md">Metadata Write-Ahead Log (WAL) Specification</a></li>
+      </ul>
+    </section>
+
+    <footer>
+      <span>OIFS &mdash; Apache-2.0 License</span>
+      <span><a href="https://github.com/ych/oifs">github.com/ych/oifs</a> &middot; <a href="sitemap.xml">sitemap.xml</a></span>
+    </footer>
+  </main>
 </body>
 </html>

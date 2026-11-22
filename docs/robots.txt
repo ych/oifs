@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://ych.github.io/oifs/sitemap.xml

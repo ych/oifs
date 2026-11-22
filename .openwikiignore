@@ -6,6 +6,8 @@
 openwiki/
 docs/openwiki-visualizer/
 docs/index.html
+docs/sitemap.xml
+docs/robots.txt
 docs/.nojekyll
 docs/similar_projects_comparison.md
 

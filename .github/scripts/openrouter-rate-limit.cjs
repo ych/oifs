@@ -1,15 +1,40 @@
 // .github/scripts/openrouter-rate-limit.cjs
-// Rate limiter for OpenRouter free models (enforces <= 19 RPM to stay safely under the 20 RPM limit)
+// Rate limiter, parallel_tool_calls enabler, and request-efficiency telemetry
+// for OpenRouter requests (enforces <= 18.2 RPM safely under the 20 RPM free-tier limit).
 
 const origFetch = globalThis.fetch;
 
 // 3.3 seconds minimum between requests = max ~18.2 requests/minute (safe under 20 RPM limit)
-const MIN_INTERVAL_MS = 3300;
+const MIN_INTERVAL_MS = (() => {
+  const envVal = Number(process.env.OIFS_OPENROUTER_MIN_INTERVAL_MS);
+  return Number.isFinite(envVal) && envVal >= 0 ? envVal : 3300;
+})();
+
 // Never sleep longer than 2 minutes on a 429; longer reset windows indicate a daily
 // RPD quota exhaustion rather than a per-minute RPM limit and would hit the 6h CI timeout.
 const MAX_RETRY_WAIT_MS = 120000;
+const SHORT_OUTPUT_THRESHOLD = 100;
+
 let lastRequestTime = 0;
 let queue = Promise.resolve();
+
+const stats = {
+  totalRequests: 0,
+  http2xx: 0,
+  http429: 0,
+  httpOther: 0,
+  networkErrors: 0,
+  chatCompletions: 0,
+  parallelToolCallsInjected: 0,
+  usageObserved: 0,
+  shortOutputTurns: 0,
+  singleToolCallTurns: 0,
+  multiToolCallTurns: 0,
+  totalPromptTokens: 0,
+  totalCompletionTokens: 0,
+};
+
+let summaryPrinted = false;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -33,13 +58,213 @@ function extractUrl(input) {
   return "";
 }
 
+/**
+ * Remove any Content-Length header after mutating a request JSON body so undici
+ * recomputes the exact byte length.
+ */
+function stripContentLengthHeader(headers) {
+  if (!headers) {
+    return headers;
+  }
+  if (typeof Headers !== "undefined" && headers instanceof Headers) {
+    const next = new Headers(headers);
+    next.delete("content-length");
+    return next;
+  }
+  if (Array.isArray(headers)) {
+    return headers.filter(
+      (entry) =>
+        !(
+          Array.isArray(entry) &&
+          typeof entry[0] === "string" &&
+          entry[0].toLowerCase() === "content-length"
+        )
+    );
+  }
+  if (typeof headers === "object") {
+    const next = {};
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() !== "content-length") {
+        next[key] = value;
+      }
+    }
+    return next;
+  }
+  return headers;
+}
+
+/**
+ * For OpenRouter /chat/completions payloads that declare `tools`, ensure
+ * `parallel_tool_calls: true` so capable models can batch exploratory reads
+ * into a single turn instead of spending one request per file/grep.
+ */
+function shapeChatCompletionInit(url, init) {
+  if (!url.includes("/chat/completions")) {
+    return init;
+  }
+  if (!init || typeof init.body !== "string") {
+    return init;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(init.body);
+  } catch {
+    return init;
+  }
+
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    !Array.isArray(parsed.tools) ||
+    parsed.tools.length === 0 ||
+    parsed.parallel_tool_calls === true
+  ) {
+    return init;
+  }
+
+  parsed.parallel_tool_calls = true;
+  stats.parallelToolCallsInjected++;
+
+  return {
+    ...init,
+    headers: stripContentLengthHeader(init.headers),
+    body: JSON.stringify(parsed),
+  };
+}
+
+function recordUsageAndToolCalls(usage, toolCallCount) {
+  if (usage && typeof usage === "object") {
+    const promptTokens = Number(usage.prompt_tokens);
+    const completionTokens = Number(usage.completion_tokens);
+    if (Number.isFinite(promptTokens) && promptTokens >= 0) {
+      stats.totalPromptTokens += promptTokens;
+    }
+    if (Number.isFinite(completionTokens) && completionTokens >= 0) {
+      stats.usageObserved++;
+      stats.totalCompletionTokens += completionTokens;
+      if (completionTokens < SHORT_OUTPUT_THRESHOLD) {
+        stats.shortOutputTurns++;
+      }
+    }
+  }
+
+  if (toolCallCount === 1) {
+    stats.singleToolCallTurns++;
+  } else if (toolCallCount >= 2) {
+    stats.multiToolCallTurns++;
+  }
+}
+
+/**
+ * Parse a cloned /chat/completions response (JSON or SSE) for efficiency telemetry.
+ * Runs off the hot path via `res.clone()` so it never blocks or mutates the caller's stream.
+ */
+function observeChatCompletionResponse(res) {
+  stats.chatCompletions++;
+
+  let cloned;
+  try {
+    cloned = res.clone();
+  } catch {
+    return;
+  }
+
+  const contentType = (res.headers.get("content-type") || "").toLowerCase();
+
+  if (contentType.includes("text/event-stream")) {
+    cloned
+      .text()
+      .then((text) => {
+        let usage = null;
+        const toolIndices = new Set();
+        for (const rawLine of text.split(/\r?\n/)) {
+          const line = rawLine.trim();
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          let chunk;
+          try {
+            chunk = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+          if (chunk && chunk.usage) {
+            usage = chunk.usage;
+          }
+          const deltaTools = chunk?.choices?.[0]?.delta?.tool_calls;
+          if (Array.isArray(deltaTools)) {
+            for (let i = 0; i < deltaTools.length; i++) {
+              const tc = deltaTools[i];
+              toolIndices.add(tc && tc.index !== undefined ? tc.index : i);
+            }
+          }
+          const msgTools = chunk?.choices?.[0]?.message?.tool_calls;
+          if (Array.isArray(msgTools)) {
+            for (let i = 0; i < msgTools.length; i++) {
+              toolIndices.add(i);
+            }
+          }
+        }
+        recordUsageAndToolCalls(usage, toolIndices.size);
+      })
+      .catch(() => {});
+    return;
+  }
+
+  if (contentType.includes("application/json") || contentType === "") {
+    cloned
+      .json()
+      .then((body) => {
+        const msgTools = body?.choices?.[0]?.message?.tool_calls;
+        const toolCount = Array.isArray(msgTools) ? msgTools.length : 0;
+        recordUsageAndToolCalls(body?.usage, toolCount);
+      })
+      .catch(() => {});
+  }
+}
+
+function printSummary() {
+  if (summaryPrinted || stats.totalRequests === 0) {
+    return;
+  }
+  summaryPrinted = true;
+
+  const shortPct =
+    stats.usageObserved > 0
+      ? ((stats.shortOutputTurns / stats.usageObserved) * 100).toFixed(1)
+      : "n/a";
+  const avgOut =
+    stats.usageObserved > 0
+      ? (stats.totalCompletionTokens / stats.usageObserved).toFixed(1)
+      : "n/a";
+
+  console.log(
+    [
+      "[RateLimiter] OpenRouter Run Summary:",
+      `requests=${stats.totalRequests} (2xx=${stats.http2xx}, 429=${stats.http429}, other=${stats.httpOther}, netErr=${stats.networkErrors})`,
+      `chat=${stats.chatCompletions}`,
+      `parallel_tool_calls_injected=${stats.parallelToolCallsInjected}`,
+      `tool_turns(single=${stats.singleToolCallTurns}, multi=${stats.multiToolCallTurns})`,
+      `short_output(<${SHORT_OUTPUT_THRESHOLD}tok)=${stats.shortOutputTurns}/${stats.usageObserved} (${shortPct}%)`,
+      `tokens(prompt=${stats.totalPromptTokens}, completion=${stats.totalCompletionTokens}, avg_out=${avgOut})`,
+    ].join(" | ")
+  );
+}
+
+process.on("beforeExit", printSummary);
+process.on("exit", printSummary);
+
 globalThis.fetch = async function (input, init) {
   const url = extractUrl(input);
 
-  // Only rate-limit requests targeting OpenRouter API
+  // Only intercept requests targeting OpenRouter API
   if (!url.includes("openrouter.ai")) {
     return origFetch(input, init);
   }
+
+  const effectiveInit = shapeChatCompletionInit(url, init);
+  const isChatCompletion = url.includes("/chat/completions");
 
   // Queue all OpenRouter requests so they are paced sequentially
   return new Promise((resolve, reject) => {
@@ -58,11 +283,13 @@ globalThis.fetch = async function (input, init) {
             await delay(MIN_INTERVAL_MS - elapsed);
           }
           lastRequestTime = Date.now();
+          stats.totalRequests++;
 
           try {
-            const res = await origFetch(input, init);
+            const res = await origFetch(input, effectiveInit);
 
             if (res.status === 429) {
+              stats.http429++;
               const resetHeader = res.headers.get("x-ratelimit-reset");
               let waitMs = 25000; // default 25s
               if (resetHeader) {
@@ -89,9 +316,19 @@ globalThis.fetch = async function (input, init) {
               continue;
             }
 
+            if (res.ok) {
+              stats.http2xx++;
+              if (isChatCompletion) {
+                observeChatCompletionResponse(res);
+              }
+            } else {
+              stats.httpOther++;
+            }
+
             resolve(res);
             return;
           } catch (err) {
+            stats.networkErrors++;
             if (attempts >= maxAttempts) {
               reject(err);
               return;
@@ -111,5 +348,5 @@ globalThis.fetch = async function (input, init) {
 };
 
 console.log(
-  "[RateLimiter] OpenRouter request rate-limiter initialized (<= 16 RPM safe pacing)."
+  "[RateLimiter] OpenRouter rate-limiter & telemetry initialized (<= 18.2 RPM safe pacing, parallel_tool_calls=true)."
 );

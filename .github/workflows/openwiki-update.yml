@@ -8,7 +8,8 @@ on:
         required: false
         default: "nvidia/nemotron-3-ultra-550b-a55b:free"
   schedule:
-    - cron: "0 8 * * *"
+    # Twice weekly (Mon & Thu 08:00 UTC) so commits batch before spending API quota
+    - cron: "0 8 * * 1,4"
 
 permissions:
   contents: write
@@ -27,17 +28,66 @@ jobs:
           # update runs against an empty change summary.
           fetch-depth: 0
 
+      - name: Preflight change gate
+        id: preflight
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Manual workflow_dispatch: running OpenWiki update."
+            exit 0
+          fi
+
+          if [ ! -f openwiki/.last-update.json ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "No openwiki/.last-update.json found: running OpenWiki update."
+            exit 0
+          fi
+
+          last_status=$(jq -r '.status // empty' openwiki/.last-update.json)
+          last_head=$(jq -r '.gitHead // empty' openwiki/.last-update.json)
+
+          if [ "$last_status" != "complete" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Previous OpenWiki run status is '${last_status:-unknown}' (incomplete): resuming update."
+            exit 0
+          fi
+
+          if [ -z "$last_head" ] || ! git cat-file -e "${last_head}^{commit}" 2>/dev/null; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Previous gitHead '${last_head:-missing}' unavailable: running OpenWiki update."
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "$last_head" HEAD -- \
+            src/ \
+            include/ \
+            Cargo.toml \
+            openwiki/INSTRUCTIONS.md \
+            ':(glob)docs/*.md')
+
+          if [ -n "$changed" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Relevant source/design changes detected since ${last_head}:"
+            echo "$changed"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=OpenWiki Update Skipped::No changes under src/, include/, Cargo.toml, openwiki/INSTRUCTIONS.md, or docs/*.md since ${last_head}."
+          fi
+
       - name: Set up Node.js
+        if: ${{ steps.preflight.outputs.should_run == 'true' }}
         uses: actions/setup-node@v5
         with:
           node-version: "22"
 
       - name: Install OpenWiki
+        if: ${{ steps.preflight.outputs.should_run == 'true' }}
         # mermaid + jsdom are optional; they add high-fidelity validation of Mermaid diagrams. Remove if your wiki has none.
         run: npm install --global openwiki@0.9.0 mermaid@11.16.0 jsdom@29.1.1
 
       - name: Run OpenWiki
         id: openwiki
+        if: ${{ steps.preflight.outputs.should_run == 'true' }}
         continue-on-error: true
         run: |
           openwiki code --update --print
@@ -54,12 +104,12 @@ jobs:
           LANGCHAIN_TRACING_V2: "false"
 
       - name: Remove transient OpenWiki run state
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.preflight.outputs.should_run == 'true' }}
         run: rm -f -- openwiki/.run.json
 
       - name: List OpenWiki update paths
         id: paths
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.preflight.outputs.should_run == 'true' }}
         # Check if actual markdown or docs visualizer files changed before creating a PR
         run: |
           paths=openwiki,docs,AGENTS.md
@@ -79,7 +129,7 @@ jobs:
 
       - name: Create OpenWiki update pull request
         id: create-pr
-        if: ${{ !cancelled() && steps.paths.outputs.has_content == 'true' }}
+        if: ${{ !cancelled() && steps.preflight.outputs.should_run == 'true' && steps.paths.outputs.has_content == 'true' }}
         uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
         with:
           add-paths: ${{ steps.paths.outputs.list }}

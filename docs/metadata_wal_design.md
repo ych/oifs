@@ -1,295 +1,62 @@
 # OIFS Metadata WAL (Write-Ahead Logging / Journaling) Specification
 
-This document specifies the architecture, journal records, disk layout, crash recovery mechanisms, optionality/compatibility guarantees, and formal verification requirements for the **Metadata WAL (Write-Ahead Logging / Journaling)** subsystem in **OIFS (O's Inode File System)**.
+This document describes the on-disk layout, transaction model, durability modes, and crash-recovery guarantees of the opt-in **Metadata WAL** implemented in `src/journal.rs` and `src/disk.rs`.
 
 ---
 
-## 1. Problem Statement & Motivation
+## 1. Design Goals
 
-In OIFS, metadata-modifying operations (such as `create_file`, `delete_file`, and `mkdir`) require mutating multiple disjoint disk blocks:
-1. **Inode Bitmap**: marking an inode bit as allocated or freed.
-2. **Data Block Bitmap**: marking data block bit(s) as allocated or freed.
-3. **Inode Table**: writing or updating the 256-byte `Inode` structure.
-4. **Directory Data Block**: appending or removing a `DirectoryEntry`.
-5. **Parent Directory Inode**: updating file size and `modified_at` timestamp.
+Metadata mutations (`create_file`, `create_file_with_data`, `mkdir`, `delete_file`, `rename`, `write_data`, `truncate`, `defragment`) update multiple disjoint structures: inode bitmap, data bitmap, inode slots, directory blocks, and indirect pointer blocks. Without a journal, a crash mid-mutation can leave leaked blocks or orphan inodes requiring an offline `oifs fsck`.
 
-### Current Risks
-If a crash occurs (power cut, process `SIGKILL`, or system reboot) mid-way through these writes:
-* The filesystem may suffer from orphan inodes, leaked blocks, or dangling directory entries pointing to unallocated inodes.
-* Recovery currently requires a complete disk-wide scan via `oifs fsck`, which traverses every inode and block bitmap and can take considerable time on large images.
-
-### Design Goals
-* **Opt-in / Optional Feature**: Users can freely choose whether to enable journaling (`--journal`) upon image creation. When disabled, the image maintains zero metadata overhead and 100% backward compatibility.
-* **Atomic Transactions**: When enabled, guarantees "all-or-nothing" atomicity across multi-block metadata mutations.
-* **Fast Crash Recovery (< 5ms)**: At image mount/load time, sequentially replaying committed journal transactions (Redo Replay) restores consistency in milliseconds, obviating the need for an offline `fsck`.
-* **Zero-Copy & 4KB Page Alignment Preserved**: WAL only logs metadata operations. Data payload blocks retain strict 4096-byte hardware MMU alignment and zero-copy [`Cow<'a, [u8]>`](file:///Users/ych/oifs/README.md) semantics.
-* **Formal Verification Friendly**: Designed for AWS Kani CBMC proofs covering ring-buffer arithmetic safety and replay idempotency.
+The Metadata WAL provides:
+- **Opt-in zero-overhead compatibility**: Enabled at image creation (`--journal` or `DiskManager::open_with_options(..., journaled = true, ...)`). Non-journaled images reserve zero WAL blocks and execute direct in-place updates.
+- **All-or-nothing crash atomicity**: Every multi-block metadata mutation is staged via `AllocSim` without touching the live image, committed as a single CRC32C-checksummed transaction (`commit_journal_tx`), and then applied in place (`apply_journal_ops`).
+- **Ordered-mode payload safety**: Payload data blocks are written and flushed *before* the metadata commit (except small `<= 8 KiB` payloads in `create_file_with_data` under `DurabilityMode::Strict`, which are data-journaled inline inside the WAL commit to reduce sync barriers from 3 to 1).
+- **Fast idempotent redo recovery**: At mount time, committed transactions in the ring buffer are replayed idempotently in milliseconds; torn or CRC-invalid tail records are cleanly ignored.
+- **Strict read-only safety**: `DiskManager::open_read_only*` verifies WAL cleanliness without writing a single byte and refuses unrecovered dirty journals rather than mutating the image.
 
 ---
 
-## 2. Optional Feature Architecture & Compatibility
-
-The WAL subsystem is designed as an **opt-in modular extension**, analogous to the relationship between Linux `ext2` (non-journaled) and `ext3`/`ext4` (journaled with JBD2).
-
-### 2.1 CLI Interface
-* **Enable Journaling** (recommended for production/high-reliability environments):
-  ```bash
-  cargo run --bin oifs -- -i disk.img create --size 10 --journal
-  ```
-* **Disable Journaling** (for maximum raw memory throughput or minimal image footprint):
-  ```bash
-  cargo run --bin oifs -- -i disk.img create --size 10 --no-journal
-  ```
-
-### 2.2 Dual-Mode Disk Layout Comparison
-
-#### Mode A: Non-Journaled (Legacy / Default, 100% Identical to Existing Layout)
-```text
-[Block 0] SuperBlock (has_journal = false, journal_block_count = 0)
-[Block 1] Inode Bitmap (1 block = 32K inodes)
-[Block 2] Data Bitmap (1 block = 32K blocks)
-[Block 3 .. 1026] Inode Table (1024 blocks = 32K inodes)
-[Block 1027 ..] Data Blocks (file & directory content)
-```
-* No storage overhead, byte-identical to legacy OIFS disk images.
-
-#### Mode B: Journaled Mode
-```text
-[Block 0] SuperBlock (has_journal = true, journal_block_count = 32)
-[Block 1] Inode Bitmap
-[Block 2] Data Bitmap
-[Block 3 .. 34] Journal Ring Buffer (32 blocks = 128 KB)
-[Block 35 .. 1058] Inode Table (1024 blocks = 32K inodes)
-[Block 1059 ..] Data Blocks (file & directory content)
-```
-
-### 2.3 Runtime Zero-Overhead Dispatch
-In critical write paths in `DiskManager` (e.g. `create_entry_internal`, `delete_file`), execution branches on `guard.has_journal()`:
-```rust
-if guard.has_journal() {
-    // Journaled path: TxBatch -> serialize -> msync WAL -> apply to mmap -> checkpoint
-    Self::execute_metadata_transaction(&mut guard, tx)?;
-} else {
-    // Non-journaled path: direct in-place update + sync_mutation_ranges (zero overhead)
-    Self::execute_legacy_in_place(&mut guard, mutation)?;
-}
-```
-
----
-
-## 3. SuperBlock Layout Extensions
-
-Fields are appended to [`SuperBlock`](file:///Users/ych/oifs/src/superblock.rs) in Block 0 (which has over 4000 unused bytes), preserving backward compatibility:
-
-```rust
-pub struct SuperBlock {
-    // ... Existing fields (magic, block_size, block_count, etc.) ...
-
-    // --- Metadata WAL extension fields ---
-    /// Whether WAL journaling is active for this image
-    pub has_journal: bool,
-    /// Starting block ID of the journal ring buffer (e.g. 3)
-    pub journal_start_block: u64,
-    /// Number of dedicated journal blocks (e.g. 32 = 128 KB)
-    pub journal_block_count: u32,
-    /// Current write head byte offset within the journal ring buffer
-    pub journal_head: u64,
-    /// Current checkpoint tail byte offset within the journal ring buffer
-    pub journal_tail: u64,
-    /// Monotonically increasing transaction sequence ID
-    pub journal_tx_seq: u64,
-    /// Clean unmount flag (set to false upon first write, true on clean flush/close)
-    pub cleanly_unmounted: bool,
-}
-```
-
----
-
-## 4. WAL Record & Transaction Frame Format
-
-Each transaction consists of a fixed-size header, one or more micro-mutation records, and a commit marker, protected by hardware-accelerated **CRC32C** to detect torn writes.
-
-### 4.1 Transaction Frame
+## 2. On-Disk Layout (Format v3, 4096-Byte Blocks)
 
 ```text
-+-----------------------------------------------------------------------------------+
-| TxHeader (24 Bytes)                                                               |
-|  - magic: u32 = 0x57414C54 ("WALT")                                              |
-|  - tx_seq: u64 (Monotonic transaction sequence number)                            |
-|  - payload_len: u32 (Total length of serialized records)                          |
-|  - crc32c: u32 (Hardware CRC32C over header + payload)                            |
-|  - reserved: u32                                                                  |
-+-----------------------------------------------------------------------------------+
-| Payload: Compact sequence of serialized MetadataOp records                        |
-|  - Op 1: SetInodeBitmap { inode_id, allocated }                                   |
-|  - Op 2: WriteInode { inode_id, inode_bytes: [u8; 256] }                          |
-|  - Op 3: WriteDirectorySlice { block_id, offset, data }                           |
-|  - Op 4: UpdateInode { inode_id, size, mtime }                                    |
-+-----------------------------------------------------------------------------------+
-| TxCommitMarker: u32 = 0xDEADBEEF                                                  |
-+-----------------------------------------------------------------------------------+
++-------------------+--------------------+-------------------+---------------------+-------------------------+
+| Block 0           | Blocks 1..I        | Blocks I+1..D     | [Optional WAL]      | Inode Table -> Data     |
+| SuperBlock (4KB)  | Inode Bitmap       | Data Bitmap       | 33 Blocks (1 + 32)  | 256B Slots -> 4KB Data  |
++-------------------+--------------------+-------------------+---------------------+-------------------------+
 ```
 
-### 4.2 Metadata Operations (`MetadataOp`)
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum MetadataOp {
-    /// Inode bitmap allocation or deallocation
-    SetInodeBitmap {
-        inode_id: u64,
-        allocated: bool,
-    },
-    /// Data block bitmap allocation or deallocation
-    SetDataBitmap {
-        block_id: u64,
-        allocated: bool,
-    },
-    /// Inode record update or initialization (256-byte aligned)
-    WriteInode {
-        inode_id: u64,
-        inode_bytes: [u8; 256],
-    },
-    /// Slice modification in a directory data block (inserting/removing entry)
-    WriteDirectorySlice {
-        block_id: u64,
-        offset: u16,
-        data: Vec<u8>,
-    },
-}
-```
+- **Dynamic v3 bitmaps**: Inode and data bitmap sizes scale with image capacity (1 block tracks 32,768 entries).
+- **WAL region (33 blocks = 132 KiB)** placed between the data bitmap and inode table when enabled:
+  - **1 Header Block (4 KiB)**: Magic, version, `head_seq`, `tail_offset`, ring geometry, and CRC32C.
+  - **32 Ring Blocks (128 KiB)**: Circular byte buffer of length-prefixed, CRC32C-verified `Transaction` frames containing coalesced `MetadataOp` records (`SetInodeBitmap`, `SetDataBitmap`, `SetDataBitmapRange`, `WriteBlockSlice`, `WriteInode`).
+- **Write-through `FileIo` efficiency**: `JournalRegionMut` tracks exact dirty byte ranges and `pwrite`s only the modified header bytes and newly appended ring frame rather than rewriting all 132 KiB.
 
 ---
 
-## 5. Write Pipeline Lifecycle
+## 3. Transaction Execution & Checkpointing
 
-Taking `create_file(parent_id, "example.txt")` as an example:
+Every journaled mutation follows a strict 3-phase protocol:
+1. **Compute & Stage (no live mutation)**: Simulate any new allocations through `AllocSim`, build post-images of modified directory/indirect blocks and inodes, and coalesce contiguous bitmap ops (`coalesce_ops`).
+2. **Commit Point (`commit_journal_tx`)**: Append the CRC32C-checksummed frame to the WAL ring and persist according to `DurabilityMode` (coalescing header + frame sync in `Strict` mode).
+3. **Apply & Deferred Checkpoint (`apply_journal_ops` + `maybe_checkpoint`)**: Apply post-images to the live image; once ring utilization crosses the checkpoint watermark (JBD2-style deferred checkpointing), flush live metadata and advance the WAL head pointer.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Op as Operation (create_file)
-    participant Batch as Memory TxBatch
-    participant WAL as Disk WAL Ring Buffer
-    participant InPlace as Disk In-Place (mmap Inode/Bitmap)
-
-    Op->>Batch: Prepare mutations (Alloc Inode, Write Inode, Append Dir Entry)
-    Op->>WAL: Append serialized transaction frame (TxHeader, Payload, CRC32C)
-    Note over WAL: msync(WAL byte range) <br/>★ Atomic Commit Point ★
-    Op->>InPlace: Apply mutations directly into memory map (mmap)
-    Note over InPlace: Update in-memory dir_cache
-    Note over WAL, InPlace: Checkpoint: Advance journal_tail as in-place pages flush
-    Op-->>Op: Return success (new_inode_id)
-```
-
-### Atomic Commit Guarantees
-1. **Crash before Step 2 completes**: The WAL does not contain the transaction record; in-place disk state remains unmodified and completely consistent.
-2. **Crash during Step 2 (Torn Write)**: CRC32C checksum verification fails upon recovery; the partial record is discarded as an uncommitted transaction.
-3. **Crash during Step 3 (In-place mutation partially written)**: The transaction is already committed in the WAL with a valid CRC32C. Boot recovery re-applies (Redo) all operations, automatically restoring consistency in milliseconds.
+**Core Invariant**: Every metadata-mutating path on a journaled image *must* go through the WAL. Bypassing the WAL on any path would allow a pending transaction in the ring to replay stale post-images over newer changes after a crash.
 
 ---
 
-## 6. Fast Crash Recovery & Redo Replay
+## 4. Durability Modes (`DurabilityMode`)
 
-During `DiskManager::open`, if `cleanly_unmounted == false` or `journal_head != journal_tail`:
-
-```rust
-pub fn recover_from_journal(mmap: &mut MmapMut, sb: &mut SuperBlock) -> Result<usize, DiskManagerError> {
-    let mut cursor = sb.journal_tail;
-    let mut replayed_transactions = 0;
-    let ring_size = sb.journal_block_count as u64 * sb.block_size as u64;
-
-    while cursor != sb.journal_head {
-        match read_tx_frame(mmap, sb, cursor) {
-            Ok(tx) if tx.verify_crc() => {
-                // CRC valid: replay all operations onto in-place structures
-                for op in tx.ops {
-                    apply_op_in_place(mmap, sb, &op)?;
-                }
-                cursor = (cursor + tx.total_len()) % ring_size;
-                replayed_transactions += 1;
-            }
-            _ => {
-                // Encountered corrupted, torn, or uncommitted transaction: halt replay
-                break;
-            }
-        }
-    }
-
-    // Flush replayed modifications to disk and reset pointers
-    mmap.flush()?;
-    sb.journal_tail = cursor;
-    sb.journal_head = cursor;
-    sb.cleanly_unmounted = true;
-    sync_superblock(mmap, sb)?;
-
-    Ok(replayed_transactions)
-}
-```
+| Mode | Behavior | Trade-off |
+| :--- | :--- | :--- |
+| **`Lazy`** (default) | Writes to OS page cache / `mmap`; flushed on `flush()`, `Drop`, or OS writeback | Maximum throughput; process-crash safe |
+| **`RangeAsync`** | Tracks dirty byte ranges and drains `msync(MS_ASYNC)` asynchronously outside write locks | Low latency with proactive background writeback |
+| **`Strict`** | Synchronous `msync(MS_SYNC)` / `File::sync_data()` barrier on WAL commit (single-syscall coalesced header + frame; `<= 8 KiB` `create_file_with_data` inline data-journaled) | Immediate power-loss durability |
+| **`LegacyWholeMmapAsync`** | Full-mapping async flush per mutation | Legacy compatibility |
 
 ---
 
-## 7. Integration with Existing Subsystems
+## 5. Verification
 
-1. **Durability Policies (`DurabilityMode`)**:
-   - `DurabilityMode::Strict`: Calls synchronous `msync` on the WAL range immediately on every transaction commit.
-   - `DurabilityMode::Lazy` / `RangeAsync`: Buffers transactions in memory, flushing on periodic background sync or explicit `sync()` calls for maximum throughput.
-2. **Master-Proxy Multi-Process Concurrency**:
-   - Only the Master process (holding OS `flock`) appends to the WAL and advances pointers. Proxies forward operations via IPC, avoiding multi-process log contention.
-3. **Formal Verification (Kani CBMC)**:
-   - Proved that `apply_op_in_place` is strictly **idempotent** across all `MetadataOp` variants (`SetInodeBitmap`, `SetDataBitmap`, `WriteBlockSlice`, `WriteInode`), guaranteeing that replaying multiple times yields identical filesystem states.
-   - Proved that circular ring-buffer pointer arithmetic `(cursor + len) % ring_size` and `(head + ring - tail) % ring` are free from arithmetic overflow and out-of-bounds access.
-   - Proved that `checkpoint_to` moves `tail` forward towards `head` monotonically without passing it.
-
----
-
-## 8. Implementation Milestones
-
-| Milestone | Scope | Deliverables | Status |
-| :--- | :--- | :--- | :--- |
-| **M1** | Journal structures & ring buffer (`src/journal.rs`) | `MetadataOp` serialization, `TxHeader`, CRC32C computation | Completed |
-| **M2** | Superblock expansion & layout formatting | Support `--journal` creation flag and backward-compatible parsing | Completed |
-| **M3** | Write path integration (`src/disk.rs`) | Connect `create_file`, `delete_file`, `mkdir` to transaction batches | Completed |
-| **M4** | Crash recovery & fault injection tests | Power-cut / torn-write injection tests verifying self-healing recovery | Completed |
-| **M5** | Kani formal proofs | CBMC proofs for replay idempotency and ring buffer invariants | **Completed** |
-| **M6** | `write_data` Journaling & Refactoring | Ordered payload staging via `AllocSim`, pointer pruning on shrink, helper extraction | Completed |
-
----
-
-## 9. Implementation Details & Lessons Learned
-
-### 9.1 Self-Contained Helper Extraction
-To keep `DiskManager` maintainable and decouple block arithmetic from storage policies, the following self-contained helpers reside in `src/journal.rs`:
-* `AllocSim`: Pre-allocates block/inode IDs against copied bitmaps without modifying `mmap`.
-* `sim_get_or_alloc_block`: Simulates block allocation and records corresponding `MetadataOp`s.
-* `stage_payload_write`: Writes raw payload bytes directly into mapping before metadata commit.
-* `prune_stale_pointers`: Clears dangling indirect/double/triple pointer entries when a file shrinks.
-
-### 9.2 Ordered Data Semantics in `write_data` Journaling
-User data payload is deliberately **not** logged inside the WAL ring buffer (which would cause write amplification scaling with file size). Instead, crash consistency relies on **strict write ordering**:
-1. **Stage**: Allocate blocks via `AllocSim` and write payload into data blocks while their bitmap bits remain 0 (free).
-2. **Flush Payload**: Ensure newly written payload blocks reach persistent storage.
-3. **Commit Metadata**: Append the metadata transaction (setting bitmap bits, updating inode, and pointer updates) to the WAL and sync. This is the atomic commit point.
-4. **Apply**: Replay metadata ops in place.
-
-If power fails before Step 3, free blocks contain unreferenced garbage (harmless). If power fails after Step 3, boot recovery replays the transaction, ensuring metadata never references unwritten or uncommitted blocks.
-
-### 9.3 Pointer Pruning on File Shrink
-When an existing file is truncated or rewritten with a smaller size, indirect pointer blocks retain pointers to decommissioned blocks. Leaving these pointers causes `fsck` to detect `missing_blocks` (inode references a block that bitmap marks as free).
-`prune_stale_pointers` traverses direct, single, double, and triple indirect trees up to the new length:
-* Direct pointers beyond `first_stale` are zeroed in the inode.
-* Indirect roots beyond `first_stale` are zeroed.
-* Tail entries within pointer blocks are zeroed via `WriteBlockSlice` ops recorded in the same transaction.
-
----
-
-## 10. `RangeAsync` Deferred Dirty-Range Coalescing (`P4.33` — Resolved)
-
-### 10.1 Previous Bottleneck
-Before `P4.33`, `DurabilityMode::RangeAsync` called `flush_async_range(offset, len)` (`msync(MS_ASYNC)`) synchronously inside `inner.write()` on every mutation (`~17k writes/sec` vs `~500k writes/sec` in `Lazy`, ~3–7%), paying multiple kernel VM syscalls per file operation.
-
-### 10.2 Implemented Solution (`PendingAsyncRanges`)
-1. **In-Memory Interval Buffering**: Mutations under `DurabilityMode::RangeAsync` append and merge neighboring dirty byte ranges into `DiskManagerInner::pending_async_ranges` without invoking `msync` while holding `inner.write()`.
-2. **WAL-Ordered Batched Drain Outside Write Lock**: Once `64` mutations or `1 MiB` of dirty spans accumulate, `DiskManager::maybe_drain_async_ranges` acquires `sync_mutex` + `inner.read()` (allowing concurrent readers to proceed), flushes the journal region first (`MS_ASYNC`), and then flushes the sorted, gap-coalesced image spans.
-3. **Deterministic Sync Boundaries**: Mode transitions (`set_durability_mode`), `flush()`, `flush_async()`, and `Drop` drain or supersede all buffered ranges, lifting `RangeAsync` small/medium write throughput by **6.1x–24.2x** (`~198k–355k ops/s`).
-
+- **Integration & Crash Tests**: `tests/journal_test.rs`, `tests/rename_test.rs`, `tests/read_only_mode_test.rs`, `tests/auto_defrag_test.rs` (torn-write injection, idempotent redo replay, checkpoint wrap-around, WAL-atomic in-place defragmentation and `rename`).
+- **Formal Verification (Kani)**: Proofs in `src/journal.rs` verify CRC32C torn-write detection, ring-buffer wrap-around arithmetic, checkpoint invariants, and bitmap op coalescing soundness.

@@ -107,9 +107,9 @@ An inode stores:
 | `src/bin/oifs_mcp.rs` | AI Model Context Protocol (MCP) server for IDE/agent tooling (optional `mcp` feature). |
 | `tests/` | 70 integration test files (74 total test targets): Bolero property/fuzz suites, stress, crash-safety, concurrency, journal, auto-defrag, `FileIo` storage & data page cache, `read_only_mode_test`, `fuse_test`, `ReadSession` / `create_file_with_data`, `async_and_ffi_test`, `cpp_api_test`, IPC-security, block-pointer & size/bomb bounds, inode-bounds, defrag-seekable, zeroed-block, zstd-pool, encrypted-context-binding, large-image-bitmap, and CLI suites. |
 | `docs/cpp_and_async_api_design.md` | Architecture, trade-offs, and safety invariants for `include/oifs.hpp`, C FFI zero-copy sessions, Async Inline Fast-Path, and Group-Commit writes. |
-| `docs/optimization_roadmap.md` | Detailed optimization changelog and benchmarks. |
-| `docs/metadata_wal_design.md` | Metadata WAL specification, durability modes, and recovery guarantees. |
-| `docs/performance_and_verification_research.md` | Audit of performance bottlenecks, safety properties, and formal verification blueprints. |
+| `docs/metadata_wal_design.md` | Metadata WAL specification, v3 33-block layout, durability modes, and crash-recovery guarantees. |
+| `docs/nfs_mount_design.md` | Pure-Rust local loopback NFSv3 Server design (zero-kext macOS/Linux mounting, ONC RPC v2/XDR, MOUNT v3 + NFS v3). |
+| `docs/cross_image_reflink_design.md` | Cross-image fast transfer & CoW reflink design (`FICLONERANGE` -> `copy_file_range` -> raw compressed block transfer, whole-image `clonefile`/`FICLONE`). |
 
 ---
 

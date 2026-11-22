@@ -19,6 +19,14 @@
 #include <span>
 #endif
 
+#if __cplusplus >= 202002L && defined(__cpp_impl_coroutine)
+#if __has_include(<coroutine>)
+#define OIFS_HAS_CPP20_COROUTINE 1
+#include <coroutine>
+#include <thread>
+#endif
+#endif
+
 namespace oifs {
 
 /**
@@ -32,11 +40,49 @@ public:
 };
 
 /**
+ * Checks dynamic library compatibility against the header (or requested) version.
+ * Returns 0 (exact match), 1 (newer library loaded), or -1 (older incompatible library).
+ */
+inline int32_t check_version(uint32_t major = OIFS_VERSION_MAJOR,
+                             uint32_t minor = OIFS_VERSION_MINOR,
+                             uint32_t patch = OIFS_VERSION_PATCH) noexcept {
+    return oifs_check_version(major, minor, patch);
+}
+
+/**
+ * Returns the runtime version string of the loaded liboifs dynamic library.
+ */
+inline std::string_view version_string() noexcept {
+    const char* s = oifs_version_string();
+    return s != nullptr ? std::string_view(s) : std::string_view{};
+}
+
+/**
+ * Returns the absolute filesystem path from which liboifs was loaded.
+ */
+inline std::string loaded_path() {
+    char buf[4096] = {0};
+    if (oifs_loaded_path(buf, sizeof(buf)) != 0) {
+        throw Error("oifs_loaded_path failed");
+    }
+    return std::string(buf);
+}
+
+/**
  * Storage engine mode for OIFS container images.
  */
 enum class StorageMode : uint8_t {
     Mmap = OIFS_STORAGE_MODE_MMAP,
     FileIo = OIFS_STORAGE_MODE_FILE_IO,
+};
+
+/**
+ * Pluggable read/write I/O engine backend.
+ */
+enum class IoBackend : uint8_t {
+    Mmap = OIFS_IO_BACKEND_MMAP,
+    Pread = OIFS_IO_BACKEND_PREAD,
+    IoUring = OIFS_IO_BACKEND_IO_URING,
 };
 
 /**
@@ -56,6 +102,168 @@ enum class WritePolicy : uint32_t {
     Raw = OIFS_WRITE_POLICY_RAW,
     Stream = OIFS_WRITE_POLICY_STREAM,
     Seekable64K = OIFS_WRITE_POLICY_SEEKABLE_64K,
+};
+
+/**
+ * Whole-image CoW clone method selected by the host OS.
+ */
+enum class CloneMethod : uint8_t {
+    ApfsClonefile = OIFS_CLONE_METHOD_APFS_CLONEFILE,
+    LinuxFiclone = OIFS_CLONE_METHOD_LINUX_FICLONE,
+    StandardCopy = OIFS_CLONE_METHOD_STANDARD_COPY,
+};
+
+/**
+ * Tier selected by cross-image file transfer or sub-range splice.
+ */
+enum class TransferMethod : uint8_t {
+    Reflink = OIFS_TRANSFER_METHOD_REFLINK,
+    CopyFileRange = OIFS_TRANSFER_METHOD_COPY_FILE_RANGE,
+    RawBlockCopy = OIFS_TRANSFER_METHOD_RAW_BLOCK_COPY,
+    LogicalReencode = OIFS_TRANSFER_METHOD_LOGICAL_REENCODE,
+};
+
+/**
+ * Options for cross-image file transfer (`FileSystem::transfer_file_to`).
+ */
+struct TransferOptions {
+    bool move_file = false;
+    bool overwrite = false;
+};
+
+/**
+ * Statistics returned by `FileSystem::transfer_file_to`.
+ */
+struct TransferStats {
+    uint64_t src_inode = 0;
+    uint64_t dst_inode = 0;
+    uint64_t logical_bytes = 0;
+    uint64_t physical_bytes = 0;
+    uint64_t extents_transferred = 0;
+    TransferMethod method = TransferMethod::LogicalReencode;
+};
+
+/**
+ * Source range trim behavior after `FileSystem::splice_range_to`.
+ */
+enum class SpliceTrimMode : uint8_t {
+    Keep = OIFS_SPLICE_TRIM_KEEP,
+    PunchHole = OIFS_SPLICE_TRIM_PUNCH_HOLE,
+    CollapseRange = OIFS_SPLICE_TRIM_COLLAPSE,
+};
+
+/**
+ * Options for cross-image sub-range splice (`FileSystem::splice_range_to`).
+ */
+struct SpliceOptions {
+    SpliceTrimMode trim_mode = SpliceTrimMode::Keep;
+};
+
+/**
+ * Statistics returned by `FileSystem::splice_range_to`.
+ */
+struct SpliceStats {
+    uint64_t src_inode = 0;
+    uint64_t dst_inode = 0;
+    uint64_t bytes_spliced = 0;
+    uint64_t logical_rmw_bytes = 0;
+    uint64_t body_fast_path_bytes = 0;
+    uint64_t physical_bytes = 0;
+    uint64_t extents_transferred = 0;
+    uint64_t src_blocks_freed = 0;
+    TransferMethod method = TransferMethod::LogicalReencode;
+};
+
+/**
+ * SIMD pre-compression numeric filter pipeline configuration.
+ */
+struct FilterConfig {
+    uint8_t typesize = 0;
+    bool enable_delta = false;
+    bool enable_shuffle = false;
+    bool enable_bitshuffle = false;
+
+    static constexpr FilterConfig none() noexcept {
+        return FilterConfig{0, false, false, false};
+    }
+
+    static constexpr FilterConfig numeric(uint8_t elem_typesize) noexcept {
+        return FilterConfig{elem_typesize, true, true, false};
+    }
+
+    static constexpr FilterConfig delta_only(uint8_t elem_typesize) noexcept {
+        return FilterConfig{elem_typesize, true, false, false};
+    }
+
+    static constexpr FilterConfig shuffle_only(uint8_t elem_typesize) noexcept {
+        return FilterConfig{elem_typesize, false, true, false};
+    }
+
+    static constexpr FilterConfig bitshuffle(uint8_t elem_typesize) noexcept {
+        return FilterConfig{elem_typesize, false, false, true};
+    }
+
+    constexpr OIFSFilterConfig to_c() const noexcept {
+        return OIFSFilterConfig{
+            typesize,
+            static_cast<uint8_t>(enable_delta ? 1 : 0),
+            static_cast<uint8_t>(enable_shuffle ? 1 : 0),
+            static_cast<uint8_t>(enable_bitshuffle ? 1 : 0),
+        };
+    }
+};
+
+/**
+ * Inode metadata returned by `FileSystem::stat()`.
+ */
+struct FileStat {
+    uint64_t inode_id = 0;
+    uint64_t size = 0;
+    uint64_t compressed_size = 0;
+    uint64_t created_at = 0;
+    uint64_t modified_at = 0;
+    bool is_dir = false;
+    bool encrypted = false;
+    bool seekable_64k = false;
+    uint8_t filter_typesize = 0;
+    bool filter_delta = false;
+    bool filter_shuffle = false;
+    bool filter_bitshuffle = false;
+};
+
+/**
+ * Structural integrity check report returned by `FileSystem::verify_integrity()`.
+ */
+struct FsckReport {
+    bool is_clean = false;
+    uint64_t orphan_inodes = 0;
+    uint64_t leaked_blocks = 0;
+    uint64_t missing_blocks = 0;
+    uint64_t cross_linked_blocks = 0;
+};
+
+/**
+ * Data-block fragmentation report returned by `FileSystem::analyze_fragmentation()`.
+ */
+struct FragmentationStats {
+    uint64_t total_blocks = 0;
+    uint64_t used_blocks = 0;
+    uint64_t free_blocks = 0;
+    uint64_t free_runs = 0;
+    uint64_t largest_free_run = 0;
+    double avg_gap_size = 0.0;
+    double fragmentation_ratio = 0.0;
+};
+
+/**
+ * Defragmentation summary returned by `FileSystem::defragment()`.
+ */
+struct DefragStats {
+    uint64_t files_processed = 0;
+    uint64_t bytes_moved = 0;
+    uint64_t blocks_freed = 0;
+    double frag_before = 0.0;
+    double frag_after = 0.0;
 };
 
 /**
@@ -93,6 +301,13 @@ public:
 
     constexpr Span() noexcept : data_(nullptr), size_(0) {}
     constexpr Span(T* data, std::size_t size) noexcept : data_(data), size_(size) {}
+
+    template <typename U,
+              typename = std::enable_if_t<std::is_const_v<T> &&
+                                          std::is_same_v<std::remove_const_t<T>, U> &&
+                                          !std::is_const_v<U>>>
+    constexpr Span(const Span<U>& other) noexcept
+        : data_(other.data()), size_(other.size()) {}
 
     constexpr T* data() const noexcept { return data_; }
     constexpr std::size_t size() const noexcept { return size_; }
@@ -174,6 +389,45 @@ private:
     const uint8_t* data_;
     std::size_t size_;
 };
+
+/**
+ * Converts a typed contiguous span or vector of trivially copyable elements into a `ByteView`.
+ */
+template <typename T>
+inline ByteView as_bytes(Span<const T> data) noexcept {
+    using ValueT = std::remove_cv_t<T>;
+    static_assert(std::is_trivially_copyable_v<ValueT>,
+                  "oifs::as_bytes requires a trivially copyable element type");
+    return ByteView(reinterpret_cast<const uint8_t*>(data.data()), data.size_bytes());
+}
+
+template <typename T, typename = std::enable_if_t<!std::is_const_v<T>>>
+inline ByteView as_bytes(Span<T> data) noexcept {
+    return oifs::as_bytes(Span<const T>(data.data(), data.size()));
+}
+
+template <typename T, typename Alloc>
+inline ByteView as_bytes(const std::vector<T, Alloc>& vec) noexcept {
+    using ValueT = std::remove_cv_t<T>;
+    static_assert(std::is_trivially_copyable_v<ValueT>,
+                  "oifs::as_bytes requires a trivially copyable element type");
+    return ByteView(reinterpret_cast<const uint8_t*>(vec.data()), vec.size() * sizeof(ValueT));
+}
+
+#if __cplusplus >= 202002L && defined(__cpp_lib_span)
+template <typename T, std::size_t Extent>
+inline ByteView as_bytes(std::span<const T, Extent> data) noexcept {
+    using ValueT = std::remove_cv_t<T>;
+    static_assert(std::is_trivially_copyable_v<ValueT>,
+                  "oifs::as_bytes requires a trivially copyable element type");
+    return ByteView(reinterpret_cast<const uint8_t*>(data.data()), data.size_bytes());
+}
+
+template <typename T, std::size_t Extent, typename = std::enable_if_t<!std::is_const_v<T>>>
+inline ByteView as_bytes(std::span<T, Extent> data) noexcept {
+    return oifs::as_bytes(std::span<const T, Extent>(data.data(), data.size()));
+}
+#endif
 
 /**
  * Non-owning mutable view over a contiguous byte buffer.
@@ -617,6 +871,49 @@ public:
         return "Unknown async error";
     }
 
+#if defined(OIFS_HAS_CPP20_COROUTINE)
+    /**
+     * C++20 coroutine awaiter for `AsyncFuture`.
+     *
+     * - Inline Fast-Path hits (`await_ready() == true`) resume immediately with zero
+     *   suspension or thread hop.
+     * - Pending futures suspend and await `oifs_async_wait` on a background thread,
+     *   resuming the coroutine handle upon completion.
+     */
+    class Awaiter {
+    public:
+        explicit Awaiter(AsyncFuture& fut) noexcept : fut_(fut) {}
+
+        bool await_ready() const noexcept { return fut_.is_ready(); }
+
+        void await_suspend(std::coroutine_handle<> h) {
+            suspended_ = true;
+            OIFSAsyncFuture* raw_fut = fut_.raw();
+            std::thread([this, h, raw_fut]() mutable {
+                result_ = (raw_fut != nullptr) ? oifs_async_wait(raw_fut) : -1;
+                h.resume();
+            }).detach();
+        }
+
+        int64_t await_resume() {
+            if (!suspended_) {
+                return fut_.wait();
+            }
+            if (result_ < 0) {
+                throw Error(fut_.last_error());
+            }
+            return result_;
+        }
+
+    private:
+        AsyncFuture& fut_;
+        int64_t result_ = 0;
+        bool suspended_ = false;
+    };
+
+    Awaiter operator co_await() noexcept { return Awaiter{*this}; }
+#endif
+
 private:
     OIFSAsyncFuture* fut_ = nullptr;
 };
@@ -725,20 +1022,57 @@ public:
         return FileSystem(h);
     }
 
+    static FileSystem get_or_open(std::string_view path, uint64_t size = 0) {
+        std::string c_path(path);
+        OIFSHandle* h = oifs_get_or_open(c_path.c_str(), size);
+        if (h == nullptr) {
+            throw Error("oifs_get_or_open failed for path: " + c_path);
+        }
+        return FileSystem(h);
+    }
+
+    static FileSystem get_or_open_with_password(std::string_view path,
+                                                uint64_t size,
+                                                std::string_view password) {
+        std::string c_path(path);
+        std::string c_pwd(password);
+        OIFSHandle* h = oifs_get_or_open_with_password(
+            c_path.c_str(), size, c_pwd.empty() ? nullptr : c_pwd.c_str());
+        if (h == nullptr) {
+            throw Error("oifs_get_or_open_with_password failed for path: " + c_path);
+        }
+        return FileSystem(h);
+    }
+
     /**
      * Opens an existing OIFS image in read-only mode (shared F_RDLCK lock, zero writes).
      * Works on 0444 images and allows concurrent read-only mounts across processes.
      */
-    static FileSystem open_read_only(const std::string& path,
-                                     const std::string& password = "",
+    static FileSystem open_read_only(std::string_view path,
+                                     std::string_view password = {},
                                      StorageMode mode = StorageMode::Mmap) {
-        const char* pwd_ptr = password.empty() ? nullptr : password.c_str();
+        std::string c_path(path);
+        std::string c_pwd(password);
+        const char* pwd_ptr = c_pwd.empty() ? nullptr : c_pwd.c_str();
         OIFSHandle* h = oifs_open_read_only(
-            path.c_str(), pwd_ptr, static_cast<uint8_t>(mode));
+            c_path.c_str(), pwd_ptr, static_cast<uint8_t>(mode));
         if (h == nullptr) {
-            throw Error("oifs_open_read_only failed for path: " + path);
+            throw Error("oifs_open_read_only failed for path: " + c_path);
         }
         return FileSystem(h);
+    }
+
+    /**
+     * Clones a whole OIFS container image using the fastest host OS CoW primitive.
+     */
+    static CloneMethod clone_image(std::string_view src, std::string_view dst) {
+        std::string c_src(src);
+        std::string c_dst(dst);
+        uint8_t method = OIFS_CLONE_METHOD_STANDARD_COPY;
+        if (oifs_clone_image(c_src.c_str(), c_dst.c_str(), &method) != 0) {
+            throw Error("oifs_clone_image failed from '" + c_src + "' to '" + c_dst + "'");
+        }
+        return static_cast<CloneMethod>(method);
     }
 
     /**
@@ -784,6 +1118,24 @@ public:
         }
     }
 
+    IoBackend set_io_backend(IoBackend backend) {
+        ensure_open();
+        int32_t eff = oifs_set_io_backend(handle_, static_cast<uint8_t>(backend));
+        if (eff < 0) {
+            throw Error(last_error());
+        }
+        return static_cast<IoBackend>(eff);
+    }
+
+    IoBackend get_io_backend() const {
+        ensure_open();
+        int32_t b = oifs_get_io_backend(handle_);
+        if (b < 0) {
+            throw Error(last_error());
+        }
+        return static_cast<IoBackend>(b);
+    }
+
     void mkdir(std::string_view path) {
         ensure_open();
         std::string c_path(path);
@@ -800,6 +1152,15 @@ public:
         }
     }
 
+    void rename(std::string_view old_path, std::string_view new_path) {
+        ensure_open();
+        std::string c_old(old_path);
+        std::string c_new(new_path);
+        if (oifs_rename(handle_, c_old.c_str(), c_new.c_str()) != 0) {
+            throw Error(last_error());
+        }
+    }
+
     void truncate_file(std::string_view path, uint64_t new_size) {
         ensure_open();
         std::string c_path(path);
@@ -811,19 +1172,53 @@ public:
     std::vector<DirEntry> ls() const {
         ensure_open();
         std::vector<DirEntry> entries;
-        ListCallback cb = [](const char* name, uint64_t size, uint64_t mtime, void* user_data) {
-            auto* out = static_cast<std::vector<DirEntry>*>(user_data);
-            try {
-                out->push_back(
-                    DirEntry{name != nullptr ? std::string(name) : std::string{}, size, mtime});
-            } catch (...) {
-                // Never allow C++ exceptions to unwind across the extern "C" ABI boundary.
-            }
-        };
-        if (oifs_ls(handle_, cb, &entries) != 0) {
+        if (oifs_ls(handle_, &FileSystem::ls_callback, &entries) != 0) {
             throw Error(last_error());
         }
         return entries;
+    }
+
+    std::vector<DirEntry> ls(std::string_view path) const {
+        ensure_open();
+        std::vector<DirEntry> entries;
+        std::string c_path(path);
+        if (oifs_ls_dir(handle_, c_path.c_str(), &FileSystem::ls_callback, &entries) != 0) {
+            throw Error(last_error());
+        }
+        return entries;
+    }
+
+    FileStat stat(std::string_view path) const {
+        ensure_open();
+        std::string c_path(path);
+        OIFSFileStat raw{};
+        if (oifs_stat(handle_, c_path.c_str(), &raw) != 0) {
+            throw Error(last_error());
+        }
+        FileStat out;
+        out.inode_id = raw.inode_id;
+        out.size = raw.size;
+        out.compressed_size = raw.compressed_size;
+        out.created_at = raw.created_at;
+        out.modified_at = raw.modified_at;
+        out.is_dir = (raw.is_dir != 0);
+        out.encrypted = (raw.encrypted != 0);
+        out.seekable_64k = (raw.seekable_64k != 0);
+        out.filter_typesize = raw.filter_typesize;
+        out.filter_delta = (raw.filter_delta != 0);
+        out.filter_shuffle = (raw.filter_shuffle != 0);
+        out.filter_bitshuffle = (raw.filter_bitshuffle != 0);
+        return out;
+    }
+
+    bool exists(std::string_view path) const {
+        ensure_open();
+        std::string c_path(path);
+        int32_t rc = oifs_exists(handle_, c_path.c_str());
+        if (rc < 0) {
+            throw Error(last_error());
+        }
+        return rc != 0;
     }
 
     uint64_t resolve_path(std::string_view path) const {
@@ -834,6 +1229,24 @@ public:
             throw Error(last_error());
         }
         return static_cast<uint64_t>(id);
+    }
+
+    std::vector<uint8_t> read_file(std::string_view path) const {
+        ensure_open();
+        FileStat st = stat(path);
+        if (st.is_dir) {
+            throw Error("Cannot read_file on a directory: " + std::string(path));
+        }
+        if (st.size == 0) {
+            return {};
+        }
+        if (st.size > static_cast<uint64_t>(SIZE_MAX)) {
+            throw Error("File size exceeds addressable memory");
+        }
+        std::vector<uint8_t> buf(static_cast<std::size_t>(st.size));
+        std::size_t got = read_at(path, 0, MutableByteSpan(buf));
+        buf.resize(got);
+        return buf;
     }
 
     uint64_t create_file_with_data(std::string_view path,
@@ -856,6 +1269,83 @@ public:
                                    int32_t zstd_level = 0) {
         return create_file_with_data(path, data, static_cast<uint32_t>(policy), zstd_level);
     }
+
+    uint64_t create_file_with_data(std::string_view path,
+                                   ByteView data,
+                                   uint32_t policy_flags,
+                                   int32_t zstd_level,
+                                   FilterConfig filter) {
+        ensure_open();
+        std::string c_path(path);
+        OIFSFilterConfig raw_filter = filter.to_c();
+        int64_t id = oifs_create_file_with_data_filtered(handle_,
+                                                         c_path.c_str(),
+                                                         data.data(),
+                                                         data.size(),
+                                                         policy_flags,
+                                                         zstd_level,
+                                                         &raw_filter);
+        if (id < 0) {
+            throw Error(last_error());
+        }
+        return static_cast<uint64_t>(id);
+    }
+
+    uint64_t create_file_with_data(std::string_view path,
+                                   ByteView data,
+                                   WritePolicy policy,
+                                   int32_t zstd_level,
+                                   FilterConfig filter) {
+        return create_file_with_data(
+            path, data, static_cast<uint32_t>(policy), zstd_level, filter);
+    }
+
+    template <typename T>
+    uint64_t create_file_with_span(std::string_view path,
+                                   Span<const T> data,
+                                   WritePolicy policy = WritePolicy::Default,
+                                   int32_t zstd_level = 0,
+                                   FilterConfig filter = FilterConfig::none()) {
+        return create_file_with_data(path, oifs::as_bytes(data), policy, zstd_level, filter);
+    }
+
+    template <typename T, typename = std::enable_if_t<!std::is_const_v<T>>>
+    uint64_t create_file_with_span(std::string_view path,
+                                   Span<T> data,
+                                   WritePolicy policy = WritePolicy::Default,
+                                   int32_t zstd_level = 0,
+                                   FilterConfig filter = FilterConfig::none()) {
+        return create_file_with_data(path, oifs::as_bytes(data), policy, zstd_level, filter);
+    }
+
+    template <typename T, typename Alloc>
+    uint64_t create_file_with_span(std::string_view path,
+                                   const std::vector<T, Alloc>& data,
+                                   WritePolicy policy = WritePolicy::Default,
+                                   int32_t zstd_level = 0,
+                                   FilterConfig filter = FilterConfig::none()) {
+        return create_file_with_data(path, oifs::as_bytes(data), policy, zstd_level, filter);
+    }
+
+#if __cplusplus >= 202002L && defined(__cpp_lib_span)
+    template <typename T, std::size_t Extent>
+    uint64_t create_file_with_span(std::string_view path,
+                                   std::span<const T, Extent> data,
+                                   WritePolicy policy = WritePolicy::Default,
+                                   int32_t zstd_level = 0,
+                                   FilterConfig filter = FilterConfig::none()) {
+        return create_file_with_data(path, oifs::as_bytes(data), policy, zstd_level, filter);
+    }
+
+    template <typename T, std::size_t Extent, typename = std::enable_if_t<!std::is_const_v<T>>>
+    uint64_t create_file_with_span(std::string_view path,
+                                   std::span<T, Extent> data,
+                                   WritePolicy policy = WritePolicy::Default,
+                                   int32_t zstd_level = 0,
+                                   FilterConfig filter = FilterConfig::none()) {
+        return create_file_with_data(path, oifs::as_bytes(data), policy, zstd_level, filter);
+    }
+#endif
 
     void write_file(std::string_view path, ByteView data) {
         ensure_open();
@@ -889,6 +1379,199 @@ public:
                     WritePolicy policy,
                     int32_t zstd_level = 0) {
         write_file(path, offset, data, static_cast<uint32_t>(policy), zstd_level);
+    }
+
+    void write_file(std::string_view path,
+                    uint64_t offset,
+                    ByteView data,
+                    uint32_t policy_flags,
+                    int32_t zstd_level,
+                    FilterConfig filter) {
+        ensure_open();
+        std::string c_path(path);
+        OIFSFilterConfig raw_filter = filter.to_c();
+        if (oifs_write_file_with_filters(handle_,
+                                         c_path.c_str(),
+                                         offset,
+                                         data.data(),
+                                         data.size(),
+                                         policy_flags,
+                                         zstd_level,
+                                         &raw_filter) != 0) {
+            throw Error(last_error());
+        }
+    }
+
+    void write_file(std::string_view path,
+                    uint64_t offset,
+                    ByteView data,
+                    WritePolicy policy,
+                    int32_t zstd_level,
+                    FilterConfig filter) {
+        write_file(path, offset, data, static_cast<uint32_t>(policy), zstd_level, filter);
+    }
+
+    template <typename T>
+    void write_span(std::string_view path,
+                    uint64_t offset,
+                    Span<const T> data,
+                    WritePolicy policy = WritePolicy::Default,
+                    int32_t zstd_level = 0,
+                    FilterConfig filter = FilterConfig::none()) {
+        write_file(path, offset, oifs::as_bytes(data), policy, zstd_level, filter);
+    }
+
+    template <typename T, typename = std::enable_if_t<!std::is_const_v<T>>>
+    void write_span(std::string_view path,
+                    uint64_t offset,
+                    Span<T> data,
+                    WritePolicy policy = WritePolicy::Default,
+                    int32_t zstd_level = 0,
+                    FilterConfig filter = FilterConfig::none()) {
+        write_file(path, offset, oifs::as_bytes(data), policy, zstd_level, filter);
+    }
+
+    template <typename T, typename Alloc>
+    void write_span(std::string_view path,
+                    uint64_t offset,
+                    const std::vector<T, Alloc>& data,
+                    WritePolicy policy = WritePolicy::Default,
+                    int32_t zstd_level = 0,
+                    FilterConfig filter = FilterConfig::none()) {
+        write_file(path, offset, oifs::as_bytes(data), policy, zstd_level, filter);
+    }
+
+#if __cplusplus >= 202002L && defined(__cpp_lib_span)
+    template <typename T, std::size_t Extent>
+    void write_span(std::string_view path,
+                    uint64_t offset,
+                    std::span<const T, Extent> data,
+                    WritePolicy policy = WritePolicy::Default,
+                    int32_t zstd_level = 0,
+                    FilterConfig filter = FilterConfig::none()) {
+        write_file(path, offset, oifs::as_bytes(data), policy, zstd_level, filter);
+    }
+
+    template <typename T, std::size_t Extent, typename = std::enable_if_t<!std::is_const_v<T>>>
+    void write_span(std::string_view path,
+                    uint64_t offset,
+                    std::span<T, Extent> data,
+                    WritePolicy policy = WritePolicy::Default,
+                    int32_t zstd_level = 0,
+                    FilterConfig filter = FilterConfig::none()) {
+        write_file(path, offset, oifs::as_bytes(data), policy, zstd_level, filter);
+    }
+#endif
+
+    TransferStats transfer_file_to(std::string_view src_path,
+                                   FileSystem& dst,
+                                   std::string_view dst_path,
+                                   TransferOptions opts = {}) {
+        ensure_open();
+        dst.ensure_open();
+        std::string c_src(src_path);
+        std::string c_dst(dst_path);
+        uint32_t flags = 0;
+        if (opts.move_file) {
+            flags |= OIFS_TRANSFER_FLAG_MOVE;
+        }
+        if (opts.overwrite) {
+            flags |= OIFS_TRANSFER_FLAG_OVERWRITE;
+        }
+        OIFSTransferStats raw{};
+        if (oifs_transfer_file_to(
+                handle_, c_src.c_str(), dst.handle_, c_dst.c_str(), flags, &raw) != 0) {
+            throw Error(last_error());
+        }
+        TransferStats out;
+        out.src_inode = raw.src_inode;
+        out.dst_inode = raw.dst_inode;
+        out.logical_bytes = raw.logical_bytes;
+        out.physical_bytes = raw.physical_bytes;
+        out.extents_transferred = raw.extents_transferred;
+        out.method = static_cast<TransferMethod>(raw.method);
+        return out;
+    }
+
+    SpliceStats splice_range_to(uint64_t src_inode,
+                                uint64_t src_off,
+                                FileSystem& dst,
+                                uint64_t dst_inode,
+                                uint64_t dst_off,
+                                uint64_t len,
+                                SpliceOptions opts = {}) {
+        ensure_open();
+        dst.ensure_open();
+        OIFSSpliceStats raw{};
+        if (oifs_splice_range_to(handle_,
+                                 src_inode,
+                                 src_off,
+                                 dst.handle_,
+                                 dst_inode,
+                                 dst_off,
+                                 len,
+                                 static_cast<uint8_t>(opts.trim_mode),
+                                 &raw) != 0) {
+            throw Error(last_error());
+        }
+        SpliceStats out;
+        out.src_inode = raw.src_inode;
+        out.dst_inode = raw.dst_inode;
+        out.bytes_spliced = raw.bytes_spliced;
+        out.logical_rmw_bytes = raw.logical_rmw_bytes;
+        out.body_fast_path_bytes = raw.body_fast_path_bytes;
+        out.physical_bytes = raw.physical_bytes;
+        out.extents_transferred = raw.extents_transferred;
+        out.src_blocks_freed = raw.src_blocks_freed;
+        out.method = static_cast<TransferMethod>(raw.method);
+        return out;
+    }
+
+    FsckReport verify_integrity() const {
+        ensure_open();
+        OIFSFsckReport raw{};
+        if (oifs_verify_integrity(handle_, &raw) != 0) {
+            throw Error(last_error());
+        }
+        FsckReport out;
+        out.is_clean = (raw.is_clean != 0);
+        out.orphan_inodes = raw.orphan_inodes;
+        out.leaked_blocks = raw.leaked_blocks;
+        out.missing_blocks = raw.missing_blocks;
+        out.cross_linked_blocks = raw.cross_linked_blocks;
+        return out;
+    }
+
+    FragmentationStats analyze_fragmentation() const {
+        ensure_open();
+        OIFSFragmentationStats raw{};
+        if (oifs_analyze_fragmentation(handle_, &raw) != 0) {
+            throw Error(last_error());
+        }
+        FragmentationStats out;
+        out.total_blocks = raw.total_blocks;
+        out.used_blocks = raw.used_blocks;
+        out.free_blocks = raw.free_blocks;
+        out.free_runs = raw.free_runs;
+        out.largest_free_run = raw.largest_free_run;
+        out.avg_gap_size = raw.avg_gap_size;
+        out.fragmentation_ratio = raw.fragmentation_ratio;
+        return out;
+    }
+
+    DefragStats defragment() {
+        ensure_open();
+        OIFSDefragStats raw{};
+        if (oifs_defragment(handle_, &raw) != 0) {
+            throw Error(last_error());
+        }
+        DefragStats out;
+        out.files_processed = raw.files_processed;
+        out.bytes_moved = raw.bytes_moved;
+        out.blocks_freed = raw.blocks_freed;
+        out.frag_before = raw.frag_before;
+        out.frag_after = raw.frag_after;
+        return out;
     }
 
     std::size_t read_at(std::string_view path, uint64_t offset, MutableByteSpan dst) const {
@@ -1132,6 +1815,16 @@ public:
     }
 
 private:
+    static void ls_callback(const char* name, uint64_t size, uint64_t mtime, void* user_data) {
+        auto* out = static_cast<std::vector<DirEntry>*>(user_data);
+        try {
+            out->push_back(
+                DirEntry{name != nullptr ? std::string(name) : std::string{}, size, mtime});
+        } catch (...) {
+            // Never allow C++ exceptions to unwind across the extern "C" ABI boundary.
+        }
+    }
+
     void ensure_open() const {
         if (handle_ == nullptr) {
             throw Error("Operation on closed oifs::FileSystem");

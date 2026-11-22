@@ -2062,6 +2062,1075 @@ pub extern "C" fn oifs_fuse_dispatch_frame(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Atomic POSIX Rename
+// ---------------------------------------------------------------------------
+
+/// Atomically renames or moves a file or directory within the filesystem.
+///
+/// Resolves both `old_path` and `new_path` to their parent directories and entry names,
+/// then delegates to [`DiskManager::rename`]. Returns `0` on success or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_rename(
+    handle: *mut OIFSHandle,
+    old_path: *const c_char,
+    new_path: *const c_char,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    if old_path.is_null() || new_path.is_null() {
+        handle_ref.set_last_error(Some("Null path provided".to_string()));
+        return -1;
+    }
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let old_str = match unsafe { cstr_to_str(old_path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+        let new_str = match unsafe { cstr_to_str(new_path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+
+        let dm = &handle_ref.dm;
+        match (|| -> Result<(), Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
+            let (old_parent_id, old_name) = dm.resolve_parent(old_str)?;
+            let (new_parent_id, new_name) = dm.resolve_parent(new_str)?;
+            dm.rename(old_parent_id, &old_name, new_parent_id, &new_name)?;
+            Ok(())
+        })() {
+            Ok(()) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during rename".to_string()));
+            -1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-Image CoW Clone, 3-Tier Fast Transfer & Sub-Range Splice
+// ---------------------------------------------------------------------------
+
+pub const OIFS_CLONE_METHOD_APFS_CLONEFILE: u8 = 0;
+pub const OIFS_CLONE_METHOD_LINUX_FICLONE: u8 = 1;
+pub const OIFS_CLONE_METHOD_STANDARD_COPY: u8 = 2;
+
+pub const OIFS_TRANSFER_METHOD_REFLINK: u8 = 0;
+pub const OIFS_TRANSFER_METHOD_COPY_FILE_RANGE: u8 = 1;
+pub const OIFS_TRANSFER_METHOD_RAW_BLOCK_COPY: u8 = 2;
+pub const OIFS_TRANSFER_METHOD_LOGICAL_REENCODE: u8 = 3;
+
+pub const OIFS_TRANSFER_FLAG_MOVE: u32 = 0x01;
+pub const OIFS_TRANSFER_FLAG_OVERWRITE: u32 = 0x02;
+
+pub const OIFS_SPLICE_TRIM_KEEP: u8 = 0;
+pub const OIFS_SPLICE_TRIM_PUNCH_HOLE: u8 = 1;
+pub const OIFS_SPLICE_TRIM_COLLAPSE: u8 = 2;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSTransferStats {
+    pub src_inode: u64,
+    pub dst_inode: u64,
+    pub logical_bytes: u64,
+    pub physical_bytes: u64,
+    pub extents_transferred: u64,
+    pub method: u8,
+    pub _pad: [u8; 7],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSSpliceStats {
+    pub src_inode: u64,
+    pub dst_inode: u64,
+    pub bytes_spliced: u64,
+    pub logical_rmw_bytes: u64,
+    pub body_fast_path_bytes: u64,
+    pub physical_bytes: u64,
+    pub extents_transferred: u64,
+    pub src_blocks_freed: u64,
+    pub method: u8,
+    pub _pad: [u8; 7],
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<OIFSTransferStats>() == 48);
+    assert!(std::mem::size_of::<OIFSSpliceStats>() == 72);
+};
+
+#[inline]
+const fn clone_method_to_u8(method: crate::disk::CloneMethod) -> u8 {
+    match method {
+        crate::disk::CloneMethod::ApfsClonefile => OIFS_CLONE_METHOD_APFS_CLONEFILE,
+        crate::disk::CloneMethod::LinuxFiclone => OIFS_CLONE_METHOD_LINUX_FICLONE,
+        crate::disk::CloneMethod::StandardCopy => OIFS_CLONE_METHOD_STANDARD_COPY,
+    }
+}
+
+#[inline]
+const fn transfer_method_to_u8(method: crate::disk::TransferMethod) -> u8 {
+    match method {
+        crate::disk::TransferMethod::Reflink => OIFS_TRANSFER_METHOD_REFLINK,
+        crate::disk::TransferMethod::CopyFileRange => OIFS_TRANSFER_METHOD_COPY_FILE_RANGE,
+        crate::disk::TransferMethod::RawBlockCopy => OIFS_TRANSFER_METHOD_RAW_BLOCK_COPY,
+        crate::disk::TransferMethod::LogicalReencode => OIFS_TRANSFER_METHOD_LOGICAL_REENCODE,
+    }
+}
+
+/// Clones a whole OIFS `.img` container using the host OS's fastest CoW primitive
+/// (`clonefile` on macOS APFS, `ioctl(FICLONE)` on Linux, or standard copy fallback).
+///
+/// If `out_method` is non-null, writes one of `OIFS_CLONE_METHOD_*`.
+/// Returns `0` on success or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_clone_image(
+    src_path: *const c_char,
+    dst_path: *const c_char,
+    out_method: *mut u8,
+) -> i32 {
+    if src_path.is_null() || dst_path.is_null() {
+        return -1;
+    }
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(src_str) = (unsafe { cstr_to_str(src_path) }) else {
+            return -1;
+        };
+        let Ok(dst_str) = (unsafe { cstr_to_str(dst_path) }) else {
+            return -1;
+        };
+
+        match DiskManager::clone_image(src_str, dst_str) {
+            Ok(method) => {
+                if !out_method.is_null() {
+                    unsafe {
+                        *out_method = clone_method_to_u8(method);
+                    }
+                }
+                0
+            }
+            Err(_) => -1,
+        }
+    }));
+
+    res.unwrap_or(-1)
+}
+
+/// Transfers a regular file from `src_handle` to `dst_handle` using the 3-tier fast-path
+/// pipeline (`Reflink` -> `CopyFileRange` -> `RawBlockCopy`), falling back to `LogicalReencode`
+/// across encrypted boundaries.
+///
+/// `flags` is a bitmask of `OIFS_TRANSFER_FLAG_MOVE` and `OIFS_TRANSFER_FLAG_OVERWRITE`.
+/// If `out_stats` is non-null, populates transfer statistics on success.
+/// Returns `0` on success or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_transfer_file_to(
+    src_handle: *mut OIFSHandle,
+    src_path: *const c_char,
+    dst_handle: *mut OIFSHandle,
+    dst_path: *const c_char,
+    flags: u32,
+    out_stats: *mut OIFSTransferStats,
+) -> i32 {
+    let src_ref = unsafe {
+        if src_handle.is_null() {
+            return -1;
+        }
+        &(*src_handle)
+    };
+
+    let dst_ref = unsafe {
+        if dst_handle.is_null() {
+            src_ref.set_last_error(Some("Null destination handle provided".to_string()));
+            return -1;
+        }
+        &(*dst_handle)
+    };
+
+    let same_handle = ptr::eq(src_handle, dst_handle);
+    let set_err = |msg: String| {
+        src_ref.set_last_error(Some(msg.clone()));
+        if !same_handle {
+            dst_ref.set_last_error(Some(msg));
+        }
+    };
+
+    if src_path.is_null() || dst_path.is_null() {
+        set_err("Null path provided".to_string());
+        return -1;
+    }
+
+    let options = crate::disk::TransferOptions {
+        move_file: (flags & OIFS_TRANSFER_FLAG_MOVE) != 0,
+        overwrite: (flags & OIFS_TRANSFER_FLAG_OVERWRITE) != 0,
+    };
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let src_str = match unsafe { cstr_to_str(src_path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                set_err(msg.to_string());
+                return -1;
+            }
+        };
+        let dst_str = match unsafe { cstr_to_str(dst_path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                set_err(msg.to_string());
+                return -1;
+            }
+        };
+
+        match (|| -> Result<crate::disk::TransferStats, Box<dyn std::error::Error>> {
+            if dst_ref.dm.is_read_only() || (options.move_file && src_ref.dm.is_read_only()) {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
+            let (src_parent, src_name) = src_ref.dm.resolve_parent(src_str)?;
+            let (dst_parent, dst_name) = dst_ref.dm.resolve_parent(dst_str)?;
+            let stats = src_ref.dm.transfer_file_to(
+                src_parent,
+                &src_name,
+                &dst_ref.dm,
+                dst_parent,
+                &dst_name,
+                options,
+            )?;
+            Ok(stats)
+        })() {
+            Ok(stats) => {
+                if !out_stats.is_null() {
+                    unsafe {
+                        *out_stats = OIFSTransferStats {
+                            src_inode: stats.src_inode,
+                            dst_inode: stats.dst_inode,
+                            logical_bytes: stats.logical_bytes,
+                            physical_bytes: stats.physical_bytes,
+                            extents_transferred: stats.extents_transferred as u64,
+                            method: transfer_method_to_u8(stats.method),
+                            _pad: [0; 7],
+                        };
+                    }
+                }
+                src_ref.set_last_error(None);
+                if !same_handle {
+                    dst_ref.set_last_error(None);
+                }
+                0
+            }
+            Err(e) => {
+                set_err(e.to_string());
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            set_err("Panic occurred during transfer_file_to".to_string());
+            -1
+        }
+    }
+}
+
+/// Splices a byte sub-range `[src_off, src_off + len)` from `src_inode` in `src_handle`
+/// into `[dst_off, dst_off + len)` of `dst_inode` in `dst_handle`.
+///
+/// `trim_mode` must be one of `OIFS_SPLICE_TRIM_KEEP` (0), `OIFS_SPLICE_TRIM_PUNCH_HOLE` (1),
+/// or `OIFS_SPLICE_TRIM_COLLAPSE` (2).
+/// If `out_stats` is non-null, populates splice statistics on success.
+/// Returns `0` on success or `-1` on error.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_splice_range_to(
+    src_handle: *mut OIFSHandle,
+    src_inode: u64,
+    src_off: u64,
+    dst_handle: *mut OIFSHandle,
+    dst_inode: u64,
+    dst_off: u64,
+    len: u64,
+    trim_mode: u8,
+    out_stats: *mut OIFSSpliceStats,
+) -> i32 {
+    let src_ref = unsafe {
+        if src_handle.is_null() {
+            return -1;
+        }
+        &(*src_handle)
+    };
+
+    let dst_ref = unsafe {
+        if dst_handle.is_null() {
+            src_ref.set_last_error(Some("Null destination handle provided".to_string()));
+            return -1;
+        }
+        &(*dst_handle)
+    };
+
+    let same_handle = ptr::eq(src_handle, dst_handle);
+    let set_err = |msg: String| {
+        src_ref.set_last_error(Some(msg.clone()));
+        if !same_handle {
+            dst_ref.set_last_error(Some(msg));
+        }
+    };
+
+    let mode = match trim_mode {
+        OIFS_SPLICE_TRIM_KEEP => crate::disk::SpliceTrimMode::Keep,
+        OIFS_SPLICE_TRIM_PUNCH_HOLE => crate::disk::SpliceTrimMode::PunchHole,
+        OIFS_SPLICE_TRIM_COLLAPSE => crate::disk::SpliceTrimMode::CollapseRange,
+        _ => {
+            set_err(format!("Invalid splice trim mode: {trim_mode}"));
+            return -1;
+        }
+    };
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match (|| -> Result<crate::disk::SpliceStats, Box<dyn std::error::Error>> {
+            if dst_ref.dm.is_read_only()
+                || (mode != crate::disk::SpliceTrimMode::Keep && src_ref.dm.is_read_only())
+            {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
+            let stats = src_ref.dm.splice_range_to(
+                src_inode,
+                src_off,
+                &dst_ref.dm,
+                dst_inode,
+                dst_off,
+                len,
+                crate::disk::SpliceOptions { trim_mode: mode },
+            )?;
+            Ok(stats)
+        })() {
+            Ok(stats) => {
+                if !out_stats.is_null() {
+                    unsafe {
+                        *out_stats = OIFSSpliceStats {
+                            src_inode: stats.src_inode,
+                            dst_inode: stats.dst_inode,
+                            bytes_spliced: stats.bytes_spliced,
+                            logical_rmw_bytes: stats.logical_rmw_bytes,
+                            body_fast_path_bytes: stats.body_fast_path_bytes,
+                            physical_bytes: stats.physical_bytes,
+                            extents_transferred: stats.extents_transferred as u64,
+                            src_blocks_freed: stats.src_blocks_freed as u64,
+                            method: transfer_method_to_u8(stats.method),
+                            _pad: [0; 7],
+                        };
+                    }
+                }
+                src_ref.set_last_error(None);
+                if !same_handle {
+                    dst_ref.set_last_error(None);
+                }
+                0
+            }
+            Err(e) => {
+                set_err(e.to_string());
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            set_err("Panic occurred during splice_range_to".to_string());
+            -1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Subdirectory Listing, Stat & Exists
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSFileStat {
+    pub inode_id: u64,
+    pub size: u64,
+    pub compressed_size: u64,
+    pub created_at: u64,
+    pub modified_at: u64,
+    pub is_dir: u8,
+    pub encrypted: u8,
+    pub seekable_64k: u8,
+    pub filter_typesize: u8,
+    pub filter_delta: u8,
+    pub filter_shuffle: u8,
+    pub filter_bitshuffle: u8,
+    pub _pad: u8,
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<OIFSFileStat>() == 48);
+};
+
+/// Lists entries in the directory at `path`.
+///
+/// Passing `NULL`, `""`, or `"/"` lists the root directory. Passing a path to any
+/// subdirectory lists that directory; passing a regular file path returns `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_ls_dir(
+    handle: *mut OIFSHandle,
+    path: *const c_char,
+    cb: Option<ListCallback>,
+    user_data: *mut c_void,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    let cb_fn = match cb {
+        Some(f) => f,
+        None => {
+            handle_ref.set_last_error(Some("Null callback provided".to_string()));
+            return -1;
+        }
+    };
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dm = &handle_ref.dm;
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let dir_inode_id = if path.is_null() {
+                dm.superblock().root_inode
+            } else {
+                let path_str = unsafe { cstr_to_str(path) }
+                    .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
+                if path_str.is_empty() || path_str == "/" {
+                    dm.superblock().root_inode
+                } else {
+                    dm.resolve_path(path_str)?
+                }
+            };
+
+            let entries = dm.list_dir(dir_inode_id)?;
+            for entry in entries {
+                if let Ok(inode) = dm.read_inode(entry.inode) {
+                    let c_name = CString::new(entry.name).unwrap_or_default();
+                    cb_fn(c_name.as_ptr(), inode.size, inode.modified_at, user_data);
+                }
+            }
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(code) => code,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during directory listing".to_string()));
+            -1
+        }
+    }
+}
+
+/// Retrieves inode metadata for `path` and writes it into `*out_stat`.
+///
+/// Returns `0` on success or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_stat(
+    handle: *mut OIFSHandle,
+    path: *const c_char,
+    out_stat: *mut OIFSFileStat,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    if path.is_null() || out_stat.is_null() {
+        handle_ref.set_last_error(Some("Null argument provided".to_string()));
+        return -1;
+    }
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path_str = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+
+        let dm = &handle_ref.dm;
+        match (|| -> Result<OIFSFileStat, Box<dyn std::error::Error>> {
+            let inode_id = dm.resolve_path(path_str)?;
+            let inode = dm.read_inode(inode_id)?;
+            Ok(OIFSFileStat {
+                inode_id,
+                size: inode.size,
+                compressed_size: inode.compressed_size,
+                created_at: inode.created_at,
+                modified_at: inode.modified_at,
+                is_dir: u8::from(inode.mode == FileType::Directory),
+                encrypted: u8::from(inode.encrypted),
+                seekable_64k: u8::from((inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0),
+                filter_typesize: inode.filter_typesize,
+                filter_delta: u8::from(inode.filter_delta),
+                filter_shuffle: u8::from(inode.filter_shuffle),
+                filter_bitshuffle: u8::from(inode.filter_bitshuffle),
+                _pad: 0,
+            })
+        })() {
+            Ok(stat) => {
+                unsafe {
+                    *out_stat = stat;
+                }
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during stat".to_string()));
+            -1
+        }
+    }
+}
+
+/// Checks whether `path` exists in the filesystem.
+///
+/// Returns `1` if `path` exists, `0` if it does not exist, or `-1` on null/invalid handle or path.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_exists(handle: *mut OIFSHandle, path: *const c_char) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    if path.is_null() {
+        handle_ref.set_last_error(Some("Null path provided".to_string()));
+        return -1;
+    }
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path_str = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+
+        match handle_ref.dm.resolve_path(path_str) {
+            Ok(_) => {
+                handle_ref.set_last_error(None);
+                1
+            }
+            Err(_) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during exists".to_string()));
+            -1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SIMD Numeric Pre-Compression Filters
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSFilterConfig {
+    pub typesize: u8,
+    pub delta: u8,
+    pub shuffle: u8,
+    pub bitshuffle: u8,
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<OIFSFilterConfig>() == 4);
+};
+
+#[inline]
+unsafe fn ffi_filter_config_to_rust(cfg: *const OIFSFilterConfig) -> crate::filters::FilterConfig {
+    if cfg.is_null() {
+        crate::filters::FilterConfig::none()
+    } else {
+        let c = unsafe { &*cfg };
+        crate::filters::FilterConfig {
+            typesize: c.typesize,
+            delta: c.delta != 0,
+            shuffle: c.shuffle != 0,
+            bitshuffle: c.bitshuffle != 0,
+        }
+    }
+}
+
+/// Atomically creates a new file and writes its initial payload with optional SIMD
+/// pre-compression filters.
+///
+/// Passing `NULL` for `filter_cfg` disables filters (`FilterConfig::none()`).
+/// Returns the new `inode_id` (`>= 0`) on success, or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_create_file_with_data_filtered(
+    handle: *mut OIFSHandle,
+    path: *const c_char,
+    buf: *const u8,
+    buf_size: u64,
+    policy_flags: u32,
+    zstd_level: i32,
+    filter_cfg: *const OIFSFilterConfig,
+) -> i64 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    if path.is_null() || (buf.is_null() && buf_size > 0) {
+        handle_ref.set_last_error(Some("Null argument provided".to_string()));
+        return -1;
+    }
+
+    let Ok(len) = usize::try_from(buf_size) else {
+        handle_ref.set_last_error(Some("Buffer size overflows usize".to_string()));
+        return -1;
+    };
+
+    let compression_mode = policy_to_compression_mode(policy_flags, zstd_level);
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path_str = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+        let filter_config = unsafe { ffi_filter_config_to_rust(filter_cfg) };
+        let data = if len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(buf, len) }
+        };
+
+        let dm = &handle_ref.dm;
+        match (|| -> Result<u64, Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
+            let (parent_id, name) = dm.resolve_parent(path_str)?;
+            let id = dm.create_file_with_data_with_filters(
+                parent_id,
+                &name,
+                data,
+                compression_mode,
+                filter_config,
+            )?;
+            Ok(id)
+        })() {
+            Ok(id) => {
+                handle_ref.set_last_error(None);
+                id as i64
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some(
+                "Panic occurred during create_file_with_data_filtered".to_string(),
+            ));
+            -1
+        }
+    }
+}
+
+/// Writes `buf[..buf_size]` to `path` at `offset` with explicit compression policy and
+/// optional SIMD pre-compression filters. Creates the file if it does not yet exist.
+///
+/// Passing `NULL` for `filter_cfg` disables filters (`FilterConfig::none()`).
+/// Returns `0` on success or `-1` on error.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_write_file_with_filters(
+    handle: *mut OIFSHandle,
+    path: *const c_char,
+    offset: u64,
+    buf: *const u8,
+    buf_size: u64,
+    policy_flags: u32,
+    zstd_level: i32,
+    filter_cfg: *const OIFSFilterConfig,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    if path.is_null() || (buf.is_null() && buf_size > 0) {
+        handle_ref.set_last_error(Some("Null argument provided".to_string()));
+        return -1;
+    }
+
+    let Ok(len) = usize::try_from(buf_size) else {
+        handle_ref.set_last_error(Some("Buffer size overflows usize".to_string()));
+        return -1;
+    };
+
+    let compression_mode = policy_to_compression_mode(policy_flags, zstd_level);
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path_str = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+        let filter_config = unsafe { ffi_filter_config_to_rust(filter_cfg) };
+        let data = if len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(buf, len) }
+        };
+
+        let dm = &handle_ref.dm;
+        match (|| -> Result<(), Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
+            let (parent_id, name) = dm.resolve_parent(path_str)?;
+            match dm.lookup(parent_id, &name) {
+                Ok(existing_id) => {
+                    dm.write_data_with_filters(
+                        existing_id,
+                        offset,
+                        data,
+                        compression_mode,
+                        filter_config,
+                    )?;
+                }
+                Err(_) if offset == 0 => {
+                    dm.create_file_with_data_with_filters(
+                        parent_id,
+                        &name,
+                        data,
+                        compression_mode,
+                        filter_config,
+                    )?;
+                }
+                Err(_) => {
+                    let inode_id = dm.create_file(parent_id, &name)?;
+                    dm.write_data_with_filters(
+                        inode_id,
+                        offset,
+                        data,
+                        compression_mode,
+                        filter_config,
+                    )?;
+                }
+            }
+            Ok(())
+        })() {
+            Ok(()) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some(
+                "Panic occurred during write_file_with_filters".to_string(),
+            ));
+            -1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Online Maintenance & Diagnostics
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSFsckReport {
+    pub is_clean: u8,
+    pub _pad: [u8; 7],
+    pub orphan_inodes: u64,
+    pub leaked_blocks: u64,
+    pub missing_blocks: u64,
+    pub cross_linked_blocks: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSFragmentationStats {
+    pub total_blocks: u64,
+    pub used_blocks: u64,
+    pub free_blocks: u64,
+    pub free_runs: u64,
+    pub largest_free_run: u64,
+    pub avg_gap_size: f64,
+    pub fragmentation_ratio: f64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSDefragStats {
+    pub files_processed: u64,
+    pub bytes_moved: u64,
+    pub blocks_freed: u64,
+    pub frag_before: f64,
+    pub frag_after: f64,
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<OIFSFsckReport>() == 40);
+    assert!(std::mem::size_of::<OIFSFragmentationStats>() == 56);
+    assert!(std::mem::size_of::<OIFSDefragStats>() == 40);
+};
+
+/// Runs a full structural consistency check (`fsck`) on the image and writes the summary
+/// into `*out_report`.
+///
+/// Safe on both read-write and read-only handles. Returns `0` on success or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_verify_integrity(
+    handle: *mut OIFSHandle,
+    out_report: *mut OIFSFsckReport,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    if out_report.is_null() {
+        handle_ref.set_last_error(Some("Null output report pointer provided".to_string()));
+        return -1;
+    }
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match handle_ref.dm.verify_integrity() {
+            Ok(report) => {
+                unsafe {
+                    *out_report = OIFSFsckReport {
+                        is_clean: u8::from(report.is_clean),
+                        _pad: [0; 7],
+                        orphan_inodes: report.orphan_inodes.len() as u64,
+                        leaked_blocks: report.leaked_blocks.len() as u64,
+                        missing_blocks: report.missing_blocks.len() as u64,
+                        cross_linked_blocks: report.cross_linked_blocks.len() as u64,
+                    };
+                }
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during verify_integrity".to_string()));
+            -1
+        }
+    }
+}
+
+/// Analyzes data-block fragmentation and writes metrics into `*out_stats`.
+///
+/// Safe on both read-write and read-only handles. Returns `0` on success or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_analyze_fragmentation(
+    handle: *mut OIFSHandle,
+    out_stats: *mut OIFSFragmentationStats,
+) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    if out_stats.is_null() {
+        handle_ref.set_last_error(Some("Null output stats pointer provided".to_string()));
+        return -1;
+    }
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match handle_ref.dm.analyze_fragmentation() {
+            Ok(stats) => {
+                unsafe {
+                    *out_stats = OIFSFragmentationStats {
+                        total_blocks: stats.total_blocks as u64,
+                        used_blocks: stats.used_blocks as u64,
+                        free_blocks: stats.free_blocks as u64,
+                        free_runs: stats.free_runs as u64,
+                        largest_free_run: stats.largest_free_run as u64,
+                        avg_gap_size: stats.avg_gap_size,
+                        fragmentation_ratio: stats.fragmentation_ratio,
+                    };
+                }
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some(
+                "Panic occurred during analyze_fragmentation".to_string(),
+            ));
+            -1
+        }
+    }
+}
+
+/// Runs online in-place defragmentation on `handle` (WAL-atomic COW on journaled images,
+/// cycle-aware permutation on non-journaled images).
+///
+/// Rejects read-only handles cleanly with `DiskManagerError::ReadOnly`.
+/// If `out_stats` is non-null, writes defragmentation statistics on success.
+/// Returns `0` on success or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_defragment(handle: *mut OIFSHandle, out_stats: *mut OIFSDefragStats) -> i32 {
+    let handle_ref = unsafe {
+        if handle.is_null() {
+            return -1;
+        }
+        &(*handle)
+    };
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dm = &handle_ref.dm;
+        match (|| -> Result<crate::disk::DefragStats, Box<dyn std::error::Error>> {
+            if dm.is_read_only() {
+                return Err(crate::disk::DiskManagerError::ReadOnly.into());
+            }
+            let backing_path = dm.backing_path();
+            let path_str = backing_path.to_str().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Backing image path is not valid UTF-8",
+                )
+            })?;
+            let stats = dm.defragment(path_str, crate::disk::DefragMode::InPlace, None)?;
+            Ok(stats)
+        })() {
+            Ok(stats) => {
+                if !out_stats.is_null() {
+                    unsafe {
+                        *out_stats = OIFSDefragStats {
+                            files_processed: stats.files_processed as u64,
+                            bytes_moved: stats.bytes_moved,
+                            blocks_freed: stats.blocks_freed as u64,
+                            frag_before: stats.frag_before,
+                            frag_after: stats.frag_after,
+                        };
+                    }
+                }
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+
+    match res {
+        Ok(val) => val,
+        Err(_) => {
+            handle_ref.set_last_error(Some("Panic occurred during defragment".to_string()));
+            -1
+        }
+    }
+}
+
 #[cfg(kani)]
 mod verification {
     use super::*;

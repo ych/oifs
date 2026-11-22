@@ -127,14 +127,44 @@ int32_t oifs_set_file_io_cache_bytes(OIFSHandle *handle, size_t bytes);
  * Directory Operations
  */
 int32_t oifs_ls(OIFSHandle *handle, ListCallback cb, void *user_data);
+int32_t oifs_ls_dir(OIFSHandle *handle, const char *path, ListCallback cb, void *user_data);
 int32_t oifs_mkdir(OIFSHandle *handle, const char *path);
 
 /*
- * File Operations
+ * File Operations & Metadata Queries
  */
 int32_t oifs_create_file(OIFSHandle *handle, const char *path);
 int32_t oifs_create_or_open_file(OIFSHandle *handle, const char *path);
 int32_t oifs_delete_file(OIFSHandle *handle, const char *path);
+int32_t oifs_rename(OIFSHandle *handle, const char *old_path, const char *new_path);
+
+/**
+ * Inode metadata returned by oifs_stat.
+ */
+typedef struct {
+    uint64_t inode_id;
+    uint64_t size;
+    uint64_t compressed_size;
+    uint64_t created_at;
+    uint64_t modified_at;
+    uint8_t is_dir;
+    uint8_t encrypted;
+    uint8_t seekable_64k;
+    uint8_t filter_typesize;
+    uint8_t filter_delta;
+    uint8_t filter_shuffle;
+    uint8_t filter_bitshuffle;
+    uint8_t _pad;
+} OIFSFileStat;
+
+int32_t oifs_stat(OIFSHandle *handle, const char *path, OIFSFileStat *out_stat);
+
+/**
+ * Checks whether a path exists in the filesystem.
+ *
+ * @return 1 if path exists, 0 if it does not exist, -1 on null/invalid handle or path
+ */
+int32_t oifs_exists(OIFSHandle *handle, const char *path);
 
 /*
  * High-Performance Direct I/O
@@ -366,6 +396,191 @@ int64_t oifs_fuse_dispatch_frame(
 );
 
 /*
+ * SIMD Numeric Pre-Compression Filters
+ */
+
+/**
+ * Pre-compression numeric filter pipeline configuration.
+ * Pass NULL to filtered write APIs to disable all filters.
+ */
+typedef struct {
+    uint8_t typesize;   /* Element size in bytes (1, 2, 4, or 8; 0 = disabled) */
+    uint8_t delta;      /* Non-zero to enable first-order delta encoding */
+    uint8_t shuffle;    /* Non-zero to enable byte shuffle */
+    uint8_t bitshuffle; /* Non-zero to enable bit shuffle */
+} OIFSFilterConfig;
+
+/**
+ * Atomically creates a file and writes its initial payload with optional SIMD filters.
+ *
+ * @return New inode_id (>= 0) on success, or -1 on error
+ */
+int64_t oifs_create_file_with_data_filtered(
+    OIFSHandle *handle,
+    const char *path,
+    const uint8_t *buf,
+    uint64_t buf_size,
+    uint32_t policy_flags,
+    int32_t zstd_level,
+    const OIFSFilterConfig *filter_cfg
+);
+
+/**
+ * Writes data to a file at the given offset with explicit write policy and optional SIMD filters.
+ * Creates the file if it does not yet exist.
+ *
+ * @return 0 on success, -1 on error
+ */
+int32_t oifs_write_file_with_filters(
+    OIFSHandle *handle,
+    const char *path,
+    uint64_t offset,
+    const uint8_t *buf,
+    uint64_t buf_size,
+    uint32_t policy_flags,
+    int32_t zstd_level,
+    const OIFSFilterConfig *filter_cfg
+);
+
+/*
+ * Cross-Image CoW Clone, 3-Tier Fast Transfer & Sub-Range Splice
+ */
+#define OIFS_CLONE_METHOD_APFS_CLONEFILE        0
+#define OIFS_CLONE_METHOD_LINUX_FICLONE         1
+#define OIFS_CLONE_METHOD_STANDARD_COPY         2
+
+#define OIFS_TRANSFER_METHOD_REFLINK            0
+#define OIFS_TRANSFER_METHOD_COPY_FILE_RANGE    1
+#define OIFS_TRANSFER_METHOD_RAW_BLOCK_COPY     2
+#define OIFS_TRANSFER_METHOD_LOGICAL_REENCODE   3
+
+#define OIFS_TRANSFER_FLAG_MOVE                 0x01
+#define OIFS_TRANSFER_FLAG_OVERWRITE            0x02
+
+#define OIFS_SPLICE_TRIM_KEEP                   0
+#define OIFS_SPLICE_TRIM_PUNCH_HOLE             1
+#define OIFS_SPLICE_TRIM_COLLAPSE               2
+
+typedef struct {
+    uint64_t src_inode;
+    uint64_t dst_inode;
+    uint64_t logical_bytes;
+    uint64_t physical_bytes;
+    uint64_t extents_transferred;
+    uint8_t method;
+    uint8_t _pad[7];
+} OIFSTransferStats;
+
+typedef struct {
+    uint64_t src_inode;
+    uint64_t dst_inode;
+    uint64_t bytes_spliced;
+    uint64_t logical_rmw_bytes;
+    uint64_t body_fast_path_bytes;
+    uint64_t physical_bytes;
+    uint64_t extents_transferred;
+    uint64_t src_blocks_freed;
+    uint8_t method;
+    uint8_t _pad[7];
+} OIFSSpliceStats;
+
+/**
+ * Clones a whole OIFS container image using the fastest host OS CoW primitive.
+ *
+ * @param src_path   Path to an existing source .img file
+ * @param dst_path   Path to the new destination .img file (must not already exist)
+ * @param out_method Optional pointer to receive OIFS_CLONE_METHOD_* (may be NULL)
+ * @return 0 on success, -1 on error
+ */
+int32_t oifs_clone_image(
+    const char *src_path,
+    const char *dst_path,
+    uint8_t *out_method
+);
+
+/**
+ * Transfers a regular file from src_handle to dst_handle using the 3-tier fast-path pipeline.
+ *
+ * @param src_handle Source filesystem handle
+ * @param src_path   Source file path
+ * @param dst_handle Destination filesystem handle (may alias src_handle)
+ * @param dst_path   Destination file path
+ * @param flags      Bitmask of OIFS_TRANSFER_FLAG_MOVE and OIFS_TRANSFER_FLAG_OVERWRITE
+ * @param out_stats  Optional pointer to receive transfer statistics (may be NULL)
+ * @return 0 on success, -1 on error
+ */
+int32_t oifs_transfer_file_to(
+    OIFSHandle *src_handle,
+    const char *src_path,
+    OIFSHandle *dst_handle,
+    const char *dst_path,
+    uint32_t flags,
+    OIFSTransferStats *out_stats
+);
+
+/**
+ * Splices a byte sub-range [src_off, src_off + len) from src_inode in src_handle
+ * into [dst_off, dst_off + len) of dst_inode in dst_handle.
+ *
+ * @param src_handle Source filesystem handle
+ * @param src_inode  Source regular file inode ID
+ * @param src_off    Source byte offset
+ * @param dst_handle Destination filesystem handle (may alias src_handle)
+ * @param dst_inode  Destination regular file inode ID
+ * @param dst_off    Destination byte offset
+ * @param len        Number of bytes to splice
+ * @param trim_mode  One of OIFS_SPLICE_TRIM_KEEP, OIFS_SPLICE_TRIM_PUNCH_HOLE, OIFS_SPLICE_TRIM_COLLAPSE
+ * @param out_stats  Optional pointer to receive splice statistics (may be NULL)
+ * @return 0 on success, -1 on error
+ */
+int32_t oifs_splice_range_to(
+    OIFSHandle *src_handle,
+    uint64_t src_inode,
+    uint64_t src_off,
+    OIFSHandle *dst_handle,
+    uint64_t dst_inode,
+    uint64_t dst_off,
+    uint64_t len,
+    uint8_t trim_mode,
+    OIFSSpliceStats *out_stats
+);
+
+/*
+ * Online Maintenance & Diagnostics
+ */
+
+typedef struct {
+    uint8_t is_clean;
+    uint8_t _pad[7];
+    uint64_t orphan_inodes;
+    uint64_t leaked_blocks;
+    uint64_t missing_blocks;
+    uint64_t cross_linked_blocks;
+} OIFSFsckReport;
+
+typedef struct {
+    uint64_t total_blocks;
+    uint64_t used_blocks;
+    uint64_t free_blocks;
+    uint64_t free_runs;
+    uint64_t largest_free_run;
+    double avg_gap_size;
+    double fragmentation_ratio;
+} OIFSFragmentationStats;
+
+typedef struct {
+    uint64_t files_processed;
+    uint64_t bytes_moved;
+    uint64_t blocks_freed;
+    double frag_before;
+    double frag_after;
+} OIFSDefragStats;
+
+int32_t oifs_verify_integrity(OIFSHandle *handle, OIFSFsckReport *out_report);
+int32_t oifs_analyze_fragmentation(OIFSHandle *handle, OIFSFragmentationStats *out_stats);
+int32_t oifs_defragment(OIFSHandle *handle, OIFSDefragStats *out_stats);
+
+/*
  * Diagnostics and Error Handling
  */
 int32_t oifs_last_error(OIFSHandle *handle, char *buf, uint32_t buf_size);
@@ -394,9 +609,9 @@ int32_t oifs_get_io_backend(OIFSHandle *handle);
  * runtime version provided by the loaded liboifs dynamic library.
  */
 #define OIFS_VERSION_MAJOR 1
-#define OIFS_VERSION_MINOR 3
+#define OIFS_VERSION_MINOR 4
 #define OIFS_VERSION_PATCH 0
-#define OIFS_VERSION_STRING "1.3.0"
+#define OIFS_VERSION_STRING "1.4.0"
 #define OIFS_VERSION_CODE (((uint64_t)OIFS_VERSION_MAJOR << 32) | ((uint64_t)OIFS_VERSION_MINOR << 16) | (uint64_t)OIFS_VERSION_PATCH)
 
 /*

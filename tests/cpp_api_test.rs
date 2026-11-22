@@ -193,6 +193,10 @@ fn test_cpp_native_zero_copy_async_and_benchmark() {
 #include <utility>
 #include <vector>
 
+#if defined(OIFS_HAS_CPP20_COROUTINE)
+#include <exception>
+#endif
+
 #ifndef _WIN32
 #include <cerrno>
 #include <fcntl.h>
@@ -2368,6 +2372,586 @@ static void test_fuse_kernel_frame_dispatch(const std::string& fuse_img_path) {
     }
 }
 
+static void test_rename_stat_exists_subdir_and_filters(const std::string& img_path) {
+    // 5. Version & Loaded-Path Free Functions
+    OIFS_CHECK(oifs::check_version() == OIFS_VERSION_COMPAT_OK);
+    OIFS_CHECK(oifs::check_version(1, 0, 0) == OIFS_VERSION_COMPAT_WARN);
+    OIFS_CHECK(oifs::check_version(99, 0, 0) == OIFS_VERSION_COMPAT_ERR);
+    OIFS_CHECK(oifs::version_string() == OIFS_VERSION_STRING);
+    std::string dylib_loc = oifs::loaded_path();
+    OIFS_CHECK(!dylib_loc.empty());
+
+    {
+        oifs::FileSystem fs = oifs::FileSystem::open_with_options(
+            img_path, 32ULL * 1024 * 1024, "", oifs::StorageMode::Mmap, true);
+
+        // 5b. IoBackend getter & setter
+        OIFS_CHECK(fs.get_io_backend() == oifs::IoBackend::Mmap);
+        oifs::IoBackend eff_pread = fs.set_io_backend(oifs::IoBackend::Pread);
+        OIFS_CHECK(eff_pread == oifs::IoBackend::Pread);
+        OIFS_CHECK(fs.get_io_backend() == oifs::IoBackend::Pread);
+        // IoUring either succeeds (Linux with feature) or falls back to Pread cleanly
+        oifs::IoBackend eff_uring = fs.set_io_backend(oifs::IoBackend::IoUring);
+        OIFS_CHECK(eff_uring == oifs::IoBackend::IoUring || eff_uring == oifs::IoBackend::Pread);
+        OIFS_CHECK(fs.set_io_backend(oifs::IoBackend::Mmap) == oifs::IoBackend::Mmap);
+
+        // 3. Subdirectory listing, stat, exists
+        OIFS_CHECK(!fs.exists("alpha"));
+        fs.mkdir("alpha");
+        fs.mkdir("alpha/sub");
+        OIFS_CHECK(fs.exists("alpha"));
+        OIFS_CHECK(fs.exists("alpha/sub"));
+
+        oifs::FileStat dir_st = fs.stat("alpha/sub");
+        OIFS_CHECK(dir_st.is_dir);
+        OIFS_CHECK(!dir_st.encrypted);
+        OIFS_CHECK(dir_st.inode_id > 0);
+
+        std::string hello = "Hello subdirectory and rename!";
+        uint64_t hello_ino = fs.create_file_with_data(
+            "alpha/sub/hello.txt", oifs::ByteView(hello), oifs::WritePolicy::Raw, 0);
+        OIFS_CHECK(fs.exists("alpha/sub/hello.txt"));
+
+        auto sub_entries = fs.ls("alpha/sub");
+        OIFS_CHECK(sub_entries.size() == 1);
+        OIFS_CHECK(sub_entries[0].name == "hello.txt");
+        OIFS_CHECK(sub_entries[0].size == hello.size());
+
+        // ls("/") and ls("") and ls() all list root
+        auto root_slash = fs.ls("/");
+        auto root_empty = fs.ls("");
+        auto root_default = fs.ls();
+        OIFS_CHECK(root_slash.size() == root_default.size());
+        OIFS_CHECK(root_empty.size() == root_default.size());
+
+        // ls on a regular file or missing path throws oifs::Error
+        bool caught_ls_file = false;
+        try {
+            (void)fs.ls("alpha/sub/hello.txt");
+        } catch (const oifs::Error&) {
+            caught_ls_file = true;
+        }
+        OIFS_CHECK(caught_ls_file);
+
+        // 1. Atomic Rename (cross-directory + within-directory)
+        fs.mkdir("beta");
+        fs.rename("alpha/sub/hello.txt", "beta/moved.txt");
+        OIFS_CHECK(!fs.exists("alpha/sub/hello.txt"));
+        OIFS_CHECK(fs.exists("beta/moved.txt"));
+        OIFS_CHECK(fs.resolve_path("beta/moved.txt") == hello_ino);
+        std::vector<uint8_t> read_moved = fs.read_file("beta/moved.txt");
+        OIFS_CHECK(std::string(read_moved.begin(), read_moved.end()) == hello);
+
+        // Rename missing path must fail
+        bool caught_rename_missing = false;
+        try {
+            fs.rename("no_such_src.txt", "no_such_dst.txt");
+        } catch (const oifs::Error&) {
+            caught_rename_missing = true;
+        }
+        OIFS_CHECK(caught_rename_missing);
+
+        // 4 & 7. SIMD Numeric Filters + Ergonomic Typed Read/Write Helpers
+        constexpr size_t kNumI32 = 4096;
+        std::vector<int32_t> ints(kNumI32);
+        for (size_t i = 0; i < kNumI32; ++i) {
+            ints[i] = static_cast<int32_t>(100000 + i * 3);
+        }
+        oifs::Span<const int32_t> const_i32_span(ints.data(), ints.size());
+        oifs::Span<int32_t> mut_i32_span(ints.data(), ints.size());
+
+        uint64_t num_ino = fs.create_file_with_span(
+            "beta/numeric.bin",
+            const_i32_span,
+            oifs::WritePolicy::Stream,
+            3,
+            oifs::FilterConfig::numeric(4));
+        OIFS_CHECK(num_ino > 0);
+
+        oifs::FileStat num_st = fs.stat("beta/numeric.bin");
+        OIFS_CHECK(!num_st.is_dir);
+        OIFS_CHECK(num_st.size == ints.size() * sizeof(int32_t));
+        OIFS_CHECK(num_st.filter_typesize == 4);
+        OIFS_CHECK(num_st.filter_delta);
+        OIFS_CHECK(num_st.filter_shuffle);
+        OIFS_CHECK(!num_st.filter_bitshuffle);
+
+        std::vector<uint8_t> raw_num = fs.read_file("beta/numeric.bin");
+        OIFS_CHECK(raw_num.size() == ints.size() * sizeof(int32_t));
+        auto roundtrip_i32 = oifs::ByteView(raw_num).as_span<const int32_t>();
+        OIFS_CHECK(roundtrip_i32.size() == kNumI32);
+        for (size_t i = 0; i < kNumI32; ++i) {
+            OIFS_CHECK(roundtrip_i32[i] == ints[i]);
+        }
+
+        // BitShuffle + Stream via vector overload & create_file_with_data filtered overload
+        std::vector<uint64_t> u64_vals = make_u64_pattern(12000, 0x123456789ABCDEF0ULL); // 96 KiB
+        uint64_t bs_ino = fs.create_file_with_span(
+            "beta/bitshuffle_stream.bin",
+            u64_vals,
+            oifs::WritePolicy::Stream,
+            3,
+            oifs::FilterConfig::bitshuffle(8));
+        OIFS_CHECK(bs_ino > 0);
+
+        oifs::FileStat bs_st = fs.stat("beta/bitshuffle_stream.bin");
+        OIFS_CHECK(!bs_st.seekable_64k);
+        OIFS_CHECK(bs_st.filter_typesize == 8);
+        OIFS_CHECK(!bs_st.filter_delta);
+        OIFS_CHECK(!bs_st.filter_shuffle);
+        OIFS_CHECK(bs_st.filter_bitshuffle);
+
+        std::vector<uint8_t> raw_bs = fs.read_file("beta/bitshuffle_stream.bin");
+        OIFS_CHECK(raw_bs.size() == u64_vals.size() * sizeof(uint64_t));
+        OIFS_CHECK(std::memcmp(raw_bs.data(), u64_vals.data(), raw_bs.size()) == 0);
+
+        // Seekable64K stat check
+        (void)fs.create_file_with_span(
+            "beta/seek64k.bin",
+            u64_vals,
+            oifs::WritePolicy::Seekable64K,
+            3);
+        oifs::FileStat seek_st = fs.stat("beta/seek64k.bin");
+        OIFS_CHECK(seek_st.seekable_64k);
+        OIFS_CHECK(seek_st.size == u64_vals.size() * sizeof(uint64_t));
+        OIFS_CHECK(fs.read_file("beta/seek64k.bin").size() == seek_st.size);
+
+        // write_span (non-const Span<T> and offset write with filters)
+        std::vector<int32_t> patch_ints = {42, 43, 44, 45};
+        fs.write_span(
+            "beta/patched.bin",
+            0,
+            mut_i32_span,
+            oifs::WritePolicy::Stream,
+            1,
+            oifs::FilterConfig::numeric(4));
+        fs.write_span(
+            "beta/patched.bin",
+            16,
+            patch_ints,
+            oifs::WritePolicy::Stream,
+            1,
+            oifs::FilterConfig::numeric(4));
+        std::vector<uint8_t> patched_bytes = fs.read_file("beta/patched.bin");
+        auto patched_sp = oifs::ByteView(patched_bytes).as_span<const int32_t>();
+        OIFS_CHECK(patched_sp[0] == ints[0]);
+        OIFS_CHECK(patched_sp[4] == 42);
+        OIFS_CHECK(patched_sp[5] == 43);
+        OIFS_CHECK(patched_sp[6] == 44);
+        OIFS_CHECK(patched_sp[7] == 45);
+        OIFS_CHECK(patched_sp[8] == ints[8]);
+
+#if __cplusplus >= 202002L && defined(__cpp_lib_span)
+        // C++20 std::span<const T> and std::span<T> overloads
+        std::span<const int32_t> std_const_sp(ints);
+        (void)fs.create_file_with_span(
+            "beta/cpp20_span.bin",
+            std_const_sp,
+            oifs::WritePolicy::Stream,
+            1,
+            oifs::FilterConfig::numeric(4));
+        std::span<int32_t> std_mut_sp(patch_ints);
+        fs.write_span(
+            "beta/cpp20_span.bin",
+            8,
+            std_mut_sp,
+            oifs::WritePolicy::Stream,
+            1,
+            oifs::FilterConfig::numeric(4));
+        std::vector<uint8_t> c20_read = fs.read_file("beta/cpp20_span.bin");
+        auto c20_sp = oifs::ByteView(c20_read).as_span<const int32_t>();
+        OIFS_CHECK(c20_sp[2] == 42);
+        OIFS_CHECK(c20_sp[3] == 43);
+#endif
+
+        // Empty file read_file & directory read_file error check
+        (void)fs.create_file_with_data("beta/empty.bin", oifs::ByteView(), oifs::WritePolicy::Raw, 0);
+        OIFS_CHECK(fs.read_file("beta/empty.bin").empty());
+        bool caught_read_dir = false;
+        try {
+            (void)fs.read_file("beta");
+        } catch (const oifs::Error&) {
+            caught_read_dir = true;
+        }
+        OIFS_CHECK(caught_read_dir);
+
+        // 6. Online Maintenance & Diagnostics
+        oifs::FsckReport fsck = fs.verify_integrity();
+        OIFS_CHECK(fsck.is_clean);
+        OIFS_CHECK(fsck.orphan_inodes == 0);
+        OIFS_CHECK(fsck.leaked_blocks == 0);
+        OIFS_CHECK(fsck.missing_blocks == 0);
+        OIFS_CHECK(fsck.cross_linked_blocks == 0);
+
+        oifs::FragmentationStats frag = fs.analyze_fragmentation();
+        OIFS_CHECK(frag.total_blocks > 0);
+        OIFS_CHECK(frag.used_blocks + frag.free_blocks == frag.total_blocks);
+
+        // Create fragmented layout and defragment
+        for (int i = 0; i < 6; ++i) {
+            std::vector<uint8_t> blk(8192, static_cast<uint8_t>('A' + i));
+            (void)fs.create_file_with_data(
+                "frag_" + std::to_string(i) + ".bin", oifs::ByteView(blk), oifs::WritePolicy::Raw, 0);
+        }
+        fs.delete_file("frag_1.bin");
+        fs.delete_file("frag_3.bin");
+        oifs::DefragStats dstats = fs.defragment();
+        (void)dstats;
+        OIFS_CHECK(fs.verify_integrity().is_clean);
+        fs.flush();
+    }
+
+    // Unified open_read_only(path) (1-arg, 2-arg, 3-arg) & read-only checks on new methods
+    {
+        oifs::FileSystem ro = oifs::FileSystem::open_read_only(img_path);
+        OIFS_CHECK(ro.is_read_only());
+        OIFS_CHECK(ro.exists("beta/moved.txt"));
+        OIFS_CHECK(!ro.exists("beta/missing.txt"));
+        OIFS_CHECK(ro.stat("beta/numeric.bin").filter_delta);
+        OIFS_CHECK(!ro.ls("beta").empty());
+        OIFS_CHECK(ro.verify_integrity().is_clean);
+        OIFS_CHECK(ro.analyze_fragmentation().total_blocks > 0);
+
+        bool caught_ro_rename = false;
+        try {
+            ro.rename("beta/moved.txt", "beta/blocked.txt");
+        } catch (const oifs::Error&) {
+            caught_ro_rename = true;
+        }
+        OIFS_CHECK(caught_ro_rename);
+
+        bool caught_ro_defrag = false;
+        try {
+            (void)ro.defragment();
+        } catch (const oifs::Error&) {
+            caught_ro_defrag = true;
+        }
+        OIFS_CHECK(caught_ro_defrag);
+    }
+}
+
+static void test_clone_transfer_splice_and_get_or_open(const std::string& data_dir) {
+    const std::string src_img = join_path(data_dir, "cpp_xfer_src.img");
+    const std::string dst_img = join_path(data_dir, "cpp_xfer_dst.img");
+    const std::string enc_img = join_path(data_dir, "cpp_xfer_enc.img");
+    const std::string clone_img = join_path(data_dir, "cpp_xfer_cloned.img");
+
+    // 5c. get_or_open & get_or_open_with_password
+    {
+        oifs::FileSystem g1 = oifs::FileSystem::get_or_open(src_img, 16ULL * 1024 * 1024);
+        oifs::FileSystem g2 = oifs::FileSystem::get_or_open(src_img, 0);
+        std::string via_session = "Created via get_or_open session!";
+        (void)g1.create_file_with_data(
+            "session_file.txt", oifs::ByteView(via_session), oifs::WritePolicy::Raw, 0);
+        g1.flush();
+        std::vector<uint8_t> got = g2.read_file("session_file.txt");
+        OIFS_CHECK(std::string(got.begin(), got.end()) == via_session);
+    }
+    {
+        oifs::FileSystem ge1 = oifs::FileSystem::get_or_open_with_password(
+            enc_img, 16ULL * 1024 * 1024, "session_enc_pwd");
+        std::string sec_msg = "Encrypted file created via get_or_open_with_password";
+        (void)ge1.create_file_with_data(
+            "enc_payload.bin", oifs::ByteView(sec_msg), oifs::WritePolicy::Raw, 0);
+        ge1.flush();
+
+        oifs::FileSystem ge2 = oifs::FileSystem::get_or_open_with_password(
+            enc_img, 0, "session_enc_pwd");
+        std::vector<uint8_t> dec = ge2.read_file("enc_payload.bin");
+        OIFS_CHECK(std::string(dec.begin(), dec.end()) == sec_msg);
+    }
+
+    // 2a. Whole-image CoW clone
+    {
+        oifs::CloneMethod cm = oifs::FileSystem::clone_image(src_img, clone_img);
+        OIFS_CHECK(cm == oifs::CloneMethod::ApfsClonefile ||
+                   cm == oifs::CloneMethod::LinuxFiclone ||
+                   cm == oifs::CloneMethod::StandardCopy);
+
+        oifs::FileSystem cloned_ro = oifs::FileSystem::open_read_only(clone_img);
+        OIFS_CHECK(cloned_ro.exists("session_file.txt"));
+        std::vector<uint8_t> got = cloned_ro.read_file("session_file.txt");
+        OIFS_CHECK(std::string(got.begin(), got.end()) == "Created via get_or_open session!");
+
+        // Cloning onto an existing path must fail
+        bool caught_dup_clone = false;
+        try {
+            (void)oifs::FileSystem::clone_image(src_img, clone_img);
+        } catch (const oifs::Error&) {
+            caught_dup_clone = true;
+        }
+        OIFS_CHECK(caught_dup_clone);
+    }
+
+    // 2b & 2c. Cross-image transfer_file_to & splice_range_to
+    {
+        oifs::FileSystem src = oifs::FileSystem::open_with_options(
+            src_img, 0, "", oifs::StorageMode::Mmap, false);
+        oifs::FileSystem dst = oifs::FileSystem::open_with_options(
+            dst_img, 16ULL * 1024 * 1024, "", oifs::StorageMode::Mmap, false);
+        oifs::FileSystem enc = oifs::FileSystem::open_with_options(
+            enc_img, 0, "session_enc_pwd", oifs::StorageMode::Mmap, false);
+
+        // Populate 64 KiB raw file in src
+        std::vector<uint8_t> big_raw(64 * 1024);
+        for (size_t i = 0; i < big_raw.size(); ++i) {
+            big_raw[i] = static_cast<uint8_t>((i * 19 + 3) & 0xFF);
+        }
+        uint64_t src_ino = src.create_file_with_data(
+            "big_raw.bin", oifs::ByteView(big_raw), oifs::WritePolicy::Raw, 0);
+
+        // Copy transfer src -> dst
+        oifs::TransferStats xfer = src.transfer_file_to("big_raw.bin", dst, "copied_raw.bin");
+        OIFS_CHECK(xfer.src_inode == src_ino);
+        OIFS_CHECK(xfer.dst_inode > 0);
+        OIFS_CHECK(xfer.logical_bytes == big_raw.size());
+        OIFS_CHECK(dst.read_file("copied_raw.bin") == big_raw);
+        OIFS_CHECK(src.exists("big_raw.bin"));
+
+        // Overwrite + move transfer
+        std::string small_src = "Move overwrite payload!";
+        (void)src.create_file_with_data(
+            "to_move.txt", oifs::ByteView(small_src), oifs::WritePolicy::Raw, 0);
+        oifs::TransferOptions move_opts;
+        move_opts.move_file = true;
+        move_opts.overwrite = true;
+        oifs::TransferStats mv_xfer = src.transfer_file_to(
+            "to_move.txt", dst, "copied_raw.bin", move_opts);
+        OIFS_CHECK(mv_xfer.logical_bytes == small_src.size());
+        OIFS_CHECK(!src.exists("to_move.txt"));
+        std::vector<uint8_t> moved_read = dst.read_file("copied_raw.bin");
+        OIFS_CHECK(std::string(moved_read.begin(), moved_read.end()) == small_src);
+
+        // Cross encrypted boundary must use LogicalReencode
+        oifs::TransferStats enc_xfer = src.transfer_file_to(
+            "big_raw.bin", enc, "reencrypted.bin");
+        OIFS_CHECK(enc_xfer.method == oifs::TransferMethod::LogicalReencode);
+        OIFS_CHECK(enc.read_file("reencrypted.bin") == big_raw);
+
+        // Sub-range splice: Keep, PunchHole, CollapseRange
+        std::vector<uint8_t> dst_base(64 * 1024, 0x11);
+        uint64_t dst_splice_ino = dst.create_file_with_data(
+            "splice_dst.bin", oifs::ByteView(dst_base), oifs::WritePolicy::Raw, 0);
+
+        oifs::SpliceStats sp_keep = src.splice_range_to(
+            src_ino, 4096, dst, dst_splice_ino, 8192, 16384);
+        OIFS_CHECK(sp_keep.src_inode == src_ino);
+        OIFS_CHECK(sp_keep.dst_inode == dst_splice_ino);
+        OIFS_CHECK(sp_keep.bytes_spliced == 16384);
+        std::vector<uint8_t> dst_after_keep = dst.read_file("splice_dst.bin");
+        OIFS_CHECK(std::memcmp(dst_after_keep.data() + 8192, big_raw.data() + 4096, 16384) == 0);
+        OIFS_CHECK(dst_after_keep[0] == 0x11);
+
+        // PunchHole on [16384, 32768) in src_ino
+        oifs::SpliceOptions punch_opts;
+        punch_opts.trim_mode = oifs::SpliceTrimMode::PunchHole;
+        oifs::SpliceStats sp_punch = src.splice_range_to(
+            src_ino, 16384, dst, dst_splice_ino, 0, 16384, punch_opts);
+        OIFS_CHECK(sp_punch.bytes_spliced == 16384);
+        std::vector<uint8_t> src_after_punch = src.read_file("big_raw.bin");
+        OIFS_CHECK(src_after_punch.size() == big_raw.size());
+        for (size_t i = 16384; i < 32768; ++i) {
+            OIFS_CHECK(src_after_punch[i] == 0);
+        }
+
+        // CollapseRange on [0, 8192) in src_ino
+        oifs::SpliceOptions collapse_opts;
+        collapse_opts.trim_mode = oifs::SpliceTrimMode::CollapseRange;
+        oifs::SpliceStats sp_col = src.splice_range_to(
+            src_ino, 0, dst, dst_splice_ino, 32768, 8192, collapse_opts);
+        OIFS_CHECK(sp_col.bytes_spliced == 8192);
+        std::vector<uint8_t> src_after_col = src.read_file("big_raw.bin");
+        OIFS_CHECK(src_after_col.size() == big_raw.size() - 8192);
+        OIFS_CHECK(std::memcmp(src_after_col.data(), big_raw.data() + 8192, 4096) == 0);
+    }
+
+    // Read-only enforcement on transfer_file_to and splice_range_to
+    {
+        oifs::FileSystem ro_src = oifs::FileSystem::open_read_only(src_img);
+        oifs::FileSystem ro_dst = oifs::FileSystem::open_read_only(dst_img);
+        oifs::FileSystem rw_dst = oifs::FileSystem::open_with_options(
+            join_path(data_dir, "cpp_xfer_rw_dst.img"),
+            8ULL * 1024 * 1024,
+            "",
+            oifs::StorageMode::Mmap,
+            false);
+
+        // Copy OUT of read-only source into RW destination is allowed
+        oifs::TransferStats ro_copy = ro_src.transfer_file_to(
+            "session_file.txt", rw_dst, "from_ro.txt");
+        OIFS_CHECK(ro_copy.logical_bytes > 0);
+        OIFS_CHECK(rw_dst.exists("from_ro.txt"));
+
+        // Move OUT of read-only source must throw
+        oifs::TransferOptions mv;
+        mv.move_file = true;
+        bool caught_ro_move = false;
+        try {
+            (void)ro_src.transfer_file_to("session_file.txt", rw_dst, "blocked_mv.txt", mv);
+        } catch (const oifs::Error&) {
+            caught_ro_move = true;
+        }
+        OIFS_CHECK(caught_ro_move);
+
+        // Transfer INTO read-only destination must throw
+        bool caught_ro_dst = false;
+        try {
+            (void)rw_dst.transfer_file_to("from_ro.txt", ro_dst, "blocked_into_ro.txt");
+        } catch (const oifs::Error&) {
+            caught_ro_dst = true;
+        }
+        OIFS_CHECK(caught_ro_dst);
+
+        // Splice PunchHole on read-only source must throw
+        uint64_t ro_src_ino = ro_src.resolve_path("session_file.txt");
+        uint64_t rw_dst_ino = rw_dst.resolve_path("from_ro.txt");
+        oifs::SpliceOptions punch;
+        punch.trim_mode = oifs::SpliceTrimMode::PunchHole;
+        bool caught_ro_splice = false;
+        try {
+            (void)ro_src.splice_range_to(ro_src_ino, 0, rw_dst, rw_dst_ino, 0, 8, punch);
+        } catch (const oifs::Error&) {
+            caught_ro_splice = true;
+        }
+        OIFS_CHECK(caught_ro_splice);
+    }
+}
+
+#if defined(OIFS_HAS_CPP20_COROUTINE)
+struct SyncCoroTask {
+    struct promise_type {
+        std::mutex mtx;
+        std::condition_variable cv;
+        bool finished = false;
+        std::exception_ptr exc;
+
+        SyncCoroTask get_return_object() noexcept {
+            return SyncCoroTask{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        std::suspend_never initial_suspend() noexcept { return {}; }
+        struct FinalAwaiter {
+            bool await_ready() noexcept { return false; }
+            void await_suspend(std::coroutine_handle<promise_type> h) noexcept {
+                auto& p = h.promise();
+                {
+                    std::lock_guard<std::mutex> lk(p.mtx);
+                    p.finished = true;
+                }
+                p.cv.notify_all();
+            }
+            void await_resume() noexcept {}
+        };
+        FinalAwaiter final_suspend() noexcept { return {}; }
+        void return_void() noexcept {}
+        void unhandled_exception() noexcept { exc = std::current_exception(); }
+    };
+
+    std::coroutine_handle<promise_type> handle;
+    bool waited = false;
+
+    explicit SyncCoroTask(std::coroutine_handle<promise_type> h) noexcept : handle(h) {}
+    SyncCoroTask(const SyncCoroTask&) = delete;
+    SyncCoroTask& operator=(const SyncCoroTask&) = delete;
+    ~SyncCoroTask() {
+        if (handle) {
+            if (!waited) {
+                auto& p = handle.promise();
+                std::unique_lock<std::mutex> lk(p.mtx);
+                p.cv.wait(lk, [&] { return p.finished; });
+            }
+            handle.destroy();
+        }
+    }
+
+    void wait() {
+        auto& p = handle.promise();
+        {
+            std::unique_lock<std::mutex> lk(p.mtx);
+            p.cv.wait(lk, [&] { return p.finished; });
+        }
+        waited = true;
+        if (p.exc) {
+            std::rethrow_exception(p.exc);
+        }
+    }
+};
+
+static SyncCoroTask run_cpp20_coro_workflow(
+    oifs::FileSystem& fs,
+    uint64_t raw_ino,
+    const std::vector<uint8_t>& raw_expected,
+    uint64_t comp_ino,
+    const std::vector<uint8_t>& comp_expected
+) {
+    // 1. Inline Fast-Path hit: await_ready() == true (zero suspend!)
+    std::vector<uint8_t> raw_out(raw_expected.size(), 0);
+    oifs::AsyncFuture raw_fut = fs.read_at_async(raw_ino, 0, oifs::MutableByteSpan(raw_out));
+    OIFS_CHECK(raw_fut.is_ready());
+    int64_t n_raw = co_await raw_fut;
+    OIFS_CHECK(n_raw == static_cast<int64_t>(raw_expected.size()));
+    OIFS_CHECK(raw_out == raw_expected);
+
+    // 2. Background pool slow-path: compressed file suspends & resumes on worker completion
+    std::vector<uint8_t> comp_out(comp_expected.size(), 0);
+    int64_t n_comp = co_await fs.read_at_async(comp_ino, 0, oifs::MutableByteSpan(comp_out));
+    OIFS_CHECK(n_comp == static_cast<int64_t>(comp_expected.size()));
+    OIFS_CHECK(comp_out == comp_expected);
+
+    // 3. Group-Commit async create + write + flush via co_await
+    std::string coro_text = "Created and flushed via C++20 co_await coroutine!";
+    int64_t created_id = co_await fs.create_file_with_data_async(
+        "coro_created.txt", oifs::ByteView(coro_text), oifs::WritePolicy::Raw, 0);
+    OIFS_CHECK(created_id > 0);
+
+    std::string patched = "CORO";
+    int64_t wrote_id = co_await fs.write_file_async("coro_created.txt", oifs::ByteView(patched));
+    OIFS_CHECK(wrote_id == created_id);
+
+    int64_t flush_rc = co_await fs.flush_async();
+    OIFS_CHECK(flush_rc == 0);
+
+    std::vector<uint8_t> check_buf(coro_text.size(), 0);
+    int64_t n_chk = co_await fs.read_at_async(
+        static_cast<uint64_t>(created_id), 0, oifs::MutableByteSpan(check_buf));
+    OIFS_CHECK(n_chk == static_cast<int64_t>(coro_text.size()));
+    OIFS_CHECK(std::memcmp(check_buf.data(), "COROted", 7) == 0);
+
+    // 4. Failing async future throws oifs::Error from co_await
+    std::vector<uint8_t> err_buf(16, 0);
+    bool caught_coro_err = false;
+    try {
+        (void)co_await fs.read_at_async(9999999ULL, 0, oifs::MutableByteSpan(err_buf));
+    } catch (const oifs::Error& e) {
+        caught_coro_err = std::strlen(e.what()) > 0;
+    }
+    OIFS_CHECK(caught_coro_err);
+}
+
+static void test_cpp20_coroutine_co_await(const std::string& coro_img) {
+    oifs::FileSystem fs = oifs::FileSystem::open_with_options(
+        coro_img, 16ULL * 1024 * 1024, "", oifs::StorageMode::Mmap, true);
+    fs.set_durability_mode(oifs::DurabilityMode::Strict);
+
+    std::vector<uint8_t> raw_data(16384);
+    for (size_t i = 0; i < raw_data.size(); ++i) {
+        raw_data[i] = static_cast<uint8_t>((i * 11 + 7) & 0xFF);
+    }
+    std::vector<uint8_t> comp_data = make_compressible_pattern(196608, 42);
+
+    uint64_t raw_ino = fs.create_file_with_data(
+        "coro_raw.bin", oifs::ByteView(raw_data), oifs::WritePolicy::Raw, 0);
+    uint64_t comp_ino = fs.create_file_with_data(
+        "coro_comp.zst", oifs::ByteView(comp_data), oifs::WritePolicy::Seekable64K, 3);
+
+    SyncCoroTask task = run_cpp20_coro_workflow(fs, raw_ino, raw_data, comp_ino, comp_data);
+    task.wait();
+}
+#else
+#if __cplusplus >= 202002L && defined(__cpp_impl_coroutine) && __has_include(<coroutine>)
+#error "OIFS_HAS_CPP20_COROUTINE must be defined in C++20 coroutine builds"
+#endif
+#endif
+
 int main(int argc, char** argv) {
     OIFS_CHECK(OIFS_CHECK_VERSION() == OIFS_VERSION_COMPAT_OK);
 
@@ -2404,6 +2988,8 @@ int main(int argc, char** argv) {
     const std::string mt_fio_img = join_path(data_dir, "cpp_mt_rw_fio.img");
     const std::string bench_img = join_path(data_dir, "cpp_bench.img");
     const std::string fuse_img = join_path(data_dir, "cpp_fuse.img");
+    const std::string features_img = join_path(data_dir, "cpp_features.img");
+    const std::string coro_img = join_path(data_dir, "cpp_coro.img");
 
     test_pinnable_slice_zero_copy_and_fallbacks(mmap_img, file_io_img, enc_img);
     test_out_of_order_destruction_safety(mmap_img);
@@ -2413,6 +2999,13 @@ int main(int argc, char** argv) {
     test_multi_process_and_multi_thread(
         argv[0], mp_plain_img, mp_enc_img, mt_mmap_img, mt_fio_img);
     test_fuse_kernel_frame_dispatch(fuse_img);
+    test_rename_stat_exists_subdir_and_filters(features_img);
+    test_clone_transfer_splice_and_get_or_open(data_dir);
+#if defined(OIFS_HAS_CPP20_COROUTINE)
+    test_cpp20_coroutine_co_await(coro_img);
+#else
+    (void)coro_img;
+#endif
     run_micro_benchmark(bench_img);
 
     std::cout << "ALL C++ NATIVE API (include/oifs.hpp) TESTS & BENCHMARKS PASSED!\n";

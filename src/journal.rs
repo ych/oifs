@@ -3949,6 +3949,137 @@ fn sim_get_or_alloc_block_coalesced(
     }
 }
 
+/// Stages setting a raw physical block pointer (`phys_blk`) at `logical_idx` in `inode`,
+/// allocating any missing indirect pointer tables via `sim` and recording WAL ops.
+pub(crate) fn sim_set_logical_block_ptr(
+    backing: &ImageBacking,
+    inode: &mut Inode,
+    logical_idx: usize,
+    phys_blk: u64,
+    sim: &mut AllocSim,
+    ops: &mut Vec<crate::journal::MetadataOp>,
+) -> Result<(), DiskManagerError> {
+    use crate::inode::BlockPath;
+
+    if phys_blk == 0 {
+        return Ok(());
+    }
+    let Some(path) = BlockPath::from_logical(logical_idx) else {
+        return Err(DiskManagerError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Logical block index exceeds maximum file size",
+        )));
+    };
+    let val_bytes = phys_blk.to_le_bytes().to_vec();
+    match path {
+        BlockPath::Direct(i) => {
+            inode.blocks[i] = phys_blk;
+        }
+        BlockPath::Single(i) => {
+            let sib = sim_ensure_root(backing, &mut inode.blocks[10], sim, ops)?;
+            sim.pointers.insert((sib, i), phys_blk);
+            ops.push(MetadataOp::WriteBlockSlice {
+                block_id: sib,
+                offset: (i * 8) as u32,
+                data: val_bytes,
+            });
+        }
+        BlockPath::Double(a, b) => {
+            let dib = sim_ensure_root(backing, &mut inode.blocks[11], sim, ops)?;
+            let sib = sim_child(backing, dib, a, true, sim, ops)?;
+            sim.pointers.insert((sib, b), phys_blk);
+            ops.push(MetadataOp::WriteBlockSlice {
+                block_id: sib,
+                offset: (b * 8) as u32,
+                data: val_bytes,
+            });
+        }
+        BlockPath::Triple(a, b, c) => {
+            let tib = sim_ensure_root(backing, &mut inode.triple_indirect, sim, ops)?;
+            let dib = sim_child(backing, tib, a, true, sim, ops)?;
+            let sib = sim_child(backing, dib, b, true, sim, ops)?;
+            sim.pointers.insert((sib, c), phys_blk);
+            ops.push(MetadataOp::WriteBlockSlice {
+                block_id: sib,
+                offset: (c * 8) as u32,
+                data: val_bytes,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Clears a logical pointer/chunk slot to `0` in `inode` against [`AllocSim`] without
+/// allocating any new indirect pointer blocks.
+pub(crate) fn sim_clear_logical_slot(
+    backing: &ImageBacking,
+    inode: &mut Inode,
+    logical_idx: usize,
+    sim: &mut AllocSim,
+    ops: &mut Vec<crate::journal::MetadataOp>,
+) {
+    use crate::inode::BlockPath;
+
+    let read_sim_ptr = |parent: u64, slot: usize, sim: &AllocSim| -> u64 {
+        if let Some(&cached) = sim.pointers.get(&(parent, slot)) {
+            cached
+        } else if sim.is_fresh(parent) {
+            0
+        } else {
+            backing.read_block_ptr(parent, slot)
+        }
+    };
+
+    match BlockPath::from_logical(logical_idx) {
+        Some(BlockPath::Direct(i)) => {
+            inode.blocks[i] = 0;
+        }
+        Some(BlockPath::Single(i)) => {
+            let sib = inode.blocks[10];
+            if sim.is_data_block(sib) && read_sim_ptr(sib, i, sim) != 0 {
+                sim.pointers.insert((sib, i), 0);
+                ops.push(MetadataOp::WriteBlockSlice {
+                    block_id: sib,
+                    offset: (i * 8) as u32,
+                    data: 0u64.to_le_bytes().to_vec(),
+                });
+            }
+        }
+        Some(BlockPath::Double(a, b)) => {
+            let dib = inode.blocks[11];
+            if sim.is_data_block(dib) {
+                let sib = read_sim_ptr(dib, a, sim);
+                if sim.is_data_block(sib) && read_sim_ptr(sib, b, sim) != 0 {
+                    sim.pointers.insert((sib, b), 0);
+                    ops.push(MetadataOp::WriteBlockSlice {
+                        block_id: sib,
+                        offset: (b * 8) as u32,
+                        data: 0u64.to_le_bytes().to_vec(),
+                    });
+                }
+            }
+        }
+        Some(BlockPath::Triple(a, b, c)) => {
+            let tib = inode.triple_indirect;
+            if sim.is_data_block(tib) {
+                let dib = read_sim_ptr(tib, a, sim);
+                if sim.is_data_block(dib) {
+                    let sib = read_sim_ptr(dib, b, sim);
+                    if sim.is_data_block(sib) && read_sim_ptr(sib, c, sim) != 0 {
+                        sim.pointers.insert((sib, c), 0);
+                        ops.push(MetadataOp::WriteBlockSlice {
+                            block_id: sib,
+                            offset: (c * 8) as u32,
+                            data: 0u64.to_le_bytes().to_vec(),
+                        });
+                    }
+                }
+            }
+        }
+        None => {}
+    }
+}
+
 /// Sets a seekable 64K ChunkEntry pointer in an inode against [`AllocSim`].
 ///
 /// Records needed indirect pointer table block allocations and slice writes into `ops`

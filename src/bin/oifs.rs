@@ -283,6 +283,45 @@ enum Commands {
         #[arg(long)]
         allow_other: bool,
     },
+    /// Clone an entire OIFS image using OS CoW reflink (APFS clonefile / Linux FICLONE)
+    Clone {
+        /// Source OIFS image path (defaults to --image if omitted)
+        src: PathBuf,
+        /// Destination OIFS image path (must not already exist)
+        dst: PathBuf,
+    },
+    /// Fast cross-image file copy or move (3-tier: FICLONERANGE -> copy_file_range -> raw blocks)
+    Transfer {
+        /// Destination OIFS image path
+        #[arg(long = "to")]
+        to: PathBuf,
+        /// Source file path inside the source image (--image)
+        src_path: String,
+        /// Destination file path inside --to image (defaults to src_path)
+        #[arg(long = "dest")]
+        dest: Option<String>,
+        /// Remove source file after destination commits and flushes
+        #[arg(long = "move")]
+        move_file: bool,
+        /// Overwrite existing file at destination
+        #[arg(long)]
+        overwrite: bool,
+        /// Password for encrypted destination image (optional)
+        #[arg(long = "to-password")]
+        to_password: Option<String>,
+        /// Sub-range byte offset in source file (enables `splice_range_to`)
+        #[arg(long = "offset")]
+        offset: Option<u64>,
+        /// Sub-range byte length to splice (defaults to remaining source bytes from --offset)
+        #[arg(long = "len")]
+        len: Option<u64>,
+        /// Sub-range byte offset in destination file (defaults to --offset or 0)
+        #[arg(long = "dst-offset")]
+        dst_offset: Option<u64>,
+        /// Source trim mode for sub-range splice: keep, punch-hole, or collapse
+        #[arg(long = "trim-mode", default_value = "keep")]
+        trim_mode: String,
+    },
 }
 
 /// Helper function to read password securely from stdin (with terminal echo masked).
@@ -575,13 +614,31 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if let Commands::Clone { src, dst } = &cli.command {
+        let method = oifs::DiskManager::clone_image(src, dst)?;
+        if cli.json {
+            println!(
+                "{}",
+                json!({
+                    "ok": true,
+                    "src": src.to_string_lossy(),
+                    "dst": dst.to_string_lossy(),
+                    "method": format!("{method:?}"),
+                })
+            );
+        } else {
+            println!("Cloned {:?} -> {:?} ({:?})", src, dst, method);
+        }
+        return Ok(());
+    }
+
     let image = cli
         .image
         .as_ref()
         .ok_or("Image path must be provided via -i / --image")?;
 
     match &cli.command {
-        Commands::FilterAnalyze { .. } => unreachable!(),
+        Commands::FilterAnalyze { .. } | Commands::Clone { .. } => unreachable!(),
         Commands::Create {
             size,
             encrypt,
@@ -1625,6 +1682,357 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         "foreground": foreground,
                         "allow_other": allow_other,
                     })
+                );
+            }
+            Ok(())
+        }
+        Commands::Transfer {
+            to,
+            src_path,
+            dest,
+            move_file,
+            overwrite,
+            to_password,
+            offset,
+            len,
+            dst_offset,
+            trim_mode,
+        } => {
+            if !image.exists() {
+                return Err(format!("Source image {:?} does not exist.", image).into());
+            }
+            if !to.exists() {
+                return Err(format!("Destination image {:?} does not exist.", to).into());
+            }
+            let parsed_trim = match trim_mode.as_str() {
+                "keep" => oifs::SpliceTrimMode::Keep,
+                "punch-hole" | "punch" => oifs::SpliceTrimMode::PunchHole,
+                "collapse" | "collapse-range" => oifs::SpliceTrimMode::CollapseRange,
+                other => {
+                    return Err(format!(
+                        "Invalid --trim-mode '{}': expected keep, punch-hole, or collapse",
+                        other
+                    )
+                    .into());
+                }
+            };
+            let is_splice = offset.is_some()
+                || len.is_some()
+                || dst_offset.is_some()
+                || parsed_trim != oifs::SpliceTrimMode::Keep;
+
+            if (*move_file || parsed_trim != oifs::SpliceTrimMode::Keep) && cli.read_only {
+                return Err(oifs::DiskManagerError::ReadOnly.into());
+            }
+            let src_session = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                None,
+                cli.read_only,
+            )?;
+            let dst_session = open_session(to, to_password, &session_mode, cli.json, None, false)?;
+
+            let split_parent_name =
+                |session: &OifsSession,
+                 raw_path: &str|
+                 -> Result<(u64, String), Box<dyn std::error::Error>> {
+                    let trimmed = raw_path.trim_matches('/');
+                    if trimmed.is_empty() {
+                        return Err("Path cannot be root '/'".into());
+                    }
+                    match trimmed.rsplit_once('/') {
+                        Some((parent_str, name)) => {
+                            let parent_id = session.resolve_path(parent_str)?;
+                            Ok((parent_id, name.to_string()))
+                        }
+                        None => Ok((0, trimmed.to_string())),
+                    }
+                };
+
+            let (src_parent, src_name) = split_parent_name(&src_session, src_path)?;
+            let dst_path_str = dest.as_deref().unwrap_or(src_path.as_str());
+            let (dst_parent, dst_name) = split_parent_name(&dst_session, dst_path_str)?;
+
+            if is_splice {
+                let src_ino = src_session.lookup(src_parent, &src_name)?;
+                let src_inode = src_session.read_inode(src_ino)?;
+                if src_inode.mode != FileType::File {
+                    return Err("transfer only supports regular files".into());
+                }
+                let src_off = offset.unwrap_or(0);
+                let dst_off = dst_offset.unwrap_or(src_off);
+                let splice_len = len.unwrap_or_else(|| src_inode.size.saturating_sub(src_off));
+                let dst_ino = match dst_session.lookup(dst_parent, &dst_name) {
+                    Ok(id) => id,
+                    Err(_) => dst_session.create_file(dst_parent, &dst_name)?,
+                };
+
+                let stats = match (&src_session, &dst_session) {
+                    (
+                        OifsSession::Direct { dm: src_dm, .. },
+                        OifsSession::Direct { dm: dst_dm, .. },
+                    ) => src_dm.splice_range_to(
+                        src_ino,
+                        src_off,
+                        dst_dm,
+                        dst_ino,
+                        dst_off,
+                        splice_len,
+                        oifs::SpliceOptions {
+                            trim_mode: parsed_trim,
+                        },
+                    )?,
+                    _ => {
+                        let eff_len = if src_off >= src_inode.size {
+                            0
+                        } else {
+                            splice_len.min(src_inode.size - src_off)
+                        };
+                        let mut buf = vec![0u8; eff_len as usize];
+                        let mut got = 0usize;
+                        while got < buf.len() {
+                            let r = src_session.read_at(
+                                src_ino,
+                                src_off + got as u64,
+                                &mut buf[got..],
+                            )?;
+                            if r == 0 {
+                                buf.truncate(got);
+                                break;
+                            }
+                            got += r;
+                        }
+                        let dst_inode = dst_session.read_inode(dst_ino)?;
+                        let dst_seekable =
+                            (dst_inode.flags & oifs::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+                        let dst_mode = if dst_seekable {
+                            CompressionMode::Seekable {
+                                chunk_size: oifs::inode::CHUNK_SIZE_64K as u32,
+                                level: 1,
+                            }
+                        } else if dst_inode.compressed_size > 0 {
+                            CompressionMode::Always
+                        } else {
+                            CompressionMode::Never
+                        };
+                        let dst_filters = oifs::filters::FilterConfig {
+                            typesize: dst_inode.filter_typesize,
+                            delta: dst_inode.filter_delta,
+                            shuffle: dst_inode.filter_shuffle,
+                            bitshuffle: dst_inode.filter_bitshuffle,
+                        };
+                        if !buf.is_empty() {
+                            dst_session.write_data_with_filters(
+                                dst_ino,
+                                dst_off,
+                                &buf,
+                                dst_mode,
+                                dst_filters,
+                            )?;
+                        }
+                        if parsed_trim != oifs::SpliceTrimMode::Keep && !buf.is_empty() {
+                            dst_session.flush()?;
+                            let src_seekable =
+                                (src_inode.flags & oifs::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+                            let src_mode = if src_seekable {
+                                CompressionMode::Seekable {
+                                    chunk_size: oifs::inode::CHUNK_SIZE_64K as u32,
+                                    level: 1,
+                                }
+                            } else if src_inode.compressed_size > 0 {
+                                CompressionMode::Always
+                            } else {
+                                CompressionMode::Never
+                            };
+                            let src_filters = oifs::filters::FilterConfig {
+                                typesize: src_inode.filter_typesize,
+                                delta: src_inode.filter_delta,
+                                shuffle: src_inode.filter_shuffle,
+                                bitshuffle: src_inode.filter_bitshuffle,
+                            };
+                            match parsed_trim {
+                                oifs::SpliceTrimMode::Keep => {}
+                                oifs::SpliceTrimMode::PunchHole => {
+                                    let zeros = vec![0u8; buf.len()];
+                                    src_session.write_data_with_filters(
+                                        src_ino,
+                                        src_off,
+                                        &zeros,
+                                        src_mode,
+                                        src_filters,
+                                    )?;
+                                }
+                                oifs::SpliceTrimMode::CollapseRange => {
+                                    let mut full = src_session.read_data(src_ino)?;
+                                    let s = (src_off as usize).min(full.len());
+                                    let e = ((src_off + buf.len() as u64) as usize).min(full.len());
+                                    full.drain(s..e);
+                                    src_session.write_data_with_filters(
+                                        src_ino,
+                                        0,
+                                        &full,
+                                        src_mode,
+                                        src_filters,
+                                    )?;
+                                    src_session.truncate(src_ino, full.len() as u64)?;
+                                }
+                            }
+                        }
+                        oifs::SpliceStats {
+                            src_inode: src_ino,
+                            dst_inode: dst_ino,
+                            bytes_spliced: buf.len() as u64,
+                            logical_rmw_bytes: buf.len() as u64,
+                            body_fast_path_bytes: 0,
+                            physical_bytes: 0,
+                            extents_transferred: 0,
+                            src_blocks_freed: 0,
+                            method: if buf.is_empty() {
+                                oifs::TransferMethod::RawBlockCopy
+                            } else {
+                                oifs::TransferMethod::LogicalReencode
+                            },
+                        }
+                    }
+                };
+
+                if cli.json {
+                    println!(
+                        "{}",
+                        json!({
+                            "ok": true,
+                            "src_inode": stats.src_inode,
+                            "dst_inode": stats.dst_inode,
+                            "bytes_spliced": stats.bytes_spliced,
+                            "logical_rmw_bytes": stats.logical_rmw_bytes,
+                            "body_fast_path_bytes": stats.body_fast_path_bytes,
+                            "physical_bytes": stats.physical_bytes,
+                            "extents_transferred": stats.extents_transferred,
+                            "src_blocks_freed": stats.src_blocks_freed,
+                            "method": format!("{:?}", stats.method),
+                            "trim_mode": trim_mode,
+                        })
+                    );
+                } else {
+                    println!(
+                        "Spliced '{}' [{}..{}] -> '{}' @ {} ({} body bytes, {} RMW bytes, {} physical bytes, {} src blocks freed, {:?})",
+                        src_path,
+                        src_off,
+                        src_off + stats.bytes_spliced,
+                        dst_path_str,
+                        dst_off,
+                        stats.body_fast_path_bytes,
+                        stats.logical_rmw_bytes,
+                        stats.physical_bytes,
+                        stats.src_blocks_freed,
+                        stats.method,
+                    );
+                }
+                return Ok(());
+            }
+
+            let stats = match (&src_session, &dst_session) {
+                (
+                    OifsSession::Direct { dm: src_dm, .. },
+                    OifsSession::Direct { dm: dst_dm, .. },
+                ) => src_dm.transfer_file_to(
+                    src_parent,
+                    &src_name,
+                    dst_dm,
+                    dst_parent,
+                    &dst_name,
+                    oifs::TransferOptions {
+                        move_file: *move_file,
+                        overwrite: *overwrite,
+                    },
+                )?,
+                // If either side is a Remote IPC proxy, fall back to logical IPC read + write
+                // so we never touch raw host FDs behind the Master process's back.
+                _ => {
+                    let src_ino = src_session.lookup(src_parent, &src_name)?;
+                    let src_inode = src_session.read_inode(src_ino)?;
+                    if src_inode.mode != FileType::File {
+                        return Err("transfer only supports regular files".into());
+                    }
+                    let data = src_session.read_data(src_ino)?;
+
+                    if let Ok(existing_ino) = dst_session.lookup(dst_parent, &dst_name) {
+                        if !*overwrite {
+                            return Err(format!("Destination '{dst_name}' already exists").into());
+                        }
+                        let existing = dst_session.read_inode(existing_ino)?;
+                        if existing.mode == FileType::Directory {
+                            return Err("Is a directory".into());
+                        }
+                        dst_session.delete_file(dst_parent, &dst_name)?;
+                    }
+
+                    let is_seekable = (src_inode.flags & oifs::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+                    let comp_mode = if is_seekable {
+                        CompressionMode::Seekable {
+                            chunk_size: oifs::inode::CHUNK_SIZE_64K as u32,
+                            level: 3,
+                        }
+                    } else if src_inode.compressed_size > 0 {
+                        CompressionMode::Always
+                    } else {
+                        CompressionMode::Never
+                    };
+                    let filter_cfg = oifs::filters::FilterConfig {
+                        typesize: src_inode.filter_typesize,
+                        delta: src_inode.filter_delta,
+                        shuffle: src_inode.filter_shuffle,
+                        bitshuffle: src_inode.filter_bitshuffle,
+                    };
+
+                    let dst_ino = dst_session.create_file(dst_parent, &dst_name)?;
+                    if let Err(e) = dst_session
+                        .write_data_with_filters(dst_ino, 0, &data, comp_mode, filter_cfg)
+                    {
+                        let _ = dst_session.delete_file(dst_parent, &dst_name);
+                        return Err(e.into());
+                    }
+                    if *move_file {
+                        dst_session.flush()?;
+                        src_session.delete_file(src_parent, &src_name)?;
+                    }
+                    oifs::TransferStats {
+                        src_inode: src_ino,
+                        dst_inode: dst_ino,
+                        logical_bytes: data.len() as u64,
+                        physical_bytes: data.len() as u64,
+                        extents_transferred: usize::from(!data.is_empty()),
+                        method: oifs::TransferMethod::LogicalReencode,
+                    }
+                }
+            };
+
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "src_inode": stats.src_inode,
+                        "dst_inode": stats.dst_inode,
+                        "logical_bytes": stats.logical_bytes,
+                        "physical_bytes": stats.physical_bytes,
+                        "extents_transferred": stats.extents_transferred,
+                        "method": format!("{:?}", stats.method),
+                        "moved": move_file,
+                    })
+                );
+            } else {
+                println!(
+                    "{} '{}' -> '{}' ({} logical bytes, {} physical bytes, {} extents, {:?})",
+                    if *move_file { "Moved" } else { "Copied" },
+                    src_path,
+                    dst_path_str,
+                    stats.logical_bytes,
+                    stats.physical_bytes,
+                    stats.extents_transferred,
+                    stats.method,
                 );
             }
             Ok(())

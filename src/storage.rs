@@ -2091,6 +2091,21 @@ impl ImageBacking {
         }
     }
 
+    /// Invalidates cached user-space data/metadata pages covering blocks
+    /// `[start_block..start_block + count)`. Used after external FD-level writes
+    /// (`FICLONERANGE`, `copy_file_range`, raw `pwrite`) bypass `ImageBacking`.
+    pub(crate) fn invalidate_block_range_caches(&self, start_block: u64, count: u64) {
+        if count == 0 {
+            return;
+        }
+        if let Self::File(f) = self {
+            let last_block = start_block.saturating_add(count - 1);
+            f.data_cache.invalidate_block_range(start_block, last_block);
+            f.block_cache
+                .invalidate_block_range(start_block, last_block);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn replace_file_for_test(&mut self, file: File) {
         if let Self::File(fb) = self {

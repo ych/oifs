@@ -19,8 +19,15 @@ pub mod zstd_pool;
 
 pub use auto_defrag::{AutoDefragConfig, AutoDefragStats};
 pub use disk::{
-    DiskManager, DiskManagerError, DurabilityMode, FileReadHandle, OifsAsyncTask, ReadRequest,
-    ReadSession,
+    CloneMethod, DiskManager, DiskManagerError, DurabilityMode, FileReadHandle, LogicalRun,
+    OifsAsyncTask, ReadRequest, ReadSession, ReflinkFallback, SpliceOptions, SplicePartition,
+    SpliceStats, SpliceTrimMode, TransferMethod, TransferOptions, TransferStats,
+    can_splice_fast_path, canonical_file_id, classify_reflink_errno,
+    clear_unsupported_reflink_cache, coalesce_logical_runs, combine_transfer_tier,
+    is_reflink_device_pair_unsupported, mark_reflink_device_pair_unsupported,
+    plan_splice_partition, punch_host_file_blocks, punch_table_slot, push_logical_block_run,
+    rebase_chunk_entry, shift_table_collapse, should_use_raw_fast_path, slot_reads_as_zero,
+    transfer_byte_range,
 };
 pub use filters::{FilterConfig, FilterPipeline, FilterType};
 pub use fuse::{FuseAttr, FuseDirEntry, FuseMountOptions, OifsFuseFs};

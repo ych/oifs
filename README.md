@@ -1,193 +1,300 @@
 # OIFS (O's Inode File System)
 
+[![CI](https://github.com/ych/oifs/actions/workflows/rust.yml/badge.svg)](https://github.com/ych/oifs/actions/workflows/rust.yml)
+[![Release](https://img.shields.io/badge/release-v1.4.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.4.0)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
+[![Kani Verified](https://img.shields.io/badge/Kani%20Verified-109%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
+
 [English](README.md) | [繁體中文](README_zh.md) | [📖 Online Documentation](https://ych.github.io/oifs/)
 
-> 🌐 **Documentation & Architecture Website**: [https://ych.github.io/oifs/](https://ych.github.io/oifs/)  
-> Browse interactive architecture diagrams, module call trees, verified design claims, and comprehensive technical specifications.
+**OIFS** is a high-performance, single-file Unix-like inode filesystem engine written in Rust (Edition 2024). It packs an entire POSIX-style directory tree—with crash-safe WAL journaling, XChaCha20-Poly1305 AEAD encryption, SIMD numerical compression filters, seekable 64 KiB random-access chunks, pure-Rust FUSE mounting, cross-image CoW reflink transfers, C/C++17/20 zero-copy bindings, and an AI MCP server—into one portable `.img` container file.
 
-OIFS is a high-performance, embedded, single-file multi-process inode filesystem engine written in Rust (Edition 2024). It delivers crash-resilient WAL storage, fine-grained sharded concurrency, hardened AEAD encryption, scientific numerical pre-compression filters, seekable 64 KiB parallel chunked I/O, pluggable asynchronous I/O engines, a native Model Context Protocol (MCP) server for AI agents, and a stable C/C++ FFI interface.
-
----
-
-## Capabilities & Architecture
-
-### 1. Storage & Scaling
-*   **Unix-like Inode Architecture & Format v2/v3**: Deterministic fixed 256-byte little-endian inode records (zeroed reserved space, leak-free) and multi-block v3 bitmaps that scale beyond 128 MiB images, with 100% backward compatibility and in-place `oifs migrate` from legacy v1 images.
-*   **Large File Support (up to 513 GB)**: Single, double, and triple indirect block indexing (134,480,394 blocks of 4 KiB) with batch indirect leaf resolution and sparse subtree hole-skipping.
-*   **Seekable 64 KiB Parallel Chunked Engine**: Independent 64 KiB compressed/encrypted chunks backed by a zero-dependency persistent scoped worker pool, pooled Zstd `CCtx`/`DCtx` contexts, sequential 4-chunk parallel read-ahead, incremental $O(\Delta \text{chunks})$ truncation with indirect table pruning, and non-journaled in-place chunk block reuse.
-*   **Dynamic Multi-Block Directories**: Seamlessly expands directories across dynamically allocated 4 KiB extent blocks with 64-bit SipHash filename indexing and 32-shard in-memory acceleration.
-*   **Online & Background Defragmentation 🧹**: Supports both Safe mode (atomic `.old` backup swap) and WAL-atomic In-Place COW defragmentation, plus an opt-in background auto-defragmentation coordinator (`--auto-defrag[=THRESHOLD]`).
-*   **FSCK Integrity Diagnostics 🛠️**: Full structural consistency scanner detecting orphan inodes, leaked blocks, missing blocks, and cross-linked references with human-readable and structured JSON outputs.
-
-### 2. Transactional Crash Resilience & Durability
-*   **Transactional Metadata WAL (Write-Ahead Log)**: Opt-in CRC32C-checksummed circular ring buffer (`--journal`) using ordered-mode payload flush before metadata commit, idempotent redo replay, torn-write rejection, and automatic mount-time crash recovery.
-*   **Configurable Durability Policies**:
-    *   `Strict`: Synchronous `msync(MS_SYNC)` with single-syscall WAL header+frame coalescing and JBD2-style deferred in-place metadata checkpointing (`10.9k+ ops/sec`, `2.3x` faster than per-tx metadata sync).
-    *   `RangeAsync`: Batched dirty-range coalescing drained asynchronously outside exclusive write locks (`234k+ ops/sec`).
-    *   `Lazy`: Shared mmap / OS page-cache writeback for maximum throughput (`626k+ ops/sec`), surviving process crashes and flushing on `flush()` / `Drop`.
-*   **Non-Blocking Flush Concurrency**: `flush()` and `flush_async()` serialize physical `msync` calls through a dedicated synchronization mutex while holding only a shared read lock, so flushes never stall concurrent readers.
-
-### 3. High-Concurrency Multi-Threaded Engine
-*   **32-Shard Lock-Striped Inode & Directory Caches**: Both `BoundedInodeCache` (Second-Chance Clock eviction) and `ShardedDirCache` (with out-of-lock directory index promotion) are partitioned across 32 independent `RwLock` shards using 64-bit Fibonacci hashing (**8.6M+ directory lookups/sec** across 16 threads, **9.97x** faster under contention).
-*   **Out-of-Lock Processing Pipeline**: Delta/Shuffle/BitShuffle filtering, Zstandard compression, and XChaCha20-Poly1305 encryption execute completely outside exclusive filesystem locks, eliminating reader starvation during heavy multi-MB writes.
-*   **Zero-Allocation Path Splitting**: Zero-heap-allocation path component iteration (`resolve_path_iter`) and $O(1)$ parent splitting (`resolve_parent`), delivering **11.9M+ path lookups/sec (83.9 ns/op)**.
-
-### 4. End-to-End Cryptographic & Format Security 🔒
-*   **OWASP / RFC 9106 Hardened Argon2id KDF**: Memory-hard key derivation (`64 MiB`, `t=3`, `p=4`) with per-image random salt and **BLAKE2b-512 domain-separated subkeys** (`payload_key`, `filename_siv_key`, `filename_cipher_key`, `ipc_auth_key`), automatically zeroized on drop (`zeroize`).
-*   **Context-Bound XChaCha20-Poly1305 AEAD**: Binds ciphertexts to `inode_id` (and `chunk_idx` + `flags` for seekable chunks) via Poly1305 AAD to prevent cross-file swaps and chunk reordering. Uses AArch64 NEON / x86_64 AVX2 SIMD for file & chunk payloads and an RFC 8439-identical 1-block scalar fast path for short filenames (`<= 192 B`).
-*   **192-Bit SIV Filename Encryption**: Deterministic `XChaCha20-Poly1305` filename encryption (`_e_...`) with 24-byte synthetic nonces and `parent_inode` bound in Poly1305 AAD; raw image inspections (`strings`, `hexdump`) reveal zero filenames or contents.
-*   **Defense-in-Depth On-Disk Hardening**:
-    *   Rejects unencrypted inodes and plaintext filename injection on encrypted images, and refuses opening unencrypted/downgraded images with a password (`NotEncrypted`).
-    *   Enforces `SuperBlock::validate` version allow-lists, data-area block pointer bounds, zeroed block reuse, owner-only `0600` image creation (+ `O_NOFOLLOW` on `create_encrypted`), cycle-safe CLI `ls -r`/`rm -r`, and fallible bounded allocations (`MAX_READ_DATA_BYTES`, `MAX_DECOMPRESSED_STREAM_BYTES`) against forged-size OOM and Zstd decompression bombs.
-    *   Hardened IPC transport with challenge-response authentication (passwords never cross the wire), owner-only `0700`/`0600` sockets and rendezvous files, loopback-only default TCP (`--allow-remote-ipsc`), and bounded frame deserialization.
-
-### 5. Numerical Data Filters & Compression ⚡
-*   **Pre-Compression Filters**: First-order Delta (with NEON/SSE2 SIMD), Byte Shuffle (AoS $\rightarrow$ SoA), BitShuffle (delta-swap ILP 8×8 transposition), and TruncPrecision, boosting compression on binary numerical telemetry from 1.95x up to **390x (99.7% space savings)**. Optional `blosc2` feature flag supported.
-*   **Intelligent Filter Recommender**: Evaluates candidate pipelines by Shannon entropy and Zstd ratio to suggest optimal parameters.
-
-### 6. Transparent Multi-Process & Network IPC 🔄
-*   **Dynamic Master-Proxy Coordination**: The first process acquires an exclusive OS lock (`fcntl`) and runs as **Master**; concurrent secondary processes transparently connect as **Proxies** over local Unix Domain Sockets (UDS) or Network TCP (`--network`) with pooled authenticated streams.
-
-### 7. Pluggable Async I/O Engine ⚡
-*   Runtime-selectable payload read backend via API or `OIFS_IO_BACKEND`:
-    *   `IoBackend::Mmap`: Zero-copy memory mapping with contiguous extent coalescing.
-    *   `IoBackend::Pread`: Positional syscalls per coalesced extent run.
-    *   `IoBackend::IoUring`: Linux asynchronous submission queue (optional `io-uring` feature).
-
-### 8. Mathematical Verification & Tooling 🛡️
-*   **92 Kani Formal Proofs**: Formally verified with AWS **Kani Rust Verifier (CBMC)** covering block pointer resolution, superblock geometry, bitmap scanning, filter bijectivity, CRC32C torn-write detection, WAL ring/idempotency invariants, chunk entry bit-isolation, incremental seekable truncation, AAD domain separation, and IPC frame bounds.
-*   **Bolero Fuzzing & Shuttle Concurrency Testing**: Property/fuzz testing via Bolero, randomized schedule permutation testing via Shuttle, and 68 integration test suites.
-*   **Model Context Protocol (MCP) Server 🤖**: Dedicated `oifs_mcp` binary (`--features mcp`) exposing OIFS operations to AI coding agents over JSON-RPC.
-*   **Stable C/C++ ABI (FFI) 🔌**: Shared library (`liboifs.so` / `liboifs.dylib`) with a 3-state runtime version handshake (`oifs_check_version`, `oifs_loaded_path`).
+> 🌐 **Interactive Architecture & Specs**: [https://ych.github.io/oifs/](https://ych.github.io/oifs/)
 
 ---
 
-## Performance & Concurrency Benchmarks
+## Why OIFS?
 
-Measured on release builds (Apple Silicon `aarch64`, `--release`):
+Choose OIFS when you need **real filesystem semantics inside a single portable file** without sacrificing raw throughput, compression ratio, or crash safety:
 
-| Benchmark Scenario | Workload / Configuration | Result / Throughput | Highlights / Comparison |
-| :--- | :--- | :--- | :--- |
-| **Dense Indirect `read_at`** | 1,000 × 1 MB double-indirect reads | **58.2 GB/s** (`16.8 ms`) | **2.63x faster** via batch leaf resolution + extent coalescing |
-| **Sparse Subtree Hole-Skip** | 200 × 4 MB unallocated indirect subtrees | **232.5 GB/s** (`3.36 ms`) | **4.55x faster** vs 4 KiB block stepping |
-| **Seekable 64K `read_at`** | 16 MB seekable file (`1 MiB` / `4 KiB` seq reads) | **12.6 GB/s** (`1.27 ms`) / **3.32 GB/s** (`4.82 ms`) | **2.70x / 1.47x faster** via persistent worker pool + 4-chunk read-ahead |
-| **Large File Journaled Write** | 32 MB initial write / overwrite (WAL enabled) | **9.78 GB/s** / **46.1 GB/s** | Linear scaling across 1 MB–32 MB |
-| **Encrypted 64K Appends** | 128 × 64 KiB encrypted appends (8 MB) | **701 MB/s** (`11.41 ms`) | **+21.7%** via AArch64 NEON + zero-regression short-filename scalar path |
-| **32-Shard Directory Cache** | 16 threads × 10k ops (97% lookup + 3% build) | **8.60M lookups/sec** (`3.24 ms`) | **9.97x faster** vs single `RwLock` |
-| **Path Resolution & `list_dir`** | 200k 3-tier `resolve_path` / 5,000-entry `list_dir` | **11.9M lookups/sec** (`83.9 ns`) / **9,523 listings/sec** (`105 µs`) | Zero-allocation path traversal |
-| **Journal Durability Modes** | 500 × 512 B `create` + `write` (WAL enabled) | Lazy **626k/s** \| RangeAsync **234k/s** \| Strict **10.9k/s** | `Strict` **2.31x faster** via JBD2-style deferred metadata checkpointing |
-| **In-Place COW Defragment** | 500 fragmented 16 KB files (WAL enabled) | **3.28–3.65 ms** (No-op: `18.9 µs`) | **4.4x faster** via word-level bitmap + WAL op coalescing |
-| **Numerical Data Compression** | 4-byte structured telemetry (`Delta` + Zstd) | **390.1x ratio** (99.7% savings) | **200x better** than raw Zstd (`1.95x`) |
+1. **AI Agent Sandboxes & Portable Workspaces**: Pack an entire project or agent memory into one encrypted `.img` container, fork it in O(1) via CoW (`oifs clone`), mount it via FUSE, or expose it directly to Claude Desktop / Cursor via the built-in `oifs_mcp` server.
+2. **Scientific Telemetry & ML Datasets**: Replace bloated HDF5 archives or millions of scattered Zarr/Parquet files—SIMD Delta/Shuffle/BitShuffle + Seekable 64 KiB Zstd achieves up to **390× compression** while keeping microsecond random `read_at` and cross-image `FICLONERANGE` dataset splitting.
+3. **Embedded App Asset Packs & Encrypted Vaults**: Unlike read-only ZIP/SquashFS archives, OIFS supports concurrent multi-process read-write, `F_RDLCK` read-only mounts, atomic `rename`, WAL crash recovery, and zero-copy C++17/20 `oifs::PinnableSlice` views over a single OS file descriptor.
+
+### Positioning vs. Alternatives
+
+| Capability | **OIFS** | SQLite (Blob Store) | HDF5 | SquashFS / DwarFS |
+| :--- | :---: | :---: | :---: | :---: |
+| **Read-Write + Crash-Safe WAL** | ✅ (Ordered WAL + `fsck`) | ✅ (SQLite WAL) | ⚠️ (fragile on crash) | ❌ (read-only) |
+| **Multi-Process & OS Mount** | ✅ Master-Proxy IPC + Pure-Rust FUSE + `F_RDLCK` RO | ✅ File locks | ⚠️ SWMR only | ✅ FUSE (RO only) |
+| **Built-in AEAD Encryption** | ✅ XChaCha20-Poly1305 + 192-bit SIV filenames | 🔌 Paid / third-party | ❌ | ❌ |
+| **Numerical SIMD Filters + Seekable 64K** | ✅ Delta / Shuffle / BitShuffle + 64K Zstd | ❌ | ✅ Chunked filters | ⚠️ Generic / dedup |
+| **POSIX Hierarchy & Cross-Image Reflink** | ✅ Directories, `rename`, `FICLONERANGE`, 1 OS FD | ❌ SQL tables | ⚠️ Group tree | ✅ Read-only tree |
 
 ---
 
-## Build & Test
+## Architecture Overview
+
+```mermaid
+flowchart TB
+    subgraph Clients["Clients & Interfaces"]
+        Rust["Rust API / Async OifsAsyncTask"]
+        CPP["C FFI (oifs.h) & Modern C++17/20 (oifs.hpp / co_await)"]
+        FUSE["Pure-Rust FUSE ABI v7.28 (Linux / macFUSE)"]
+        CLI["CLI (oifs) & MCP Server (oifs_mcp)"]
+    end
+
+    subgraph IPC["Multi-Process Coordination"]
+        MP["Master-Proxy IPC (fcntl Lock + UDS / TCP Challenge-Response)"]
+    end
+
+    subgraph Engine["OIFS Storage Engine (DiskManager)"]
+        Cache["32-Shard Inode Cache & Sharded Dir Cache (Fibonacci Hash)"]
+        Pipe["Out-of-Lock Pipeline: SIMD Delta/Shuffle/BitShuffle -> Zstd -> XChaCha20-Poly1305"]
+        Transfer["3-Tier Cross-Image Transfer: FICLONERANGE -> copy_file_range -> Raw Blocks"]
+        WAL["Metadata WAL (CRC32C, 128 KiB Ring, Ordered Mode, Deferred Checkpoint)"]
+    end
+
+    subgraph Storage["Dual Storage Engine (Single .img Container)"]
+        Mmap["StorageMode::Mmap (Zero-Copy MAP_SHARED / PROT_READ)"]
+        FileIo["StorageMode::FileIo (Zero-mmap pread/pwrite + 64-Shard DataPageCache)"]
+    end
+
+    Clients --> IPC --> Cache
+    Cache --> Pipe --> WAL
+    Cache --> Transfer
+    WAL --> Storage
+    Transfer --> Storage
+```
+
+---
+
+## Quick Start
+
+### Install CLI & Build Shared Library
 
 ```bash
-# Build in release mode (lean default dependencies; optional: --features blosc2,mcp,io-uring)
+# Install `oifs` and `oifs_mcp` binaries to ~/.cargo/bin
+cargo install --path .
+
+# Or build release binaries & shared library (target/release/liboifs.{so,dylib})
 cargo build --release
-
-# Run all 68 unit and integration test suites
-cargo test --release
-
-# Run Kani formal verification proofs (all 92 harnesses in parallel)
-cargo kani -j 8 --output-format=terse
-
-# Run full pre-release verification script (fmt, clippy, build, test, shuttle, kani, coverage)
-./scripts/release_check.sh --quick
 ```
+
+### Everyday CLI Workflows
+
+```bash
+# 1. Create a 64 MiB journaled image (or add --encrypt for Argon2id + XChaCha20-Poly1305)
+oifs -i dataset.img create --size 64 --journal
+oifs -i vault.img create --size 64 --journal --encrypt
+
+# 2. Import/export files with automatic SIMD numerical filter selection & 64K seekable chunks
+oifs filter-analyze telemetry.bin
+oifs -i dataset.img put telemetry.bin --filter auto --chunked
+oifs -i dataset.img get telemetry.bin restored.bin
+
+# 3. Directories, read-only inspection (--read-only acquires shared F_RDLCK, zero writes)
+oifs -i dataset.img mkdir models
+oifs -i dataset.img ls -r
+oifs -i dataset.img --read-only stat telemetry.bin
+oifs -i dataset.img --read-only --no-mmap cat README.txt
+
+# 4. Mount natively via Pure-Rust FUSE (Linux /dev/fuse or macOS macFUSE)
+oifs -i dataset.img mount ./mnt --foreground
+oifs -i dataset.img --read-only mount ./mnt_ro --foreground
+
+# 5. Instant O(1) CoW image fork & 3-tier cross-image fast transfer / sub-range splice
+oifs clone dataset.img sandbox_fork.img
+oifs -i dataset.img transfer --to train.img telemetry.bin --dest /train/telemetry.bin
+oifs -i dataset.img transfer --to shard.img telemetry.bin --offset 0 --len 65536 --trim-mode punch-hole
+
+# 6. Integrity check (FSCK), online defrag & legacy v1 -> v2 inode format migration
+oifs -i dataset.img fsck --json
+oifs -i dataset.img defrag
+oifs -i legacy_v1.img migrate    # Upgrades legacy v1 bincode inodes in place to fixed 256B v2 records
+```
+
+> **Format v2 vs. v3 Note**: Newly created images use **Format v3** (dynamic multi-block bitmaps scaling well beyond 128 MiB + fixed 256-byte **v2 inode records**). Legacy v1 images remain 100% readable/writable and can upgrade their inode table in place via `oifs migrate`.
 
 ---
 
-## CLI Usage
+## MCP Server for AI Agents 🤖
 
-The compiled `oifs` binary provides a comprehensive CLI for managing disk images.
+`oifs_mcp` (`--features mcp`, enabled by default) exposes an OIFS `.img` container over stdio JSON-RPC so Claude Desktop, Cursor, or custom AI agents get an isolated, persistent single-file sandbox.
 
-### 1. Create Image
-```bash
-# Create a 10MB image (with optional metadata WAL journaling via --journal)
-cargo run --bin oifs -- -i disk.img create --size 10 --journal
+Add to `claude_desktop_config.json` or `.mcp.json`:
 
-# Create an encrypted image (prompts securely with masked input)
-cargo run --bin oifs -- -i encrypted.img create --size 10 --encrypt
+```json
+{
+  "mcpServers": {
+    "oifs-sandbox": {
+      "command": "oifs_mcp",
+      "args": ["/path/to/agent_workspace.img", "--size", "64"],
+      "env": {
+        "OIFS_PASSWORD": "optional-vault-password"
+      }
+    }
+  }
+}
 ```
 
-### 2. File Import, Export & Directories
-```bash
-# Import / export host files
-cargo run --bin oifs -- -i disk.img put dataset.bin
-cargo run --bin oifs -- -i disk.img get dataset.bin extracted.bin
-
-# Create directories, list recursively, remove recursively
-cargo run --bin oifs -- -i disk.img mkdir logs
-cargo run --bin oifs -- -i disk.img ls -r
-cargo run --bin oifs -- -i disk.img rm -r logs
-```
-
-### 3. Numerical Compression & Filter Recommendation ⚡
-```bash
-# Analyze data and get automated filter recommendations
-cargo run --bin oifs -- filter-analyze dataset.bin
-
-# Import with auto-recommended or explicit filters (delta, shuffle, bitshuffle, both)
-cargo run --bin oifs -- -i disk.img put dataset.bin --filter auto
-cargo run --bin oifs -- -i disk.img put dataset.bin --filter delta --typesize 4
-```
-
-### 4. Integrity Check (FSCK), Online Defrag & Format Migration 🛠️
-```bash
-# Verify filesystem consistency
-cargo run --bin oifs -- -i disk.img fsck
-cargo run --bin oifs -- -i disk.img fsck --json
-
-# Online defragmentation (or enable background auto-defrag via --auto-defrag=0.3)
-cargo run --bin oifs -- -i disk.img defrag
-
-# Upgrade legacy v1 images in place to format v2
-cargo run --bin oifs -- -i legacy.img migrate
-```
-
-### 5. Multi-Process, Network IPC & MCP Server 🌐🤖
-```bash
-# Node 1 starts as Master listening on loopback TCP 8989
-cargo run --bin oifs -- -i disk.img --network 127.0.0.1:8989 ls
-
-# Node 2 connects as Proxy, transparently dispatching operations
-cargo run --bin oifs -- -i disk.img --network 127.0.0.1:8989 put data.bin
-
-# Launch the native MCP server for AI coding agents
-cargo run --bin oifs_mcp --features mcp
-```
+**Exposed MCP Tools**: `read_file`, `write_file`, `append_file`, `list_dir`, `mkdir`, `delete_file`, `truncate_file`, and `status`.
 
 ---
 
-## Rust API Example
+## Code Examples
+
+### Self-Contained Rust API Example
 
 ```rust
 use oifs::disk::{CompressionMode, DiskManager};
+use oifs::filters::FilterConfig;
+use oifs::storage::StorageMode;
 
-// Open existing image (size 0 opens without truncation)
-let dm = DiskManager::open("disk.img", 0).unwrap();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Creates a fresh 16 MiB journaled image (or opens existing) using Mmap or FileIo
+    let dm = DiskManager::open_with_options(
+        "demo.img",
+        16 * 1024 * 1024,
+        None,               // Some("secret") for encrypted container
+        true,               // Enable CRC32C Metadata WAL
+        StorageMode::Mmap,  // Or StorageMode::FileIo (zero mmap)
+    )?;
 
-// Resolve root directory and create a file
-let root_id = dm.resolve_path(".").unwrap();
-let file_id = dm.create_file(root_id, "telemetry.bin").unwrap();
+    // Single-transaction create + SIMD Delta/Shuffle + Seekable 64 KiB Zstd write
+    let payload: Vec<u8> = (0u32..32_768).flat_map(u32::to_le_bytes).collect();
+    let file_id = dm.create_file_with_data_with_filters(
+        0,
+        "telemetry.bin",
+        &payload,
+        CompressionMode::Seekable64K { level: 3 },
+        FilterConfig::numeric(4),
+    )?;
 
-// Write data (supports Never, Auto, Always, Stream { level }, and Seekable { chunk_size, level })
-let data = b"High-throughput concurrent payload";
-dm.write_data(file_id, 0, data, CompressionMode::Auto).unwrap();
+    // Amortized lock-free batch reading via ReadSession + pinned FileReadHandle
+    let session = dm.begin_read();
+    let handle = session.open_inode(file_id)?;
+    let mut slice = vec![0u8; 4096];
+    let n = handle.read_at(65_536, &mut slice)?;
+    assert_eq!(&slice[..n], &payload[65_536..65_536 + n]);
+    drop(handle);
+    drop(session);
 
-// Read full file or positional slice
-let content = dm.read_data(file_id).unwrap();
-assert_eq!(content, data);
+    // Atomic metadata-only rename & full consistency check (fsck)
+    let dir_id = dm.create_directory(0, "archive")?;
+    dm.rename(0, "telemetry.bin", dir_id, "run_01.bin")?;
+    assert!(dm.verify_integrity()?.is_clean);
+    Ok(())
+}
+```
+
+### Modern C++17 / C++20 Zero-Copy API (`include/oifs.hpp`)
+
+```cpp
+#include "oifs.hpp"
+#include <cassert>
+#include <vector>
+
+int main() {
+    assert(oifs::check_version() == OIFS_VERSION_COMPAT_OK);
+
+    oifs::OpenOptions opts;
+    opts.size = 16ULL * 1024 * 1024;
+    opts.journaled = true;
+    auto fs = oifs::FileSystem::open_with_options("cpp_demo.img", opts);
+
+    // Typed span write with SIMD Delta+Shuffle numerical filter
+    std::vector<float> weights(16384, 1.25f);
+    fs.create_file_with_span("weights.f32", weights,
+                             oifs::WritePolicy::Seekable64K, 3,
+                             oifs::FilterConfig::numeric(4));
+
+    // RocksDB-style PinnableSlice: 0-copy mmap pin or automatic 1-copy fallback
+    auto session = fs.begin_read();
+    auto handle = session.open_file("weights.f32");
+    auto slice = handle.read_pinnable(0, 4096);
+    auto view = slice.as_span<float>();
+    assert(view[0] == 1.25f);
+
+    // C++20 also supports `co_await fs.read_at_async(...)` with Inline Fast-Path zero-suspend!
+    assert(fs.verify_integrity().is_clean);
+}
 ```
 
 ---
 
-## Documentation Website & Interactive Visualizer 🌐
+## Core Capabilities & Engineering Highlights
 
-Explore the complete system specifications, module dependencies, and verified design claims:  
-👉 **[https://ych.github.io/oifs/](https://ych.github.io/oifs/)**
+*   **Dual Storage Engine (`Mmap` & `FileIo`)**: Defaults to zero-copy `MAP_SHARED` mmap, with an opt-in 100% `mmap`-free positional `pread`/`pwrite` engine (`--no-mmap` / `OIFS_STORAGE_MODE=pread`) backed by write-through bitmap/WAL mirrors, a 16-shard 4 MiB `MetadataBlockCache`, and a configurable 64-shard 32 MiB Second-Chance Clock `DataPageCache`.
+*   **Strict Read-Only Mode (`F_RDLCK` + `PROT_READ`)**: Opens `0444` images with `O_RDONLY`, acquires shared OS read locks for concurrent multi-process inspection, preserves 0-copy `mmap_slice()`, verifies WAL cleanliness with zero writes, and suppresses all `Drop` flushes.
+*   **Pure-Rust Cross-Platform FUSE (ABI v7.28)**: Zero external C library dependencies; single-FD open-handle multiplexing (1,000+ FUSE handles on 1 `.img` OS FD), dynamic `max_write` negotiation (`1 MiB` default, Linux `FUSE_MAX_PAGES` & `/sys/module/fuse/parameters/max_pages_limit`, macOS `-o iosize`), `FUSE_RENAME`/`RENAME2`, Finder metadata filtering, and UTF-8 NFD→NFC normalization.
+*   **Atomic POSIX `rename` & 3-Tier Cross-Image Transfer / Sub-Range Splice**:
+    *   Single-WAL-transaction `DiskManager::rename` with SIV filename re-encryption and cycle prevention.
+    *   `clone_image` (APFS `clonefile` / Linux `FICLONE`), `transfer_file_to`, and `splice_range_to` (`FICLONERANGE` → `copy_file_range` → raw compressed block copy) with encryption/AAD fast-path gating, `(src_dev, dst_dev)` negative reflink cache, WAL ordered-mode `fdatasync`, Seekable 64K `ChunkEntry` rebasing, sparse zero-subtree skipping, `Head/Body/Tail` sandwich partitioning, and `SpliceTrimMode::{Keep, PunchHole, CollapseRange}`.
+*   **Transactional Metadata WAL & Configurable Durability**: Opt-in 33-block (1 header + 128 KiB ring) CRC32C WAL with `Lazy`, `RangeAsync`, and `Strict` modes, single-transaction `create_file_with_data` (inline data-journaling payloads `<= 8 KiB`), and async Group-Commit writes.
+*   **32-Shard Concurrency & Out-of-Lock Pipeline**: 32-shard Fibonacci-hashed `BoundedInodeCache` & `ShardedDirCache`, out-of-lock SIMD filter / Zstd / AEAD execution, and non-blocking `flush()`.
+*   **Hardened Cryptography & Defense-in-Depth**: OWASP/RFC 9106 Argon2id (`64 MiB`, `t=3`, `p=4`), BLAKE2b-512 domain-separated subkeys, context-bound XChaCha20-Poly1305 AEAD (`inode_id` + `chunk_idx` + `flags` in AAD; AArch64 NEON / x86_64 AVX2 payloads + 1-block scalar short-filename fast path), 192-bit SIV filenames, zeroed block reuse, owner-only `0600` files, bounded OOM/bomb protections, and loopback-only default TCP IPC (`--allow-remote-ipc` opt-in).
+*   **Formal Verification & Quality Assurance**: **109 AWS Kani (CBMC) formal proofs**, Bolero property/fuzz testing, Shuttle DPOR concurrency testing, and **73 integration test suites**.
+
+---
+
+## Platform Support & Feature Flags
+
+| Feature / Subsystem | Linux (`x86_64` / `aarch64`) | macOS (Apple Silicon / Intel) | Windows |
+| :--- | :---: | :---: | :---: |
+| Core Engine (`Mmap` / `FileIo`, WAL, Encryption, Filters, C/C++ FFI) | ✅ Full | ✅ Full | ⚠️ Experimental (`fcntl` locks & Unix IPC are Unix-only) |
+| Native Kernel FUSE Mount (`oifs mount`) | ✅ `/dev/fuse` + `fusermount3` | ✅ `macFUSE 5.x` (`SCM_RIGHTS`) | ❌ Userspace `dispatch_frame` only |
+| Cross-Image Zero-Copy Reflink (`FICLONERANGE` / `clonefile`) | ✅ Btrfs / XFS / bcachefs / Lustre Lreflink | ✅ Whole-image APFS `clonefile`; sub-range raw fallback | ❌ Raw block fallback |
+| `IoBackend::IoUring` | ✅ (`--features io_uring`, default) | ↩️ Falls back to `Pread` | ↩️ Falls back to `Pread` |
+| Master-Proxy Multi-Process IPC | ✅ UDS & TCP | ✅ UDS & TCP | ❌ Standalone only |
+
+| Cargo Feature Flag | Default | Description |
+| :--- | :---: | :--- |
+| `mcp` | ✅ On | Builds the `oifs_mcp` JSON-RPC server (`rmcp`, `tokio`, `schemars`). |
+| `io_uring` | ✅ On (Linux only) | Enables Linux `io_uring` async payload-read backend (`io-uring`). |
+| `blosc2` | ❌ Off | Enables optional native C-Blosc2 interop wrappers (`filters::blosc2_*`). |
+
+---
+
+## Performance Benchmarks
+
+Measured on **Apple M5 Pro, 64 GiB RAM, macOS (`aarch64`, `--release`)**, operating on warm OS page cache (`Mmap` / `FileIo` + WAL where noted):
+
+| Benchmark Scenario | Workload / Configuration | Result / Throughput | Notes / Comparison |
+| :--- | :--- | :--- | :--- |
+| **Dense Indirect `read_at`** | 1,000 × 1 MiB double-indirect reads (`Mmap`, warm cache) | **58.2 GB/s** (`16.8 ms`) | **2.63× faster** via batch leaf resolution + extent coalescing |
+| **Sparse Subtree Hole-Skip** | 200 × 4 MiB unallocated subtrees (logical zero-fill) | **232.5 GB/s** (`3.36 ms`) | Logical throughput (skips unallocated subtrees without disk I/O; **4.55× faster**) |
+| **Seekable 64K `read_at`** | 16 MiB seekable file (`1 MiB` / `4 KiB` seq reads) | **12.6 GB/s** (`1.27 ms`) / **3.32 GB/s** (`4.82 ms`) | **2.70× / 1.47× faster** via persistent worker pool + 4-chunk read-ahead |
+| **Cross-Image Fast Transfer** | 16 MiB `Delta+Shuffle+Zstd` / 64 MiB Sparse (`64 KiB` alloc) | **0.04 ms** / **0.23 ms** (`RawBlockCopy`) | **137.7× / 104.0× faster** vs logical decompress+recompress (`6.14 ms` / `24.43 ms`) |
+| **Cross-Image Zstd & Splice** | 16 MiB Zstd stream / 8 MiB Seekable Splice+Collapse | **0.47 ms** / **0.79 ms** | **16.3× / 2.81× faster** vs logical re-encode |
+| **Whole-Image CoW Clone** | 64 MiB `.img` fork (`oifs clone`, APFS `clonefile`) | **0.09 ms** | **2.19× faster** than `std::fs::copy`, 0 extra disk space |
+| **C++ Zero-Copy `PinnableSlice`** | Random 4 KiB reads (`Mmap`, `FileReadHandle`) | **4.5–6.1 ns/op** | **23×–27× faster** than path-based C `oifs_read_at` (`106–167 ns/op`) |
+| **32-Shard Directory Cache** | 16 threads × 10k ops (97% lookup + 3% build) | **8.60M lookups/sec** (`3.24 ms`) | **9.97× faster** vs single `RwLock` |
+| **Journal Durability Modes** | 500 × 512 B `create` + `write` (WAL, `Mmap`) | Lazy **626k/s** \| RangeAsync **234k/s** \| Strict **10.9k/s** | `Strict` **2.31× faster** via deferred metadata checkpointing |
+| **Live macFUSE 5.5.0 Mount** | 16 MiB seq write (`Mmap+WAL` / `FileIo+WAL`) | **2.13 GB/s** / **1.09 GB/s** (warm peak) | Full OS VFS + kernel FUSE round-trip; UBC reads **19.5–20.7 GB/s** |
+| **Numerical Data Compression** | 4-byte structured telemetry (`Delta` + Zstd) | **390.1× ratio** (99.7% savings) | **200× better** than raw Zstd (`1.95×`) |
+
+---
+
+## Build, Test & Formal Verification
+
+```bash
+# Run all 73 integration suites + unit tests (77 total targets)
+cargo test --release
+
+# Run key suites under pure pread/pwrite StorageMode::FileIo (zero mmap)
+OIFS_STORAGE_MODE=pread cargo test --release --test transfer_test --test rename_test --test fuse_test --test cpp_api_test --test read_only_mode_test
+
+# Run live kernel FUSE mount E2E tests & APFS benchmark (requires macFUSE or /dev/fuse)
+cargo test --release --test fuse_live_mount_test -- --ignored --nocapture --test-threads=1
+
+# Run all 109 Kani formal verification proofs in parallel
+cargo kani -j 8 --output-format=terse
+
+# One-click pre-release verification (fmt, clippy, build, test, shuttle, kani, coverage)
+./scripts/release_check.sh --quick
+```
 
 ---
 

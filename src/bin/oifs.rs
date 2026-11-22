@@ -117,7 +117,7 @@ struct Cli {
     /// Custom bind address for network mode (e.g. 0.0.0.0:9050 or 127.0.0.1:0).
     ///
     /// The IPC transport is plain TCP without TLS, so a non-loopback
-    /// address has to be requested explicitly with `--allow-remote-ipsc`.
+    /// address has to be requested explicitly with `--allow-remote-ipc`.
     #[arg(long = "bind", global = true)]
     bind: Option<String>,
 
@@ -125,8 +125,8 @@ struct Cli {
     ///
     /// Only safe when the traffic is tunnelled (WireGuard, IPsec, SSH port
     /// forwarding); the IPC transport itself is not encrypted.
-    #[arg(long = "allow-remote-ipsc", global = true)]
-    allow_remote_ipsc: bool,
+    #[arg(long = "allow-remote-ipc", alias = "allow-remote-ipsc", global = true)]
+    allow_remote_ipc: bool,
 
     /// Output results as minified JSON
     #[arg(long, global = true)]
@@ -508,11 +508,11 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // unless the operator asks for it explicitly.
     if let Some(bind) = cli.bind.as_deref()
         && !oifs::ipc::is_loopback_bind(bind)
-        && !cli.allow_remote_ipsc
+        && !cli.allow_remote_ipc
     {
         return Err(format!(
             "refusing to bind the IPC master to the non-loopback address {bind}: the IPC \
-             transport is plain TCP without TLS. Use --allow-remote-ipsc only when the \
+             transport is plain TCP without TLS. Use --allow-remote-ipc only when the \
              traffic is tunnelled (WireGuard/IPsec/SSH)."
         )
         .into());

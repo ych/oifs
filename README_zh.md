@@ -1,191 +1,299 @@
 # OIFS (O's Inode File System)
 
+[![CI](https://github.com/ych/oifs/actions/workflows/rust.yml/badge.svg)](https://github.com/ych/oifs/actions/workflows/rust.yml)
+[![Release](https://img.shields.io/badge/release-v1.4.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.4.0)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
+[![Kani Verified](https://img.shields.io/badge/Kani%20Verified-109%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
+
 [English](README.md) | [繁體中文](README_zh.md) | [📖 線上官方文件](https://ych.github.io/oifs/)
 
-> 🌐 **線上官方文件與架構視覺化網站**: [https://ych.github.io/oifs/](https://ych.github.io/oifs/)  
-> 探索完整的互動式系統架構圖形導覽、模組呼叫關係、形式化數學證明與技術規格文件。
+**OIFS** 是以 Rust（Edition 2024）打造的單檔、類 Unix Inode 嵌入式檔案系統引擎。它將完整的階層式檔案系統——包含斷電自癒 WAL、XChaCha20-Poly1305 加密、SIMD 科學數值壓縮濾鏡、可隨機存取的 64 KiB 分塊壓縮、純 Rust 跨平台 FUSE 掛載、跨映像檔 CoW Reflink 搬移、C/C++17/20 零拷貝介面與 AI MCP 伺服器——全部封裝在單一可攜的 `.img` 容器檔中。
 
-OIFS 是一個以 Rust（Edition 2024）打造的高效能、單檔嵌入式多行程 Inode 檔案系統引擎。具備斷電崩潰自癒 WAL、細粒度分片並行保護、強化級 AEAD 加密、科學數值前處理壓縮濾鏡、可隨機存取的 64 KiB 並行分塊引擎、可插拔異步 I/O 引擎、專為 AI 代理人設計的原生 Model Context Protocol (MCP) 伺服器，以及穩定的 C/C++ FFI 介面。
-
----
-
-## 核心功能與系統架構 (Capabilities & Architecture)
-
-### 1. 儲存與大容量擴展 (Storage & Scaling)
-*   **類 Unix Inode 架構與 v2/v3 磁碟格式**：固定 256-byte 小端序 Inode 記錄（保留區歸零、無記憶體洩漏）與多區塊 v3 Bitmap（突破 128 MiB 映像檔上限），100% 向後相容舊版 v1 映像檔並支援 `oifs migrate` 原地升級。
-*   **超大檔案支援（高達 513 GB）**：單級、雙級與三級間接區塊索引（134,480,394 個 4 KiB 區塊），具備批次間接指標葉節點解析與稀疏子樹跳洞加速。
-*   **Seekable 64 KiB 並行分塊引擎**：獨立 64 KiB 壓縮／加密分塊，搭配零外部依賴的常駐 Scoped Worker Pool、全域回收 Zstd `CCtx`/`DCtx` 池、順序讀取 4-chunk 並行 Read-Ahead 預取、$O(\Delta \text{chunks})$ 漸進式截斷與間接表回收，以及非 Journal 模式的原地區塊重用。
-*   **動態多區塊目錄 (Multi-Block Directory)**：目錄自動跨動態配置的 4 KiB Extent 區塊擴展，結合 64 位元 SipHash 檔名雜湊與 32 分片記憶體索引快取。
-*   **線上與背景自動磁碟重組 (Online & Auto Defrag) 🧹**：支援 Safe 模式（原子 `.old` 備份置換）與 WAL 原子化 In-Place COW 重組，並提供可選的背景自動重組協調器（`--auto-defrag[=THRESHOLD]`）。
-*   **FSCK 結構完整性診斷 🛠️**：完整一致性掃描器，偵測孤立 Inode、洩漏區塊、遺失區塊與交叉參照，支援文字與 JSON 輸出。
-
-### 2. 事務性斷電崩潰自癒與持久化 (Transactional Crash Resilience & Durability)
-*   **事務性 Metadata WAL (預寫日誌)**：可選啟用（`--journal`）的 CRC32C 校驗環狀預寫日誌，採 Ordered Mode（先落盤 Payload 再提交 Metadata）、冪等 Redo 重放、撕裂寫入偵測，掛載時自動復原。
-*   **可設定持久化策略 (Configurable Durability Policies)**：
-    *   `Strict`：合併單次系統呼叫同步 WAL Header+Frame，並採用 JBD2 式延遲原地 Metadata Checkpoint（**10.9k+ ops/sec**，較逐筆同步 metadata 快 **2.31 倍**）。
-    *   `RangeAsync`：背景批次合併髒區間並於寫鎖外異步排空（**234k+ ops/sec**）。
-    *   `Lazy`：共享 mmap / OS 頁快取寫回，達極限輸送量（**626k+ ops/sec**），可抗行程崩潰並於 `flush()` / `Drop` 落盤。
-*   **非阻塞 Flush 並行保護**：`flush()` 與 `flush_async()` 僅持有共享讀鎖並透過專屬同步互斥鎖序列化 `msync`，絕不阻塞並行讀取執行緒。
-
-### 3. 高並行多執行緒引擎 (High-Concurrency Multi-Threaded Engine)
-*   **32 分片條帶化 Inode 與目錄快取**：`BoundedInodeCache`（Second-Chance Clock 淘汰）與 `ShardedDirCache`（鎖外建立完整目錄索引）皆以 64 位元費氏雜湊切分為 32 個獨立 `RwLock` 分片（16 執行緒下達 **8.60M+ lookups/sec**，鎖競爭下提速 **9.97 倍**）。
-*   **鎖外處理管線 (Out-of-Lock Pipeline)**：濾鏡轉換、Zstd 壓縮與 XChaCha20-Poly1305 加密全程在檔案系統排他鎖之外執行，繁重多 MB 寫入下讀取零飢餓。
-*   **零配置路徑解析**：零 Heap 配置的路徑分量迭代（`resolve_path_iter`）與 $O(1)$ 父目錄切分（`resolve_parent`），達 **11.9M+ 次路徑解析/秒（83.9 ns/op）**。
-
-### 4. 端對端密碼學與格式安全 (End-to-End Cryptographic & Format Security) 🔒
-*   **OWASP / RFC 9106 強化 Argon2id KDF**：記憶體困難金鑰衍生（`64 MiB`、`t=3`、`p=4`），搭配隨機 Salt 與 **BLAKE2b-512 網域隔離子金鑰階層**（`payload_key`、`filename_siv_key`、`filename_cipher_key`、`ipc_auth_key`），於 Drop 時以 `zeroize` 自動清零。
-*   **Context-Bound XChaCha20-Poly1305 AEAD**：透過 Poly1305 AAD 將密文綁定至 `inode_id`（Seekable 分塊另綁定 `chunk_idx` 與 `flags`），防止跨檔置換與分塊重排；大檔與分塊於 AArch64 自動啟用 NEON、x86_64 自動啟用 AVX2 SIMD，短檔名（`<= 192 B`）則走與 RFC 8439 完全一致的 1-block scalar fast path，兼顧大檔吞吐與目錄速度。
-*   **192-bit SIV 檔名加密**：確定性 `XChaCha20-Poly1305` 檔名加密（`_e_...`），採完整 24-byte 合成 Nonce 並將 `parent_inode` 納入 Poly1305 AAD 驗證；原始映像檔掃描完全不外洩任何檔名或內容。
-*   **縱深防禦磁碟格式強化**：
-    *   加密映像檔一律拒絕未加密 Inode 與明文檔名注入，並拒絕以密碼開啟未加密／遭降級的映像檔（`NotEncrypted`）。
-    *   `SuperBlock::validate` 強制檢查版本白名單與加密旗標一致性；驗證資料區區塊指標邊界、新配置區塊預先歸零、新建 `.img` 採擁有者專用 `0600` 權限（`create_encrypted` 加 `O_NOFOLLOW`）、CLI 遞迴 `ls -r`/`rm -r` 具循環與深度防護，以及可失敗上限配置（`MAX_READ_DATA_BYTES`、`MAX_DECOMPRESSED_STREAM_BYTES`）防禦偽造超大 `inode.size` OOM 與 Zstd 解壓炸彈。
-    *   強化 IPC 傳輸：Challenge-Response 驗證（密碼不經網路傳輸）、`0700`/`0600` socket 與 rendezvous 檔、TCP 預設僅監聽 loopback（`--allow-remote-ipsc`）與有界框架反序列化。
-
-### 5. 科學數值前處理濾鏡與壓縮 (Numerical Data Filters & Compression) ⚡
-*   **前處理濾鏡**：一階差分 Delta（含 NEON/SSE2 SIMD）、Byte Shuffle（AoS $\rightarrow$ SoA）、BitShuffle（8×8 位元矩陣轉置）與 TruncPrecision，可將結構化數值資料壓縮比由 1.95x 提升至 **390x（空間節省 99.7%）**；另支援可選 `blosc2` feature。
-*   **智慧濾鏡推薦器**：計算候選管線的資訊熵與壓縮比，自動推薦最佳參數。
-
-### 6. 透明多行程與網路協同 IPC (Transparent Multi-Process & Network IPC) 🔄
-*   **動態主從架構 (Master-Proxy)**：首個行程取得 OS 級排他鎖（`fcntl`）成為 **Master**；後續行程透過本地 Unix Domain Socket (UDS) 或 Network TCP（`--network`）以連線池透明轉發請求。
-
-### 7. 可插拔異步 I/O 引擎 (Pluggable Async I/O Engine) ⚡
-*   可透過 API 或 `OIFS_IO_BACKEND` 動態切換：
-    *   `IoBackend::Mmap`：共享記憶體零拷貝與連續 Extent 合併。
-    *   `IoBackend::Pread`：合併後連續 Extent 位置讀取。
-    *   `IoBackend::IoUring`：Linux 異步提交佇列（可選 `io-uring` feature）。
-
-### 8. 數學形式化驗證與工具鏈 (Mathematical Verification & Tooling) 🛡️
-*   **92 項 Kani 數學形式化證明**：使用 AWS **Kani Rust Verifier (CBMC)** 驗證區塊指標解析、SuperBlock 幾何不變量、Bitmap 掃描、濾鏡雙射可逆性、CRC32C 撕裂偵測、WAL 環狀緩衝與冪等性、Seekable 分塊位元隔離與漸進截斷、AAD 網域隔離與 IPC 框架邊界。
-*   **Bolero 模糊測試與 Shuttle 並行驗證**：結合 Bolero 屬性／模糊測試、Shuttle 執行緒排程窮舉驗證與 68 組整合測試套件。
-*   **Model Context Protocol (MCP) 伺服器 🤖**：內建 `oifs_mcp`（`--features mcp`），讓 AI 代理人透過 JSON-RPC 工具直接操作 OIFS。
-*   **穩定 C/C++ ABI (FFI) 🔌**：提供動態函式庫（`liboifs.so` / `liboifs.dylib`）與三態版本握手（`oifs_check_version`、`oifs_loaded_path`）。
+> 🌐 **線上官方文件與架構視覺化網站**：[https://ych.github.io/oifs/](https://ych.github.io/oifs/)
 
 ---
 
-## 效能與並行實測基準 (Performance & Concurrency Benchmarks)
+## 為什麼選擇 OIFS？（Why OIFS?）
 
-於 Release 建置（Apple Silicon `aarch64`、`--release`）實測取得：
+當你需要**在單一可攜檔案裡擁有真正的檔案系統語意**，同時兼顧極致吞吐、壓縮率與崩潰一致性時：
 
-| 評測場景 | 負載與條件 | 實測結果 / 輸送量 | 亮點 / 對比 |
-| :--- | :--- | :--- | :--- |
-| **密集雙重間接 `read_at`** | 1,000 × 1 MB 雙重間接區塊讀取 | **58.2 GB/s** (`16.8 ms`) | 批次葉節點解析 + 連續區段合併，**提速 2.63 倍** |
-| **稀疏子樹跳洞讀取** | 200 × 4 MB 未配置間接子樹 | **232.5 GB/s** (`3.36 ms`) | 較逐 4 KiB 步進**提速 4.55 倍** |
-| **Seekable 64K `read_at`** | 16 MB 分塊檔（`1 MiB` / `4 KiB` 順序讀） | **12.6 GB/s** (`1.27 ms`) / **3.32 GB/s** (`4.82 ms`) | 常駐 Worker Pool + 4-chunk 預取，**提速 2.70x / 1.47x** |
-| **大檔 Journaled 寫入** | 32 MB 首次寫入 / 覆寫（開啟 WAL） | **9.78 GB/s** / **46.1 GB/s** | 1 MB–32 MB 線性擴展 |
-| **加密 64K Append** | 128 × 64 KiB 加密附加寫入（8 MB） | **701 MB/s** (`11.41 ms`) | AArch64 NEON + 短檔名 scalar fast path，**提速 +21.7%** 且加密目錄零退化 |
-| **32 分片目錄快取** | 16 執行緒 × 10k 次操作（97% 查詢 + 3% 建索引） | **8.60M lookups/sec** (`3.24 ms`) | 較單一 `RwLock` **提速 9.97 倍** |
-| **路徑解析與目錄列舉** | 20 萬次三層 `resolve_path` / 5,000 檔 `list_dir` | **11.9M lookups/sec** (`83.9 ns`) / **9,523 listings/sec** (`105 µs`) | 零 Heap 配置路徑解析 |
-| **Journal 持久化模式** | 500 × 512 B `create` + `write`（開啟 WAL） | Lazy **626k/s** \| RangeAsync **234k/s** \| Strict **10.9k/s** | JBD2 式延遲 Metadata Checkpoint 使 `Strict` **提速 2.31 倍** |
-| **原地 COW 磁碟重組** | 500 個碎片化 16 KB 檔案（開啟 WAL） | **3.28–3.65 ms**（免重組：`18.9 µs`） | 字組級 Bitmap + WAL 操作合併，**提速 4.4 倍** |
-| **數值資料壓縮效益** | 4-byte 結構化遙測資料（`Delta` + Zstd） | **390.1 倍壓縮比**（省 99.7%） | 較原生 Zstd（`1.95x`）**優化 200 倍** |
+1. **AI Agent 沙盒與狀態封裝**：把整個專案工作區或代理人記憶打包成單一加密 `.img`，透過 CoW（`oifs clone`）在毫秒內建立獨立分支、用 FUSE 直接掛載，或透過內建 `oifs_mcp` 直接對接 Claude Desktop / Cursor。
+2. **科學計算遙測與 ML 資料集**：取代肥大易損的 HDF5 或數百萬個散落小檔的 Zarr/Parquet——SIMD Delta/Shuffle/BitShuffle 搭配 64 KiB Seekable Zstd 可達 **390× 壓縮比**，同時維持微秒級隨機 `read_at` 與跨 `.img` `FICLONERANGE` 資料集秒級切分。
+3. **應用程式內嵌資源包與安全儲存艙**：相較唯讀的 ZIP / SquashFS，OIFS 具備多行程併發讀寫、`F_RDLCK` 嚴格唯讀掛載、原子 `rename`、WAL 防崩潰與 C++17/20 `oifs::PinnableSlice` 零拷貝視圖，且全系統僅佔用單一 OS 檔案描述符（FD）。
+
+### 競品定位比較
+
+| 核心維度 | **OIFS** | SQLite（Blob 儲存） | HDF5 | SquashFS / DwarFS |
+| :--- | :---: | :---: | :---: | :---: |
+| **可讀寫＋崩潰安全 WAL** | ✅（Ordered WAL + `fsck`） | ✅（SQLite WAL） | ⚠️（崩潰易損壞） | ❌（唯讀） |
+| **多行程併發與系統掛載** | ✅ Master-Proxy IPC + 純 Rust FUSE + `F_RDLCK` 唯讀 | ✅ 檔案鎖 | ⚠️ 僅 SWMR | ✅ FUSE（僅唯讀） |
+| **內建 AEAD 加密** | ✅ XChaCha20-Poly1305 + 192-bit SIV 檔名 | 🔌 需付費／外掛 | ❌ | ❌ |
+| **數值 SIMD 濾鏡＋隨機 64K 壓縮** | ✅ Delta / Shuffle / BitShuffle + 64K Zstd | ❌ | ✅ 分塊濾鏡 | ⚠️ 通用壓縮／去重 |
+| **POSIX 目錄語意與跨檔 Reflink** | ✅ 目錄樹、`rename`、`FICLONERANGE`、單一 FD | ❌ SQL 資料表 | ⚠️ Group 樹 | ✅ 唯讀目錄樹 |
 
 ---
 
-## 建置與測試 (Build & Test)
+## 系統架構總覽
+
+```mermaid
+flowchart TB
+    subgraph Clients["用戶端與介面層"]
+        Rust["Rust API / 非同步 OifsAsyncTask"]
+        CPP["C FFI (oifs.h) & Modern C++17/20 (oifs.hpp / co_await)"]
+        FUSE["純 Rust FUSE ABI v7.28 (Linux / macFUSE)"]
+        CLI["CLI 工具 (oifs) & MCP 伺服器 (oifs_mcp)"]
+    end
+
+    subgraph IPC["多行程協同"]
+        MP["Master-Proxy IPC (fcntl 鎖 + UDS / TCP Challenge-Response)"]
+    end
+
+    subgraph Engine["OIFS 儲存引擎 (DiskManager)"]
+        Cache["32 分片 Inode 快取 & 目錄快取 (費氏雜湊)"]
+        Pipe["鎖外處理管線: SIMD Delta/Shuffle/BitShuffle -> Zstd -> XChaCha20-Poly1305"]
+        Transfer["跨映像檔三層降級傳輸: FICLONERANGE -> copy_file_range -> Raw Blocks"]
+        WAL["Metadata WAL (CRC32C, 128 KiB 環狀緩衝, Ordered Mode, 延遲 Checkpoint)"]
+    end
+
+    subgraph Storage["雙引擎底層儲存 (單一 .img 容器)"]
+        Mmap["StorageMode::Mmap (零拷貝 MAP_SHARED / PROT_READ)"]
+        FileIo["StorageMode::FileIo (零 mmap pread/pwrite + 64 分片 DataPageCache)"]
+    end
+
+    Clients --> IPC --> Cache
+    Cache --> Pipe --> WAL
+    Cache --> Transfer
+    WAL --> Storage
+    Transfer --> Storage
+```
+
+---
+
+## 快速開始 (Quick Start)
+
+### 安裝執行檔與建置動態函式庫
 
 ```bash
-# Release 建置（精簡預設依賴；可選啟用 --features blosc2,mcp,io-uring）
+# 安裝 `oifs` 與 `oifs_mcp` 到 ~/.cargo/bin
+cargo install --path .
+
+# 或建置 Release 執行檔與 C/C++ 動態函式庫 (target/release/liboifs.{so,dylib})
 cargo build --release
-
-# 執行全部 68 組單元與整合測試套件
-cargo test --release
-
-# 平行執行全部 92 項 Kani 數學形式化證明
-cargo kani -j 8 --output-format=terse
-
-# 一鍵執行發布前檢查腳本（fmt、clippy、build、test、shuttle、kani、coverage）
-./scripts/release_check.sh --quick
 ```
+
+### 常用 CLI 操作
+
+```bash
+# 1. 建立 64 MiB 具 WAL 保護的映像檔（加 --encrypt 啟用 Argon2id + XChaCha20-Poly1305）
+oifs -i dataset.img create --size 64 --journal
+oifs -i vault.img create --size 64 --journal --encrypt
+
+# 2. 自動分析並以 SIMD 數值濾鏡 + 64K Seekable 分塊匯入／匯出
+oifs filter-analyze telemetry.bin
+oifs -i dataset.img put telemetry.bin --filter auto --chunked
+oifs -i dataset.img get telemetry.bin restored.bin
+
+# 3. 目錄與嚴格唯讀檢視（--read-only 取得共享 F_RDLCK 鎖，零寫入）
+oifs -i dataset.img mkdir models
+oifs -i dataset.img ls -r
+oifs -i dataset.img --read-only stat telemetry.bin
+oifs -i dataset.img --read-only --no-mmap cat README.txt
+
+# 4. 透過純 Rust FUSE 掛載（Linux /dev/fuse 或 macOS macFUSE）
+oifs -i dataset.img mount ./mnt --foreground
+oifs -i dataset.img --read-only mount ./mnt_ro --foreground
+
+# 5. O(1) 整顆映像檔 CoW 分支與跨映像檔三層快速搬移／子區段剪接
+oifs clone dataset.img sandbox_fork.img
+oifs -i dataset.img transfer --to train.img telemetry.bin --dest /train/telemetry.bin
+oifs -i dataset.img transfer --to shard.img telemetry.bin --offset 0 --len 65536 --trim-mode punch-hole
+
+# 6. 結構檢查 (FSCK)、線上磁碟重組與舊版 v1 遷移
+oifs -i dataset.img fsck --json
+oifs -i dataset.img defrag
+oifs -i legacy_v1.img migrate    # 將舊版 v1 bincode Inode 原地升級為固定 256B v2 記錄
+```
+
+> **Format v2 與 v3 說明**：新建映像檔一律採用 **Format v3**（可突破 128 MiB 的動態多區塊 Bitmap＋固定 256-byte **v2 Inode 記錄**）；舊版 v1 映像檔維持 100% 相容並可透過 `oifs migrate` 原地升級 Inode 記錄格式。
 
 ---
 
-## 命令列工具使用說明 (CLI Usage)
+## AI Agent 專用 MCP 伺服器設定 🤖
 
-### 1. 建立映像檔
-```bash
-# 建立 10MB 映像檔（可加 --journal 啟用 Metadata WAL）
-cargo run --bin oifs -- -i disk.img create --size 10 --journal
+`oifs_mcp`（預設啟用 `mcp` feature）透過 stdio JSON-RPC 將單一 `.img` 沙盒直接暴露給 Claude Desktop、Cursor 或自訂 AI Agent。
 
-# 建立加密映像檔（自動安全遮罩密碼輸入）
-cargo run --bin oifs -- -i encrypted.img create --size 10 --encrypt
+在 `claude_desktop_config.json` 或 Cursor `.mcp.json` 加入：
+
+```json
+{
+  "mcpServers": {
+    "oifs-sandbox": {
+      "command": "oifs_mcp",
+      "args": ["/path/to/agent_workspace.img", "--size", "64"],
+      "env": {
+        "OIFS_PASSWORD": "optional-vault-password"
+      }
+    }
+  }
+}
 ```
 
-### 2. 檔案匯入、匯出與目錄操作
-```bash
-# 匯入與匯出檔案
-cargo run --bin oifs -- -i disk.img put dataset.bin
-cargo run --bin oifs -- -i disk.img get dataset.bin extracted.bin
-
-# 建立目錄、遞迴列表、遞迴刪除
-cargo run --bin oifs -- -i disk.img mkdir logs
-cargo run --bin oifs -- -i disk.img ls -r
-cargo run --bin oifs -- -i disk.img rm -r logs
-```
-
-### 3. 數值壓縮與智慧濾鏡推薦 ⚡
-```bash
-# 分析資料特徵並取得最佳濾鏡推薦報告
-cargo run --bin oifs -- filter-analyze dataset.bin
-
-# 自動推薦或手動指定濾鏡（delta、shuffle、bitshuffle、both）
-cargo run --bin oifs -- -i disk.img put dataset.bin --filter auto
-cargo run --bin oifs -- -i disk.img put dataset.bin --filter delta --typesize 4
-```
-
-### 4. 結構檢查 (FSCK)、線上重組與格式遷移 🛠️
-```bash
-# 結構一致性檢查
-cargo run --bin oifs -- -i disk.img fsck
-cargo run --bin oifs -- -i disk.img fsck --json
-
-# 線上磁碟重組（或使用 --auto-defrag=0.3 啟用背景自動重組）
-cargo run --bin oifs -- -i disk.img defrag
-
-# 將舊版 v1 映像檔原地升級為 v2 格式
-cargo run --bin oifs -- -i legacy.img migrate
-```
-
-### 5. 多行程、網路 IPC 與 MCP 伺服器 🌐🤖
-```bash
-# 節點 1 以 Master 啟動並監聽 loopback TCP 8989 埠
-cargo run --bin oifs -- -i disk.img --network 127.0.0.1:8989 ls
-
-# 節點 2 以 Proxy 連線並透明轉發操作
-cargo run --bin oifs -- -i disk.img --network 127.0.0.1:8989 put data.bin
-
-# 啟動原生 MCP 伺服器供 AI 代理人使用
-cargo run --bin oifs_mcp --features mcp
-```
+**提供之 MCP Tools**：`read_file`、`write_file`、`append_file`、`list_dir`、`mkdir`、`delete_file`、`truncate_file`、`status`。
 
 ---
 
-## Rust API 程式碼範例
+## 程式碼範例
+
+### 可獨立執行的 Rust API 範例
 
 ```rust
 use oifs::disk::{CompressionMode, DiskManager};
+use oifs::filters::FilterConfig;
+use oifs::storage::StorageMode;
 
-// 開啟現有映像檔（size 傳入 0 表示不截斷既有檔案）
-let dm = DiskManager::open("disk.img", 0).unwrap();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 建立（或開啟）16 MiB 啟用 WAL 的映像檔，可選 Mmap 或純 FileIo
+    let dm = DiskManager::open_with_options(
+        "demo.img",
+        16 * 1024 * 1024,
+        None,               // 傳入 Some("secret") 即啟用加密容器
+        true,               // 啟用 CRC32C Metadata WAL
+        StorageMode::Mmap,  // 或 StorageMode::FileIo（完全免 mmap）
+    )?;
 
-// 解析根目錄並建立檔案
-let root_id = dm.resolve_path(".").unwrap();
-let file_id = dm.create_file(root_id, "telemetry.bin").unwrap();
+    // 單交易建檔＋SIMD Delta/Shuffle＋Seekable 64 KiB Zstd 壓縮寫入
+    let payload: Vec<u8> = (0u32..32_768).flat_map(u32::to_le_bytes).collect();
+    let file_id = dm.create_file_with_data_with_filters(
+        0,
+        "telemetry.bin",
+        &payload,
+        CompressionMode::Seekable64K { level: 3 },
+        FilterConfig::numeric(4),
+    )?;
 
-// 寫入資料（支援 Never、Auto、Always、Stream { level }、Seekable { chunk_size, level }）
-let data = b"High-throughput concurrent payload";
-dm.write_data(file_id, 0, data, CompressionMode::Auto).unwrap();
+    // 透過 ReadSession + FileReadHandle 攤銷鎖與查表開銷做隨機讀取
+    let session = dm.begin_read();
+    let handle = session.open_inode(file_id)?;
+    let mut slice = vec![0u8; 4096];
+    let n = handle.read_at(65_536, &mut slice)?;
+    assert_eq!(&slice[..n], &payload[65_536..65_536 + n]);
+    drop(handle);
+    drop(session);
 
-// 讀取完整檔案或指定區段
-let content = dm.read_data(file_id).unwrap();
-assert_eq!(content, data);
+    // 原子純 metadata 更名與一致性檢查 (fsck)
+    let dir_id = dm.create_directory(0, "archive")?;
+    dm.rename(0, "telemetry.bin", dir_id, "run_01.bin")?;
+    assert!(dm.verify_integrity()?.is_clean);
+    Ok(())
+}
+```
+
+### Modern C++17 / C++20 零拷貝 API（`include/oifs.hpp`）
+
+```cpp
+#include "oifs.hpp"
+#include <cassert>
+#include <vector>
+
+int main() {
+    assert(oifs::check_version() == OIFS_VERSION_COMPAT_OK);
+
+    oifs::OpenOptions opts;
+    opts.size = 16ULL * 1024 * 1024;
+    opts.journaled = true;
+    auto fs = oifs::FileSystem::open_with_options("cpp_demo.img", opts);
+
+    // 型別安全 Span 寫入＋SIMD Delta+Shuffle 數值濾鏡
+    std::vector<float> weights(16384, 1.25f);
+    fs.create_file_with_span("weights.f32", weights,
+                             oifs::WritePolicy::Seekable64K, 3,
+                             oifs::FilterConfig::numeric(4));
+
+    // RocksDB 風格 PinnableSlice：Mmap 下零拷貝 pin，壓縮／FileIo 自動 1-copy 降級
+    auto session = fs.begin_read();
+    auto handle = session.open_file("weights.f32");
+    auto slice = handle.read_pinnable(0, 4096);
+    auto view = slice.as_span<float>();
+    assert(view[0] == 1.25f);
+
+    // C++20 另支援 `co_await fs.read_at_async(...)`（命中快取零 suspend）
+    assert(fs.verify_integrity().is_clean);
+}
 ```
 
 ---
 
-## 官方文件與互動式視覺化導覽 🌐
+## 核心工程亮點
 
-探索完整的系統架構規範、模組依賴關係圖與經過形式化驗證的設計宣告：  
-👉 **[https://ych.github.io/oifs/](https://ych.github.io/oifs/)**
+*   **雙儲存引擎（`Mmap` 與 `FileIo`）**：預設零拷貝 `MAP_SHARED`，另提供完全免 `mmap` 的純 `pread`/`pwrite` 引擎（`--no-mmap` / `OIFS_STORAGE_MODE=pread`），內建 16 分片 4 MiB Metadata 快取與 64 分片 32 MiB Second-Chance Clock `DataPageCache`。
+*   **嚴格唯讀模式（`F_RDLCK` + `PROT_READ`）**：以 `O_RDONLY` 開啟 `0444` 映像檔、支援多行程共享唯讀鎖、保留 `mmap_slice()` 零拷貝，零寫入驗證 WAL 並於 `Drop` 抑制 flush。
+*   **純 Rust 跨平台 FUSE（ABI v7.28）**：零外部 C 函式庫依賴、單一 OS FD 複用千個開檔 handle、動態 `max_write` 協商（預設 `1 MiB`，自動偵測 Linux `FUSE_MAX_PAGES` 與 `/sys/module/fuse/parameters/max_pages_limit`、macOS `-o iosize`）、`FUSE_RENAME`/`RENAME2`、macOS Finder 過濾與 UTF-8 NFD→NFC 正規化。
+*   **POSIX 原子 `rename` 與跨 `.img` 三層降級搬移／子區段剪接**：
+    *   `DiskManager::rename` 以單筆 WAL 交易完成純 metadata 搬移、SIV 檔名重算與目錄循環防護。
+    *   `clone_image`（APFS `clonefile` / Linux `FICLONE`）、`transfer_file_to` 與 `splice_range_to`（`FICLONERANGE` → `copy_file_range` → Raw Compressed Block Copy），具備加密／AAD 閘門、`(src_dev, dst_dev)` 負向 Reflink 快取、Ordered-mode `fdatasync`、Seekable 64K `ChunkEntry` Rebase、稀疏跳洞、三明治 `Head/Body/Tail` 切分與 `SpliceTrimMode::{Keep, PunchHole, CollapseRange}`。
+*   **交易式 Metadata WAL 與 Group-Commit 非同步引擎**：33 區塊（1 Header + 128 KiB Ring）CRC32C WAL，支援 `Lazy` / `RangeAsync` / `Strict` 模式、單交易 `create_file_with_data`（`<= 8 KiB` WAL inline data-journaling）與並發 `Strict` 寫入 Group-Commit。
+*   **32 分片並行與密碼學縱深防禦**：OWASP Argon2id（`64 MiB`, `t=3`, `p=4`）、BLAKE2b-512 子金鑰隔離、Context-Bound XChaCha20-Poly1305 AEAD（NEON/AVX2＋短檔名 1-block scalar fast path）、192-bit SIV 檔名加密、新區塊清零、OOM/解壓炸彈邊界防護與預設僅綁 loopback 的 TCP IPC（`--allow-remote-ipc`）。
+*   **形式化驗證與測試覆蓋**：**109 項 AWS Kani (CBMC) 數學證明**、Bolero 模糊測試、Shuttle 並行排程驗證與 **73 組整合測試套件**。
+
+---
+
+## 平台支援矩陣與 Feature Flags
+
+| 功能／子系統 | Linux (`x86_64` / `aarch64`) | macOS (Apple Silicon / Intel) | Windows |
+| :--- | :---: | :---: | :---: |
+| 核心儲存引擎（`Mmap`/`FileIo`、WAL、加密、濾鏡、C/C++ FFI） | ✅ 完整支援 | ✅ 完整支援 | ⚠️ 實驗性（`fcntl` 鎖與 UDS 僅限 Unix） |
+| 原生 FUSE 核心掛載（`oifs mount`） | ✅ `/dev/fuse` + `fusermount3` | ✅ `macFUSE 5.x`（`SCM_RIGHTS`） | ❌ 僅使用者態 `dispatch_frame` |
+| 跨映像檔零拷貝 Reflink（`FICLONERANGE` / `clonefile`） | ✅ Btrfs / XFS / bcachefs / Lustre Lreflink | ✅ 整檔 APFS `clonefile`；子區段自動降級 Raw | ❌ 降級 Raw 區塊直搬 |
+| `IoBackend::IoUring` | ✅（`--features io_uring`，預設開啟） | ↩️ 自動退回 `Pread` | ↩️ 自動退回 `Pread` |
+| Master-Proxy 多行程 IPC | ✅ UDS 與 TCP | ✅ UDS 與 TCP | ❌ 僅單行程模式 |
+
+| Cargo Feature Flag | 預設 | 說明 |
+| :--- | :---: | :--- |
+| `mcp` | ✅ 開啟 | 建置 `oifs_mcp` JSON-RPC 伺服器（`rmcp`, `tokio`, `schemars`）。 |
+| `io_uring` | ✅ 開啟（僅 Linux） | 啟用 Linux `io_uring` 非同步讀取後端（`io-uring`）。 |
+| `blosc2` | ❌ 關閉 | 啟用可選的原生 C-Blosc2 互通包裝（`filters::blosc2_*`）。 |
+
+---
+
+## 效能實測基準
+
+測試環境：**Apple M5 Pro、64 GiB RAM、macOS（`aarch64`、`--release`）**，除註明外皆於熱 OS Page Cache 下實測（`Mmap` / `FileIo` + WAL）：
+
+| 評測場景 | 負載與條件 | 實測結果 / 吞吐量 | 備註／對比 |
+| :--- | :--- | :--- | :--- |
+| **密集雙重間接 `read_at`** | 1,000 × 1 MiB 雙重間接讀取（`Mmap` 熱頁快取） | **58.2 GB/s** (`16.8 ms`) | 批次葉節點解析＋連續區段合併，**提速 2.63×** |
+| **稀疏子樹跳洞讀取** | 200 × 4 MiB 未配置子樹（邏輯補零吞吐） | **232.5 GB/s** (`3.36 ms`) | 邏輯吞吐（直接跳過空子樹免實體 I/O，**提速 4.55×**） |
+| **Seekable 64K `read_at`** | 16 MiB 分塊檔（`1 MiB` / `4 KiB` 順序讀） | **12.6 GB/s** (`1.27 ms`) / **3.32 GB/s** (`4.82 ms`) | 常駐 Worker Pool＋4-chunk 預取，**提速 2.70× / 1.47×** |
+| **跨 `.img` 快速搬移** | 16 MiB `Delta+Shuffle+Zstd` / 64 MiB Sparse（64K 已配置） | **0.04 ms** / **0.23 ms** (`RawBlockCopy`) | 較邏輯解壓重壓（`6.14 ms` / `24.43 ms`）**提速 137.7× / 104.0×** |
+| **跨 `.img` Zstd 與子區段剪接** | 16 MiB Zstd 整檔 / 8 MiB Seekable Splice+Collapse | **0.47 ms** / **0.79 ms** | 較邏輯重編碼 **提速 16.3× / 2.81×** |
+| **整顆映像檔 CoW Clone** | 64 MiB `.img` 分支（`oifs clone`，APFS `clonefile`） | **0.09 ms** | 較 `std::fs::copy` **快 2.19×**，0 額外磁碟空間 |
+| **C++ 零拷貝 `PinnableSlice`** | 隨機 4 KiB 讀取（`Mmap`, `FileReadHandle`） | **4.5–6.1 ns/op** | 較路徑查詢版 C `oifs_read_at`（`106–167 ns/op`）**快 23×–27×** |
+| **32 分片目錄快取** | 16 執行緒 × 10k 次操作（97% 查詢＋3% 建索引） | **8.60M lookups/sec** (`3.24 ms`) | 較單一 `RwLock` **提速 9.97×** |
+| **Journal 持久化模式** | 500 × 512 B `create` + `write`（WAL, `Mmap`） | Lazy **626k/s** \| RangeAsync **234k/s** \| Strict **10.9k/s** | 延遲 Metadata Checkpoint 使 `Strict` **提速 2.31×** |
+| **實機 macFUSE 5.5.0 掛載** | 16 MiB 順序寫（`Mmap+WAL` / `FileIo+WAL`） | **2.13 GB/s** / **1.09 GB/s**（熱頁峰值） | 完整經過 macOS Kernel VFS；UBC 讀取達 **19.5–20.7 GB/s** |
+| **數值資料壓縮效益** | 4-byte 結構化遙測資料（`Delta` + Zstd） | **390.1× 壓縮比**（省 99.7%） | 較原生 Zstd（`1.95×`）**優化 200×** |
+
+---
+
+## 建置、測試與形式化驗證
+
+```bash
+# 執行全部 73 組整合測試與單元測試（共 77 targets）
+cargo test --release
+
+# 於純 pread/pwrite（零 mmap）模式執行核心套件
+OIFS_STORAGE_MODE=pread cargo test --release --test transfer_test --test rename_test --test fuse_test --test cpp_api_test --test read_only_mode_test
+
+# 執行真實核心 FUSE 掛載端對端測試與 APFS 對照 benchmark（需 macFUSE 或 /dev/fuse）
+cargo test --release --test fuse_live_mount_test -- --ignored --nocapture --test-threads=1
+
+# 平行執行全部 109 項 Kani 數學形式化證明
+cargo kani -j 8 --output-format=terse
+
+# 一鍵發布前檢查（fmt、clippy、build、test、shuttle、kani、coverage）
+./scripts/release_check.sh --quick
+```
 
 ---
 

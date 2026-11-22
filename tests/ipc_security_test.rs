@@ -92,6 +92,7 @@ fn test_client_rejects_a_master_that_cannot_prove_its_key() {
     let _img = TestImage::new("test_sec18_fake_master");
 
     // A "fake master" that answers the challenge with a wrong MAC.
+    let _ = fs::remove_file("/tmp/oifs_fake_master_test.sock");
     let listener = std::os::unix::net::UnixListener::bind("/tmp/oifs_fake_master_test.sock")
         .expect("bind fake master");
     let handle = std::thread::spawn(move || {
@@ -224,11 +225,11 @@ fn test_non_loopback_bind_requires_an_explicit_opt_in() {
         .expect("run oifs");
     assert!(
         !output.status.success(),
-        "a non-loopback bind must be refused without --allow-remote-ipsc"
+        "a non-loopback bind must be refused without --allow-remote-ipc"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("allow-remote-ipsc"),
+        stderr.contains("allow-remote-ipc"),
         "the error should mention the opt-in flag: {stderr}"
     );
 }

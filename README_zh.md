@@ -75,10 +75,14 @@ flowchart TB
 ### 安裝執行檔與建置動態函式庫
 
 ```bash
-# 安裝 `oifs` 與 `oifs_mcp` 到 ~/.cargo/bin
-cargo install --path .
+# 方式一：一行免 Clone 直接從 GitHub Release Tag 安裝
+cargo install --git https://github.com/ych/oifs --tag 1.4.0
 
-# 或建置 Release 執行檔與 C/C++ 動態函式庫 (target/release/liboifs.{so,dylib})
+# 方式二：直接下載預編譯執行檔（Linux x86_64/arm64 與 macOS Intel/Apple Silicon）
+#   https://github.com/ych/oifs/releases
+
+# 方式三：從本機原始碼安裝或建置動態函式庫 (target/release/liboifs.{so,dylib})
+cargo install --path .
 cargo build --release
 ```
 

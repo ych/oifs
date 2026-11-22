@@ -75,10 +75,14 @@ flowchart TB
 ### Install CLI & Build Shared Library
 
 ```bash
-# Install `oifs` and `oifs_mcp` binaries to ~/.cargo/bin
-cargo install --path .
+# Option 1: One-line install directly from GitHub Release tag (no git clone needed)
+cargo install --git https://github.com/ych/oifs --tag 1.4.0
 
-# Or build release binaries & shared library (target/release/liboifs.{so,dylib})
+# Option 2: Download prebuilt binaries (Linux x86_64/arm64 & macOS Intel/Apple Silicon)
+#   https://github.com/ych/oifs/releases
+
+# Option 3: Build locally from source (produces binaries + target/release/liboifs.{so,dylib})
+cargo install --path .
 cargo build --release
 ```
 

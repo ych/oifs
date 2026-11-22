@@ -76,6 +76,7 @@ jobs:
           cp LICENSE "${STAGE_DIR}/"
           mkdir -p "${STAGE_DIR}/include"
           cp include/oifs.h "${STAGE_DIR}/include/"
+          cp include/oifs.hpp "${STAGE_DIR}/include/"
 
           # Generate tar.gz archive and sha256 checksum
           cd target/package

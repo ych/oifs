@@ -42,5 +42,6 @@ Use this map to go directly to the source of truth for any subsystem:
 
 - **Prefer depth over page proliferation**: Consolidate overlapping `architecture/*`, `workflows/*`, and `testing/*` topics into cohesive pages (~15–20 high-signal pages total) instead of duplicating the same subsystem across multiple thin pages.
 - **Stay strictly grounded in current code**: Document symbols, structs, CLI flags, C/C++ APIs, and invariants verified directly in `src/` and `include/`.
+- **Include canonical repository links**: In `quickstart.md` and `architecture/overview.md`, include links to the official GitHub repository (`https://github.com/ych/oifs`) and online documentation site (`https://ych.github.io/oifs/`).
 - **Clean terminology**: Never include internal tracking IDs or ticket codes in documentation.
 - **Keep diagrams compact**: Use valid GitHub-flavored Mermaid diagrams where they genuinely clarify data flow or on-disk layout.

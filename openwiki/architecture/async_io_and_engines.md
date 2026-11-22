@@ -1,24 +1,26 @@
 ---
 type: "Reference"
-title: "Async I/O & Read Engines"
-openwiki_generated: true
+title: "Async I/O Engine and Group Commit"
+description: "Covers the pluggable I/O backend system (Mmap, Pread, IoUring), ExtentList coalescing, io_uring capability gating, async read engine with inline fast-path, and async write engine with group commit for DurabilityMode::Strict."
+tags: ["architecture", "io", "async", "io-uring", "group-commit"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-22T10:29:12.696Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
+  - id: openwiki-source-c9e5b32aad7cafdb095c81a4
+    resource: repo://src/ffi.rs
   - id: openwiki-source-ea9e30b0c99ad48bf309d4ab
     resource: repo://src/io_engine.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
 ---
 
-
-# Async I/O & Read Engines
+# Async I/O Engine and Group Commit
 
 OIFS separates metadata operations from payload data reading. Filesystem metadata (superblocks, bitmaps, inodes, indirect pointer blocks, and directory indices) resides on the shared `MAP_SHARED` memory map for zero-copy, low-overhead access. File payloads can be large, cold, and scattered across physical blocks—reading them through the mmap means every uncached page is a synchronous page fault, one fault at a time.
 
-P3.2 introduced a pluggable data-block read engine ([src/io_engine.rs]()) that decouples physical payload I/O from memory-mapped page faults, enabling applications to select between three backends: **Mmap**, **Pread**, and **IoUring**.
+P3.2 introduced a pluggable data-block read engine (`src/io_engine.rs`) that decouples physical payload I/O from memory-mapped page faults, enabling applications to select between three backends: **Mmap**, **Pread**, and **IoUring**. In v1.4.0 the async write pipeline adds a dedicated group-commit thread that merges concurrent `DurabilityMode::Strict` operations behind a single `flush()` barrier.
 
 ```mermaid
 flowchart TD
@@ -55,9 +57,11 @@ flowchart TD
     style UringPath fill:#e3f2fd,stroke:#1565c0
 ```
 
+---
+
 ## 1. IoBackend Architecture and Selection
 
-The `IoBackend` enum defines three distinct data-block retrieval strategies ([src/io_engine.rs#L36-L51]()):
+The `IoBackend` enum defines three distinct data-block retrieval strategies ([src/io_engine.rs#L36-L51](repo://src/io_engine.rs#L36-L51)):
 
 | Backend | Value | Mechanism | Platforms |
 | :--- | :--- | :--- | :--- |
@@ -65,13 +69,13 @@ The `IoBackend` enum defines three distinct data-block retrieval strategies ([sr
 | `IoBackend::Pread` | 1 | Positional `pread(2)` syscall per coalesced extent | All Unix |
 | `IoBackend::IoUring` | 2 | Batched async submission to a pooled `io_uring` ring | Linux ≥ 5.6, `io_uring` cargo feature |
 
-All backends read through the standard OS page cache without `O_DIRECT`, ensuring that recently written dirty pages (including uncommitted mutations under `DurabilityMode::Lazy`) are immediately visible across all backends ([src/io_engine.rs#L1-L25]()).
+All backends read through the standard OS page cache without `O_DIRECT`, ensuring that recently written dirty pages (including uncommitted mutations under `DurabilityMode::Lazy`) are immediately visible across all backends ([src/io_engine.rs#L1-L25](repo://src/io_engine.rs#L1-L25)).
 
 Backend selection is configurable via:
 
-- **Environment variable**: `OIFS_IO_BACKEND=mmap|pread|io_uring` (case-insensitive; aliases: `uring`, `iouring`, `io-uring`). Read once at `DiskManager` construction via `IoBackend::from_env()` ([src/io_engine.rs#L34-L35]()).
-- **Programmatic Rust API**: `DiskManager::set_io_backend(backend)` or builder-style `DiskManager::with_io_backend(backend)` ([src/disk.rs#L1615-L1624]()).
-- **FFI**: `oifs_set_io_backend(handle, backend_u8)` and `oifs_get_io_backend(handle)` ([src/ffi.rs#L726-L755]()).
+- **Environment variable**: `OIFS_IO_BACKEND=mmap|pread|io_uring` (case-insensitive; aliases: `uring`, `iouring`, `io-uring`). Read once at `DiskManager` construction via `IoBackend::from_env()` ([src/io_engine.rs#L34-L35](repo://src/io_engine.rs#L34-L35)).
+- **Programmatic Rust API**: `DiskManager::set_io_backend(backend)` or builder-style `DiskManager::with_io_backend(backend)` ([src/disk.rs#L1615-L1624](repo://src/disk.rs#L1615-L1624)).
+- **FFI**: `oifs_set_io_backend(handle, backend_u8)` and `oifs_get_io_backend(handle)` ([src/ffi.rs#L726-L755](repo://src/ffi.rs#L726-L755)).
 
 ```rust
 // Querying and configuring the backend
@@ -81,11 +85,13 @@ assert_eq!(dm.io_backend(), effective);        // effective backend after gating
 assert_eq!(dm.requested_io_backend(), IoBackend::IoUring); // what was asked for
 ```
 
-Requesting `IoUring` where it is unavailable never fails; `IoBackend::resolve()` transparently falls back to `Pread`, and the effective backend is reported separately from the requested one ([src/io_engine.rs#L60-L68]()).
+Requesting `IoUring` where it is unavailable never fails; `IoBackend::resolve()` transparently falls back to `Pread`, and the effective backend is reported separately from the requested one ([src/io_engine.rs#L60-L68](repo://src/io_engine.rs#L60-L68)).
+
+---
 
 ## 2. ExtentList Block Coalescing
 
-Non-contiguous files incur high syscall or SQE overhead if dispatched one 4 KiB block at a time. OIFS solves this through `ExtentList`, which merges contiguous physical disk runs **and** destination buffer offsets on `push` ([src/io_engine.rs#L232-L287]()):
+Non-contiguous files incur high syscall or SQE overhead if dispatched one 4 KiB block at a time. OIFS solves this through `ExtentList`, which merges contiguous physical disk runs **and** destination buffer offsets on `push` ([src/io_engine.rs#L232-L287](repo://src/io_engine.rs#L232-L287)):
 
 ```rust
 pub fn push(&mut self, disk_offset: u64, buf_offset: usize, len: usize) {
@@ -98,92 +104,181 @@ pub fn push(&mut self, disk_offset: u64, buf_offset: usize, len: usize) {
         last.len = new_len;          // merge into previous extent
         return;
     }
-    self.extents.push(ReadExtent { disk_offset, buf_offset, len });
+    self.extents.push(ReadExtent {
+        disk_offset,
+        buf_offset,
+        len,
+    });
 }
 ```
 
-A file whose blocks were allocated contiguously collapses into a single `ReadExtent`—a 100 MiB contiguous read executes as one `pread` or one `io_uring` SQE instead of ~25,600 operations. The logic handles overflow safely: if `checked_add` would wrap, a new extent is created instead ([src/io_engine.rs#L268-L277]()).
+A file whose blocks were allocated contiguously therefore collapses into a single extent—i.e., a single `pread` / single SQE regardless of its size in blocks. This applies to both `read_at` and `read_at_batch` paths.
 
-This coalescing behavior is **formally proven correct** by Kani model checking ([src/io_engine.rs#L850-L874]()):
+---
 
-```rust
-#[kani::proof]
-#[kani::unwind(4)]
-fn proof_extent_push_preserves_coverage() {
-    // ... generates arbitrary extent pairs ...
-    let contiguous = d1 + l1 as u64 == d2 && b1 + l1 == b2;
-    assert_eq!(list.total_bytes(), l1 + l2);   // no bytes lost or invented
-    assert_eq!(list.len() == 1, contiguous);   // merge iff both ranges continue
-}
+## 3. io_uring Capability Gating
+
+The `IoUring` backend is not available everywhere. The engine performs a one-time, cached probe at first `IoEngine` construction ([src/io_engine.rs#L497-L502](repo://src/io_engine.rs#L497-L502)) and rejects `IoUring` when any of the following conditions hold:
+
+| Condition | Details |
+| :--- | :--- |
+| **Non-Linux** | `io_uring` is a Linux-only interface. |
+| **Cargo feature disabled** | The `io_uring` feature must be enabled at compile time. |
+| **Kernel too old** | Mainline Linux ≥ 5.15 required (via `MIN_RECOMMENDED_KERNEL = (5, 15)`) ([src/io_engine.rs#L115](repo://src/io_engine.rs#L115)). |
+| **RHEL 9 backport missing** | RHEL 9.0–9.2 shipped with `CONFIG_IO_URING=n`. RHEL 9.3+ (kernel `5.14.0-362+`, build ≥ 362 on `.el9` kernels) backports `io_uring` as a Technology Preview ([src/io_engine.rs#L118-L128](repo://src/io_engine.rs#L118-L128)). |
+| **Sysctl disabled** | RHEL 9.4+ adds `kernel.io_uring_disabled` (0 = allow all, 1 = privileged/group only, 2 = disabled). If the sysctl blocks ring creation, the probe fails and the engine falls back to `Pread`. |
+| **seccomp / container** | The `io_uring_enter(2)` syscall may be filtered; the probe catches `EPERM`/`EACCES` as unsupported. |
+| **Kernel lacks `IORING_OP_READ`** | The probe registers a `Probe` and verifies `opcode::Read::CODE` is supported ([src/io_engine.rs#L535-L537](repo://src/io_engine.rs#L535-L537)). |
+
+The `OIFS_ALLOW_PRE_5_15` environment variable bypasses the kernel-version gate (but not the probe) for testing on older kernels.
+
+---
+
+## 4. Async Read Engine: Inline Fast-Path + Background Pool
+
+The Rust API exposes `DiskManager::read_at_async`, `read_data_async`, and `read_at_batch_async`, all returning `OifsAsyncTask<T>` ([src/disk.rs#L9231-L9249](repo://src/disk.rs#L9231-L9249)). The FFI layer provides `oifs_read_at_async`, `oifs_read_at_async_cb`, and corresponding futures ([src/ffi.rs#L1583-L1880](repo://src/ffi.rs#L1583-L1880)).
+
+### Inline Fast-Path (Zero Thread Hop)
+
+When the read can be satisfied entirely from cached data, the operation completes synchronously on the calling thread:
+
+- **Mmap hits**: The requested range is raw, uncompressed, unencrypted, and the backing is `StorageMode::Mmap`.
+- **DataPageCache hits**: `StorageMode::FileIo` with the range resident in the internal page cache (≤ 16 MiB per extent).
+- **ChunkReadCache hits**: Seekable 64K chunked files where the single target chunk is cached.
+- **DecodedBlobCache hits**: Compressed/encrypted files (≤ 16 MiB total) with a decoded blob already cached.
+
+The fast-path is implemented in `try_read_at_inline_into` ([src/disk.rs#L9015-L9170](repo://src/disk.rs#L9015-L9170)). On success, `OifsAsyncTask::ready` returns an immediately resolved future—no heap allocation, no background thread wake-up.
+
+### Background Pool Dispatch
+
+On cache miss, lock contention, or cold decode (compressed/encrypted files exceeding cache limits), the read is submitted to a persistent background thread pool via `OifsAsyncTask::spawn`. The pool uses a bounded queue with a condition variable; workers execute the full `read_at` path including indirect block traversal, decompression, decryption, and filter unapplication.
+
+---
+
+## 5. Async Write Engine: Group Commit for Strict Durability
+
+Writes under `DurabilityMode::Strict` require a durable `flush()` (metadata + payload `msync`) after every mutation. To avoid serializing flushes when many writers operate concurrently, OIFS v1.4.0 introduces a **group-commit** thread that batches multiple operations behind a single barrier.
+
+### Architecture
+
+1. **Submission**: Async write APIs (`create_file_with_data_async`, `write_data_async`, and FFI equivalents `oifs_create_file_with_data_async`, `oifs_write_file_async`) call `submit_group_write_op` ([src/disk.rs#L8830](repo://src/disk.rs#L8830)), which enqueues a `GroupWriteOp` containing:
+   - A cloned `DiskManager` (Arc).
+   - The closure to execute under the write lock (`run`).
+   - A completion callback (`complete`).
+
+2. **Single Worker Thread**: A dedicated thread named `"oifs-group-commit"` ([src/disk.rs#L8835-L8845](repo://src/disk.rs#L8835-L8845)) wakes on the condition variable, drains up to 128 ops from the queue, and processes them in a batch.
+
+3. **Deferred Strict Sync**: Inside the batch, a thread-local guard `DeferStrictSyncGuard::enter()` ([src/disk.rs#L8538-L8547](repo://src/disk.rs#L8538-L8547)) sets a flag that causes `DiskManager::flush` (invoked internally by strict write paths) to **defer** its `msync` and return immediately.
+
+4. **Execution Phase**: Each operation’s `run` closure executes under the exclusive write lock sequentially (one at a time to preserve ACID ordering). The `run` closures may include multiple internal `flush()` calls that become no-ops while the guard is active.
+
+5. **Harvest Window**: While the batch is running, newly arriving ops are appended up to the 128-op limit ([src/disk.rs#L8873-L8883](repo://src/disk.rs#L8873-L8883)).
+
+6. **Group Flush**: After all `run` closures complete, the guard drops, the thread iterates over the **unique** `DiskManager` inner pointers that participated, and issues one `flush()` per distinct manager ([src/disk.rs#L8885-L8895](repo://src/disk.rs#L8885-L8895)).
+
+7. **Completion**: Each operation’s `complete` callback is invoked with the result (or the group-flush error if its manager was in the strict set) ([src/disk.rs#L8897-L8905](repo://src/disk.rs#L8897-L8905)).
+
+```mermaid
+sequenceDiagram
+    participant C1 as Caller 1 (Strict)
+    participant C2 as Caller 2 (Strict)
+    participant Q as GroupWriteQueue
+    participant W as Worker Thread
+    participant DM1 as DiskManager A
+    participant DM2 as DiskManager B
+
+    C1->>Q: submit_group_write_op(op1)
+    C2->>Q: submit_group_write_op(op2)
+    Q->>W: notify_one
+    W->>Q: drain batch [op1, op2]
+    W->>W: DeferStrictSyncGuard::enter()
+    W->>DM1: op1.run() (flush becomes no-op)
+    W->>DM2: op2.run() (flush becomes no-op)
+    W->>W: DeferStrictSyncGuard drops
+    W->>DM1: flush()  (single msync)
+    W->>DM2: flush()  (single msync)
+    W->>C1: complete(op1_result)
+    W->>C2: complete(op2_result)
 ```
 
-## 3. Kernel Gating and Graceful Fallback
+### Effect
 
-Because `io_uring` experienced kernel instability and security restrictions in earlier releases, OIFS implements strict kernel version gating with `OnceLock` caching ([src/io_engine.rs#L115-L210]()):
+If 100 concurrent threads call `write_data_async` with `DurabilityMode::Strict` on the same filesystem, they incur **one** `msync` instead of 100. Latency scales with the slowest operation in the batch, not the sum.
 
-- **Baseline Requirement**: Mainline Linux kernel version **≥ 5.15** (`MIN_RECOMMENDED_KERNEL = (5, 15)`).
-- **Enterprise Linux Support**: Automatically detects **RHEL 9.3+** backports (`5.14.0-362+` on `.el9` kernels) by parsing `utsname.release` via `libc::uname`.
-- **Sysctl and Sandbox Protection**: Probes ring creation and checks for `IORING_OP_READ` support. If `io_uring` is disabled by sysctl (`kernel.io_uring_disabled`), seccomp rules, or missing kernel features, `IoBackend::resolve()` automatically falls back to `IoBackend::Pread`.
+### Other Durability Modes
 
-Applications calling `dm.set_io_backend(IoBackend::IoUring)` receive the effective backend (`IoBackend::Pread` if unsupported), guaranteeing configuration never triggers runtime errors.
+- `RangeAsync`: Uses the existing `PendingAsyncRanges` accumulator + `async_drain_ready` flag; no group-commit thread involvement.
+- `LegacyWholeMmapAsync`: Defers to the legacy whole-mmap async path.
+- `Lazy`: No implicit sync; caller controls durability explicitly.
 
-An escape hatch exists for development: setting `OIFS_ALLOW_PRE_5_15=1` skips the kernel version check (but still requires `IORING_OP_READ` probe to pass) ([src/io_engine.rs#L434-L454]()).
+---
 
-## 4. IoUring Ring Pooling and Memory Safety
+## 6. FFI Async Surface: OIFSAsyncFuture, Polling, Callbacks
 
-To support concurrent readers under `DiskManager`'s reader-writer lock (`Arc<RwLock<DiskManagerInner>>`), the `io_uring` engine maintains an internal `RingPool` ([src/io_engine.rs#L457-L534]()):
+The FFI layer wraps `OifsAsyncTask` into `OIFSAsyncFuture` ([src/ffi.rs#L1586](repo://src/ffi.rs#L1586)), adding a drop barrier that waits for background reads still writing into caller buffers.
 
-- **Submission Queue Depth**: `RING_ENTRIES = 64` entries per ring (caps in-flight operations).
-- **Maximum Single Operation**: `MAX_OP_BYTES = 1 MiB (1 << 20)`. Extents exceeding this are **split across multiple SQEs**, allowing the kernel to service chunks in parallel and keeping `len` within `u32` ([src/io_engine.rs#L495-L502]()).
-- **Idle Ring Cache**: Up to `MAX_IDLE_RINGS = 16` pre-initialized rings are cached for reuse, eliminating teardown/initialization overhead under contention.
-- **Completion Guarantee**: The read loop **never returns while any SQE remains in-flight**. After a hard `io_uring_enter` error with in-flight operations, the process aborts to prevent memory corruption from kernel writes into freed buffers ([src/io_engine.rs#L565-L652]()).
+### Future-based API
 
-```rust
-// Short-read handling: remainder is resubmitted on the same ring
-if n < op.len {
-    op.ptr = unsafe { op.ptr.add(n) };
-    op.len -= n;
-    op.off += n as u64;
-    if first_err.is_none() {
-        pending.push_back(idx);  // re-queue remainder
-    }
-}
+| Function | Purpose |
+| :--- | :--- |
+| `oifs_read_at_async` | Async positional read; inline fast-path returns immediately ready future. |
+| `oifs_create_file_with_data_async` | Async file create + write via group-commit pipeline. |
+| `oifs_write_file_async` | Async file write via group-commit pipeline. |
+| `oifs_flush_async` | Async flush on background pool. |
+
+All return `*mut OIFSAsyncFuture` (or null on invalid args). The future owns the task; callers **must** eventually call `oifs_async_free`.
+
+### Poll / Wait / Error
+
+```c
+int oifs_async_poll(const OIFSAsyncFuture* fut);    // 1=ready, 0=pending, -1=invalid
+int64_t oifs_async_wait(OIFSAsyncFuture* fut);      // blocks, returns result or -1
+int oifs_async_last_error(const OIFSAsyncFuture* fut, char* buf, uint32_t buf_size);
+void oifs_async_free(OIFSAsyncFuture* fut);         // waits if background read in progress
 ```
 
-Transient errors (`EINTR`, `EAGAIN`, `EBUSY`) are re-queued; permanent errors short-circuit after all in-flight completions are reaped.
+### Callback-based API
 
-## 5. ReadTarget and the validate() Bounds Check
+For environments without polling infrastructure:
 
-Every read operation constructs `ReadTarget` structs pairing a mutable buffer slice with its `ExtentList` ([src/io_engine.rs#L300-L310]()):
+```c
+typedef void (*OifsAsyncStatusCallback)(int64_t status, void* user_data);
+typedef void (*OifsAsyncReadCallback)(int64_t status, const uint8_t* buf, uint64_t len, void* user_data);
 
-```rust
-pub struct ReadTarget<'a> {
-    pub buf: &'a mut [u8],
-    pub extents: &'a [ReadExtent],
-}
+int oifs_read_at_async_cb(... OifsAsyncReadCallback cb, void* user_data);
+int oifs_create_file_with_data_async_cb(... OifsAsyncStatusCallback cb, void* user_data);
+int oifs_write_file_async_cb(... OifsAsyncStatusCallback cb, void* user_data);
 ```
 
-Before any backend executes, `validate(targets, image_len)` enforces **two invariants** for every extent ([src/io_engine.rs#L312-L334]()):
+Callbacks execute on the background pool thread; they must not block.
 
-1. **Buffer bounds**: `extent.buf_offset + extent.len ≤ target.buf.len()`
-2. **Image bounds**: `extent.disk_offset + extent.len ≤ image_len`
+---
 
-This is the safety precondition for the `io_uring` backend (which hands raw pointers to the kernel) and keeps all backends' error behavior identical.
+## 7. Configuration Summary
 
-## 6. Batch Reads via `read_at_batch`
+| Setting | Mechanism | Default |
+| :--- | :--- | :--- |
+| **Read backend** | `OIFS_IO_BACKEND=mmap\|pread\|io_uring` | `mmap` |
+| **Kernel version gate bypass** | `OIFS_ALLOW_PRE_5_15=1` | Enforced |
+| **Durability** | `DiskManager::set_durability_mode(Strict \| RangeAsync \| LegacyWholeMmapAsync \| Lazy)` | `Lazy` |
+| **Max cached extent** | `MAX_CACHED_EXTENT = 16 MiB` (inline fast-path threshold) | Constant |
 
-`DiskManager::read_at_batch` processes multiple `ReadRequest`s under a **single read lock**, gathering extents into batched `ReadTarget`s for high-throughput parallel execution ([src/disk.rs#L3657-L3720]()):
+---
 
-1. For each request, `read_at_prepare` traverses indirect blocks, emits `ReadExtent`s into an `ExtentList` (or copies directly for `Mmap`/compressed/encrypted files).
-2. Valid requests become `ReadTarget`s; failed requests report errors immediately.
-3. A single `IoEngine::read` call executes all targets—on `IoUring`, every extent from every request is in-flight simultaneously at queue depth ≤ 64.
-4. Errors after submission fail all requests that had pending extents.
+## 8. Invariants and Failure Semantics
 
-This design enables applications to issue hundreds of concurrent reads with minimal lock contention.
+- **io_uring fallback is silent**: `IoBackend::IoUring` requested → unsupported → `effective()` returns `Pread`; no error is raised.
+- **ExtentList never wraps**: `checked_add` guards against integer overflow; a run that would overflow `usize` splits into a new extent ([src/io_engine.rs#L242-L247](repo://src/io_engine.rs#L242-L247)).
+- **Background reads never UAF**: `OIFSAsyncFuture`’s `wait_on_drop=true` forces `oifs_async_free` to block until the background read finishes writing into the caller’s buffer.
+- **Group commit is per-DiskManager**: Two distinct `DiskManager` instances (different image files) each get their own flush barrier; the worker deduplicates by `Arc::as_ptr(&dm.inner)`.
+- **Strict writes in group commit are atomic w.r.t durability**: If the group flush fails, every strict op in the batch surfaces the same I/O error via its completion callback.
+- **Inline fast-path is best-effort**: Any lock contention, cache miss, or decode requirement falls back to the background pool without surfacing an error to the caller.
 
-## 7. Testing and Verification
+---
 
-- **Functional Equivalence**: `/tests/io_engine_test.rs` runs identical `read_data`, `read_at`, and `read_at_batch` workloads across **all supported backends** (filtered by `IoBackend::is_supported()`), asserting byte-identical results for direct, single/double/triple-indirect, sparse, compressed, encrypted, and filtered files.
-- **Coherence**: `test_mmap_writes_visible_to_syscall_backends` verifies that un-`msync`ed `Lazy` writes are immediately readable via `Pread`/`IoUring` (same page cache).
-- **Concurrency**: `test_concurrent_readers_on_syscall_backends` spawns 8 threads × 20 iterations per backend.
-- **Kani Proofs**: Coverage-preserving coalescing (`proof_extent_push_preserves_coverage`), `IoBackend::from_u8` totality, and other core logic are mechanically verified ([src/io_engine.rs#L844-L887]()).
+## 9. Related Pages
+
+- [DiskManager & Persistence](disk_manager_and_persistence.md) — Core storage manager, durability modes, write pipeline
+- [FFI Interface](ffi_interface.md) — Complete FFI surface including async APIs
+- [Testing & Verification](../operations/testing_and_verification.md) — Kani proofs for kernel version gating, extent coalescing, backend agreement
+- [FFI Workflow](../workflows/ffi_workflow.md) — Example async read/write patterns from C/C++

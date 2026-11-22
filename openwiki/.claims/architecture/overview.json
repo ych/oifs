@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b2a176295259bba934bb5748ddc70df593f5ac139d7764dc6a6e3c159d30c6ee",
+  "pageVersion": "sha256:bc43efd2c0f04f36b9d483e8cfaaa8e370ba653d57cfda2965b4f776bd6f213e",
   "claims": [
     {
       "id": "claim_ec4bccfc008e49a6a600c5293a404169",
@@ -9,20 +9,6 @@
         {
           "resource": "repo://Cargo.toml#L12-L14",
           "version": "repo-lines-v1:sha256:159af002c7ce0873a2e01c7f9cf087ba2953252ff114b3e6f0bf1f11af676e28:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg0MzVlZjU5NGYzMzcwNzMwN2MxZmU1OWIwMTdmMjExZTllZThhMTVjODJkZDVlYWIxOWI3NjdhNmY3NGJlOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjg1MTI2Nzc4YTgwODM0OTRmMWRmZDJjYjI5ZDc4NDM5MTQwOTViNjUyZjcwZGIxNDBjNDUxM2I0ZmQzNzFiMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQ3NmIxM2EwMjBmNjAyNDhhN2VjODFhOTNlZDA1NDJiZTgyMzQyNmQyYzAyNmFmYjg4YjY0M2RjMDEwYjMyYiJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_bc4915f9c05349efb4c9499827aad099",
-      "statement": "src/lib.rs declares 16 core subsystems of OIFS (allocator, auto_defrag, bitmap, directory, disk, encryption, ffi, filters, inode, inode_format, io_engine, ipc, journal, session, superblock, zstd_pool) and defines the uniform BLOCK_SIZE constant as 4096 bytes.",
-      "evidence": [
-        {
-          "resource": "repo://src/lib.rs#L1-L16",
-          "version": "repo-lines-v1:sha256:72639e603f6c7aca265b35cf3d9eaf540e675287eb091eef28e9d9c2698051f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOGIwZTZkZjFjMDViNzMwMmFmNGUxNmU3MDhkMDA3OWVjOTRjNzliOWYzNTk5NjAzZDVhMjIyYTQ5YzZiZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1M2Q2MWFmMDJiMzA2YmEyYzhmMDUyNmFjZWE2ZjI4NDNhYWRjMGIyZDlmYzEzYjEyOGE5ODYwOTViZWMzZjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyOWRkOGJkYjU2NWNlZjY1NmZhM2RkYmI5OWJiNTQ0YmFhMTFhZDM2OTljMjUyMDZkZjM3MDA4MDEwODk4ZmIifQ"
-        },
-        {
-          "resource": "repo://src/lib.rs#L24-L24",
-          "version": "repo-lines-v1:sha256:3bae9f3c8361e927899831f79106a50da0e417245a12cc6a5d2cc1447fe9c3b8:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2JhZTlmM2M4MzYxZTkyNzg5OTgzMWY3OTEwNmE1MGRhMGU0MTcyNDVhMTJjYzZhNWQyY2MxNDQ3ZmU5YzNiOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2JhZTlmM2M4MzYxZTkyNzg5OTgzMWY3OTEwNmE1MGRhMGU0MTcyNDVhMTJjYzZhNWQyY2MxNDQ3ZmU5YzNiOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzZkMGE3YTJhYmNmZmMzNGIzODE0YTQ3ZWQwN2Q2ZDBhMGZjZDVkZTBjODYxNTQ5ZTBlZGJjZDM3YzliZjFhYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDIyMGMxOTIyMTJkOTUwNDlkZjIxMzE1MzMyMWExNzg3MDkyOTIxZmFkYTdiOGFjOTc3MDE1ZDk3Nzc5MWZhNiJ9"
         }
       ]
     },
@@ -59,20 +45,6 @@
         {
           "resource": "repo://README.md#L30-L50",
           "version": "repo-lines-v1:sha256:acdd301785f2a4f323738b7afa1f4b9fc1a39b34d98c796e9dd32590d9d3c878:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDQwNDczOGY5ZTkwMzFkYjI0ZGM0Nzc0ODAxMTBkZmNlYzBkNmNiNzdhZjk0Mzk2ODNhNWVlYThjMWU1NjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg2OThmN2ZmMTY4OGY0OWI4ODkwM2E3ZDYyNzdlMDMxZGI3Mzk2NmQyYzFkM2UzMzg3YWM0Yjk5NGYwMWE5YWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU5ZThjNDBkYTRiNGYyMDM3ZmFhOTZkZDY2YjU4ZWJlNGNhOGE5NjBlNzY2YzA4M2Y4NzRkOWQ2ZjJkOTY4YWUifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_636c9703c0734b88a9ebe14a12ad1f00",
-      "statement": "OIFS version is 1.2.0 with Edition 2024, and the v3 on-disk layout (format_version=3) introduces multi-block bitmaps and a journal region between the data bitmap and inode table.",
-      "evidence": [
-        {
-          "resource": "repo://Cargo.toml#L1-L6",
-          "version": "repo-lines-v1:sha256:d5e2f7f328f37090f2ac0980237c5d90b5fa7d076f0ff98fabcb94a820c3f710:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGEzY2Q1YTgxYjNmOWE2MjFhYTQ5M2Q5MGM0NWY0MmFiNTcxZDRlNDJiOGFlNWFmZjM1MWNiMGEwMmQwNmQ4MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWY4NmQ3ZjRkM2Q4YzgxMjZhNGRmMjM5ZjZkMDA5OTg3MGMyOWNkYWE1NTk1Njg1Njc1M2MyNDBkY2I0YzhmYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjFiODVmZGU3MGYzYWM5OWViZjQzN2Y2NDBmODQ0NTRjMDFiN2Q5ZmU4ZmQwZDQ4YTJmMjcyNDM4M2FjZTRhMSJ9"
-        },
-        {
-          "resource": "repo://src/superblock.rs#L343-L360",
-          "version": "repo-lines-v1:sha256:8cbf68cba3d3b2a2e9deceebc7e1e450268e1578840bee9515afbbf96ffeebb7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhZGFhNTExMDczY2IxMWE2NGMzZTlhYTQwZWEyNDEwYTUzYmExMmVkMTY2NWJmMzEzM2ZiY2VkZDU4ZTBjZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxNDVkNThjZTFjMTViYzU2MjExYTVmMTcwNTVhMzQ5ZmUwN2FjMGJmZDM2YzBlODhiMTY4YjdjOGFmNGU4MWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNlMmE0NmMxYTc4MWM4ZTUwODkzZmRjYjk1Y2E1ZjZkMDk5MjNiZTE0YWRkNWZhYTc4MjQ2ZDRmYzg1YmRiMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhN2M1ZmQwMjk5MWRlNTU2NDkxMmEyZTQ0ODI5OWRmYTc4OTczNDFmMGNkNWU1OGFkNjhlYzAzNDFhOWU2N2MifQ"
         }
       ]
     },
@@ -127,14 +99,42 @@
           "version": "repo-lines-v1:sha256:af78a9666ab30603f56ac7d8a2037f1344a3c247b715d0aec9d153cfc4c7c3fd:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg0MzVlZjU5NGYzMzcwNzMwN2MxZmU1OWIwMTdmMjExZTllZThhMTVjODJkZDVlYWIxOWI3NjdhNmY3NGJlOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjFiODVmZGU3MGYzYWM5OWViZjQzN2Y2NDBmODQ0NTRjMDFiN2Q5ZmU4ZmQwZDQ4YTJmMjcyNDM4M2FjZTRhMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2U5NTMzYmQ5YTg3Zjk0MjY5MmFjZmU5ODgyNDhlNmY1ZTQxN2NkZGU0NDgwZmFkM2M3YjQ2NWY2MGJkNTg3ZSJ9"
         },
         {
-          "resource": "repo://src/ffi.rs#L780-L850",
+          "resource": "repo://src/ffi.rs#L830-L900",
           "version": "repo-lines-v1:sha256:97d31bcb47e993aaa8453f37cb19b8412f64ab849962d75eb56e7cec5a6d6ee0:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyMDBiMjI1Y2UyNjdmMTIwMjczNTI1NmFhMjBlYmZmMjc4ODI1YTY5NTc4YzFmMGFjNzQ1YmRhY2FkYjAzYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ5ODEzZGJlMDJkNGJiMzcyNDI5YzdiNmU1Zjk1YWFjNTU2ODg5ZDg5Zjk2ZjVkZTZiMTdmZDE1NTgzNmY0ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMyMDg2YTc0YzZhMDYwY2NiNzFjMDVjZDI3ZDZlOTQzMjM4M2IwODg4NzFjNDM0OTQ2ZThlNDZmZGFjYjY1OTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE3Mjg3Y2UwOWIzZjhhNzFlN2VmNzhhYTZmZGFhYWYxYTg1N2MwZTViYjUxNjc5OTUxNzk2ODU1NWU0NmI5ZGMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e59342dade3f4352809cecd8dcaaa280",
+      "statement": "src/lib.rs declares 18 core subsystems of OIFS (allocator, auto_defrag, bitmap, directory, disk, encryption, ffi, filters, fuse, inode, inode_format, io_engine, ipc, journal, session, storage, superblock, zstd_pool) and defines the uniform BLOCK_SIZE constant as 4096 bytes.",
+      "evidence": [
+        {
+          "resource": "repo://src/lib.rs#L1-L16",
+          "version": "repo-lines-v1:sha256:ae9ed5fc3597db72572629d275e79de9807cc26005cf1287ad4848c669473ead:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOGIwZTZkZjFjMDViNzMwMmFmNGUxNmU3MDhkMDA3OWVjOTRjNzliOWYzNTk5NjAzZDVhMjIyYTQ5YzZiZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4NzM0NGQ4YWU5NjhmNmQzYTU3MzQxY2JkNjdlZDNjYmRkZGM2YTViMTRmMGRiY2MyZTc2ZmM5YTkzYWRkMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiNDMzNWZhNWVkM2NlYWVhYTFlMmU1MDAzNDAwNjQ4ZDZhZGJjYmIwYzBhNTdlZjA0MmQ0MzJiY2MwNjRlZjYifQ"
+        },
+        {
+          "resource": "repo://src/lib.rs#L24-L24",
+          "version": "repo-lines-v1:sha256:faf58e78e82d0bbd6dd7184296eebc58591fd3b401b32b07e094f40728d1d7cb:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmFmNThlNzhlODJkMGJiZDZkZDcxODQyOTZlZWJjNTg1OTFmZDNiNDAxYjMyYjA3ZTA5NGY0MDcyOGQxZDdjYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmFmNThlNzhlODJkMGJiZDZkZDcxODQyOTZlZWJjNTg1OTFmZDNiNDAxYjMyYjA3ZTA5NGY0MDcyOGQxZDdjYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWFhNzNjODBhYTFjZTc1Y2NjYjE3MzlmYmQxZWVmNmI5MjVmMGFlNjIyMjhmZGI3OGRiYjUzNTgyYTlkYTJmNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjMyODkwZjIxMjRmNGVhZmFkMGY2Mjg2NWQ1NzcwN2YxZjJlMzIwZDE4ODdmM2YzY2NhMWUwOGZhNWYyMzdkMyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_92505c4ae1d44752898824d19bf31ade",
+      "statement": "OIFS version is 1.4.0 with Edition 2024, and the v3 on-disk layout (format_version=3) introduces multi-block bitmaps and a journal region between the data bitmap and inode table.",
+      "evidence": [
+        {
+          "resource": "repo://Cargo.toml#L1-L6",
+          "version": "repo-lines-v1:sha256:2b6da0b3a6a82ea7d65184b4e5f7e2ec586d8d28f0248ebdaab697c7161da0ef:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGEzY2Q1YTgxYjNmOWE2MjFhYTQ5M2Q5MGM0NWY0MmFiNTcxZDRlNDJiOGFlNWFmZjM1MWNiMGEwMmQwNmQ4MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWY4NmQ3ZjRkM2Q4YzgxMjZhNGRmMjM5ZjZkMDA5OTg3MGMyOWNkYWE1NTk1Njg1Njc1M2MyNDBkY2I0YzhmYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjFiODVmZGU3MGYzYWM5OWViZjQzN2Y2NDBmODQ0NTRjMDFiN2Q5ZmU4ZmQwZDQ4YTJmMjcyNDM4M2FjZTRhMSJ9"
+        },
+        {
+          "resource": "repo://src/superblock.rs#L343-L360",
+          "version": "repo-lines-v1:sha256:8cbf68cba3d3b2a2e9deceebc7e1e450268e1578840bee9515afbbf96ffeebb7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhZGFhNTExMDczY2IxMWE2NGMzZTlhYTQwZWEyNDEwYTUzYmExMmVkMTY2NWJmMzEzM2ZiY2VkZDU4ZTBjZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxNDVkNThjZTFjMTViYzU2MjExYTVmMTcwNTVhMzQ5ZmUwN2FjMGJmZDM2YzBlODhiMTY4YjdjOGFmNGU4MWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNlMmE0NmMxYTc4MWM4ZTUwODkzZmRjYjk1Y2E1ZjZkMDk5MjNiZTE0YWRkNWZhYTc4MjQ2ZDRmYzg1YmRiMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhN2M1ZmQwMjk5MWRlNTU2NDkxMmEyZTQ0ODI5OWRmYTc4OTczNDFmMGNkNWU1OGFkNjhlYzAzNDFhOWU2N2MifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-20T22:07:36.625Z"
+    "at": "2026-11-22T10:29:12.696Z"
   }
 }

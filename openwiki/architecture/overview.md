@@ -1,11 +1,11 @@
 ---
 type: architecture
 title: OIFS Architecture Overview
-description: High-level architectural overview of OIFS (O's Inode File System), detailing its single-file on-disk image model, module layout, multi-target crate compilation, and subsystem interactions across CLI, C FFI, and MCP entry points.
-tags: [architecture, overview, modules, crate-type, mcp-feature, subsystems, block-size, io_engine]
+description: High-level architectural overview of OIFS (O's Inode File System), detailing its single-file on-disk image model, module layout, multi-target crate compilation, and subsystem interactions across CLI, C FFI, MCP, and FUSE entry points.
+tags: [architecture, overview, modules, crate-type, mcp-feature, subsystems, block-size, io_engine, fuse, transfer, maintenance, storage-mode, read-only, version-1.4.0]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-22T10:29:12.696Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -25,14 +25,14 @@ sources:
     resource: repo://src/session.rs
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
 ---
 
 # OIFS Architecture Overview
 
-OIFS (O's Inode File System) is a high-performance, embedded, multi-process inode filesystem engine implemented in Rust. It delivers crash-resilient storage, fine-grained concurrency, military-grade AEAD encryption, scientific data pre-compression filters, pluggable asynchronous I/O engines, a native Model Context Protocol (MCP) server for AI agents, and a stable C/C++ FFI interface, all packaged in a single portable `.img` container file.
+OIFS (O's Inode File System) is a high-performance, embedded, multi-process inode filesystem engine implemented in Rust. It delivers crash-resilient storage, fine-grained concurrency, military-grade AEAD encryption, scientific data pre-compression filters, pluggable asynchronous I/O engines, a native Model Context Protocol (MCP) server for AI agents, a zero-external-C-dependency FUSE kernel protocol implementation (ABI v7.28), a stable C/C++ FFI interface, and cross-image fast transfer/splice/cloning capabilities, all packaged in a single portable `.img` container file.
 
-Version **1.2.0** (Edition 2024) introduces the v3 on-disk layout with multi-block bitmaps for scaling beyond 128 MiB, a Metadata WAL (Write-Ahead Log) journal for crash-resilient metadata mutations, and an opt-in background auto-defragmentation coordinator.
+Version **1.4.0** (Edition 2024) introduces the v3 on-disk layout with multi-block bitmaps for scaling beyond 128 MiB, a Metadata WAL (Write-Ahead Log) journal for crash-resilient metadata mutations, an opt-in background auto-defragmentation coordinator, a pure-Rust FUSE kernel protocol engine, cross-image 3-tier fast transfer (reflink → copy_file_range → raw blocks), WAL-atomic in-place defragmentation, read-only mount mode with shared `F_RDLCK`, and a second storage engine (`FileIo`) that eliminates `mmap` hazards entirely.
 
 ## Core Design Principles
 
@@ -41,11 +41,12 @@ Version **1.2.0** (Edition 2024) introduces the v3 on-disk layout with multi-blo
 - **Pluggable I/O Engine**: Decouples block access from memory mapping via configurable backends (`mmap`, `pread`, Linux `io_uring`).
 - **Multi-Process Concurrency**: Dynamic Master-Proxy architecture coordinates shared access via IPC (Unix domain sockets or TCP).
 - **Layered Security**: Transparent at-rest encryption (XChaCha20-Poly1305 AEAD) with Argon2id key derivation and deterministic filename privacy.
-- **Consumer Surfaces**: Unified access through CLI, C FFI library, and MCP server for AI agent integration.
+- **Consumer Surfaces**: Unified access through CLI, C FFI library, MCP server for AI agent integration, and FUSE kernel mount.
+- **Cross-Image Operations**: First-class `transfer_file_to`, `splice_range_to`, and `clone_image` APIs with a 3-tier automatic fallback pipeline.
 
 ## Module Layout
 
-The core library (`src/lib.rs`) organizes functionality into 14 specialized modules:
+The core library (`src/lib.rs`) organizes functionality into 18 specialized modules:
 
 ```mermaid
 flowchart TD
@@ -53,6 +54,7 @@ flowchart TD
         CLI[CLI<br/>src/bin/oifs.rs]
         FFI[C FFI<br/>src/ffi.rs]
         MCP[MCP Server<br/>src/bin/oifs_mcp.rs]
+        FUSE[FUSE Mount<br/>src/fuse.rs]
     end
 
     subgraph Core[Core Library]
@@ -70,6 +72,10 @@ flowchart TD
         Encrypt[Encryption<br/>src/encryption.rs]
         Journal[Journal/WAL<br/>src/journal.rs]
         AutoDefrag[Auto Defrag<br/>src/auto_defrag.rs]
+        StorageMode[Storage Mode<br/>src/storage.rs]
+        Transfer[Cross-Image Transfer<br/>src/disk/transfer.rs]
+        Maintenance[Maintenance Ops<br/>src/disk/maintenance.rs]
+        Chunked[Seekable Chunked I/O<br/>src/disk/chunked.rs]
     end
 
     subgraph IOEngine[I/O Engine]
@@ -79,6 +85,7 @@ flowchart TD
     CLI --> Session
     FFI --> Session
     MCP --> Session
+    FUSE --> DiskManager
     Session --> IPC
     Session --> DiskManager
     IPC --> DiskManager
@@ -90,6 +97,10 @@ flowchart TD
     DiskManager --> Encrypt
     DiskManager --> Journal
     DiskManager --> AutoDefrag
+    DiskManager --> StorageMode
+    DiskManager --> Transfer
+    DiskManager --> Maintenance
+    DiskManager --> Chunked
     DiskManager --> IO
     IO -->|reads/writes| Storage
 ```
@@ -106,12 +117,14 @@ flowchart TD
 | `encryption` | `src/encryption.rs` | XChaCha20-Poly1305 AEAD, Argon2id KDF, BLAKE2b domain-separated subkeys, SIV filename encryption |
 | `ffi` | `src/ffi.rs` | C ABI surface with `OIFSHandle`, 3-state version handshake (`oifs_check_version`), thread-isolated errors |
 | `filters` | `src/filters.rs` | Pre-compression transformations (Delta, ByteShuffle, BitShuffle, TruncPrecision) with intelligent pipeline optimization |
+| `fuse` | `src/fuse.rs` | Pure-Rust FUSE kernel protocol (ABI v7.28), zero-external-C-dependency mount runners, dual Linux/macOS ABI support, `SCM_RIGHTS` fd passing, dynamic `max_write` negotiation |
 | `inode` | `src/inode.rs` | 256-byte inode structure, block pointers, extent resolution, Kani formal verification |
 | `inode_format` | `src/inode_format.rs` | Fixed 256-byte little-endian inode record encoding (format v2), per-inode version dispatch |
 | `io_engine` | `src/io_engine.rs` | Pluggable I/O backends with ExtentList coalescing and kernel capability gating |
 | `ipc` | `src/ipc.rs` | Master-Proxy protocol, UDS/TCP rendezvous, length-prefixed framing, challenge-response auth |
 | `journal` | `src/journal.rs` | CRC32C-checksummed circular WAL ring, idempotent redo replay, torn-write detection |
 | `session` | `src/session.rs` | Process-wide session registry with reference counting, transparent failover, mode switching |
+| `storage` | `src/storage.rs` | Dual storage engines: `Mmap` (default) and `FileIo` (100% `mmap`-free `pread`/`pwrite`) |
 | `superblock` | `src/superblock.rs` | On-disk superblock magic (`OIFS`), geometry, v3 layout, format_version, migration cursor |
 | `zstd_pool` | `src/zstd_pool.rs` | Pooled Zstd `CCtx`/`DCtx` contexts for zero-allocation compression paths |
 
@@ -119,22 +132,33 @@ The uniform `BLOCK_SIZE` constant is defined as **4096 bytes** in `src/lib.rs`.
 
 ## Consumer Surfaces
 
-OIFS exposes three distinct access paths to the same underlying library:
+OIFS exposes **four** distinct access paths to the same underlying library:
 
 ### 1. Command Line Interface (`src/bin/oifs.rs`)
-Full-featured CLI for filesystem creation, manipulation, inspection, and maintenance. Supports all three session modes via `--ipc` (Local) and `--network` (Network) flags, plus `--auto-defrag[=THRESHOLD]` for background defragmentation.
+Full-featured CLI for filesystem creation, manipulation, inspection, and maintenance. Supports all three session modes via `--ipc` (Local) and `--network` (Network) flags, plus `--auto-defrag[=THRESHOLD]` for background defragmentation, `--no-mmap` for `FileIo` storage mode, `--read-only` for read-only mounts, and a `mount` subcommand for FUSE filesystem mounting.
 
 ### 2. C Foreign Function Interface (`src/ffi.rs`)
 Stable C API (`liboifs.so` / `liboifs.dylib`) enabling integration with C/C++ applications. Provides:
-- `oifs_open` / `oifs_open_with_password` / `oifs_create_encrypted` for filesystem access
-- File/directory operations, `read`/`write`/`truncate`, attribute access
+- `oifs_open` / `oifs_open_with_password` / `oifs_open_read_only` / `oifs_open_with_options` for filesystem access
+- File/directory operations, `read`/`write`/`truncate`, attribute access, zero-copy mmap slice, batch I/O
 - `oifs_check_version` / `oifs_version_code` / `oifs_loaded_path` for 3-state runtime version handshake
+- `oifs_transfer_file_to`, `oifs_splice_range_to`, `oifs_clone_image` for cross-image operations
+- `oifs_defragment`, `oifs_analyze_fragmentation`, `oifs_verify_integrity` for maintenance
 - Thread-local error state via `OIFSHandle::last_error`
 
 ### 3. Model Context Protocol Server (`src/bin/oifs_mcp.rs`)
 JSON-RPC server allowing AI agents and IDEs (Cursor, Claude Desktop) to inspect and modify OIFS images via standardized tools. Runs on stdio transport, exposes tools: `write_file`, `read_file`, `list_dir`, `mkdir`, `delete`, `stat`, `create_image`.
 
-The MCP server and its async dependencies (`tokio`, `rmcp`) are gated behind the optional `mcp` feature flag, permitting lightweight builds without async runtimes.
+### 4. FUSE Kernel Mount (`src/fuse.rs`)
+Pure-Rust FUSE kernel protocol implementation (ABI v7.28) with zero external C dependencies. Features:
+- **Dual Linux & macOS ABI support**: standard Linux 88-byte `FuseAttr` and macOS/Darwin 104-byte `FuseAttr` with `crtime`/`crtimensec`/`flags`
+- **SCM_RIGHTS file descriptor passing** for `fusermount3`/`fusermount` handshakes on Linux; `socketpair` + `SCM_RIGHTS` for macFUSE/osxfuse
+- **Dynamic `max_write` negotiation**: probes `FUSE_MAX_PAGES` and `FUSE_BIG_WRITES` capability bits, computes optimal transfer size per kernel/platform
+- **Single-FD container**: any number of open FUSE file handles multiplex over the single underlying OIFS image descriptor
+- **Strict read-only enforcement**: when mounted read-only, every mutating operation returns `-EROFS` with zero disk writes
+- **Panic-free frame dispatch**: validates every header and payload boundary, never panics on truncated/malformed input
+
+The MCP server and its async dependencies (`tokio`, `rmcp`) are gated behind the optional `mcp` feature flag. The FUSE module is always compiled but only used when the `mount` subcommand is invoked.
 
 ## Feature Flags and Build Configuration
 
@@ -146,7 +170,7 @@ The MCP server and its async dependencies (`tokio`, `rmcp`) are gated behind the
 
 **Default features:** `["mcp", "io_uring"]`
 
-The crate compiles as both `cdylib` (for FFI) and `rlib` (for Rust dependencies) per `Cargo.toml` `[lib] crate-type`.
+The crate compiles as both `cdylib` (for FFI) and `rlib` (for Rust dependencies) per `Cargo.toml` `[lib] crate-type = ["cdylib", "rlib"]`.
 
 ## Session Modes and Master/Proxy Topology
 
@@ -174,13 +198,13 @@ stateDiagram-v2
         [*] --> Master
         Master --> Proxy: Subsequent processes connect
         Master: Rendezvous .image.master file in image dir\nTCP listener + Active Ping Probe
-        Proxy: TCP connection with auth\nClock-free liveness check
+        Proxy: TCP connection with auth\nClock-free liveness check\nDynamic max_write negotiation
     }
 ```
 
 ### Standalone (Default)
 - **Direct mode only**: No IPC, no background threads, zero sockets.
-- Process directly accesses `DiskManager` via `mmap`.
+- Process directly accesses `DiskManager` via `mmap` (or `FileIo` when `--no-mmap` is specified).
 - Used by `OifsSession::get_or_open`, `get_or_open_with_password`, `get_or_create_encrypted`.
 
 ### Local (Unix Domain Socket)
@@ -192,6 +216,7 @@ stateDiagram-v2
 ### Network (TCP + Rendezvous)
 - **First process = Master**: Writes `.image.master` rendezvous file in image directory (owner-only 0600) containing bind address, PID, auth token.
 - **Subsequent processes = Proxies**: Read rendezvous file, connect via TCP, verify liveness with **Clock-Free Active Ping Probe** (Ping/Pong handshake).
+- **Dynamic `max_write` negotiation**: FUSE `INIT` handshake probes kernel capabilities (`FUSE_MAX_PAGES`, `FUSE_BIG_WRITES`) to compute optimal transfer sizes per platform.
 - Default bind is loopback-only (`127.0.0.1:0`); non-loopback requires explicit `--allow-remote-ipc`.
 - Enabled via `--network` CLI flag or `get_or_open_network*`.
 
@@ -284,6 +309,60 @@ Master Key (256-bit, Argon2id: m=64MiB, t=3, p=4)
   - `Strict`: `msync(MS_SYNC)` per mutation, JBD2-style deferred checkpointing, ~10.9k ops/sec
 - Non-blocking `flush()`/`flush_async()` serializes physical `msync` through dedicated mutex while holding only shared read lock
 
+## Cross-Image Transfer, Splice & Clone (`src/disk/transfer.rs`)
+
+OIFS provides first-class cross-image operations with a **3-tier automatic fallback pipeline**:
+
+| Tier | Method | Mechanism | Platform Support |
+|------|--------|-----------|------------------|
+| 1 | `Reflink` | Linux `ioctl(FICLONERANGE)` | Btrfs, XFS (`reflink=1`), bcachefs, NFSv4.2, Lustre Lreflink |
+| 2 | `CopyFileRange` | Linux `copy_file_range(2)` | ext4, Lustre cross-OST |
+| 3 | `RawBlockCopy` | Portable raw `pread`/`pwrite` of compressed extents | macOS APFS, fallback kernels |
+| Fallback | `LogicalReencode` | Decrypt/read + re-encrypt/write | Encrypted image boundary, unaligned RMW |
+
+### Operations
+- **`transfer_file_to`**: Whole-file copy/move with overwrite and move-file semantics
+- **`splice_range_to`**: Sub-range copy/move with `Keep` / `PunchHole` / `CollapseRange` trim modes
+- **`clone_image`**: Whole-image CoW clone (`clonefile` on APFS, `FICLONE` on Linux, byte-copy fallback)
+
+### Crash Safety
+- **Two-image `Copy-Commit-Then-Trim`**: Source flushed, destination blocks allocated & transferred, WAL committed, *then* source range trimmed
+- **Sandwich alignment splitting** (`Head / Body / Tail`): Aligned body uses 3-tier fast path; unaligned edges use logical RMW
+- Works across independent encryption domains (different salts, independent AEAD keys)
+
+## Read-Only Mode and FileIo Storage Mode
+
+### Read-Only Mount (`open_read_only`, `oifs_open_read_only`, `--read-only`)
+- Acquires shared `F_RDLCK` (POSIX read lock) — multiple readers coexist, writers excluded
+- Works on `0444` permission images (e.g., on read-only media)
+- Zero writes: no journal replay, no bitmap mutation, no superblock update
+- `DiskManager::is_read_only()` returns `true`; all mutating operations return `DiskManagerError::ReadOnly`
+- FUSE mount with `--read-only` returns `-EROFS` on every mutating op
+
+### FileIo Storage Mode (`StorageMode::FileIo`, `--no-mmap`, `OIFS_STORAGE_MODE=pread`)
+- **100% `mmap`-free**: Uses positional `pread(2)` / `pwrite(2)` exclusively
+- Eliminates `SIGBUS` crashes, `unsafe` memory-mapping hazards, and virtual memory pressure
+- Write-through bitmaps + in-memory WAL mirror + bounded 16-shard 4 KiB metadata block cache
+- User-space data page cache (configurable, default 32 MiB, max 4 GiB) for extents ≤ 64 KiB
+- Zero-copy mmap slicing disabled; `oifs_file_mmap_slice` returns "unavailable"
+- Selected via `--no-mmap` CLI flag, `OIFS_STORAGE_MODE=pread` env var, or `DiskManager::open_*_with_storage_mode`
+
+## Atomic POSIX Rename with WAL (`src/disk.rs`)
+
+- **Metadata-only**: Never reads, decrypts, re-compresses, or copies file payload blocks
+- **POSIX overwrite semantics**: Atomic target replacement for regular files; empty directory replacement; mismatch rejection; cycle prevention
+- **Crash safety**: On journaled images, entire rename (source unlink + optional target overwrite + block/inode release + destination link + parent inode updates) committed in a **single atomic CRC32C WAL transaction**
+- On encrypted images, only the directory entry's SIV-encrypted filename is recomputed for `(new_parent_inode_id, new_name)` because payload AEAD is bound to `inode_id`
+
+## Maintenance Operations (`src/disk/maintenance.rs`)
+
+- **Migration** (`migrate`): In-place legacy→v2 inode format upgrade; superblock `migration_cursor` tracks progress; crash leaves readable, resumable image
+- **Fragmentation Analysis** (`analyze_fragmentation`): Zero-allocation bitmap scan with `tzcnt` fast path; computes used/free blocks, free runs, largest gap, fragmentation ratio
+- **Defragmentation** (`defragment`):
+  - **Safe mode**: Creates new defragmented image, atomic 3-step rename (`source → backup → temp → source`)
+  - **In-place mode**: Cycle-aware permutation on unjournaled images; **WAL-atomic round-based CoW** on journaled images
+- **Integrity Verification** (`verify_integrity`): Full `fsck` — block pointer validation, bitmap consistency, directory tree walk, orphan detection, compression/encryption integrity
+
 ## Key Features Summary
 
 | Feature | Implementation |
@@ -298,15 +377,9 @@ Master Key (256-bit, Argon2id: m=64MiB, t=3, p=4)
 | Zero-Allocation Optimizations | Hardware `tzcnt` bitmap scanning, zero-copy dir lookups, filter pipelines with `Cow<'a, [u8]>` |
 | Formal Verification | 92+ Kani proofs (block pointers, superblock, bitmaps, filters, CRC32C, WAL, AAD, IPC) |
 | Concurrency Testing | Shuttle randomized schedule permutations, ThreadSanitizer stress tests |
-
-## Formal Verification and Testing
-
-- **92 Kani harnesses** verified under CBMC: block pointer resolution, superblock geometry, bitmap scanning, filter bijectivity, CRC32C torn-write detection, WAL ring/idempotency invariants, chunk entry bit-isolation, incremental seekable truncation, AAD domain separation, IPC frame bounds
-- **Bolero fuzzing** integration for property/fuzz testing
-- **Shuttle** randomized thread-schedule permutation testing
-- **68 integration test suites** covering all consumer surfaces and subsystems
-- **Release verification script** (`scripts/release_check.sh`) runs fmt, clippy, build, test, shuttle, kani, coverage
-
----
-
-*See related deep-dives: [Superblock & Layout](superblock_and_layout.md), [Disk Manager & Persistence](disk_manager_and_persistence.md), [Journal](journal.md), [Encryption](encryption.md), [Compression & Filters](compression_and_filters.md), [Async I/O & Engines](async_io_and_engines.md), [Concurrency & Session](concurrency_and_session.md), [FFI Interface](ffi_interface.md), [MCP Server](mcp_server.md).*
+| Cross-Image Operations | 3-tier fast transfer (reflink → copy_file_range → raw blocks), splice, clone |
+| Read-Only Mount | Shared `F_RDLCK`, zero writes, works on 0444 images |
+| FileIo Storage Mode | 100% mmap-free `pread`/`pwrite`, user-space page cache, eliminates SIGBUS |
+| Atomic POSIX Rename | Single WAL transaction, metadata-only, crash-safe |
+| FUSE Kernel Mount | ABI v7.28, dual Linux/macOS, SCM_RIGHTS fd passing, dynamic max_write negotiation |
+| MCP Server | JSON-RPC stdio transport for AI agent integration |

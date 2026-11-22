@@ -3,6 +3,9 @@ type: architecture
 title: Compression and Pre-compression Filters
 description: How OIFS combines zstd compression (with multi-frame EOF append, seekable 64K chunked compression with COW extent swap, and read-modify-recompress fallback) with Blosc2-style pre-compression filters (Delta, ByteShuffle, BitShuffle, TruncPrecision). Covers the Zstd thread-local pool, persistent scoped worker pool, DecodedBlobCache (4 slots, 16 MiB/entry, 32 MiB cap) for non-seekable reads, ChunkReadCache (8 slots) for seekable reads, and cache invalidation across write, truncate, delete, migrate, defrag, and reload.
 tags: [compression, zstd, filters, blosc2, entropy, cow, zero-copy, seekable-64k, caching, thread-pool]
+verified:
+  - by: openwiki/0.9.0
+    at: 2026-11-22T10:29:12.696Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
@@ -16,10 +19,7 @@ sources:
     resource: repo://src/filters.rs
   - id: openwiki-source-cf4646d1b98d2e5c392cf784
     resource: repo://src/zstd_pool.rs
-verified:
-  - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
 ---
 
 ## Responsibility and ownership
@@ -43,7 +43,7 @@ The ordering filter→compress→encrypt is why both `inode.compressed_size` (ph
 
 ## Zero-copy filter staging
 
-`apply_filters_cow` (`src/filters.rs#L642-L655`) returns a `Cow<[u8]>`: `Cow::Borrowed(data)` (zero allocation) when the filter is inactive or the typesize is not one of {1, 2, 4, 8}, and `Cow::Owned` only when a pipeline actually runs. On the common unfiltered/unencrypted path this eliminates every intermediate buffer copy — reported as up to ~28,500x speedup on 1MB payloads — and lets the uncompressed bytes flow straight into the write.
+`apply_filters_cow` (`src/filters.rs#L829-L835`) returns a `Cow<[u8]>`: `Cow::Borrowed(data)` (zero allocation) when the filter is inactive or the typesize is not one of {1, 2, 4, 8}, and `Cow::Owned` only when a pipeline actually runs. On the common unfiltered/unencrypted path this eliminates every intermediate buffer copy — reported as up to ~28,500x speedup on 1MB payloads — and lets the uncompressed bytes flow straight into the write.
 
 ## Zstd thread-local pool and persistent scoped worker pool
 
@@ -162,6 +162,23 @@ Each logical chunk index maps through the inode's pointer tree (direct → singl
 - **TruncPrecision** — zeroes least-significant mantissa bits of f32/f64 (`trunc_precision_encode_inplace`); it is lossy, so its inverse is identity.
 
 These are orchestrated by `FilterPipeline` (`src/filters.rs#L19-L70`), whose `apply` runs filters in order and `unapply` runs them in reverse. The compact `FilterConfig` (`src/filters.rs#L99-L186`) stored on the inode exposes factory helpers (`numeric`, `delta_only`, `shuffle_only`, `bitshuffle_only`, `custom`) and `to_pipeline`. Native C-Blosc2 integration is available via `blosc2_compress` / `blosc2_decompress` (`src/filters.rs#L73-L95`), which build `CParams` and use the compiled C-Blosc2 chunk codec.
+
+### FilterConfig persistence
+
+`FilterConfig` is serialized into the Inode as four dedicated fields (`src/inode.rs#L33-L65`):
+
+```rust
+pub filter_typesize: u8,    // element size (1,2,4,8) — 0 = no filters
+pub filter_delta: bool,     // Delta filter enabled
+pub filter_shuffle: bool,   // ByteShuffle filter enabled
+pub filter_bitshuffle: bool // BitShuffle filter enabled
+```
+
+This avoids any per-inode heap allocation and makes the filter config trivially copyable with the inode.
+
+### Pipeline ordering
+
+`FilterPipeline::apply` runs filters in declaration order (Delta → ByteShuffle → BitShuffle → TruncPrecision), while `unapply` runs their inverses in reverse. The `FilterConfig::to_pipeline` builder respects the same order: Delta first, then ByteShuffle, then BitShuffle.
 
 ## Entropy analysis and recommendation
 

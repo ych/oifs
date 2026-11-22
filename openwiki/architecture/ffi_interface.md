@@ -1,20 +1,20 @@
 ---
-type: architecture
-title: C FFI Interface
-description: How OIFS exposes its storage engine as a standard C shared library (liboifs) through an opaque handle model, callback-driven directory iteration, zero-copy offset reads, pluggable I/O backend configuration, version handshake, and thread-safe error reporting.
-tags: [ffi, c-api, shared-library, handles, callbacks, abi, io-engine, no-mangle, versioning, encryption]
+type: "Reference"
+title: "C FFI Interface"
+openwiki_generated: true
+verified:
+  - by: openwiki/0.9.0
+    at: 2026-11-22T10:29:12.696Z
 sources:
   - id: openwiki-source-c9e5b32aad7cafdb095c81a4
     resource: repo://src/ffi.rs
-verified:
-  - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
 ---
+
 
 # C FFI Interface
 
-The C Foreign Function Interface ([`src/ffi.rs`](repo://src/ffi.rs), [`include/oifs.h`](repo://include/oifs.h)) exports the OIFS storage engine as a standard C-compatible shared library (`liboifs.so` on Linux, `liboifs.dylib` on macOS, `oifs.dll` on Windows).
+The C Foreign Function Interface ([`src/ffi.rs`](repo://src/ffi.rs), [`include/oifs.h`](repo://include/oifs.h)) exports the OIFS storage engine as a standard C-compatible shared library (`liboifs.so` on Linux, `liboifs.dylib` on macOS, `oifs.dll` on Windows). A C++17/20 RAII wrapper header ([`include/oifs.hpp`](repo://include/oifs.hpp)) adds move-only resource management, span/byte-view helpers, and optional coroutine awaiters.
 
 It bridges the idiomatic Rust engine (`DiskManager`, `OifsSession`, `RwLock`, `IoEngine`) to C/C++, Python, Go, and other host runtimes:
 - Manages raw memory boundaries using opaque boxed pointers.
@@ -33,6 +33,7 @@ All operations require an opaque pointer to `OIFSHandle` ([`src/ffi.rs#L11-L25`]
 pub struct OIFSHandle {
     pub dm: DiskManager,
     pub last_error: std::sync::Mutex<Option<String>>,
+    pub fuse_state: std::sync::OnceLock<crate::fuse::OifsFuseState>,
 }
 ```
 
@@ -42,11 +43,12 @@ typedef struct OIFSHandle OIFSHandle;
 ```
 
 - **Handle-Isolated Errors**: Rather than using a global `errno` that risks race conditions in multithreaded host programs, each `OIFSHandle` maintains its own `last_error: std::sync::Mutex<Option<String>>`. Successful calls lock the mutex and set the Option to `None`, while errors lock the mutex and set the Option to `Some(String)`. The error string is retrieved via `oifs_last_error`.
+- **FUSE State**: The `fuse_state: OnceLock<OifsFuseState>` lazily initializes the FUSE kernel protocol dispatcher (ABI v7.28) on first use, enabling `oifs_fuse_dispatch_frame` without per-call allocation.
 - **Underlying Engine**: `OIFSHandle` embeds a `DiskManager` ([`src/disk.rs`](repo://src/disk.rs)). Because `DiskManager` wraps its inner state in `Arc<RwLock<DiskManagerInner>>`, cloning is lightweight and shares the underlying memory maps, cache layers, and locks.
 
 ## Handle Lifecycle: Open, Session Reuse, and Close
 
-OIFS provides four entry points for instantiating handles, accommodating direct disk access or process-wide session caching:
+OIFS provides multiple entry points for instantiating handles, accommodating direct disk access or process-wide session caching:
 
 ### 1. Direct Disk Access (Standalone Mode)
 - `oifs_open` ([`src/ffi.rs#L75-L106`](repo://src/ffi.rs#L75-L106)):
@@ -59,6 +61,17 @@ OIFS provides four entry points for instantiating handles, accommodating direct 
   OIFSHandle* oifs_open_with_password(const char* path, uint64_t size, const char* password);
   ```
   Opens or creates an encrypted OIFS image. The passphrase is used with Argon2id and the superblock salt to derive the 256-bit AEAD key ([`src/encryption.rs#L124`](repo://src/encryption.rs#L124)). If the file doesn't exist and a non-empty password is provided, it creates a new encrypted image; otherwise it opens an existing image (encrypted or unencrypted) with optional password verification.
+- `oifs_open_with_options` ([`src/ffi.rs#L901-L967`](repo://src/ffi.rs#L901-L967)):
+  ```c
+  OIFSHandle* oifs_open_with_options(const char* path, uint64_t size, const char* password,
+                                     uint8_t storage_mode, uint8_t journaled);
+  ```
+  Explicitly selects `StorageMode::Mmap` (0) or `StorageMode::FileIo` (1) and enables/disables metadata WAL journaling.
+- `oifs_open_read_only` ([`src/ffi.rs#L970-L1010`](repo://src/ffi.rs#L970-L1010)):
+  ```c
+  OIFSHandle* oifs_open_read_only(const char* path, const char* password, uint8_t storage_mode);
+  ```
+  Acquires a shared OS read lock (`F_RDLCK`), never opens the backing file for writing, and supports multiple concurrent read-only readers on `0444` images.
 
 ### 2. Session Registry Reuse (IPC/Local/Network Modes)
 - `oifs_get_or_open` ([`src/ffi.rs#L168-L195`](repo://src/ffi.rs#L168-L195)):
@@ -83,14 +96,15 @@ OIFS provides four entry points for instantiating handles, accommodating direct 
 
 ### Directory Iteration via C Callback
 
-Because C lacks standard iterators, `oifs_ls` ([`src/ffi.rs#L266-L331`](repo://src/ffi.rs#L266-L331)) provides a C callback mechanism:
+Because C lacks standard iterators, `oifs_ls` ([`src/ffi.rs#L266-L331`](repo://src/ffi.rs#L266-L331)) and `oifs_ls_dir` ([`src/ffi.rs#L2401-L2476`](repo://src/ffi.rs#L2401-L2476)) provide a C callback mechanism:
 
 ```c
 typedef void (*ListCallback)(const char* name, uint64_t size, uint64_t mtime, void* user_data);
 int32_t oifs_ls(OIFSHandle* handle, ListCallback cb, void* user_data);
+int32_t oifs_ls_dir(OIFSHandle* handle, const char* path, ListCallback cb, void* user_data);
 ```
 
-- Traverses root directory entries using `DirectoryIterator` ([`src/directory.rs`](repo://src/directory.rs)).
+- Traverses root directory entries or a subdirectory using `DirectoryIterator` ([`src/directory.rs`](repo://src/directory.rs)).
 - For each entry, invokes `cb(c_name.as_ptr(), inode.size, inode.modified_at, user_data)`.
 - The caller passes arbitrary state via `user_data` without requiring global variables.
 - Returns `0` on success or `-1` on error (check `oifs_last_error` for details).
@@ -98,109 +112,93 @@ int32_t oifs_ls(OIFSHandle* handle, ListCallback cb, void* user_data);
 ### File and Directory CRUD
 
 - `oifs_create_file` ([`src/ffi.rs#L334-L390`](repo://src/ffi.rs#L334-L390)): Creates a new file at path, returns `0` on success, `-1` on error.
-- `oifs_create_or_open_file` ([`src/ffi.rs#L393-L448`](repo://src/ffi.rs#L393-L448)): Creates file if missing, or opens existing file.
-- `oifs_delete_file` ([`src/ffi.rs#L451-L505`](repo://src/ffi.rs#L451-L505)): Deletes a file at path.
-- `oifs_mkdir` ([`src/ffi.rs#L611-L658`](repo://src/ffi.rs#L611-L658)): Creates a directory at path.
+- `oifs_create_or_open_file` ([`src/ffi.rs#L393-L450`](repo://src/ffi.rs#L393-L450)): Creates a file or opens an existing one atomically.
+- `oifs_delete_file` ([`src/ffi.rs#L451-L505`](repo://src/ffi.rs#L451-L505)): Deletes a file.
+- `oifs_mkdir` ([`src/ffi.rs#L601-L657`](repo://src/ffi.rs#L601-L657)): Creates a directory.
+- `oifs_rename` ([`src/ffi.rs#L2101-L2163`](repo://src/ffi.rs#L2101-L2163)): Atomically renames or moves a file or directory within the filesystem.
+- `oifs_truncate_file` ([`src/ffi.rs#L938-L980`](repo://src/ffi.rs#L938-L980)): Truncates or extends a file to the specified size in bytes.
 
-All path arguments are validated for null pointers and UTF-8 correctness. On UTF-8 conversion failure, the function returns `-1` and sets `last_error` to "Invalid UTF-8 filename".
+### File Metadata
+- `oifs_stat` ([`src/ffi.rs#L2479-L2537`](repo://src/ffi.rs#L2479-L2537)): Retrieves inode metadata into `OIFSFileStat` (size, compressed size, timestamps, encryption flag, seekable-64k flag, filter metadata).
+- `oifs_exists` ([`src/ffi.rs#L2540-L2572`](repo://src/ffi.rs#L2540-L2572)): Checks whether a path exists (returns `1` yes, `0` no, `-1` error).
+- `oifs_resolve_path` ([`src/ffi.rs#L1012-L1053`](repo://src/ffi.rs#L1012-L1053)): Resolves a filesystem path to its `inode_id` (`>= 0` on success).
 
-## File I/O
+## High-Performance Direct I/O
 
-### Offset Read (Zero-Copy)
+### Synchronous Reads
 
-`oifs_read_at` ([`src/ffi.rs#L508-L571`](repo://src/ffi.rs#L508-L571)) performs chunked/direct read starting from an arbitrary byte offset:
-
-```c
-int64_t oifs_read_at(
-    OIFSHandle* handle,
-    const char* filename,
-    uint64_t offset,
-    uint8_t* buf,
-    uint64_t buf_size
-);
-```
-
-- For uncompressed files, it directly copies from `mmap` blocks without heap allocations (zero-copy).
-- Constructs a mutable slice via `std::slice::from_raw_parts_mut(buf, buf_size as usize)` and passes it to `dm.read_at()`.
-- Returns bytes read on success (as `int64_t`), or `-1` on error.
-- `oifs_read_file` ([`src/ffi.rs#L574-L576`](repo://src/ffi.rs#L574-L576)) delegates to `oifs_read_at` with offset `0`.
-
-### Sequential Write (Auto-Compression)
-
-`oifs_write_file` ([`src/ffi.rs#L579-L657`](repo://src/ffi.rs#L579-L657)) writes data to a file at offset 0 with automatic compression:
+`oifs_read_at` ([`src/ffi.rs#L508-L571`](repo://src/ffi.rs#L508-L571)) performs a positional read starting from an arbitrary byte offset. For uncompressed files in `StorageMode::Mmap`, it directly copies from mmap blocks without heap allocations. Returns bytes read on success, or `-1` on error.
 
 ```c
-int32_t oifs_write_file(
-    OIFSHandle* handle,
-    const char* filename,
-    const uint8_t* buf,
-    uint64_t buf_size
-);
+int64_t oifs_read_at(OIFSHandle* handle, const char* filename, uint64_t offset,
+                     uint8_t* buf, uint64_t buf_size);
 ```
 
-- Resolves or creates the file, then calls `dm.write_data(inode_id, 0, data, CompressionMode::Auto)`.
-- Returns `0` on success, `-1` on error.
-- A null buffer with non-zero size is treated as a caller error.
+- `oifs_read_file` ([`src/ffi.rs#L574-L576`](repo://src/ffi.rs#L574-L576)) delegates to `oifs_read_at` with offset 0.
+- `oifs_read_at_inode` ([`src/ffi.rs#L1190-L1239`](repo://src/ffi.rs#L1190-L1239)) reads by `inode_id` without path resolution overhead.
 
-### Extended Write with Policy Control
+### Scatter-Gather Batch Read
 
-`oifs_write_file_with_policy` ([`src/ffi.rs#L661-L742`](repo://src/ffi.rs#L661-L742)) supports write policies, offsets, and custom zstd compression level:
+`oifs_read_at_batch` ([`src/ffi.rs#L1242-L1319`](repo://src/ffi.rs#L1242-L1319)) executes a batch of positional reads under a single read lock and single I/O engine submission. Populates `items[i].result` with the number of bytes read (`>= 0`) or `-1` on per-item error. Returns `0` if all items succeeded, or `-1` if any item failed.
 
 ```c
-int32_t oifs_write_file_with_policy(
-    OIFSHandle* handle,
-    const char* filename,
-    uint64_t offset,
-    const uint8_t* buf,
-    uint64_t buf_size,
-    uint32_t policy_flags,
-    int32_t zstd_level
-);
+typedef struct {
+    uint64_t inode_id;
+    uint64_t offset;
+    uint8_t* buf;
+    uint64_t buf_size;
+    int64_t result;
+} OIFSReadBatchItem;
+
+int32_t oifs_read_at_batch(OIFSHandle* handle, OIFSReadBatchItem* items, size_t count);
 ```
 
-Policy flags (from [`include/oifs.h#L64-L71`](repo://include/oifs.h#L64-L71)):
-- `OIFS_WRITE_POLICY_DEFAULT` (0x00): Auto / Full-file stream compression (default)
-- `OIFS_WRITE_POLICY_RAW` (0x01): Never compress (Raw)
-- `OIFS_WRITE_POLICY_STREAM` (0x02): Stream compression (with custom zstd_level)
-- `OIFS_WRITE_POLICY_SEEKABLE_64K` (0x08): Seekable 64KB chunked compression
+### Synchronous Writes
 
-### Truncate File
-
-`oifs_truncate_file` ([`src/ffi.rs#L904-L953`](repo://src/ffi.rs#L904-L953)) truncates or extends a file:
+- `oifs_write_file` ([`src/ffi.rs#L579-L657`](repo://src/ffi.rs#L579-L657)): Writes data to a file at offset 0 with automatic compression (creates file if it doesn't exist).
+- `oifs_write_file_with_policy` ([`src/ffi.rs#L660-L798`](repo://src/ffi.rs#L660-L798)): Extended write interface supporting write policies, offsets, and custom zstd compression level:
 
 ```c
-int32_t oifs_truncate_file(OIFSHandle* handle, const char* filename, uint64_t new_size);
+#define OIFS_WRITE_POLICY_DEFAULT       0x00  // Auto / Full-file stream compression
+#define OIFS_WRITE_POLICY_RAW           0x01  // Never compress
+#define OIFS_WRITE_POLICY_STREAM        0x02  // Stream compression (custom zstd_level)
+#define OIFS_WRITE_POLICY_SEEKABLE_64K  0x08  // Seekable 64KB chunked compression
+
+int32_t oifs_write_file_with_policy(OIFSHandle* handle, const char* filename,
+                                    uint64_t offset, const uint8_t* buf, uint64_t buf_size,
+                                    uint32_t policy_flags, int32_t zstd_level);
 ```
 
-- If `new_size < current size`, trailing bytes and unused blocks are discarded and freed.
-- If `new_size > current size`, the file is extended (sparse for raw files).
+- `oifs_create_file_with_data` ([`src/ffi.rs#L1056-L1187`](repo://src/ffi.rs#L1056-L1187)): Atomically creates a new file and writes its initial payload in a single transaction. Returns the new `inode_id` (`>= 0`) on success, or `-1` on error.
 
-## Error Handling
+### SIMD Numeric Pre-Compression Filters
 
-### Per-Handle Error Strings
-
-`oifs_last_error` ([`src/ffi.rs#L745-L791`](repo://src/ffi.rs#L745-L791)) retrieves the last error message for a handle:
+Filter pipelines (Delta, ByteShuffle, BitShuffle, TruncPrecision) can be applied before compression ([`src/filters.rs`](repo://src/filters.rs)):
 
 ```c
-int32_t oifs_last_error(OIFSHandle* handle, char* buf, uint32_t buf_size);
+typedef struct {
+    uint8_t typesize;   // Element size in bytes (1, 2, 4, 8; 0 = disabled)
+    uint8_t delta;      // Non-zero to enable first-order delta encoding
+    uint8_t shuffle;    // Non-zero to enable byte shuffle
+    uint8_t bitshuffle; // Non-zero to enable bit shuffle
+} OIFSFilterConfig;
+
+int64_t oifs_create_file_with_data_filtered(OIFSHandle* handle, const char* path,
+                                            const uint8_t* buf, uint64_t buf_size,
+                                            uint32_t policy_flags, int32_t zstd_level,
+                                            const OIFSFilterConfig* filter_cfg);
+
+int32_t oifs_write_file_with_filters(OIFSHandle* handle, const char* path, uint64_t offset,
+                                     const uint8_t* buf, uint64_t buf_size,
+                                     uint32_t policy_flags, int32_t zstd_level,
+                                     const OIFSFilterConfig* filter_cfg);
 ```
 
-- Copies the null-terminated error string into the provided buffer.
-- Guarantees null-termination even if the buffer is too small (truncates and writes final `\0`).
-- Returns `0` on success, `-1` on invalid arguments (null handle, null buffer, zero buffer size).
-- Sanitizes internal strings by replacing embedded nulls with spaces to prevent premature truncation.
-- If no error is set, returns "No error".
-
-### Null Pointer and UTF-8 Safety
-
-All FFI functions validate against null pointers:
-- Constructor functions (`oifs_open`, `oifs_open_with_password`, `oifs_get_or_open`, `oifs_get_or_open_with_password`) return `NULL` without setting `last_error` (no handle exists yet).
-- Other functions set `last_error` and return `-1` on null handle or null path arguments.
-- Non-UTF-8 path strings cause the function to return `-1` with `last_error` set to "Invalid UTF-8 filename".
+Pass `NULL` for `filter_cfg` to disable filters.
 
 ## I/O Engine Backend Configuration
 
-Runtime I/O engine selection is exposed to foreign callers ([`src/ffi.rs#L794-L825`](repo://src/ffi.rs#L794-L825)):
+Runtime pluggable I/O backend selection ([`src/ffi.rs#L758-L798`](repo://src/ffi.rs#L758-L798)):
 
 ```c
 #define OIFS_IO_BACKEND_MMAP     0
@@ -211,91 +209,274 @@ int32_t oifs_set_io_backend(OIFSHandle* handle, uint8_t backend);
 int32_t oifs_get_io_backend(OIFSHandle* handle);
 ```
 
-- `oifs_set_io_backend` converts the `uint8_t` discriminant to `IoBackend`, applies it via `dm.set_io_backend()`, and returns the effective backend (after automatic fallback, e.g., `IoUring` falls back to `Pread` on non-Linux).
-- `oifs_get_io_backend` returns the currently effective backend.
+- `Mmap`: Memory-mapped container (default).
+- `Pread`: Pure positional `pread`/`pwrite` (zero mmap).
+- `IoUring`: Linux `io_uring` (falls back to `Pread` if unsupported).
 
-## Dynamic Library Versioning & Compatibility Handshake
+Durability modes ([`src/ffi.rs#L983-L1010`](repo://src/ffi.rs#L983-L1010)):
+```c
+#define OIFS_DURABILITY_LAZY        0  // OS page-cache writeback (default)
+#define OIFS_DURABILITY_RANGE_ASYNC 1  // Batched dirty-range async flush
+#define OIFS_DURABILITY_STRICT      2  // Synchronous msync / sync_data barriers
 
-The C FFI exposes version handshake functions ([`src/ffi.rs#L828-L901`](repo://src/ffi.rs#L828-L901)) to allow host programs to verify compatibility with the loaded dynamic library:
+int32_t oifs_set_durability_mode(OIFSHandle* handle, uint8_t mode);
+```
+
+`oifs_flush` and `oifs_flush_async` commit pending data and WAL transactions.
+
+## Shared Read Session & Pinned File Handle (Amortized RwLock)
+
+For read-heavy workloads, OIFS provides a session model that amortizes the outer `RwLock` acquisition and inode lookups across multiple reads:
+
+```c
+typedef struct OIFSReadSession OIFSReadSession;
+typedef struct OIFSFileHandle OIFSFileHandle;
+
+OIFSReadSession* oifs_begin_read(OIFSHandle* handle);
+void oifs_end_read(OIFSReadSession* session);
+
+OIFSFileHandle* oifs_session_open_file(const OIFSReadSession* session, const char* path);
+OIFSFileHandle* oifs_session_open_inode(const OIFSReadSession* session, uint64_t inode_id);
+void oifs_file_close(OIFSFileHandle* file);
+
+uint64_t oifs_file_size(const OIFSFileHandle* file);
+uint64_t oifs_file_inode_id(const OIFSFileHandle* file);
+
+int64_t oifs_file_read_at(const OIFSFileHandle* file, uint64_t offset,
+                          uint8_t* buf, uint64_t buf_size);
+```
+
+Internally, `OIFSReadSession` holds an `Arc<FfiSharedSession>` containing a `DiskManager::ReadSession<'static>` (the read lock guard) and the owning `DiskManager`. `OIFSFileHandle` holds an `Arc` to the same shared session and a `FileReadHandle` borrowing from it, guaranteeing **zero use-after-free** even if the C caller destroys the `OIFSReadSession` before the `OIFSFileHandle` or a pinned mmap slice.
+
+## True Zero-Copy mmap Slice
+
+`oifs_file_mmap_slice` ([`src/ffi.rs#L1485-L1548`](repo://src/ffi.rs#L1485-L1548)) provides a true zero-copy view into the memory-mapped image for uncompressed contiguous files:
+
+```c
+int32_t oifs_file_mmap_slice(const OIFSFileHandle* file, uint64_t offset, uint64_t max_len,
+                             const uint8_t** out_ptr, uint64_t* out_len);
+```
+
+**Returns:**
+- `0`: Zero-copy succeeded; `*out_ptr` points directly to the mapped file bytes (valid while the `OIFSFileHandle` or its parent `OIFSReadSession` remains open) and `*out_len` is the clamped byte count.
+- `1`: Zero-copy unavailable (e.g., `StorageMode::FileIo`, compressed/encrypted file, sparse hole, or non-contiguous block boundary); caller should fall back to `oifs_file_read_at`.
+- `-1`: Error or null pointer argument.
+
+## Asynchronous I/O & Group-Commit Write Engine
+
+OIFS provides a Future-based async API with an **Inline Fast-Path** and **Group Commit** for writes.
+
+### Future API
+
+```c
+typedef struct OIFSAsyncFuture OIFSAsyncFuture;
+
+OIFSAsyncFuture* oifs_read_at_async(OIFSHandle* handle, uint64_t inode_id, uint64_t offset,
+                                    uint8_t* buf, uint64_t buf_size);
+OIFSAsyncFuture* oifs_create_file_with_data_async(OIFSHandle* handle, const char* path,
+                                                  const uint8_t* buf, uint64_t buf_size,
+                                                  uint32_t policy_flags, int32_t zstd_level);
+OIFSAsyncFuture* oifs_write_file_async(OIFSHandle* handle, const char* path, uint64_t offset,
+                                       const uint8_t* buf, uint64_t buf_size,
+                                       uint32_t policy_flags, int32_t zstd_level);
+OIFSAsyncFuture* oifs_flush_async(OIFSHandle* handle);
+
+int32_t oifs_async_poll(const OIFSAsyncFuture* fut);    // 1 = ready, 0 = pending, -1 = invalid
+int64_t oifs_async_wait(OIFSAsyncFuture* fut);          // Blocks, returns result or -1
+int32_t oifs_async_last_error(const OIFSAsyncFuture* fut, char* buf, uint32_t buf_size);
+void oifs_async_free(OIFSAsyncFuture* fut);             // Drop barrier: waits for in-flight write to buf
+```
+
+**Key Properties:**
+- **Inline Fast-Path**: Hot cache/mmap reads complete immediately on the calling thread (`oifs_async_poll == 1`) with zero thread context switch.
+- **Group Commit**: Concurrent async writes under `OIFS_DURABILITY_STRICT` share a single physical sync barrier per batch.
+- **Use-After-Free Safe**: `oifs_async_free` waits for any in-flight background read writing into the caller's buffer to finish before returning.
+
+### Callback API
+
+For environments that prefer callbacks over futures:
+
+```c
+typedef void (*OifsAsyncReadCallback)(int64_t status_or_len, const uint8_t* data, size_t data_len, void* user_data);
+typedef void (*OifsAsyncStatusCallback)(int64_t status_or_inode, void* user_data);
+
+int32_t oifs_read_at_async_cb(OIFSHandle* handle, uint64_t inode_id, uint64_t offset, uint64_t len,
+                              OifsAsyncReadCallback cb, void* user_data);
+int32_t oifs_create_file_with_data_async_cb(OIFSHandle* handle, const char* path,
+                                            const uint8_t* buf, uint64_t buf_size,
+                                            uint32_t policy_flags, int32_t zstd_level,
+                                            OifsAsyncStatusCallback cb, void* user_data);
+```
+
+The inline fast-path is also probed inside the callback variant.
+
+## FUSE Kernel Protocol (ABI v7.28) Frame Dispatcher
+
+`oifs_fuse_dispatch_frame` ([`src/ffi.rs#L1863-L1938`](repo://src/ffi.rs#L1863-L1938)) implements a pure-Rust FUSE kernel protocol parser and dispatcher with **zero external C dependencies**:
+
+```c
+int64_t oifs_fuse_dispatch_frame(OIFSHandle* handle, const uint8_t* req_buf, size_t req_len,
+                                 uint8_t* resp_buf, size_t resp_cap);
+```
+
+- Parses raw FUSE request frames (`fuse_in_header` + payload) against **ABI v7.28** (major 7, minor 28).
+- Supports **dual Linux & macOS ABI**:
+  - Linux: 88-byte `FuseAttr` (standard), `FuseEntryOut` 128B, `FuseAttrOut` 104B.
+  - macOS/Darwin: 104-byte `FuseAttr` (with `crtime`/`crtimensec`/`flags`), `FuseEntryOut` 144B, `FuseAttrOut` 120B.
+- **Single-FD container**: Any number of open FUSE file handles (`fh`) inside `FuseHandleTable` multiplex over the single underlying OIFS image descriptor.
+- **Strict read-only enforcement**: When mounted read-only (via `DiskManager::is_read_only()` or `FuseMountOptions::read_only`), every mutating operation returns `-EROFS` with zero disk writes.
+- **Panic-free frame dispatch**: Validates every header and payload boundary; never panics on truncated or malformed input.
+
+Open FUSE file/directory handles (`fh`) persist across successive calls on the same `OIFSHandle`.
+
+## Cross-Image Operations
+
+### Whole-Image CoW Clone
+```c
+#define OIFS_CLONE_METHOD_APFS_CLONEFILE  0
+#define OIFS_CLONE_METHOD_LINUX_FICLONE   1
+#define OIFS_CLONE_METHOD_STANDARD_COPY   2
+
+int32_t oifs_clone_image(const char* src_path, const char* dst_path, uint8_t* out_method);
+```
+Clones a whole OIFS `.img` container using the host OS's fastest CoW primitive (`clonefile` on macOS APFS, `ioctl(FICLONE)` on Linux, or standard copy fallback).
+
+### 3-Tier Fast Transfer
+```c
+#define OIFS_TRANSFER_METHOD_REFLINK           0
+#define OIFS_TRANSFER_METHOD_COPY_FILE_RANGE   1
+#define OIFS_TRANSFER_METHOD_RAW_BLOCK_COPY    2
+#define OIFS_TRANSFER_METHOD_LOGICAL_REENCODE  3
+
+#define OIFS_TRANSFER_FLAG_MOVE       0x01
+#define OIFS_TRANSFER_FLAG_OVERWRITE  0x02
+
+typedef struct { ... } OIFSTransferStats;
+
+int32_t oifs_transfer_file_to(OIFSHandle* src_handle, const char* src_path,
+                              OIFSHandle* dst_handle, const char* dst_path,
+                              uint32_t flags, OIFSTransferStats* out_stats);
+```
+Transfers a regular file using the 3-tier fast-path pipeline (`Reflink` -> `CopyFileRange` -> `RawBlockCopy`), falling back to `LogicalReencode` across encrypted boundaries.
+
+### Sub-Range Splice
+```c
+#define OIFS_SPLICE_TRIM_KEEP       0
+#define OIFS_SPLICE_TRIM_PUNCH_HOLE 1
+#define OIFS_SPLICE_TRIM_COLLAPSE   2
+
+typedef struct { ... } OIFSSpliceStats;
+
+int32_t oifs_splice_range_to(OIFSHandle* src_handle, uint64_t src_inode, uint64_t src_off,
+                             OIFSHandle* dst_handle, uint64_t dst_inode, uint64_t dst_off,
+                             uint64_t len, uint8_t trim_mode, OIFSSpliceStats* out_stats);
+```
+Splices a byte sub-range `[src_off, src_off + len)` from `src_inode` into `[dst_off, dst_off + len)` of `dst_inode`. The `trim_mode` controls what happens to the source range after the splice.
+
+## Online Maintenance & Diagnostics
+
+```c
+typedef struct { ... } OIFSFsckReport;
+typedef struct { ... } OIFSFragmentationStats;
+typedef struct { ... } OIFSDefragStats;
+
+int32_t oifs_verify_integrity(OIFSHandle* handle, OIFSFsckReport* out_report);
+int32_t oifs_analyze_fragmentation(OIFSHandle* handle, OIFSFragmentationStats* out_stats);
+int32_t oifs_defragment(OIFSHandle* handle, OIFSDefragStats* out_stats);
+```
+
+- `verify_integrity`: Runs a full structural consistency check (`fsck`). Safe on both read-write and read-only handles.
+- `analyze_fragmentation`: Analyzes data-block fragmentation metrics.
+- `defragment`: Runs online in-place defragmentation (WAL-atomic COW on journaled images, cycle-aware permutation on non-journaled images). Rejects read-only handles.
+
+## Dynamic Library Versioning & 3-State Compatibility Handshake
+
+OIFS embeds compile-time version constants and provides runtime introspection functions ([`src/ffi.rs#L801-L870`](repo://src/ffi.rs#L801-L870)):
 
 ```c
 #define OIFS_VERSION_MAJOR 1
-#define OIFS_VERSION_MINOR 2
+#define OIFS_VERSION_MINOR 4
 #define OIFS_VERSION_PATCH 0
-#define OIFS_VERSION_STRING "1.2.0"
-#define OIFS_VERSION_CODE (((uint64_t)OIFS_VERSION_MAJOR << 32) | ((uint64_t)OIFS_VERSION_MINOR << 16) | (uint64_t)OIFS_VERSION_PATCH)
+#define OIFS_VERSION_STRING "1.4.0"
+#define OIFS_VERSION_CODE (((uint64_t)OIFS_VERSION_MAJOR << 32) | \
+                           ((uint64_t)OIFS_VERSION_MINOR << 16) | (uint64_t)OIFS_VERSION_PATCH)
 
-#define OIFS_VERSION_COMPAT_OK       0  // Exact expected version: fully verified, clean
-#define OIFS_VERSION_COMPAT_WARN     1  // Newer version loaded: permitted, but emits warning
-#define OIFS_VERSION_COMPAT_ERR     -1  // Older version loaded: incompatible, error out
+#define OIFS_VERSION_COMPAT_OK       0  // Exact expected version
+#define OIFS_VERSION_COMPAT_WARN     1  // Newer library loaded (permitted)
+#define OIFS_VERSION_COMPAT_ERR     -1  // Older library loaded (blocked)
 
 uint32_t oifs_version_major(void);
 uint32_t oifs_version_minor(void);
 uint32_t oifs_version_patch(void);
 uint64_t oifs_version_code(void);
 const char* oifs_version_string(void);
+
+/**
+ * Checks compatibility between the application binary and the loaded dynamic library.
+ * Policy: "Only block older versions; do NOT block newer versions."
+ */
 int32_t oifs_check_version(uint32_t req_major, uint32_t req_minor, uint32_t req_patch);
+
+/**
+ * Retrieves the absolute filesystem path from which this dynamic library was loaded.
+ */
 int32_t oifs_loaded_path(char* buf, size_t buf_size);
 ```
 
-- `oifs_check_version` implements the policy: "Only block older versions; do NOT block newer versions."
-  - Returns `OIFS_VERSION_COMPAT_OK` (0): exact version match.
-  - Returns `OIFS_VERSION_COMPAT_WARN` (1): newer library loaded (warning, allowed).
-  - Returns `OIFS_VERSION_COMPAT_ERR` (-1): older library loaded (blocked).
-- `oifs_loaded_path` retrieves the absolute filesystem path from which the dynamic library was loaded (using `dladdr` on Unix).
+**Policy Semantics:**
+- **0 (`OIFS_VERSION_COMPAT_OK`)**: Exact version match — fully verified, clean.
+- **1 (`OIFS_VERSION_COMPAT_WARN`)**: Newer library version loaded — warning, allowed to proceed.
+- **-1 (`OIFS_VERSION_COMPAT_ERR`)**: Older library version loaded — incompatible, blocked.
 
-### Convenience Macro
+The Kani-formally-verified `oifs_check_version` function ([`src/ffi.rs#L844-L860`](repo://src/ffi.rs#L844-L860)) uses monotonic version codes and is proven to never overflow or panic for any symbolic input.
 
+Convenience macro for C callers:
 ```c
-#define OIFS_CHECK_VERSION() \
-    oifs_check_version(OIFS_VERSION_MAJOR, OIFS_VERSION_MINOR, OIFS_VERSION_PATCH)
+#define OIFS_CHECK_VERSION() oifs_check_version(OIFS_VERSION_MAJOR, OIFS_VERSION_MINOR, OIFS_VERSION_PATCH)
 ```
 
-Usage pattern in host C/C++ code:
-```c
-int status = OIFS_CHECK_VERSION();
-if (status == OIFS_VERSION_COMPAT_ERR) {
-    char path[512] = {0};
-    oifs_loaded_path(path, sizeof(path));
-    fprintf(stderr, "FATAL [liboifs]: Outdated library '%s' (v%s) loaded! Expected >= v%s.\n",
-            path, oifs_version_string(), OIFS_VERSION_STRING);
-    abort();
-} else if (status == OIFS_VERSION_COMPAT_WARN) {
-    fprintf(stderr, "WARN [liboifs]: Newer library (v%s) loaded than compiled with (v%s).\n",
-            oifs_version_string(), OIFS_VERSION_STRING);
-}
+## C++17/20 RAII Wrappers (`include/oifs.hpp`)
+
+The `oifs.hpp` header provides a comprehensive C++ abstraction layer over the C API:
+
+### Resource Management
+- **`FileSystem`**: Move-only RAII wrapper around `OIFSHandle*` with `open`, `open_with_password`, `open_read_only`, `get_or_open` static factories.
+- **`ReadSession`**: Move-only wrapper around `OIFSReadSession*`; amortizes outer `RwLock` acquisition.
+- **`FileReadHandle`**: Move-only wrapper around `OIFSFileHandle*`; holds `shared_ptr` to parent session for out-of-order destruction safety.
+- **`AsyncFuture`**: Move-only wrapper around `OIFSAsyncFuture*` with `is_ready()`, `wait()`, `last_error()`, and destructor calling `oifs_async_free` (drop barrier).
+
+### Modern C++ Types
+- **`ByteView`**: Non-owning read-only view over contiguous bytes; `as_span<T>()` with alignment/size validation.
+- **`MutableByteSpan`**: Non-owning mutable byte buffer view.
+- **`Span<T>`**: Lightweight typed non-owning contiguous span (C++17 & C++20 compatible; implicitly converts to `std::span` in C++20).
+- **`PinnableSlice`**: RocksDB-style zero-copy / 1-copy fallback read slice. On `StorageMode::Mmap` raw contiguous extents, pins the mmap address directly (`is_pinned() == true`, 0 memcpy). On `FileIo`, compressed, encrypted, sparse, or non-contiguous ranges, falls back to internal `std::vector<uint8_t>` buffer.
+- **`FilterConfig`**: Type-safe filter pipeline builder with `none()`, `numeric()`, `delta_only()`, `shuffle_only()`, `bitshuffle()` presets.
+
+### C++20 Coroutine Support
+When compiled with C++20 coroutines (`OIFS_HAS_CPP20_COROUTINE`), `AsyncFuture` provides an `awaiter`:
+```cpp
+co_await future;  // Inline Fast-Path hits resume immediately; pending futures suspend on background thread
 ```
 
-## Encryption Helpers for Language Bindings
+### Ergonomic Overloads
+Templated `create_file_with_data`, `write_file`, `write_span` overloads accept `ByteView`, `Span<const T>`, `std::vector<T>`, and `std::span` with automatic `as_bytes` conversion and filter pipeline support.
 
-The FFI exposes encryption through password-based open functions:
-- `oifs_open_with_password`: Creates or opens an encrypted image using Argon2id key derivation from the provided password and superblock salt.
-- `oifs_get_or_open_with_password`: Session-registry variant that reuses existing sessions with password validation.
+### FUSE Dispatch Helpers
+```cpp
+std::size_t fuse_dispatch_frame(ByteView req_frame, MutableByteSpan resp_buf);
+std::vector<uint8_t> fuse_dispatch_frame(ByteView req_frame);  // Auto-sized response buffer
+```
 
-Internally, `DiskManager::derive_key` ([`src/encryption.rs#L124`](repo://src/encryption.rs#L124)) performs Argon2id key derivation, and `EncryptionKey` ([`src/encryption.rs#L65`](repo://src/encryption.rs#L65)) splits the 256-bit master key into subkeys for payload encryption, filename SIV, filename cipher, and IPC authentication.
+### Error Handling
+All throwing operations throw `oifs::Error` (derived from `std::runtime_error`) with the handle's `last_error` message.
 
-## Thread-Safety Guarantees
+## Error Handling
 
-- **Handle Independence**: Each `OIFSHandle` contains its own `last_error` mutex, eliminating cross-handle error interference.
-- **Shared DiskManager**: Multiple handles created via `oifs_get_or_open` share the same `DiskManager` (via `Arc`), and all operations are protected by the internal `RwLock`.
-- **Panic Safety**: Every `extern "C"` function wraps its body in `std::panic::catch_unwind` to prevent panics from unwinding across the FFI boundary (which would be UB). Panics are caught, `last_error` is set to "Panic occurred during ...", and the function returns an error code.
-- **Reentrancy**: The C callback in `oifs_ls` is invoked while holding the `DiskManager` read lock; the callback must not call back into the FFI on the same handle (would deadlock).
+All C API functions return error codes:
+- Pointer-returning functions: `NULL` on error.
+- Integer-returning functions: `-1` on error (except `oifs_check_version` and `oifs_async_poll`).
+- Detailed error message retrieved via `oifs_last_error(OIFSHandle* handle, char* buf, uint32_t buf_size)`.
 
-## Callback-Based Async Read/Write API
+Async futures retrieve errors via `oifs_async_last_error(OIFSAsyncFuture* fut, char* buf, uint32_t buf_size)`.
 
-> **Note**: The current FFI exposes *synchronous* read/write operations (`oifs_read_at`, `oifs_read_file`, `oifs_write_file`, `oifs_write_file_with_policy`). The underlying `DiskManager` supports asynchronous `msync` via `flush_async` and `flush_async_range` ([`src/disk.rs#L5467-L5487`](repo://src/disk.rs#L5467-L5487)), but these are not yet exposed through the C FFI. Language bindings requiring async I/O should use thread pools or the engine's `RangeAsync` durability mode with explicit `oifs_flush` calls.
-
-## FfiError Mapping
-
-The Rust side uses `DiskManagerError` ([`src/disk.rs#L287`](repo://src/disk.rs#L287)) which is converted to boxed `dyn std::error::Error` and stored as string messages in `last_error`. The FFI layer does not expose numeric error codes beyond `0` (success) and `-1` (failure); detailed diagnostics require calling `oifs_last_error`.
-
-## Representative Tests
-
-The FFI is validated through:
-- **Native C tests**: [`tests/ffi_c_cpp_test.rs`](repo://tests/ffi_c_cpp_test.rs) compiles and runs a C program against the shared library, exercising version handshake, open/write/read/ls/delete, encryption with good/bad passwords, and I/O backend switching.
-- **C++ tests**: Same file includes C++ RAII (`std::unique_ptr<OIFSHandle>`), lambda callbacks, `std::vector<uint8_t>` buffers, and multi-threaded concurrent access.
-- **Robustness tests**: [`tests/ffi_robustness_test.rs`](repo://tests/ffi_robustness_test.rs) validates null-pointer handling, UTF-8 rejection, error buffer boundary checks, empty/zero-size I/O, multi-threaded session reuse, and cross-block offset reads.
-- **Extended tests**: [`tests/ffi_extended_test.rs`](repo://tests/ffi_extended_test.rs) validates version API, encryption workflow, and `oifs_loaded_path`.
-- **Rust FFI tests**: [`tests/ffi_test.rs`](repo://tests/ffi_test.rs) exercises the FFI functions from Rust via the generated bindings.
-
-The Kani formal verification proof ([`src/ffi.rs#L935-L953`](repo://src/ffi.rs#L935-L953)) proves `oifs_check_version` policy soundness for all possible symbolic inputs.
+All `extern "C"` boundaries are protected by `std::panic::catch_unwind` to prevent panics from unwinding across the FFI boundary.

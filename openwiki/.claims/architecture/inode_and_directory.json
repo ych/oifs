@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:4218c791c326ad9fbf622be63b9fa1854119e4a8c93554626c66a1a73e58e4ae",
+  "pageVersion": "sha256:a28a286a9a61210863115ac816712779aa6031c85f76d6e627d66958948f1f6e",
   "claims": [
     {
       "id": "claim_eee6149ed80a41e688eb92aa53776a94",
@@ -51,10 +51,70 @@
           "version": "repo-lines-v1:sha256:0ac94e3c1c57b3ab54cf78b5e1e92b6212d23cdf6cb890696196b5b0f28ee71e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlMmQ3NGQ5YmIxOGM4MDdjMTNkMTI1OTJiNTkzMjVkY2UwMjdkN2ZkNDAzYTBlNDZkYzE0N2JiYzI3ZDE3MGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRkMzBlNmFkN2I0NjJiZjVlMGNjZjdkYWE2ZDBiYTM2ZTI2NGVkYTBhNGM5MGM5OTQxYmI5NzBlMGMwOTRkMWIifQ"
         }
       ]
+    },
+    {
+      "id": "claim_936c03439557401fa0ab25f94b374520",
+      "statement": "DirIndex promotion logic promotes directories to complete in-memory indexes after 8 cold scans or on negative lookup, using a 32-shard ShardedDirCache with Fibonacci hashing for O(1) lookups and O(1) inserts via tail_offset tracking.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L2139-L2280",
+          "version": "repo-lines-v1:sha256:4a7efaa8866ccfd9579b4e04374f3700b74b1239e5caf7a83061140738636631:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ZTdmYTBmMzFhZWNhYjZlZjdkNmNkMzc3NmY3Y2YxMzAzMTg0OWRjMGZiYjJlNzVhYzlmMjVhYTM5ZGI3NDYzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmZDhkZTUyZTM3ZGFkYWZhM2JmZTViMzEyMGFlZWFlNGI2NTA1NDM1ZjhjMzNhZWM3Y2E0NTI5NjQ2MWFjYTJhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5OTliZGVmZWVhY2E2MzQwZTAyOTBkYzg2ZTg4OWM4OWQ1ZTE4OWFhNWJhNDRiNTg1YjNiNzA3MzRmNGE2MmQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzYTRkMTA4ZDEyNmUzNzlkNTUwZDczOWJjOTVjMjM1MTZlMjY1MjcwMDRjYzI1YmVjMWY3ZWY2NTUzZmIwNzQ0In0"
+        },
+        {
+          "resource": "repo://src/disk/caches.rs#L175-L195",
+          "version": "repo-lines-v1:sha256:0a0c1db152da5474f316492fd731656a091f5f69b2fe0053e0560d9b05b97a25:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkZGVhZTg2Y2FkNWJhNDNhZThjZTVmYTQzMDYyODQ0MjhhNmYxMGRjYzc0MGFhY2FmMjRlMGIxNGFkOWJmM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ4MzU1ZDZlNTlkZDYxZmZkNmE3YTc0ZmViYzg5ZTc4MDFkYzUwZTNmN2FmOThiNTdlZjEzMjI5NmVmYTM0NzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNlMWJmNzk0YWViNTUyNTRlZjU1MmRiZGRlM2ViZmQwZWY3MjlhNzM1ZjNlOTVjZmU4NjBiNDJmNTViNTY0ZjcifQ"
+        },
+        {
+          "resource": "repo://src/disk/caches.rs#L202-L254",
+          "version": "repo-lines-v1:sha256:347475b04127fe1a65466ce5b9e4fed3169299dc34b90fc44f2f134e99f7d9dd:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2MWIwZWIwODYyMDljYmI3ZjQ2MGE5MmU0YjM3N2E3MzA1ZDZjMjVlN2RiOTY4MTBlNGRkMGI4M2FlODUwNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBiMDExZTVkNTYwYjgzMjk0ODdiZWYyNTI5MzQ2YjE0MmM2NzNhYTk3NzI0NjQ3ODUzOWVmMjFiZDZjNzExZWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMWJjZjk5NmU5ZDllOTQ5N2IxMjM0NjlmODVjMWU0MTc0NjNlZDZlYzVlNDFhZmIzZDM3YjcxOGQ0YzUwOTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_944674665d3a429294c3ae885c614063",
+      "statement": "Filename encryption uses deterministic SIV construction with BLAKE2b-512 deriving a 192-bit XNonce from parent_inode and plaintext, XChaCha20-Poly1305 AEAD with parent_inode in AAD, and Base64URL encoding with '_e_' prefix; decryption verifies SIV nonce constant-time and falls back to legacy v1 format.",
+      "evidence": [
+        {
+          "resource": "repo://src/encryption.rs#L629-L672",
+          "version": "repo-lines-v1:sha256:69563c5ea95861c26646c8455acae6d401a2fb30d45d140a3dcfb91a59e4cedd:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiNzhhMWRjMjAzZmI5NmFmNGIwODc0Y2JmNWVhOGY0NDJhMGY5OTg5OWUwZmJlM2MyNGIwNmEzMzY0M2M3YzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiOTNmYjU5YWIyYzJlZDQ5NTUzNmZmMTA1ZWY4YzU3YTI3NmZmY2E0NTRjMjI2MzYyYTJlNjM1ODMzZWNjNmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhYTNiNDMyNmU0NDRmMzIxNjg4OTM2OTM0ZTBhYzhmMmYyZTUwODNkN2E0ZmNmMDM3NGI4OTZlN2M5MGE5YzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5YTcwN2ExYjgzNWRlZmYwYzJkZGU2NDJlNjYyOGFmNzVlNGM3ZTVmODExYWU3MTg2YTk0MjAyMTJhZTE3YmYifQ"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L720-L855",
+          "version": "repo-lines-v1:sha256:ee9c682670a18ad35a34a84839a4bc8ef4afe18a37416127185233e011d851b1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkOGZmZTkwMmRiOGM4MTNmYTcyYTJlOTRjMTY0NGY5YTFhMjBiMzhkNzA1Mzg4Mzk2ZjFhMjI0NzVkOWEyNzQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1MGNhOWMxZTNlZWIyMGY0NTc0ZjBjY2M4OGU5MjRmYWRiOGFmNzEzNTM4YjYxYjQwZTU1OTc2NjljOTkxNTNhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4MDVjZGY4ZTlmMzJiNzBiMTZkZmMwYzA1ODE5OGU5NmYxM2Y4ODhkMzgzYzdkZDc5NTllY2JkNjY5YmM3NDA2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MTAzYmRhODg3Yzk1MGJkZjI5ZWYyNTU5ZTVhMDQxZTYzOWU3ZTk2Yjc5OWZjNGMwMTk5M2Y1NmRhNmU5NjIzIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_4631722b9cbe475b8a13ca54e8e99643",
+      "statement": "FUSE layer performs pure-Rust NFD→NFC filename normalization for macOS compatibility, covering Hangul Jamo algorithmic composition, Japanese Kana dakuten/handakuten, and Latin/Cyrillic combining diacritics, with zero-allocation fast path for ASCII and already-composed strings.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L399-L573",
+          "version": "repo-lines-v1:sha256:a4f45f26befb84cd71a127a3fd962f6b4b705534a3db17845c220b631fc450c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTc1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkZWZjNjFhMWU2M2ZmNzk3YTgxYTUwM2M5MWYxNjdhMTc5ZDNlM2MwYWU5MWJlNzE5Njc4ZTEwMTYyNzMwYjcwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5MGNhNzFiMzU0ZmJhMjNjZWEwZDMzOTg4MzhhYjhhMWJhMTc0ZjYwYzc1YzYzNzY1MTM1ZTZmMTRkYjhhMjMzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4ZDk0NzY2Mzg1YzRkNzMyZWZkZWVjNTUzNzMzMWI4OGY1ZjBkZmE4ZWVhYWVjYTkwMDg1ZjlmZjMyODU4NTRlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlOTQxOTE5ZTk3YzQ1YjA3NjVkN2NjYzg5NGYwZGRiNDE3ZmQ1NDc5ZjMyMzE2ZWRjYjI5MjM3Y2JhNzNmNjJlIn0"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L684-L707",
+          "version": "repo-lines-v1:sha256:880255a674cc78f544706a139a2a7c38c17e430d310cdacffb23ff76e2c864fd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlOGQxOWYyODc0YjE3YmExYTIzZWFlNTViNjFiY2ZiMTNhOTlkODc5MTIyYWM1MzBmOWJhYTEwYWY4NTNiYmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5M2ZjOTc4OTQxNDA2MjMwOTZjYTlkYjcxNTQ0MjJkNDA0NGNkZGJmYzk1YWQ0MGRhYTc4NWY5YjkzNDJjZmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwYTZlYzVhMzc2MzI3MGFjYTczZWI1MzFmYjVhYzYxZjVhNGZlMGFkYWJlYTQ0MGJmNmVlM2FjOTBjNjIwMDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQzZDA4NjRkY2RkYzIyZDNkZWFiOGVmYjNlNjNhODQ3NzExYmYyMGVlNzE3MjM5N2ZkOWU0YTUyNTAzZWJiMjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_205ed3b4bef746d3b56ee1a2cc37315a",
+      "statement": "DirectoryEntry on-disk format is an 18-byte fixed header (inode u64 LE, hash u64 LE, name_len u16 LE) followed by variable-length UTF-8 name, with name_len==0 as end-of-block sentinel; validate_filename rejects empty, '.', '..', path separators, null bytes, and >255 byte names.",
+      "evidence": [
+        {
+          "resource": "repo://src/directory.rs#L25-L66",
+          "version": "repo-lines-v1:sha256:5a6750fb4e4a888a47900d78d392422623f6a089bc102fb2ec212ddf91515ce9:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2ZWIzOWUwZTE0YmM1M2Y5MjM4NzhmZWIxMTUwMDM1ZDE5OWUwNDcyNDU0ZDdhMTUzMTAzZjgwYzM2ZmQ1YTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliMWNkZjQ1NGFkYTZkMzlhZWFjMWJjMWEzZGVjMmIxZGVjMjZhYjM2ZTE3MWRlNTlkNTEzYmViMTk1MDQ0YWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3Y2I4Yzc3OTdhNDc2NTFmNjdiNTY1ZjRmNmJhOTM5NDc2N2NiNmVmMzRhYzMzZGM5MTU3ZjZmZjZiZTM0ODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzODJmYzA5NzE1MTVjNGExYzlkNGE1MjBkZjIyYzliOTk1MWRlNTFmYmFmYTJiMTRkYjlmMTFiNWQwNGZhNTUifQ"
+        },
+        {
+          "resource": "repo://src/directory.rs#L5-L82",
+          "version": "repo-lines-v1:sha256:17233d6a605956b17cdb4d5709ef35b1e4ee98bed6dcddbc0bbddba7a7f4cfb6:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2OTY4YjA2MjFhMGE0NTk5NWE0N2JiNDRiM2VmNGQyYjA0NDE5YzY1OGVmNDM5MWU1Y2U4MTE0NzBlZDBkODgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAzMWZhMDkzMTg0NDU4ZWU2YTU0YjI2N2MxYjRlZGQ2YTkyYzZkYTIxNTNjYWEwNWZiMzFmNTFkMjE3N2MxNTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM0ZDUwNWE4MmFlZDE0OTg0ZmM2OTA2NWJhMmY0MWNkOGNjY2MzZjE1NWRkMTA3MWFhOWNmNDI1OGNiNmQ3ZDYifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-20T22:07:36.625Z"
+    "at": "2026-11-22T10:29:12.696Z"
   }
 }

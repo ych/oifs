@@ -1,26 +1,28 @@
 ---
 type: architecture
 title: Filesystem Integrity Checking (fsck)
-description: How the OIFS fsck structural consistency scanner performs set-theoretic verification between bitmap allocation states and directory reachability to detect orphan inodes, leaked blocks, missing blocks, and cross-linked blocks.
-tags: [fsck, integrity, consistency, bitmaps, verification, orphan-inodes, leaked-blocks, cross-linked-blocks]
+description: How the OIFS fsck structural consistency scanner performs set-theoretic verification between bitmap allocation states and directory reachability to detect orphan inodes, leaked blocks, missing blocks, and cross-linked blocks, plus read-only journal cleanliness verification.
+tags: [fsck, integrity, consistency, bitmaps, verification, orphan-inodes, leaked-blocks, cross-linked-blocks, journal, read-only]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-22T10:29:12.696Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
   - id: openwiki-source-115024023ade9f243c6b4ec3
     resource: repo://src/disk/maintenance.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+  - id: openwiki-source-62eef0b8799186dd9e2faae9
+    resource: repo://src/storage.rs
+generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
 ---
 
 ## Responsibility and ownership
 
-Filesystem structural consistency verification is owned by [`DiskManager::verify_integrity`](repo://src/disk/maintenance.rs#L1534-L1542) (implemented in `verify_integrity_on`).
+Filesystem structural consistency verification is owned by [`DiskManager::verify_integrity`](repo://src/disk/maintenance.rs#L1589-L1595) (implemented in `verify_integrity_on`).
 
 It serves as the OIFS equivalent of `fsck` (filesystem consistency check). Unlike continuous runtime operations that trust filesystem invariants, `verify_integrity` treats the raw on-disk state as untrusted, scanning block bitmaps, the inode table, and directory pointer trees to diagnose storage corruption, crash remnants, or software bugs.
 
-Results are encapsulated within [`FsckReport`](repo://src/disk.rs#L251-L260), which is exposed directly to the CLI command `oifs fsck` ([`src/bin/oifs.rs`](repo://src/bin/oifs.rs#L1240-L1285)) and over the IPC layer via `IpcRequest::VerifyIntegrity` → `IpcResponseData::Fsck`.
+Results are encapsulated within [`FsckReport`](repo://src/disk.rs#L254-L265), which is exposed directly to the CLI command `oifs fsck` ([`src/bin/oifs.rs`](repo://src/bin/oifs.rs#L1557-L1600)) and over the IPC layer via `IpcRequest::VerifyIntegrity` → `IpcResponseData::Fsck` ([`src/session.rs#L1232-L1252`](repo://src/session.rs#L1232-L1252)).
 
 ## The consistency model: allocation vs reachability
 
@@ -65,6 +67,7 @@ The integrity scanner partitions discrepancies into four formal failure modes:
 
 ```rust
 /// Detailed diagnostic report from a consistency check (fsck)
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FsckReport {
     /// True if filesystem is structurally consistent
     pub is_clean: bool,
@@ -92,11 +95,11 @@ The `is_clean` flag is true only when all four vectors are empty. The CLI prints
 
 ## Verification algorithm
 
-[`DiskManager::verify_integrity_on`](repo://src/disk/maintenance.rs#L1545-L1711) operates under a shared read lock (`inner.read().unwrap()`), allowing concurrent inspections without halting read workloads. It uses compact 64-bit word bitsets for reachability tracking and zero-copy bitmap word scanning.
+[`DiskManager::verify_integrity_on`](repo://src/disk/maintenance.rs#L1597-L1767) operates under a shared read lock (`inner.read().unwrap()`), allowing concurrent inspections without halting read workloads. It uses compact 64-bit word bitsets for reachability tracking and zero-copy bitmap word scanning.
 
 ### Step 1: Bitmap ground-truth harvesting
 
-Using 64-bit word scanning via [`BitmapRef::for_each_set_bit`](repo://src/bitmap.rs#L94-L108) (and an inline `read_bitmap_word` helper), the scanner collects all physically marked bits:
+Using an inline `read_bitmap_word` helper (equivalent to scanning with [`BitmapRef::for_each_set_bit`](repo://src/bitmap.rs#L205-L232)), the scanner collects all physically marked bits:
 - `allocated_inodes`: Scans `superblock.inode_bitmap_block` across `superblock.inode_count`.
 - `allocated_data_blocks`: Scans `superblock.data_bitmap_block` starting at `superblock.data_block_start`.
 
@@ -116,16 +119,25 @@ if root_inode.mode == crate::inode::FileType::Directory {
 }
 
 while let Some(dir_inode) = dir_queue.pop() {
-    // iterate each directory block...
-    crate::directory::for_each_valid_inode_in_block(block_data, |child_id| {
-        if mark_inode_referenced(child_id) {
-            let child_inode = Self::read_inode_uncached(&guard, child_id)?;
-            record_inode_blocks(&child_inode);
-            if child_inode.mode == crate::inode::FileType::Directory {
-                dir_queue.push(child_inode);
-            }
+    let num_blocks = Self::dir_num_blocks(&dir_inode);
+    for blk_idx in 0..num_blocks {
+        let phys_blk = Self::resolve_logical_block_id(&guard.backing, &dir_inode, blk_idx);
+        if phys_blk == 0 {
+            continue;
         }
-    });
+        let _ = guard.backing.with_block(phys_blk, |block_data| {
+            crate::directory::for_each_valid_inode_in_block(block_data, |child_id| {
+                if mark_inode_referenced(child_id)
+                    && let Ok(child_inode) = Self::read_inode_uncached(&guard, child_id)
+                {
+                    record_inode_blocks(&child_inode);
+                    if child_inode.mode == crate::inode::FileType::Directory {
+                        dir_queue.push(child_inode);
+                    }
+                }
+            });
+        });
+    }
 }
 ```
 
@@ -138,8 +150,8 @@ The cross-linked detection happens inline inside `record_inode_blocks` as the tr
 
 ```rust
 let mut record_inode_blocks = |inode: &Inode| {
-    Self::for_each_inode_block(&guard.mmap, inode, |blk| {
-        if blk is in valid data range {
+    Self::for_each_inode_block(&guard.backing, inode, |blk| {
+        if blk >= db_start && (blk - db_start) < max_data_blocks as u64 {
             let idx = (blk - db_start) as usize;
             let mask = 1u64 << (idx % 64);
             let sw = &mut seen_data[idx / 64];
@@ -149,8 +161,8 @@ let mut record_inode_blocks = |inode: &Inode| {
             } else {
                 *sw |= mask;
             }
-        } else {
-            // track out-of-range references similarly
+        } else if !out_of_range_seen_blocks.insert(blk) {
+            out_of_range_cross_linked.insert(blk);
         }
     });
 };
@@ -194,7 +206,7 @@ Orphan inodes are computed similarly against `ref_inodes` vs. the inode bitmap.
 
 The cross-linked detection is a single-pass sweep-line over the reachable block reference stream:
 
-1. **Input stream**: All data block IDs extracted from every reachable inode's block pointer tree (direct `blocks[0..10]`, single-indirect `blocks[10]`, double-indirect `blocks[11]`, triple-indirect `triple_indirect`). The visitor `for_each_inode_block` flattens this hierarchy, expanding indirect pointer blocks recursively and expanding contiguous runs for seekable 64K-chunked files.
+1. **Input stream**: All data block IDs extracted from every reachable inode's block pointer tree (direct `blocks[0..10]`, single-indirect `blocks[10]`, double-indirect `blocks[11]`, triple-indirect `triple_indirect`). The visitor `for_each_inode_block` flattens this hierarchy, expanding indirect pointer blocks recursively and expanding contiguous runs for seekable 64K-chunked files ([`src/disk.rs#L2607-L2747`](repo://src/disk.rs#L2607-L2747)).
 
 2. **State**: Two bitsets of size `max_data_blocks` bits:
    - `seen_data` — bits set for blocks referenced by ≥1 reachable inode.
@@ -259,18 +271,71 @@ flowchart TD
 
 *Caption: fsck verification phases — scan bitmaps → BFS directory tree with block pointer traversal and cross-link detection → set-theoretic comparison → report.*
 
+## Read-only mount journal cleanliness verification
+
+OIFS supports opening filesystem images in read-only mode (`DiskManager::open_read_only`, [`src/disk.rs#L1301-L1380`](repo://src/disk.rs#L1301-L1380)). For journaled images, a read-only mount must verify that the journal contains no unrecovered transactions **without writing a single byte to disk**.
+
+### `is_journal_clean_read_only` implementation
+
+[`ImageBacking::is_journal_clean_read_only`](repo://src/storage.rs#L1783-L1808) performs a strictly read-only inspection:
+
+```rust
+pub(crate) fn is_journal_clean_read_only(
+    &self,
+    sb: &SuperBlock,
+) -> Result<bool, crate::disk::DiskManagerError> {
+    if !sb.has_journal_layout() {
+        return Ok(true);  // Non-journaled images are always clean
+    }
+    let region = self.journal_region_ref(sb)?;    // Read-only view of journal region
+    let mut snapshot = region.to_vec();           // Copy to avoid mutating disk
+    let ring = crate::journal::JournalRing::open(&mut snapshot, sb.block_size as u64)?;
+    Ok(ring.pending_transactions() == 0)          // True if ring is empty
+}
+```
+
+Key properties:
+- **Zero disk writes**: Takes a read-only reference to the journal region (`journal_region_ref`), copies the header and ring to a local `Vec<u8>` (`snapshot`), then opens a `JournalRing` on that in-memory copy.
+- **CRC-validated**: `JournalRing::open` validates the header magic (`0x4A52_4E4C` = "JRNL") and the per-frame CRC32C checksums plus trailing commit markers (`0xDEAD_BEEF`). Torn or corrupt frames are silently ignored (treated as not pending).
+- **Returns `true`** if `pending_transactions() == 0` (the ring is empty, `head == tail`, and the `cleanly_unmounted` flag is set).
+- **Returns `false`** if any valid, committed transaction frames remain in the ring.
+
+### Mount-time enforcement
+
+During read-only mount ([`DiskManager::open_read_only`](repo://src/disk.rs#L1340-L1350)):
+
+```rust
+if superblock.has_journal_layout() {
+    let clean = backing.is_journal_clean_read_only(&superblock)?;
+    let pending = usize::from(!clean);
+    if !Self::validate_read_only_journal_state(true, pending) {
+        return Err(DiskManagerError::Io(std::io::Error::other(
+            "Journal has unrecovered transactions; open read-write first to recover",
+        )));
+    }
+}
+```
+
+If the journal is dirty (unrecovered transactions exist), the read-only mount **fails immediately** with a clear error message and **does not modify the image**. The user must first open the image read-write (which triggers automatic journal replay), then reopen read-only.
+
+### Why this matters
+
+- **Bit-for-bit reproducibility**: A read-only mount on a clean journal guarantees zero disk writes, enabling safe inspection of forensic images, immutable container layers, and write-protected media (e.g., SD cards with physical lock switch).
+- **No silent corruption**: The check prevents a read-only mount from accidentally "cleaning" the journal via any hidden write path.
+- **Deterministic failure**: The error message tells the user exactly what to do (open read-write once to recover).
+
 ## How journaling reduces fsck need
 
 When a filesystem is created with journaling enabled (geometry `inode_table_block >= 3 + JOURNAL_RESERVED_BLOCKS`), metadata mutations (`create_file`, `delete_file`, `mkdir`, `write_data` that extends a file, `truncate`) are first recorded as a checksummed transaction in a fixed-size circular ring buffer (the journal), flushed to stable storage, and **only then** applied in place.
 
 ### Mount-time automatic replay
 
-On every mount of a journaled image, `DiskManager::open` calls [`recover_journal`](repo://src/disk.rs#L1489-L1531) **before** the manager is published:
+On every mount of a journaled image, `DiskManager::open` calls [`recover_journal`](repo://src/disk.rs#L1832-L1875) **before** the manager is published:
 
 ```rust
 if superblock.has_journal_layout() {
-    Self::recover_journal(&mut mmap, &superblock)?;
-    mmap.flush()?;
+    Self::recover_journal(&mut backing, &superblock)?;
+    backing.flush()?;
 }
 ```
 
@@ -288,3 +353,5 @@ Because every `MetadataOp` is an **absolute post-image** (not a delta), replay i
 - **Fsck role**: `verify_integrity` is still useful to detect non-journal corruptions (bit rot, hardware faults, software bugs that bypassed the journal, manual hex-editing). On a correctly functioning journaled image, `fsck` will consistently report `is_clean = true` even after unclean shutdowns.
 
 The journal effectively replaces the traditional "fsck on boot" with a guaranteed-bounded, deterministic replay that takes time proportional to the number of uncommitted transactions (typically a handful of frames), not to the size of the filesystem.
+
+As the CLI help states: *"Uncommitted transactions are replayed automatically on the next mount, so `oifs fsck` is no longer needed after a power loss."* ([`src/bin/oifs.rs#L179-L182`](repo://src/bin/oifs.rs#L179-L182))

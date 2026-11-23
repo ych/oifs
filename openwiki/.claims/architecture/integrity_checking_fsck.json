@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a5088a6a3c4fc87a3951ab01633e3f13f458f585d21713ab4d12f545be6e2cd8",
+  "pageVersion": "sha256:2d86177fa390a5e14be4a517c5271c2baf4639ceb9d8082921b513b4cc23a8cf",
   "claims": [
     {
       "id": "claim_d7ca918549b14cc1b21b3120633470f4",
@@ -17,7 +17,7 @@
       "statement": "The fsck scanner resolves physical block pointers for every reachable inode across direct, single-indirect, double-indirect, and triple-indirect tiers, tracking blocks referenced by more than one inode.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2607-L2747",
+          "resource": "repo://src/disk.rs#L2619-L2759",
           "version": "repo-lines-v1:sha256:32852ef3e51e705b291bf2d799a23b3aae5e26508d932692bb6f490e3bb11ab1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMjE2ZTY2Yzg5YmFhZTA1MzgyOGM4ZmMwMTI1ODgzNjdiN2NjMjY5OTM2YzFkNDU5NGQwODEyYzNhNjc5N2VmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1ZmQyMzM0YWNiMmE0YTM4MzU3MTdhZjFmYzE3NWYyMjFhMmVmYjZiZDQyMTAzMmRiYzdlNjVkZGFhZTdjMzRjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwNTQ2ZjIzNjg0NmY5NDA5ZGI1ZjIxZDg5YjdjZDBiYWViNDc1MTNlMzAyZmJhZjc2MTFlZTQ4NjFkNmUwMDEzIn0"
         },
         {
@@ -83,14 +83,112 @@
           "version": "repo-lines-v1:sha256:9130d87837bd4701c8885b0da708ae5186aa8f4fe3e7e2546c1eb551245287fb:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzg2MGY3NTRkYjNhMjJhZGJmY2FiZWJiNmJmOWQ1OWRkMTIzNGE1Nzg2NThkYjk0NDYyMzhlNjQwODgzMGJmOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjNlOGM1ZjI2ZmJiNWVlNjAzYTk0OGJmN2NmMjZlZWY1MzBiNjUyNjAyN2Y1M2E5MzE4ZTgxN2E0MjZjYzViMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWNjNDQ3MWMwYWMwNzIwYzU1MmUzMDE4ZWJiZTcxYWJjMGYzNzlkN2QxZmUzZjRlZGQxZDdjNzRlNGE1OWU0MSJ9"
         },
         {
-          "resource": "repo://src/disk.rs#L1832-L1875",
+          "resource": "repo://src/disk.rs#L1844-L1887",
           "version": "repo-lines-v1:sha256:6397f9bb7283ad12c6ababc568f9c627644375c66e2fff03d8ca745f50d75ca8:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4MmRkMGYzZTM1OWUyOTFkZDg5NzcxNGM1MjYyNjRjMGQwMzg5NDc5MzMxNTRmZGIzZjU3ZTcwNDNjYzU2ZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzODUzNmMxNDYyZTNjMDkwMWViZDhkYjFhMDcyZjJmOTY4ZWU1NDRkMmZkMDU2YzA5MDIwY2RlYzk3ODk3NzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVlZDEyZGYzNDcyOTIxNmQyNWViYmEwMjQyYzY5N2MxYjI3MjNjMTMxOGQyZmMxMDhiMGRlMjBhZTdmNWUwMGMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_54ade52e0be246c9a7208ff14fff24e3",
+      "statement": "verify_integrity performs a single-pass reachable tree walk from root inode using read_inode_uncached (zero cache pollution) and for_each_inode_block to expand ChunkEntry runs for seekable 64K files, tracking cross-linked block references in a dedicated bitset.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L2619-L2747",
+          "version": "repo-lines-v1:sha256:37a0c7357839e34693653df202a58d5df65b197f2d4aadabf2c8c1d03659c087:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMjE2ZTY2Yzg5YmFhZTA1MzgyOGM4ZmMwMTI1ODgzNjdiN2NjMjY5OTM2YzFkNDU5NGQwODEyYzNhNjc5N2VmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiNDVkOTcwODdhNTNiNzIyMTA0ZDk2MzBhYWRkYWU1ZWY3OTg1NThlOTg3MjFmZjllODIyYWE4N2RlNjFjOWI2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1ZmQyMzM0YWNiMmE0YTM4MzU3MTdhZjFmYzE3NWYyMjFhMmVmYjZiZDQyMTAzMmRiYzdlNjVkZGFhZTdjMzRjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiYTdiMGRkN2NlNTg2ZjQ1MTEzMGFjM2MzMTE3ZWRlOWYwNTdjNzg3YjkwOGMyYmY4OGVkMjgxNTFjODVmNTgxIn0"
+        },
+        {
+          "resource": "repo://src/disk/maintenance.rs#L1634-L1680",
+          "version": "repo-lines-v1:sha256:1d26fddd66924de8bf59c5984a11ddb8234650ea9f785d647fe73490a0822a47:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0NDgwN2Y3NjU1ODk1NzM1YWM0ZjU0YjlkZjIwZDVjOGYyNWVjZGI5YzM4MzY0NjY5MzYyMTQxNDY5YjFmMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhlMTYwOTIxY2Q1MDg3N2E5MjBkYzI3OThlMzc2NDE1MjZmMDhjYmM2Njg1YjI1N2MxZTE1NzM5NzAyZTJjYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU0MTVjNzQ4NTQ4NzM4NTJiMDc3NWFhYjZmNjA4NDAyOGM3OGQwZTFhMzMxZjQyZDA3OTM2NTIyNjljNWFiMDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_97543eee229e4a67b7fa7f9d638c3441",
+      "statement": "Chunk reference validation expands ChunkEntry (start_block + block_count) into contiguous physical block runs, and detects deduplication by flagging any block ID visited more than once across all inodes as cross-linked.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L2619-L2747",
+          "version": "repo-lines-v1:sha256:37a0c7357839e34693653df202a58d5df65b197f2d4aadabf2c8c1d03659c087:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMjE2ZTY2Yzg5YmFhZTA1MzgyOGM4ZmMwMTI1ODgzNjdiN2NjMjY5OTM2YzFkNDU5NGQwODEyYzNhNjc5N2VmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiNDVkOTcwODdhNTNiNzIyMTA0ZDk2MzBhYWRkYWU1ZWY3OTg1NThlOTg3MjFmZjllODIyYWE4N2RlNjFjOWI2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1ZmQyMzM0YWNiMmE0YTM4MzU3MTdhZjFmYzE3NWYyMjFhMmVmYjZiZDQyMTAzMmRiYzdlNjVkZGFhZTdjMzRjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiYTdiMGRkN2NlNTg2ZjQ1MTEzMGFjM2MzMTE3ZWRlOWYwNTdjNzg3YjkwOGMyYmY4OGVkMjgxNTFjODVmNTgxIn0"
+        },
+        {
+          "resource": "repo://src/disk/maintenance.rs#L1634-L1655",
+          "version": "repo-lines-v1:sha256:13ecd471edf24e6c2ce8e9f0a6e457e805bc62ebc3de8a9e33ac84ff37babe3d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0NDgwN2Y3NjU1ODk1NzM1YWM0ZjU0YjlkZjIwZDVjOGYyNWVjZGI5YzM4MzY0NjY5MzYyMTQxNDY5YjFmMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4MzI5NDE0NmEwYmQxZjgwNjg0MjExZTNjMGU0YjU3YjRjNTM5NzgxODE0YWJkMTA3ZDJlN2ZlYjZiYTk1ZDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhlMTYwOTIxY2Q1MDg3N2E5MjBkYzI3OThlMzc2NDE1MjZmMDhjYmM2Njg1YjI1N2MxZTE1NzM5NzAyZTJjYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY5MGFlOGNkM2U4YWY5MTNjNmJjM2EwMjhlNjM1NmU1MGEwODhiZTlmNjBjMWJkYjBjNWZiZjUwZDllMTIzYjAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ed74886c729d4564b5f80a921dc7a110",
+      "statement": "Bitmap cross-referencing computes set differences word-by-word: orphan inodes = alloc & !ref; leaked blocks = alloc & !seen; missing blocks = seen & !alloc; cross-linked = cross_linked_data bitset.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk/maintenance.rs#L1702-L1755",
+          "version": "repo-lines-v1:sha256:fa7f9e15f79bfbd21621352b46b3df0e236d1e81fd8f8078937602c26c010941:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4YzVhYTllOGRhYjgyODYxNDZhZmQwMjI3OTA5NWU3MzUyMmM0ZWY3ZTJjYmU0NzRkNjUwZjk0ZTk4ZDY0M2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlM2YwMTQ2Zjc0NjlhZjIyOWQwNzAyZTllNzIwMzAxNTVkZjE2YjYzODYzYTMxMTE5MDNkOTJkNzI3YWYxODMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkzZjNlNWZiNmUwM2Q4MTczYjhlNGFhNzU2MDZhZjkzOTI1ZmJkZWYxOTdhNzk1OThlMjkyZjQ2NmQxNzgzMGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiMTU3M2E3ZWYwNTRjMmVkNjBkN2MzNDQyMTk3YTk5MGVmYTM2MTgyZGE3YWE1MzZiMWZmNDkxMThmODE5MTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_59d26de475b84ef3a9e8f25f905afd46",
+      "statement": "Orphan inodes are detected as allocated inode bitmap bits never marked referenced during the directory tree walk; they are safe to clear since no user data is reachable.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L254-L265",
+          "version": "repo-lines-v1:sha256:ffd817362d35f6dfa1e3a10690e04a3ecb41db2259ecd457dd345e09687d962b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNjc4NjY2ZGY4ZGI4N2MxNDM1OThjZmEwMWI5YmZiM2U3NmE5NmEyMzI3N2ZhNzhkN2UyNGE0OTA1N2QwMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjNjAzMTE2ODdlMTBmOWZjNWU4MWE1YWUwNGJmODQ2MjhlNDYyNjc2YjY0YWMzOTQ1ZDEyZWJmOGY0MmRmOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczZjVhNjE3ZjRmNTlkMzE1MDYxYjNiZjU5Mjg0ZWMwMTNjNzJjNzI5OWQxZGVmOTYxYTA3MjAzZTllNmZmYTUifQ"
+        },
+        {
+          "resource": "repo://src/disk/maintenance.rs#L1702-L1720",
+          "version": "repo-lines-v1:sha256:40b469ba4711bc2f890c592de6b810540803262a111b8fbb3342b0f7338b52ce:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4YzVhYTllOGRhYjgyODYxNDZhZmQwMjI3OTA5NWU3MzUyMmM0ZWY3ZTJjYmU0NzRkNjUwZjk0ZTk4ZDY0M2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhODI2YmNhZmMzNWRjNGNiYWYxY2RjOWJiNGEyZmU4NDhjYmZmNTZmYWE5YjEyZTA2ZWM5MDE5ZjFlNWYzODkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkzZjNlNWZiNmUwM2Q4MTczYjhlNGFhNzU2MDZhZjkzOTI1ZmJkZWYxOTdhNzk1OThlMjkyZjQ2NmQxNzgzMGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3YWY5NzY2ZjVmM2U0NGY5OWQ2NTE2MWE1Mzc5MDg3NGFmYjY1NzdkYTM2YTIzZDgzMDVjNjI1Y2QwOTZlN2EifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c52f01ebcd334cfd83f6457d2db6c9bb",
+      "statement": "fsck is diagnostic-only with no automatic repair; manual repair procedures differ by severity: orphan inodes and leaked blocks are safe to clear; missing blocks and cross-linked blocks require manual investigation and data copying.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs.rs#L1557-L1600",
+          "version": "repo-lines-v1:sha256:1b050039979e5f0dec41936f539c54f3fb0859913481b23290c5b38a039b79c2:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3YWM0OTA1ZTZkMGM4YTI1ZDUxYTk2OGNjYjVmZGUxZGY5ZjhkZDc4NTllY2ZkN2U1MWRlMjY2NTU5NGYxOTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjNTUxZDk2MmM4Yzc3ZjE3Mzk5Yjc0OTBiZTIyZDYyM2U1MDk2MWRlMmI1ZTZlYmQwMTZkYTZlNDk1MDY4NDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdkNzc3MDliYzM5ZGQ2NzEwMGM4ZTk0ZmQxMDY0M2I4YWJkZThmMWY2MjFhMjYwYmI1OWEzYzkzNGJkNzJiYjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhY2FiMTM2OGRlMGI3MDQ5MjY3ZjE1MzU1NTE5NjFjZDZmZWUzM2M3N2Q2NTJiMmQ2ZTZiZmM4OTMwMDljZjcifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L254-L265",
+          "version": "repo-lines-v1:sha256:ffd817362d35f6dfa1e3a10690e04a3ecb41db2259ecd457dd345e09687d962b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNjc4NjY2ZGY4ZGI4N2MxNDM1OThjZmEwMWI5YmZiM2U3NmE5NmEyMzI3N2ZhNzhkN2UyNGE0OTA1N2QwMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjNjAzMTE2ODdlMTBmOWZjNWU4MWE1YWUwNGJmODQ2MjhlNDYyNjc2YjY0YWMzOTQ1ZDEyZWJmOGY0MmRmOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczZjVhNjE3ZjRmNTlkMzE1MDYxYjNiZjU5Mjg0ZWMwMTNjNzJjNzI5OWQxZGVmOTYxYTA3MjAzZTllNmZmYTUifQ"
+        },
+        {
+          "resource": "repo://src/disk/maintenance.rs#L1759-L1767",
+          "version": "repo-lines-v1:sha256:f27f6f725554227bc6cc9f5f5e374245d3514f23d3d69e7acf9ff6964b0c11a6:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTc5NzZmN2RhNjFmNmNhM2ViMTRlYzY2Y2U0Y2VkZTIyMDczNzNkODc4OTkzNzg0ODNiNGUyMjI5ODAxODA3ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWIxNTczYTdlZjA1NGMyZWQ2MGQ3YzM0NDIxOTdhOTkwZWZhMzYxODJkYTdhYTUzNmIxZmY0OTExOGY4MTkxMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_3c4a4dd4cd8c42f598e85e9cf0fc1596",
+      "statement": "Read-only journal cleanliness verification via ImageBacking::is_journal_clean_read_only copies the journal region to memory and checks pending_transactions() == 0 without any disk writes, used to reject unrecovered images on read-only mount.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L1340-L1365",
+          "version": "repo-lines-v1:sha256:d34d90234b3d1ca056fb4e32cf05508bd3385321be6a91a7d6e1018e9dcccdb2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1Y2RlZjgwODVhZTc0YWI2MzZkNjQ1OWY1YzZkNWZiZmIwZGIyNjRmMWIwZDc1YmFjNTE5YzliM2Y2NzE3YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1Y2RlZjgwODVhZTc0YWI2MzZkNjQ1OWY1YzZkNWZiZmIwZGIyNjRmMWIwZDc1YmFjNTE5YzliM2Y2NzE3YWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2ZmU1OTMxYmIwYzBlNGE5NjU1ZWRlY2U4NjJmMzRjMTMyYjJjYjQ1NjhhMzJhNDU3NGM3MWMzZmU0YmQwNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5ZTVjMzRiN2E3ZGQwZDYyMmMwZWQ4NDhjOTAxNWQwYjk0ZWRmZmQwM2U4M2Q2MjQ5MjFmMjBhOWIxZDlkYzkifQ"
+        },
+        {
+          "resource": "repo://src/storage.rs#L1783-L1808",
+          "version": "repo-lines-v1:sha256:a87b34cfab3b264b6b2ba75b0bfd7ee81933c9fab418a1bb39e2f9833da12ddb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMzJkY2I0YjIxZGQ4YTE3N2I1YTFhYjQ3Njk2MTM2YjI1MTgzZmQ3YTUzNWQ1MGZjMmMyMTRkMjcyYzk1MDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1NTM1OTMxNWVkODUyM2IyMWMxZWQ5ZmU2Njk3NGU4YWE5ZmNjYWE0YzFmOTFiNmIyZjliODU1MjBiNGEyZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ3MDExZDAxYTE3ZmI1MDdiNGIwOTBkMTlmZTE2NzcyZDIyMmY4NzZjZjhmZjQ1MTY3NjQyY2ZkODliZDVmYzUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_903e6eebd72c4ad3a2cba4b7a105b549",
+      "statement": "Out-of-range block references (referenced blocks outside the valid data bitmap range) are collected separately and reported as missing blocks and cross-linked blocks since the allocator cannot track them.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk/maintenance.rs#L1645-L1660",
+          "version": "repo-lines-v1:sha256:39dee1ef3fcfb10fc05ee86a4cf65b11ce9190315eb5484b35e592374197466a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmNjFmOTYyOWMxMjRlMzU4OWNjYzE2MmFhNzRkNTg3ODlhN2IwNWUyY2VjZjFmMmM2OTEzNzMxNDMyZjYyOTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmZjM5Y2NiOTVhY2FjMzFkN2MwYzMwNjExZDk5NGI1NWI3NmU0M2U1Zjk2NGUwYmQ3MmMyNWM2NGUzN2Q2NDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3YjAyMDgxZDQyOWFlYTQzM2UxOTQ5OGY3MjZjYmU3OWM1YTkyOTU1YTNlYzAzMDQzOTk0NjUxNWU5OWNmNjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY3NWVjOWU3NWVmNGZjZDk4ODI0OWYzZmMwZTY0OTQ3NGNhNTgyYzE2ZTYzMGI2OTFhNjdjZjcwZTZkMWJhZmMifQ"
+        },
+        {
+          "resource": "repo://src/disk/maintenance.rs#L1745-L1755",
+          "version": "repo-lines-v1:sha256:6be7dbb7deff46133f74fa4facc1ca0a6f160e917a7a22c22494785b85290a46:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0ZDEyZTJlY2RiZGI3OGY5YzY2ZmY2MWQwNTBhMDQ0OTAwYTIwMzc4ZTVhZWZiOGVlYjQ0ODgyZWI1ZDZlODEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlM2YwMTQ2Zjc0NjlhZjIyOWQwNzAyZTllNzIwMzAxNTVkZjE2YjYzODYzYTMxMTE5MDNkOTJkNzI3YWYxODMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRhOWY4NmQyOGU3ODRmOWZkMzFmYjcyZDE1ZjYwY2JjZWFhZmRkNjY5Y2JkNWI2ZGE3ODg4YTAyMzMyMWViYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiMTU3M2E3ZWYwNTRjMmVkNjBkN2MzNDQyMTk3YTk5MGVmYTM2MTgyZGE3YWE1MzZiMWZmNDkxMThmODE5MTEifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-22T10:29:12.696Z"
+    "at": "2026-11-23T20:55:55.458Z"
   }
 }

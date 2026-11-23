@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f5746f5606417070e00e3279083ef710deb4d07d6b3d57dc8cdffa26e323d58b",
+  "pageVersion": "sha256:bdf009ca1e70bd43e9568f07f5c889bdab2cc5d03cc8ad08952e0b2f61148464",
   "claims": [
     {
       "id": "claim_9808e460c6314de5ada2d5186d40afe4",
@@ -11,20 +11,10 @@
           "version": "repo-file-v1:sha256:f617d967f4879753f613ede17b9885189021715443e7c5b7b20c9661aa472c51"
         }
       ]
-    },
-    {
-      "id": "claim_eab24a256c67434793e6bf6b7c6a7ea8",
-      "statement": "Kani proofs in the filters.rs module verify the roundtrip correctness of compression filters, ensuring that encoding followed by decoding returns the original input for all possible byte sequences.",
-      "evidence": [
-        {
-          "resource": "repo://src/filters.rs#L1088-L1310",
-          "version": "repo-lines-v1:sha256:cdcfc7d441bd8236b652259be8274a1461e0521ba96b954f551e221b6d5fb8c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
-        }
-      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-20T22:07:36.625Z"
+    "at": "2026-11-23T20:55:55.458Z"
   }
 }

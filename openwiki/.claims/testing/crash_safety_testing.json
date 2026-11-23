@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:08f578a3f1b55605465fade98b2709312db1a182ac7a24681b0e0940287f778d",
+  "pageVersion": "sha256:95a900ff74a7b51a5cd577730b1240c3d3263389de726172cfff0a6e1c89ee31",
   "claims": [
     {
       "id": "claim_e4324002aa984914bc33c806f659a82d",
       "statement": "OIFS provides configurable durability modes (Lazy, RangeAsync, Strict, LegacyWholeMmapAsync) that control when and how modifications are synchronized to physical storage.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L207-L232",
+          "resource": "repo://src/disk.rs#L210-L235",
           "version": "repo-lines-v1:sha256:a9a7a22282b1c98afa9e114a9dc2774be14e442ee9332611dbf514d350190380:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzMDRlNzFjZmUzYzdkNGQzMjdhNmU2OTRlNjNjZTc4MDRiYTdmZTMxOTU0MmFlMTlkNWJhNjViMDdiZDQ1NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4OTA2M2FkODRjN2U5NWI4YzJhZWVjMjY5MDJlZjJiYTRjZjA5MjM2OTlmYWFlOTI1NGI2N2FmM2NiYWYzODAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMxZDZlZDQ4NWEwNDkwM2NlOTMzMjZjNjg5N2I3YjcxZDRkOGM0Y2QxYjgwYmYxZTdjMzI5Yjc0ZjRmOWE5MDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwNmYwMGE0YTYyZGNjYWRkZTVlMWNiYzBmOTJiZDVlYTg1YTBjODU0MTZiODIxYzNmMjlhZTZmNTRlYzIwZTkifQ"
         }
       ]
@@ -17,7 +17,7 @@
       "statement": "The Lazy durability mode (default) updates the shared mmap and OS page cache without per-mutation msync, surviving process crashes but requiring explicit flush or drop for power-loss safety.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L208-L215",
+          "resource": "repo://src/disk.rs#L211-L218",
           "version": "repo-lines-v1:sha256:413f18fc07a80c9076bec0aef38762867bc2d23ba62fa868fe66e2e0050c033e:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTNhYzg3NTg1YjZjNDA4NmVmMzE3OGE1YTMwN2EzMzUxNTQ2MjYzM2ZiMTdlNTkzMjU5MDk1YzI2NDc0MTBmNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWYzZTQxN2Y2ZWQwNTdjYWM5YjdjMDljYTQ2YTA3NDNiYzlhMzM4OWEyYmU2MDQ4ZGZiM2I3YmIxZGE0ZWFlZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmYwODE5ZTMwOGY1MDYzYTEzODc0NGRjNDQ4ODhkOTIxZjY5Yjg0MDQxNDgyMTMxMDgxY2E4ZjNjMTExODA2MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmExMDdkNWU4NDA5MDExMTQ1ZmQ4MGU5NWU1ZTNjN2M2ODM1YmIzMTI0Y2RlNGEyYmRmODAzZDEwOThlYjUxMyJ9"
         }
       ]
@@ -27,7 +27,7 @@
       "statement": "The RangeAsync durability mode asynchronously flushes only modified byte ranges per mutation via msync(MS_ASYNC).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L217-L220",
+          "resource": "repo://src/disk.rs#L220-L223",
           "version": "repo-lines-v1:sha256:752be8ee5c6c70d4eaf050444258f40a5f599a391f286815e96d731f115d268c:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWEzYzEzMWQ0MTIwZmY0N2YwOGYyYmQzYjJjYWQ5ZGUyNTQzNDcxOTZiNDA0NDY4NDEyN2E1OTU5Zjk2MzYwMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2YyMjZmOWI0ZjdlZTRiZDUxMjQ3YjIyNDk5YjdjN2I2YWVkNDFiZjJlYWU4MGZkOTJjNTlkNGI4ZGFiYWFiMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjU3ZjViOGJlMzU3MjE3OGQ0NmVlNDQyMzZlZTYyZjE2ZjViNDVjNmI5MGI0NjZjNzVkN2NkMzA4OGI0MzE4OSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjE3YjcwNzBkM2E4NDEyNGMwOWEyOTVkYThmY2NjODI5ZDc5MjA1ZWRkMDZmZDQwOTM5NjU5ZDAxMjM3MmM2NSJ9"
         }
       ]
@@ -37,7 +37,7 @@
       "statement": "The Strict durability mode synchronously flushes modified byte ranges via msync(MS_SYNC) on every mutation, guaranteeing physical storage persistence before returning.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L222-L225",
+          "resource": "repo://src/disk.rs#L225-L228",
           "version": "repo-lines-v1:sha256:ba56654b176bee071ecf56f4c3332d586079827e40414f6c23d1f8cc23c1e327:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGUzYmQwMDMzYTk2ZjRiZjU5ZmNmMDY0ZDE2ZTI1MTk1YWQ2MGVlZTEzYjhlM2RmMjJiZWM4NjBlNGEwNWU4ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWE4NmJmZjQzYjM0OWI5MjgyNzY3ZTJkMjYwMjEwMmU1MDJhOWZhODE3NWJiYTc2MjhiOTA0M2E5MmExYzU4YSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGQ1OTczMDI1NjI2ZTNjZjY4YmIxNTM3YmZjYTg1YWMzNGM5MjZlMjdhNjIzOGIxMTFmZTFhNjE2Y2ZhY2UxOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTU5MDAwOTZlNWYwZWVlZDVhN2VlZDM3MzRiMTBkZWM0ZDNmMjU0MjFmZDU4YjRmNTA1ODg0ZThmNjY2ZmRjNSJ9"
         }
       ]
@@ -47,7 +47,7 @@
       "statement": "The LegacyWholeMmapAsync durability mode asynchronously flushes the entire virtual memory map after every mutation.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L225-L228",
+          "resource": "repo://src/disk.rs#L228-L231",
           "version": "repo-lines-v1:sha256:a1c7bdabc374cd8ca4c6aeec8f7ff0954b7cc011cb9d82c8eaa3e5df224cd958:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWE4NmJmZjQzYjM0OWI5MjgyNzY3ZTJkMjYwMjEwMmU1MDJhOWZhODE3NWJiYTc2MjhiOTA0M2E5MmExYzU4YSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2NkYTU3ZGMzYjQyMDE3ZDAxNzAwMDE0MGY2NTdhNWYxMTIwZmJmMzI2ZDE1N2JiOWJkMjAxMTdkMWVmZDdjOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWMxYWM5NWQxNzg0ZTRiNWU3MDA4ZTBjN2IyNTRmMDMwNjZmYmFmOGIzY2Y4MDAzZDI5YmEyMmY1NGQ4YzY2ZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjAxMzdmYTE4MmMwNTg2YWQwMmMxMTExMGZiNjY3Mjc0OWEwNTNkZTAzNDI1Y2IzYTAwOTc2OTIyNDU5NTRiZiJ9"
         }
       ]
@@ -57,7 +57,7 @@
       "statement": "The current durability mode is accessible via DiskManager::durability_mode and can be modified at runtime via set_durability_mode.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1574-L1590",
+          "resource": "repo://src/disk.rs#L1937-L1953",
           "version": "repo-lines-v1:sha256:aa8a15b1de9f06658bba812ada3499ccb874dce0eafe6ae745d192d6f6bd40d5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyMDIyZmY4MGU2ZjczMGUxNWE0Y2I0ZWI0NTEyNjI4YTg1MjIwOGUxZGE3ZWM5NzAwOTk5YjhiNDM4OGY0NzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5ZDczZDdkMWJhOWRkM2EyMTI1YTk5YTEwNDI3Zjc3NTU0N2YwMDFkMTcyNzcwZmEzZTIwYWI3MjZjYTAyOGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZmZmQ1NGRiYWUyOThkNTE3OTYwOWJjYmJiYzdlMTMzN2QyM2JmNjIwMTZhOWE5ZmJjYmUzNzU2YTJkZjJlNDgifQ"
         }
       ]
@@ -74,21 +74,21 @@
     },
     {
       "id": "claim_7a3a9ecb265948428134af159bf8707f",
-      "statement": "The DiskManagerInner::Drop implementation flushes the journal region first (if journaled) then calls MmapMut::flush to ensure data persistence even without an explicit flush.",
+      "statement": "The DiskManagerInner::Drop implementation flushes the journal region first (if journaled) then calls MmapMut::flush on the backing storage to ensure data persistence even without an explicit flush.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L677-L695",
-          "version": "repo-lines-v1:sha256:2de692134779c2be1e4836f6964d7355a8e18a75d877366b69c25e2fc0c253a6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiNzA3NjYwMTRiZWFiYTliNmYwNzMxMGI2ZGMzM2FhYjg3NTM0NmQ1YzM1ODJiODg5MGEyMmEyMzQxNGNmNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyODVmNThhZjZhNWNkYjc4MzI1Mzc5NmQ1YWE3ZTEyZGMyYWVlNWZjY2Q2NTk2N2JjMTEyZDU2ZGUzMDRhODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyNjExMmZkZmM1MWNiMzNiMTkzMTg4ZGJkOTI0ODg3NmUwMjZlYzFiZDc1OWJhODRmZmExNDRiNTRhYmUzZWQifQ"
+          "resource": "repo://src/disk.rs#L687-L710",
+          "version": "repo-lines-v1:sha256:ab58aa9e43a3587340fa5734a3af5113be9899521cfa532df1ba6eb2ce2ba9c4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0ZDI1MTY3ZDBlN2UxNmRiNTRiMTliNTVlYjg2NzEwNWI2OGM3N2Q3NGMxNzRkNmRmNzUwMDU3MTY4NzUxMDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjYjZjODVkOWE2MTE1ZGI0ZjIyM2Q0ZTU4MjRhNGYxOTZkZmM5NTc2MTY3NjA3YzlmMDI1OWRhMGU4OTJkOGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU4YjY2YmJmOThkNTFhM2I5ZmNjMGU4N2M4MmMzYmNkMWUzZmRjMzg4NjEyZDI3NTY2ODJiMTUwM2RiMzA5YjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0ZWFkOTEyMDZiNDQ2YTAzYzQzMTgyYjVjZWRkOWRmMjVlNDFlMGI5NmQyNjI4Y2ZlYTEwMzE0YzZjZWU2OTQifQ"
         }
       ]
     },
     {
       "id": "claim_9f736114bbdf430d98206b90375dfc70",
-      "statement": "When using RangeAsync or Strict durability modes, mutations trigger synchronization of only the specific byte ranges that were modified via sync_mutation_ranges.",
+      "statement": "When using RangeAsync or Strict durability modes, mutations trigger synchronization of only the specific byte ranges that were modified via sync_mutation_ranges, including inode bitmap, data bitmap, inode ranges, allocated data blocks, and directory data blocks.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L565-L660",
-          "version": "repo-lines-v1:sha256:f2ebfa175a697f0668e05c9a305a9e4a0dc0f4514f3f4439861166a7fcde0aad:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkwY2I0MWY2MjYyOWE0ZmU3YzNjNjA3ZTE2OWMzYWZmMTg3YzY0NTgwMzBkOGQ3YmZjOTRjYWRmOTM1Y2M5NDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzNTVlMDIzYTdmZmM0Y2E5MjA4MDgxNWFkMDc0MGNkMmI3NjQwYWRjYjMxNjE0OTY5NjRhNmU2NDgxMTIwNDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiMDBjMzIzYzM1NDYwNzdmMWQ2MzI4N2QzYjA0MTY0ZjJiM2ExZTQ3ZDgxNWJjMzc4NjVjNWEyMTEwOWY5M2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMyYjJmMTdhMDEyOWY3OTFhYTVlNmNkZjY1N2IxNDgzOGE1NDY5OTcyZDg1M2ZjNGQyMDIyODYwMDI3ZjU4YWIifQ"
+          "resource": "repo://src/disk.rs#L547-L660",
+          "version": "repo-lines-v1:sha256:ac4fbf9753d61bd15bfbf480210c8592987436d3296a671f8db31f1db1a837dd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MTk4N2QwMjU2NjBmZDhlNmE0ZTAxZGU1MGNjNDQ2MDMyZjhmNDMwZjUxNjdkMmU2MDJmY2U2N2VkOTdhZjlmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4M2M5MDkwNTk4NjljM2YyYjliZWJkY2ZhNmNmYWZlYTNjZjkyNGQwNjVmZjA4MDU5ODVkMGE2Mjk5NGQ0NGZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwYjlkYWM1ZGUwODRkNTQ2NTE1YWI3NmRkYzYzM2JmMTY0ZTg4N2U0NGViZTIzZDVmYmJkYWUwYTVkNDk4MTU3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzMmIyZjE3YTAxMjlmNzkxYWE1ZTZjZGY2NTdiMTQ4MzhhNTQ2OTk3MmQ4NTNmYzRkMjAyMjg2MDAyN2Y1OGFiIn0"
         }
       ]
     },
@@ -124,19 +124,15 @@
     },
     {
       "id": "claim_d87fc301d10040c4b21f0624d4a52800",
-      "statement": "The journal recovery mechanism (recover_journal) replays durable-but-unapplied transactions automatically on mount, validating that a crash between WAL commit and in-place apply is recovered by redo.",
+      "statement": "The journal recovery mechanism (recover_journal) replays durable-but-unapplied transactions automatically on mount in three phases: validation of CRC32C-checked frames, redo of absolute post-image writes, and ring reset to clean state.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1245-L1245",
-          "version": "repo-lines-v1:sha256:fd2a3288ac0d7c7e3dc06d8c9893cd89a0f8fa1d94fc50ae36bcdd929fa25412:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQyYTMyODhhYzBkN2M3ZTNkYzA2ZDhjOTg5M2NkODlhMGY4ZmExZDk0ZmM1MGFlMzZiY2RkOTI5ZmEyNTQxMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQyYTMyODhhYzBkN2M3ZTNkYzA2ZDhjOTg5M2NkODlhMGY4ZmExZDk0ZmM1MGFlMzZiY2RkOTI5ZmEyNTQxMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzYzM2U2MDFjN2Q3ZWMwM2RmMDVjZTgwZDcxZGJmMTAyZDUwOTZhMzYwMzk4NDhlYWE4ZWNkZTdkNjBkOTVmZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGYwNWFhYWM1Mzc0MTY3NmQ0ZTE0OTUxODIxMTY0NDcwYTZmM2NiZWIyNzBhMzBmMWJiMTM5MzdiNmJkZmNlNCJ9"
+          "resource": "repo://src/disk.rs#L1844-L1910",
+          "version": "repo-lines-v1:sha256:d5fb599dc5498f91eb2d5a9d266f21b0db89470055b7a5c0ea4fcf1404bebe49:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4MmRkMGYzZTM1OWUyOTFkZDg5NzcxNGM1MjYyNjRjMGQwMzg5NDc5MzMxNTRmZGIzZjU3ZTcwNDNjYzU2ZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzODUzNmMxNDYyZTNjMDkwMWViZDhkYjFhMDcyZjJmOTY4ZWU1NDRkMmZkMDU2YzA5MDIwY2RlYzk3ODk3NzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjODc5NTU3MDg1Y2UwZGZjODQ1YmNhYWNjY2ZkNjVlOGNiYjRkYTI3NmE0MmQ2NTI2NjM0NmIyNjc2YTk2MDEifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L1489-L1565",
-          "version": "repo-lines-v1:sha256:0360f4ae98436f2f985d01d8ae29be37aebcd486e7bec852cfad604def726fb7:eyJzZWxlY3RlZExpbmVDb3VudCI6NzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwZDFlZmFhMzk3NjVjMWU4MzUyNTZkNjhiYzgzZTk5YWYyNGMwZTc5MzUzYzY3YmRhZjA0ODgzNWNhOGEwNzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3MmU0MTVjMjcwNWU2ZGQwNTdiNGNmYTA3MTc1OTE0MTY0M2FjNDQzMjZlMTY2M2ZiMzBiZmFiNjgwMTg2OTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzODUzNmMxNDYyZTNjMDkwMWViZDhkYjFhMDcyZjJmOTY4ZWU1NDRkMmZkMDU2YzA5MDIwY2RlYzk3ODk3NzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNiNmFiZWViNDY1ZWM3ZWI1OThjY2E3NjQ1YjBjYWZiMzA0ZTgzNTRlNjI3NmZhOGQ5ODNiYzZlNzY4MmRkMTcifQ"
-        },
-        {
-          "resource": "repo://tests/journal_test.rs#L153-L180",
-          "version": "repo-lines-v1:sha256:c4b0dfc2113234a033b5efb58b4e03fdf841acd6a3bd78d12129f670fe5864a7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZhNjUxZTgwYzFhNDU3ZWZlNTkyMmYwMjBhOTc2MmFjNDMwN2Q3YjIzYTA0YzYwMmFhNDZjY2VlM2U2NTRlODgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2ODVjZmYyNzRjYTJjNDJmN2Y5YmEzYzQ1ZTMzMmUxNDQ3ZjY4MGU0YjIxOWY0NTEyMGJkMTBmNjVhMzY5NjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmOWFkNDYzYmU3MWM1ZjQyMDk0NmFmYmYwN2QwZmU5ZjVmMTFkYTgyZjFlOTQ5MDNjYzMzOTVkOGMxYTBiMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFlNDc3NmNjNTBlOGFiZjVlOWMzYTExMTNiZjlmNjFkM2VhNzQ1MjhiOTk4ZDNmZjgyMmEyZjZkNjUxYzUxYjkifQ"
+          "resource": "repo://src/journal.rs#L1480-L1560",
+          "version": "repo-lines-v1:sha256:7966199be22a1abfd58e48dada7df5bd550be56776c319eebd971ec69b93606b:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1ZTM4ZmY2ZDU2NjEzMTA0OTkxZTI3ZDNlNjRlZTE5OTc0ZjAyMDExNTcwZjFhZjBjZTdmNjZkMjllZmIyODEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiMmY4NGExOGQ0NjM0ZDM3ZDRkYmZlNzc0NjU1YjBkOTllMzA3ZjYyMjFkNTk1MTQ5YmQxYTlmMWYxNDIxMDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzOWI2MTFmYjIyOGI0YzU5NTBjYzZkZTAyOTIwM2ZiZWM2NjVkNDkyNmQwMGRhNWIzYjBkM2MzMzE4NTc4ZWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0N2IzMjhjNmEyYTNmOTE2YjJjYmMxNTQwMWM4MTJiYjVlNzQyYjgyMTIxNTA0YzUwMzA5MjNmYzlhNmI0ZDUifQ"
         }
       ]
     },
@@ -145,7 +141,7 @@
       "statement": "Defragmentation crash safety is tested by simulating power loss at two precise mid-round phases: pre-commit (data copied, WAL still pre-defrag) and post-commit (WAL committed, metadata not applied), verifying fsck cleanliness and data integrity after mount recovery.",
       "evidence": [
         {
-          "resource": "repo://src/disk/maintenance.rs#L1430-L1490",
+          "resource": "repo://src/disk/maintenance.rs#L1485-L1545",
           "version": "repo-lines-v1:sha256:a9d3322bdff0d63654487757238d5ed3945d3b0cf48743cfa711740a1d4fb994:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxOTI4NTFmZjBmYTNkMDdhY2M5MDY2ZjVhMWJjYzY4YzY5NDQ5YzRkOTgzZDg0Zjc2OTBkODFjZDU2NWU2NjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNjNTQ4MDkzMzdjNjNhZjk0MzYyYzc4ZjYzOGRhZDc5YWE2OTA0NTRlZmJlY2FkODA3YTcwMGVhODQzNjk3NmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjYzUyZjNhZTg1MTcxYmUwZjc3MzgyOWU0YWYwMGZmYmU1ZTY4MjdmNmVkOGVmN2M5OGE3OTk4YzE5YTYzZTQifQ"
         },
         {
@@ -166,19 +162,11 @@
     },
     {
       "id": "claim_01463a6e31184e83a264b2890d3f8e15",
-      "statement": "Truncate operations on journaled filesystems stage all metadata changes (zeroing slack, clearing block pointers, freeing data bitmap bits, pruning indirect blocks, updating inode size) into a single WAL transaction before committing, verified by truncate_journaled_filesystem and coalesced large write/truncate/delete tests.",
+      "statement": "Truncate operations on journaled filesystems stage all metadata changes (zeroing slack, clearing block pointers, freeing data bitmap bits, pruning indirect blocks, updating inode size) into a single WAL transaction before committing.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L5918-L6280",
-          "version": "repo-lines-v1:sha256:3c06b9289a764b13d70512348c88e3cb86675da1c4e39b0803919683d0785ab3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4YTE4NWNmMjIwNzhiNGMxMTYxNGRmNjYzYmMxZjc0ZTkyNTUzM2Q1NGFmYWEwODc1NWY2NjNjZGE2NmNlOGFmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2YjcyOWY5YTE4MTFiYzQyMTA0NmRhMTRjODY0OTcwNjc2YWI5ZjczYTNkMjViNWMzZTg5YWJjZjE1MTU2NmQyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzMWY1ZWVlZGE2ZGEzMDhkODE3ZWM2NTk4ODk3NzU1MTM3NjYwYjQ5ODUyNDE1MWFjY2JhMTBjNmVlYjg2ZTk1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlZDdiMjRiYjg5YzY2OGYxYzM2Mzk4MmZjNGM4ZmRhY2M1MDM2NmI2ZWNhMGFjMzMwY2RhNTExZGY2OTkyOTk5In0"
-        },
-        {
-          "resource": "repo://tests/batch_read_sharded_dir_and_durability_test.rs#L200-L250",
-          "version": "repo-lines-v1:sha256:7b74c91d27633440a69e39dd3b7c7353607be705ae7f51f5d9d5722925a1083f:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMDRiZWMwMjQzZDdlMGE3Mjc2NTMzY2NhNmJkYmJkMDIyN2NmZTkyZDA1MzE1MjNmNGFlNmQ4ZjExMTBlOTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjMjgwY2VhY2IzZDZmNjk1OWI1YTY2Y2E0OWJkNjRiYzgyMTUwMmNhNjg3ZGZmZDBiNTBlYjQ5YzBhMTk1NTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmOWFkNDYzYmU3MWM1ZjQyMDk0NmFmYmYwN2QwZmU5ZjVmMTFkYTgyZjFlOTQ5MDNjYzMzOTVkOGMxYTBiMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImViZjMwYWExMGM4YTZjNmFhZTIwMjBkMTUzNTQzMjRmOTIxY2IzMTAwMGY5OGUxOGRmNTk2ODc5YjdkZjQ4ZTUifQ"
-        },
-        {
-          "resource": "repo://tests/contiguous_and_truncate_test.rs#L167-L205",
-          "version": "repo-lines-v1:sha256:1edbec25c1c5475d725a2fd3bbd2c2a97f2825dc78777807e9788d17fc9073cb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmMTNjODc4NTg3ZmQ0ZjEyODcxOWZkMTJmYWI3M2I4ZTZjNDFhMmE4YWQzZWExZDdmZjc4ZjdhOTI4NjVjNTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmOWFkNDYzYmU3MWM1ZjQyMDk0NmFmYmYwN2QwZmU5ZjVmMTFkYTgyZjFlOTQ5MDNjYzMzOTVkOGMxYTBiMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjViZWM5NTI5ZTRlYWIyNDU2MjhmYmExNDQwZWJhMDZkYTg2ZDNkMjQxMGRiZjFlZDBlZjFiM2E4ZGQ2MzViY2QifQ"
+          "resource": "repo://src/disk.rs#L7890-L7990",
+          "version": "repo-lines-v1:sha256:aa01446bcf7af843d22bd66b15eef536523e1c239af910cee69dd1b5b1fca819:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNmIwNDQ5MTQ2OTcyMmU4MzYzYTk0ZTQwNDQ1MzhlMDEzYTJhMjE3ZTM2YjFlNTY4YmE2MGFjYjdiNGM4ZjJlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmY2U4ZDEzN2ZhNDRhYzY2NDhiM2E0YTZmNTZmNTBiYWJhNjc3MzQxNDVkMDQ3NGE0ZTU1NTY5N2ZkMjZiZWM4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhNzI0MDgzNGQxZGNlYmY3ZjkxN2MzYTEyYzM0NWY2NDhkOWEyZWYwODViNTY3YzViY2ZhZWRiMGY4YWYzNDg2In0"
         }
       ]
     },
@@ -217,10 +205,62 @@
           "version": "repo-lines-v1:sha256:b3f0693bb1a623bf91c929d490b4c5bf766c59c6ff50ab5ba3e707e1d9796699:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzZWEyZTg5ZDA2MzhkNTk1OWEwY2MyMDVkY2NjY2RmYWNjYWQwY2UxMmQwM2JmZWM5ZWZmZDJlN2RmODAwMTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQyY2Q0ZGI0OGEzNTBlOGYwYjQ3OTQ0YzQ2ZTNmZmRiYmExMzJkMjI5MGE5MWQ3MDEyYjU2ZWI0NmM4YWI0ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNmZDUwNWQ3Y2MxNzQwZWI0OWNlYjRkZGQzYTUxOTRhZGExMjFmODJhMzMyOTgzZmIxMzI1MGUyMWQ2OWYyMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0NDI0MDgzZjk2MDQxZWNkYzNiNWJlOTJhMWJhMDlhNzU4NGIwYWI2YjNmYTE1MzY5YTcxZDRmOTQ0YWY1ODAifQ"
         }
       ]
+    },
+    {
+      "id": "claim_aae62b45d88c4685a712535c46a7655f",
+      "statement": "Durability mode guarantees differ for power-loss: Lazy requires explicit flush or Drop; RangeAsync provides async msync per-mutation; Strict provides sync msync per-mutation; LegacyWholeMmapAsync provides async full-map flush.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L207-L241",
+          "version": "repo-lines-v1:sha256:3d50f8e78e13c41f440eb3f80141d821d16d42256f506ba8fe95771a0f8fa398:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4YmEzMGIyNjQ2ZmMzZGVhNzVmMjZkYmQ3Yjk1MmUwMGU2NzAwODZjNjQ5ZjAyNjNlZWFkM2RmY2E3M2ZkNjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmMjk0NDhiMmQxZjFhZWY3ZDU1NjExMTYyODQ5N2I3YzY5YmE0OWNhMTRkZjVkZDE2ZDI1ZWRjYzQwOTA3NDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJjOWUyYWI5N2NkM2Q0ZWQxZjFiZjNkZWI1MDRjZTE4ZmU0YjliZGJhMjYwNmUzY2U3MGFkNjUzOWE0ODljMTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L547-L660",
+          "version": "repo-lines-v1:sha256:ac4fbf9753d61bd15bfbf480210c8592987436d3296a671f8db31f1db1a837dd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MTk4N2QwMjU2NjBmZDhlNmE0ZTAxZGU1MGNjNDQ2MDMyZjhmNDMwZjUxNjdkMmU2MDJmY2U2N2VkOTdhZjlmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4M2M5MDkwNTk4NjljM2YyYjliZWJkY2ZhNmNmYWZlYTNjZjkyNGQwNjVmZjA4MDU5ODVkMGE2Mjk5NGQ0NGZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwYjlkYWM1ZGUwODRkNTQ2NTE1YWI3NmRkYzYzM2JmMTY0ZTg4N2U0NGViZTIzZDVmYmJkYWUwYTVkNDk4MTU3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzMmIyZjE3YTAxMjlmNzkxYWE1ZTZjZGY2NTdiMTQ4MzhhNTQ2OTk3MmQ4NTNmYzRkMjAyMjg2MDAyN2Y1OGFiIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_fafa57561eab44b9a29334193b6bc2ff",
+      "statement": "Defragmentation crash safety is tested by simulating power loss at two precise mid-round phases: pre-commit (data copied, WAL still pre-defrag) and post-commit (WAL committed, metadata not applied), verifying fsck cleanliness and data integrity after mount recovery.",
+      "evidence": [
+        {
+          "resource": "repo://tests/journal_test.rs#L1863-L1960",
+          "version": "repo-lines-v1:sha256:b3f0693bb1a623bf91c929d490b4c5bf766c59c6ff50ab5ba3e707e1d9796699:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzZWEyZTg5ZDA2MzhkNTk1OWEwY2MyMDVkY2NjY2RmYWNjYWQwY2UxMmQwM2JmZWM5ZWZmZDJlN2RmODAwMTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQyY2Q0ZGI0OGEzNTBlOGYwYjQ3OTQ0YzQ2ZTNmZmRiYmExMzJkMjI5MGE5MWQ3MDEyYjU2ZWI0NmM4YWI0ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNmZDUwNWQ3Y2MxNzQwZWI0OWNlYjRkZGQzYTUxOTRhZGExMjFmODJhMzMyOTgzZmIxMzI1MGUyMWQ2OWYyMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0NDI0MDgzZjk2MDQxZWNkYzNiNWJlOTJhMWJhMDlhNzU4NGIwYWI2YjNmYTE1MzY5YTcxZDRmOTQ0YWY1ODAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1620159ebae54006b6a6d60e8c188e98",
+      "statement": "FSCK validation after simulated crashes is tested through direct on-disk corruption injection (orphan inodes, leaked blocks, missing blocks, cross-linked blocks) and after defragmentation crash simulations, verifying the structural consistency checker detects all error categories.",
+      "evidence": [
+        {
+          "resource": "repo://tests/fsck_extended_test.rs#L1-L177",
+          "version": "repo-lines-v1:sha256:8f165e347186bbd91245edb2bea8f3bb8b0cf20330d2f8f0b0ddb1fe4a11e079:eyJzZWxlY3RlZExpbmVDb3VudCI6MTc3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4ZWJjOGU4MWZhZGRjNDM0YjM4ODIwZTAwNzk2NjcxM2VlNzJmZmNhMjA3NDQwZGQ3M2ZiZDQ1MTA4NWYzMWVhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://tests/fsck_test.rs#L1-L69",
+          "version": "repo-lines-v1:sha256:c5e292f104705dbd48bad2faf76ecf0bc180d9dd1d55a88e1f7d8b965c34a996:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmNDY4MTFjZTk1ZDdjMjJmZGJmNWRjOTBiZWY5ZDQ1MGEwZjZkNjQzYTJhNTFkYzUyMGJkZDg4MmEzMWJiZjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://tests/journal_test.rs#L1863-L1960",
+          "version": "repo-lines-v1:sha256:b3f0693bb1a623bf91c929d490b4c5bf766c59c6ff50ab5ba3e707e1d9796699:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzZWEyZTg5ZDA2MzhkNTk1OWEwY2MyMDVkY2NjY2RmYWNjYWQwY2UxMmQwM2JmZWM5ZWZmZDJlN2RmODAwMTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQyY2Q0ZGI0OGEzNTBlOGYwYjQ3OTQ0YzQ2ZTNmZmRiYmExMzJkMjI5MGE5MWQ3MDEyYjU2ZWI0NmM4YWI0ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNmZDUwNWQ3Y2MxNzQwZWI0OWNlYjRkZGQzYTUxOTRhZGExMjFmODJhMzMyOTgzZmIxMzI1MGUyMWQ2OWYyMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0NDI0MDgzZjk2MDQxZWNkYzNiNWJlOTJhMWJhMDlhNzU4NGIwYWI2YjNmYTE1MzY5YTcxZDRmOTQ0YWY1ODAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_144ec2bb23554511b5a2fe0242ac5c77",
+      "statement": "The rename operation on journaled filesystems is atomic and recoverable: cross-directory moves preserve inode ID and data, overwrites free victim inodes and blocks atomically, and all variants reopen cleanly after simulated crash.",
+      "evidence": [
+        {
+          "resource": "repo://tests/rename_test.rs#L1-L100",
+          "version": "repo-lines-v1:sha256:94847da81d011dcda07ff7ee8a0309e99209af8b7709d20f4d4b484c4d9e1f01:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxZWJhOWY1NDA5YTc5NjQzNzExYzk2NTk0ZjQzMzgxZjU5OTBlOTc0ZTJiZTUwNjMzNTZmZDZkMjhjODQwYzRkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiNzFjMmYxN2EzOWJhNDU2ZTU1MDViNmU5NzA2M2NmMjc3MTY5MDNkOGNkZTBmMjk1MDBmZmM1ODU3MDIxOTM0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxZmJhNDJlM2FmM2M3NzgxZTg3MTg2MjIwMjI1MTM5NjI5NWYyYTMwMGE2OTUwMGQ3MmU4MDgxYjg4MDAxMmEyIn0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-20T22:07:36.625Z"
+    "at": "2026-11-23T20:55:55.458Z"
   }
 }

@@ -1,11 +1,10 @@
 ---
-type: architecture
-title: Encryption & Key Hierarchy
-description: Argon2id key derivation (m=64MiB, t=3, p=4), BLAKE2b domain-separated subkeys (payload, filename_siv, filename_cipher, ipc_auth), XChaCha20-Poly1305 for payloads, SIV + AEAD for filenames (synthetic nonce from BLAKE2b), context-bound AEAD (file_aad, chunk_aad binding inode_id, chunk_idx, flags), NEON + short-scalar XChaCha20 optimization, IPC challenge-response authentication, and the two scheme versions (legacy empty AAD vs context-bound).
-tags: [encryption, security, aead, xchacha20-poly1305, argon2id, siv, zeroize, blake2b, key-hierarchy, ipc-auth]
+type: "Reference"
+title: "Encryption"
+openwiki_generated: true
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-22T10:29:12.696Z
+    at: 2026-11-23T20:55:55.458Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
@@ -19,23 +18,18 @@ sources:
     resource: repo://src/ipc.rs
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
 ---
+
 
 ## Responsibility and ownership
 
 The encryption subsystem (`src/encryption.rs`) provides cryptographic privacy and authenticated integrity for stored files, directory entries, and on-disk metadata. It isolates cryptographic primitives into clean layers:
 
-<!-- openwiki: broken internal link [src/encryption.rs#L60-L111] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-1. **Key Management and Hygiene**: Passphrase hashing with Argon2id, master-key-to-subkey derivation via BLAKE2b domain separation, and automatic secret erasure via `ZeroizeOnDrop` ([`EncryptionKey`](src/encryption.rs#L60-L111)).
-<!-- openwiki: broken internal link [src/encryption.rs#L123-L148] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/encryption.rs#L150-L176] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-2. **File Payload AEAD**: Authenticated payload confidentiality via [`encrypt_data`](src/encryption.rs#L123-L148) / [`decrypt_data`](src/encryption.rs#L150-L176) and in-place variants.
-<!-- openwiki: broken internal link [src/encryption.rs#L368-L385] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-3. **Seekable Chunk AEAD**: Context-bound encryption for 64 KiB seekable chunks with AAD binding `inode_id`, `chunk_idx`, and `flags` ([`chunk_aad_stack`](src/encryption.rs#L368-L385)).
-<!-- openwiki: broken internal link [src/encryption.rs#L688-L780] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/encryption.rs#L782-L900] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-4. **Deterministic Filename Privacy**: SIV construction using BLAKE2b-512 synthetic nonce + XChaCha20-Poly1305 AEAD, parent inode bound in AAD ([`encrypt_filename`](src/encryption.rs#L688-L780), [`decrypt_filename`](src/encryption.rs#L782-L900)).
+1. **Key Management and Hygiene**: Passphrase hashing with Argon2id, master-key-to-subkey derivation via BLAKE2b domain separation, and automatic secret erasure via `ZeroizeOnDrop` ([`EncryptionKey`](repo://src/encryption.rs#L49-L111)).
+2. **File Payload AEAD**: Authenticated payload confidentiality via [`encrypt_data`](repo://src/encryption.rs#L184-L213) / [`decrypt_data`](repo://src/encryption.rs#L215-L241) and in-place variants.
+3. **Seekable Chunk AEAD**: Context-bound encryption for 64 KiB seekable chunks with AAD binding `inode_id`, `chunk_idx`, and `flags` ([`chunk_aad_stack`](repo://src/encryption.rs#L358-L375)).
+4. **Deterministic Filename Privacy**: SIV construction using BLAKE2b-512 synthetic nonce + XChaCha20-Poly1305 AEAD, parent inode bound in AAD ([`encrypt_filename`](repo://src/encryption.rs#L661-L779), [`decrypt_filename`](repo://src/encryption.rs#L770-L901)).
 5. **IPC Authentication**: Dedicated subkey for challenge-response authentication (`ipc_auth_key`).
 
 ```mermaid
@@ -61,8 +55,7 @@ flowchart TD
 
 ### Memory hygiene with ZeroizeOnDrop
 
-<!-- openwiki: broken internal link [src/encryption.rs#L60-L111] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-Cryptographic keys must never linger in memory or bleed into swap space or crash dumps. The [`EncryptionKey`](src/encryption.rs#L60-L111) struct wraps the master key and all four subkeys with `zeroize` macros:
+[`EncryptionKey`](repo://src/encryption.rs#L49-L111) wraps the master key and all four subkeys with `zeroize` macros:
 
 ```rust
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -81,28 +74,20 @@ pub struct EncryptionKey {
 ```
 
 - When an `EncryptionKey` instance goes out of scope, `ZeroizeOnDrop` automatically executes volatile memory zeroization on all five `[u8; 32]` arrays.
-<!-- openwiki: broken internal link [src/encryption.rs#L113-L117] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- The `fmt::Debug` implementation explicitly overrides formatted output with `EncryptionKey([REDACTED])` ([src/encryption.rs#L113-L117](src/encryption.rs#L113-L117)), preventing secrets from accidentally leaking into log outputs or panic strings.
+- The `fmt::Debug` implementation explicitly overrides formatted output with `EncryptionKey([REDACTED])` ([repo://src/encryption.rs#L109-L111](repo://src/encryption.rs#L109-L111)), preventing secrets from accidentally leaking into log outputs or panic strings.
 
 ### Argon2id password-based key derivation (PBKDF)
 
-<!-- openwiki: broken internal link [src/encryption.rs#L121-L166] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-Keys are derived from user-supplied passphrases using Argon2id via [`derive_key`](src/encryption.rs#L121-L166):
+Keys are derived from user-supplied passphrases using Argon2id via [`derive_key`](repo://src/encryption.rs#L124-L167):
 
-<!-- openwiki: broken internal link [src/encryption.rs#L13-L15] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/encryption.rs#L13-L15] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/encryption.rs#L13-L15] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- **Parameters**: `m = 65,536 KiB (64 MiB)`, `t = 3`, `p = 4` (OWASP / RFC 9106 hardened defaults). Constants are [`ARGON2_M_COST_KIB`](src/encryption.rs#L13-L15), [`ARGON2_T_COST`](src/encryption.rs#L13-L15), [`ARGON2_P_COST`](src/encryption.rs#L13-L15).
-<!-- openwiki: broken internal link [src/encryption.rs#L276-L282] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/superblock.rs#L47] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- **Salt Management**: A cryptographically secure 16-byte random salt is generated with `OsRng` via [`generate_salt()`](src/encryption.rs#L276-L282). This salt is permanently stored in plaintext within the filesystem's `SuperBlock::encryption_salt` ([src/superblock.rs#L47](src/superblock.rs#L47)).
+- **Parameters**: `m = 65,536 KiB (64 MiB)`, `t = 3`, `p = 4` (OWASP / RFC 9106 hardened defaults). Constants are [`ARGON2_M_COST_KIB`](repo://src/encryption.rs#L7-L9), [`ARGON2_T_COST`](repo://src/encryption.rs#L7-L9), [`ARGON2_P_COST`](repo://src/encryption.rs#L7-L9).
+- **Salt Management**: A cryptographically secure 16-byte random salt is generated with `OsRng` via [`generate_salt()`](repo://src/encryption.rs#L301-L306). This salt is permanently stored in plaintext within the filesystem's `SuperBlock::encryption_salt` ([repo://src/superblock.rs#L47](repo://src/superblock.rs#L47)).
 - **Rainbow Table and GPU Resistance**: Argon2id combines data-dependent and data-independent memory access passes, providing state-of-the-art resistance against both side-channel cache timing attacks and GPU/ASIC password cracking.
 - The 256-bit output hash is copied into `EncryptionKey::from_bytes(key)`, which immediately derives the four domain-separated subkeys via BLAKE2b-512.
 
-### BLAKE2b domain-separated subkey derivation
+### BLAKE2b-512 domain-separated subkey derivation
 
-<!-- openwiki: broken internal link [src/encryption.rs#L20-L57] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-[`derive_subkey`](src/encryption.rs#L20-L57) isolates the master key across distinct primitives:
+The [`derive_subkey`](repo://src/encryption.rs#L24-L44) function ensures the master key is never reused directly across distinct primitives:
 
 ```rust
 pub fn derive_subkey(master_key: &[u8; 32], context: &[u8]) -> [u8; 32] {
@@ -118,277 +103,225 @@ pub fn derive_subkey(master_key: &[u8; 32], context: &[u8]) -> [u8; 32] {
 }
 ```
 
-<!-- openwiki: broken internal link [src/encryption.rs#L17-L27] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-Four domain-separation labels (constants in [src/encryption.rs#L17-L27](src/encryption.rs#L17-L27)):
+Domain separation labels (constants at [repo://src/encryption.rs#L13-L16](repo://src/encryption.rs#L13-L16)):
+- `KDF_CONTEXT_PAYLOAD` = `b"oifs.kdf.v2.payload.xchacha20poly1305"`
+- `KDF_CONTEXT_FILENAME_SIV` = `b"oifs.kdf.v2.filename.siv.blake2b"`
+- `KDF_CONTEXT_FILENAME_CIPHER` = `b"oifs.kdf.v2.filename.aead.xchacha20poly1305"`
+- `KDF_CONTEXT_IPC_AUTH` = `b"oifs.kdf.v2.ipc.auth.blake2b"`
 
-| Subkey | Context Label | Purpose |
-|---|---|---|
-| `payload_key` | `oifs.kdf.v2.payload.xchacha20poly1305` | File & seekable-chunk XChaCha20-Poly1305 AEAD |
-| `filename_siv_key` | `oifs.kdf.v2.filename.siv.blake2b` | BLAKE2b-512 synthetic nonce (SIV) for filenames |
-| `filename_cipher_key` | `oifs.kdf.v2.filename.aead.xchacha20poly1305` | Filename XChaCha20-Poly1305 AEAD |
-| `ipc_auth_key` | `oifs.kdf.v2.ipc.auth.blake2b` | IPC challenge-response authentication (BLAKE2b MAC) |
+Each label is distinct and versioned (`v2`), guaranteeing cryptographic isolation: `payload_key` ≠ `filename_siv_key` ≠ `filename_cipher_key` ≠ `ipc_auth_key` ≠ `master_key`. Tests verify pairwise distinctness ([repo://src/encryption.rs#L1000-L1013](repo://src/encryption.rs#L1000-L1013)).
 
-The master key is **never** used directly for any encryption, MAC, or authentication operation.
+## Encryption schemes (versioning)
 
-## File payload AEAD: XChaCha20-Poly1305
+The filesystem records `encryption_version` in the superblock ([repo://src/superblock.rs#L47](repo://src/superblock.rs#L47)). Two schemes exist:
 
-<!-- openwiki: broken internal link [src/encryption.rs#L123-L148] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-File content encryption uses the extended-nonce variant of ChaCha20-Poly1305 (`XChaCha20Poly1305`, [src/encryption.rs#L123-L148](src/encryption.rs#L123-L148)).
+| Scheme | Constant | Value | AAD |
+|--------|----------|-------|-----|
+| Legacy | `ENCRYPTION_SCHEME_LEGACY` | 1 | Empty (no binding) |
+| Context-bound | `ENCRYPTION_SCHEME_CONTEXT_BOUND` | 2 | Binds `inode_id` / `chunk_idx` / `flags` / `parent_inode` |
 
-### 192-bit per-file nonces
+- New images always use `ENCRYPTION_SCHEME_CONTEXT_BOUND` ([repo://src/disk.rs#L1528](repo://src/disk.rs#L1528), [repo://src/disk.rs#L1535](repo://src/disk.rs#L1535)).
+- Legacy images (scheme 1) remain readable; their AAD is empty, so ciphertexts can be moved across files/chunks without authentication failure.
+- `file_aad_for_scheme_stack` / `chunk_aad_for_scheme_stack` ([repo://src/encryption.rs#L387-L423](repo://src/encryption.rs#L387-L423)) select the appropriate AAD based on the scheme version.
 
-Standard ChaCha20-Poly1305 uses a 96-bit nonce, which risks catastrophic key/nonce reuse collisions if nonces are generated randomly over billions of files. XChaCha20-Poly1305 features an extended **192-bit (24-byte)** nonce:
+## Context-bound Associated Data (AAD)
 
-<!-- openwiki: broken internal link [src/encryption.rs#L272-L278] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- Each encrypted file receives a unique 24-byte nonce generated via [`generate_nonce()`](src/encryption.rs#L272-L278) using system entropy (`OsRng`).
-- The 192-bit nonce size eliminates the birthday bound risk for random nonce generation ($2^{96}$ operations required for a 50% collision probability).
-<!-- openwiki: broken internal link [src/inode.rs#L36-L37] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- The nonce is stored directly in the file's metadata header: `Inode::encryption_nonce` ([src/inode.rs#L36-L37](src/inode.rs#L36-L37)).
+AAD construction is stack-allocated (zero heap allocations) and domain-separated by a leading kind byte.
 
-### Two encryption schemes (AAD binding)
+| Kind | Constant | Layout (bytes) | Binds |
+|------|----------|----------------|-------|
+| File | `AAD_KIND_FILE` (0x01) | `[kind][AAD_DOMAIN(11)][inode_id(8)]` = 20 | `inode_id` |
+| Chunk | `AAD_KIND_CHUNK` (0x02) | `[kind][AAD_DOMAIN(11)][inode_id(8)][chunk_idx(8)][flags(1)]` = 29 | `inode_id`, `chunk_idx`, `flags` |
+| Filename | `AAD_KIND_FILENAME` (0x03) | `[kind][AAD_DOMAIN(11)][parent_inode(8)]` = 20 | `parent_inode` |
 
-OIFS supports two encryption scheme versions, selected by `SuperBlock::encryption_version`:
+- `AAD_DOMAIN = b"OIFS-AAD-v1"` (11 bytes).
+- Functions: `file_aad_stack`, `chunk_aad_stack`, `filename_aad_stack` ([repo://src/encryption.rs#L348-L375](repo://src/encryption.rs#L348-L375)).
+- Kani proof verifies domain separation and injectivity ([repo://src/encryption.rs#L1138-L1164](repo://src/encryption.rs#L1138-L1164)).
 
-| Scheme | Constant | AAD Behavior |
-|---|---|---|
-| Legacy | `ENCRYPTION_SCHEME_LEGACY = 1` | Empty AAD (`Vec::new()`) — no binding |
-| Context-bound | `ENCRYPTION_SCHEME_CONTEXT_BOUND = 2` | Structured AAD binding `inode_id` (file) or `inode_id`, `chunk_idx`, `flags` (chunk) |
+## XChaCha20-Poly1305 AEAD encryption/decryption
 
-<!-- openwiki: broken internal link [src/encryption.rs#L327-L410] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-**Context-bound AAD structure** ([src/encryption.rs#L327-L410](src/encryption.rs#L327-L410)):
+### File/chunk payloads
 
-```text
-File AAD (20 bytes):
-  [0]     = 0x01 (AAD_KIND_FILE)
-  [1..12] = "OIFS-AAD-v1" (11-byte domain separator)
-  [12..20]= inode_id (u64, little-endian)
+- **Nonce**: 192-bit (24 bytes) generated via `generate_nonce()` ([repo://src/encryption.rs#L308-L312](repo://src/encryption.rs#L308-L312)) — cryptographically random, unique per encryption.
+- **Key**: `payload_key` (256-bit subkey).
+- **AAD**: `file_aad_stack(inode_id)` for whole files, `chunk_aad_stack(inode_id, chunk_idx, flags)` for seekable chunks.
+- **Operations**: `encrypt_data`, `decrypt_data`, `encrypt_data_in_place`, `decrypt_data_in_place`, `encrypt_with_nonce_prefix`, `decrypt_into_slice` ([repo://src/encryption.rs#L184-L297](repo://src/encryption.rs#L184-L297)).
 
-Chunk AAD (29 bytes):
-  [0]     = 0x02 (AAD_KIND_CHUNK)
-  [1..12] = "OIFS-AAD-v1"
-  [12..20]= inode_id (u64, little-endian)
-  [20..28]= chunk_idx (u64, little-endian)
-  [28]    = flags (u8: FLAG_EMPTY=0, FLAG_COMPRESSED=1, FLAG_RAW=2)
+### Short-message scalar fast path
 
-Filename AAD (20 bytes):
-  [0]     = 0x03 (AAD_KIND_FILENAME)
-  [1..12] = "OIFS-AAD-v1"
-  [12..20]= parent_inode (u64, little-endian)
-```
+On `aarch64` with NEON, the library's `chacha20` crate computes 4 blocks (256 B) per call and discards 3 for short messages — wasting 75% of work on filenames (`≤ 64 B`). A scalar RFC 8439 + XChaCha20 implementation (`xchacha20_poly1305_encrypt_short` / `xchacha20_poly1305_decrypt_short`, [repo://src/encryption.rs#L446-L560](repo://src/encryption.rs#L446-L560)) computes only the exact 64-byte blocks needed, remaining **byte-for-byte identical** to the reference implementation (proven by exhaustive test up to 192 bytes [repo://src/encryption.rs#L1070-L1115](repo://src/encryption.rs#L1070-L1115)). Threshold: `SHORT_XCHACHA_THRESHOLD = 192` bytes ([repo://src/encryption.rs#L331](repo://src/encryption.rs#L331)).
 
-Stack-allocated helpers avoid heap allocations on the hot path:
-<!-- openwiki: broken internal link [src/encryption.rs#L412-L425] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [`file_aad_for_scheme_stack`](src/encryption.rs#L412-L425) → `([u8; 20], usize)`
-<!-- openwiki: broken internal link [src/encryption.rs#L427-L440] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [`chunk_aad_for_scheme_stack`](src/encryption.rs#L427-L440) → `([u8; 29], usize)`
+## Filename encryption: 192-bit SIV (deterministic, collision-resistant)
 
-Legacy images (scheme 1) remain readable because `file_aad_for_scheme` / `chunk_aad_for_scheme` return empty AAD for `scheme < ENCRYPTION_SCHEME_CONTEXT_BOUND`.
+### Construction
 
-### Authenticated encryption with associated data (AEAD)
+1. **Synthetic nonce (SIV)**: 24-byte (192-bit) derived via BLAKE2b-512 keyed by `filename_siv_key`:
+   ```
+   nonce = BLAKE2b-512("OIFS_SIV_FILENAME_V2_XCHACHA20" || filename_siv_key || parent_inode(8) || name)[0..24]
+   ```
+   ([`derive_filename_siv_nonce`](repo://src/encryption.rs#L629-L639))
 
-<!-- openwiki: broken internal link [src/encryption.rs#L140] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-`encrypt_data` computes a 16-byte Poly1305 Message Authentication Code (MAC) tag appended to the ciphertext ([src/encryption.rs#L140](src/encryption.rs#L140)):
-- Any tampering, byte corruption, bit flips, or truncation of the on-disk ciphertext immediately causes `decrypt_data` to fail authentication with `EncryptionError::DecryptionFailed`.
-- Plaintext is only returned once the Poly1305 MAC tag is cryptographically verified against the key, nonce, and AAD.
+2. **AEAD encryption**: XChaCha20-Poly1305 with `filename_cipher_key`, the 24-byte nonce, and `filename_aad_stack(parent_inode)` as AAD.
 
-### Pipeline ordering: filter → compress → encrypt
-
-<!-- openwiki: broken internal link [src/disk.rs#L4308-L4372] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-In [`DiskManager::build_full_overwrite_buffer_pure`](src/disk.rs#L4308-L4372), the write pipeline strictly enforces that **pre-compression filtering and compression execute before encryption**:
-
-```
-Plaintext ──> [Filter (Delta/Shuffle)] ──> [Zstd Compress] ──> [XChaCha20 Encrypt] ──> On-Disk Blocks
-                                                                        ▲
-                                                      Nonce (OsRng) ────┘
-```
-
-**Cryptographic rationale**:
-
-1. **Shannon Entropy Flattening**: Secure ciphers like XChaCha20 output ciphertext indistinguishable from pure pseudorandom noise, with Shannon entropy approaching the theoretical maximum ($\approx 8.0$ bits per byte).
-2. **Compressibility Destruction**: Lossless compressors (LZ77, Huffman, FSE) rely entirely on recurring byte patterns and non-uniform symbol distributions. If encryption occurred first, compression would achieve 0% reduction or expand in size.
-3. **Security Invariance**: Compressing before encryption preserves maximum storage efficiency while the subsequent XChaCha20-Poly1305 pass ensures complete cryptographic confidentiality and integrity across the physical stored blocks.
-
-### NEON SIMD + short-scalar fast path
-
-<!-- openwiki: broken internal link [src/encryption.rs#L507-L512] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-On `aarch64`, the `chacha20` crate's NEON implementation (`chacha20_force_neon` feature) computes 4 ChaCha20 blocks (256 B) per `gen_ks_block` call. For short messages (< 256 B) this wastes most of the keystream. The encryption subsystem provides an **exact RFC 8439 + XChaCha20 scalar fast path** for payloads ≤ 192 bytes ([src/encryption.rs#L507-L512](src/encryption.rs#L507-L512)):
-
-```rust
-const SHORT_XCHACHA_THRESHOLD: usize = 192;
-```
-
-<!-- openwiki: broken internal link [src/encryption.rs#L567-L597] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/encryption.rs#L599-L644] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-The fast path ([`xchacha20_poly1305_encrypt_short`](src/encryption.rs#L567-L597), [`xchacha20_poly1305_decrypt_short`](src/encryption.rs#L599-L644)):
-- Computes **only the exact number of 64-byte ChaCha20 blocks** needed for the message length.
-- Uses `hchacha20_subkey` to derive the 256-bit subkey from the first 16 bytes of the 24-byte XNonce.
-- Generates the Poly1305 key from block 0, then XORs message blocks with keystream blocks 1, 2, ...
-- Implements Poly1305 per RFC 8439 (with length padding + length encoding).
-- Zeroizes all intermediate state (`subkey`, `poly_key`, keystream blocks) after use.
-- Remains **100% byte-for-byte identical** to `XChaCha20Poly1305`, preserving full NEON SIMD speed (+36%) for file and chunk payloads (> 192 B).
-
-This optimization particularly benefits filename encryption (typical length 10–60 bytes) and small chunk payloads.
-
-## Seekable chunk AEAD (64 KiB chunks)
-
-<!-- openwiki: broken internal link [src/inode.rs#L75] file "src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk/chunked.rs#L247-L277] file "src/disk/chunked.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-Files with `INODE_FLAG_SEEKABLE_64K` set ([src/inode.rs#L75](src/inode.rs#L75)) store data as independent 64 KiB logical chunks. Each chunk is encrypted independently with its own 24-byte nonce ([src/disk/chunked.rs#L247-L277](src/disk/chunked.rs#L247-L277)):
-
-- **Per-chunk nonce**: Generated via `OsRng`, stored as prefix `[nonce | ciphertext | tag]` in the chunk's block run.
-<!-- openwiki: broken internal link [src/encryption.rs#L418-L425] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- **Chunk AAD**: Binds `inode_id`, `chunk_idx` (logical index), and `flags` (compressed/raw/empty) via [`chunk_aad_for_scheme_stack`](src/encryption.rs#L418-L425).
-<!-- openwiki: broken internal link [src/disk/chunked.rs#L279-L400] file "src/disk/chunked.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- **Decryption**: [`read_single_chunk_into`](src/disk/chunked.rs#L279-L400) verifies AAD before returning plaintext, preventing chunk reordering, rollback, or cross-file injection.
-
-This design enables true random-access reads: any 64 KiB chunk can be decrypted independently without touching other chunks.
-
-## Deterministic SIV filename encryption
-
-<!-- openwiki: broken internal link [src/encryption.rs#L688-L900] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-Plain directory entry storage exposes sensitive filename patterns, extensions, and directory topologies. To protect directory listings while still allowing $O(1)$ fast lookups without decrypting every entry in a directory block, OIFS implements Synthetic Initialization Vector (SIV) filename encryption ([src/encryption.rs#L688-L900](src/encryption.rs#L688-L900)).
-
-### SIV construction and directory tweak
-
-<!-- openwiki: broken internal link [src/encryption.rs#L688-L780] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-[`encrypt_filename`](src/encryption.rs#L688-L780) deterministically generates a synthetic nonce using BLAKE2b-512 over a domain-separated context:
-
-```
-Synthetic Nonce (24 bytes) =
-  BLAKE2b-512("OIFS_SIV_FILENAME_V2_XCHACHA20" || filename_siv_key || parent_inode || plaintext_filename)[0..24]
-```
-
-The parent inode ID is mixed directly into the PRF input, so the same filename in different directories produces unrelated ciphertexts.
-
-### Encryption process
-
-1. **SIV nonce**: Derived as above using `filename_siv_key`.
-<!-- openwiki: broken internal link [src/encryption.rs#L387-L397] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-2. **AAD**: [`filename_aad_stack(parent_inode)`](src/encryption.rs#L387-L397) binds the ciphertext to its parent directory.
-3. **AEAD**: XChaCha20-Poly1305 with `filename_cipher_key`, 24-byte SIV nonce, and AAD.
-4. **Encoding**: `[24-byte nonce | ciphertext | 16-byte tag]` → unpadded Base64URL → prefix `_e_`.
-
-Output format: `_e_` + Base64URLUnpadded(`nonce || ciphertext || tag`)
-
-### Decryption and authentication
-
-<!-- openwiki: broken internal link [src/encryption.rs#L782-L900] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-[`decrypt_filename`](src/encryption.rs#L782-L900):
-1. Strips `_e_` prefix, decodes Base64URL.
-2. Splits into `nonce (24)`, `ciphertext`, `tag (16)`.
-3. Decrypts with `filename_cipher_key`, SIV nonce, and parent-inode-bound AAD.
-<!-- openwiki: broken internal link [src/encryption.rs#L651-L657] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-4. **SIV verification**: Re-computes the synthetic nonce from the candidate plaintext and compares in constant time ([`ct_eq_slice`](src/encryption.rs#L651-L657)). This prevents ciphertext manipulation even if the AEAD key were somehow compromised.
-5. Legacy fallback: If v2 decryption fails, tries the legacy 12-byte `ChaCha20Poly1305` format (`OIFS_SIV_FILENAME_V1`) for backward compatibility.
+3. **Output format**: ASCII string `_e_` + Base64URL-unpadded(`nonce(24) || ciphertext || tag(16)`). Prefix `_e_` marks encrypted entries ([repo://src/encryption.rs#L323](repo://src/encryption.rs#L323)).
 
 ### Security properties
 
-- **Deterministic**: Same `(parent_inode, filename)` → same ciphertext, enabling $O(1)$ directory lookups via hash table on encrypted names.
-- **Directory isolation**: Parent inode in both SIV nonce derivation and AEAD AAD prevents cross-directory filename correlation.
-- **Authentication**: Poly1305 tag + SIV verification ensures ciphertext integrity and origin authentication.
-- **Prefix identification**: `_e_` prefix allows instant recognition of encrypted vs. plaintext entries during directory traversal.
+- **Deterministic**: Same `(key, parent_inode, name)` → identical ciphertext. Enables directory listing without decryption.
+- **Tweakable**: Different `parent_inode` → different ciphertext for same name. Prevents cross-directory correlation.
+- **Authentication**: Poly1305 tag covers ciphertext + AAD (parent inode). Tampering detected.
+- **SIV verification**: On decryption, the derived nonce is recomputed from candidate plaintext and compared in constant time (`ct_eq_slice`). Rejects ciphertexts where nonce was forged ([repo://src/encryption.rs#L815-L825](repo://src/encryption.rs#L815-L825)).
+- **Legacy fallback**: Reads v1 12-byte `ChaCha20Poly1305` format (`OIFS_SIV_FILENAME_V1`) for backward compatibility ([repo://src/encryption.rs#L735-L779](repo://src/encryption.rs#L735-L779)).
+
+## Encryption/decryption flow
+
+```mermaid
+sequenceDiagram
+    participant User as User (password)
+    participant KDF as Argon2id KDF
+    participant Master as Master Key (32 B)
+    participant Subkeys as BLAKE2b Subkey Derivation
+    participant Payload as XChaCha20-Poly1305 (payload_key)
+    participant Filename as SIV + XChaCha20-Poly1305 (filename_*_keys)
+    participant IPC as BLAKE2b-MAC (ipc_auth_key)
+
+    User->>KDF: password + salt (16 B)
+    KDF->>Master: 256-bit hash (m=64MiB, t=3, p=4)
+    Master->>Subkeys: "OIFS-BLAKE2B-SUBKEY-KDF-V2" || len(ctx) || ctx || master
+    Subkeys->>Payload: payload_key
+    Subkeys->>Filename: filename_siv_key, filename_cipher_key
+    Subkeys->>IPC: ipc_auth_key
+
+    Note over Payload: File payload encryption
+    Payload->>Payload: nonce ← OsRng(24 B)
+    Payload->>Payload: AAD ← file_aad_stack(inode_id) / chunk_aad_stack(inode_id, chunk_idx, flags)
+    Payload->>Payload: ciphertext || tag ← XChaCha20-Poly1305(payload_key, nonce, AAD, plaintext)
+
+    Note over Filename: Filename encryption (deterministic)
+    Filename->>Filename: nonce ← BLAKE2b-512("OIFS_SIV_FILENAME_V2_XCHACHA20" || filename_siv_key || parent_inode || name)[0..24]
+    Filename->>Filename: AAD ← filename_aad_stack(parent_inode)
+    Filename->>Filename: ciphertext || tag ← XChaCha20-Poly1305(filename_cipher_key, nonce, AAD, name)
+    Filename->>Filename: output ← "_e_" || Base64URL(nonce || ciphertext || tag)
+
+    Note over IPC: IPC challenge-response
+    IPC->>IPC: client_nonce (32 B), server_nonce (32 B), salt (16 B)
+    IPC->>IPC: transcript ← direction(1) || client_nonce || server_nonce || salt
+    IPC->>IPC: mac ← BLAKE2b-MAC(ipc_auth_key, transcript, domain="OIFS-IPC-AUTH-V1")
+```
+
+## Per-file key hierarchy and key rotation considerations
+
+### Current design
+
+- **Single master key per filesystem**: All files, chunks, and filenames derive from the same `EncryptionKey` hierarchy (master + 4 subkeys).
+- **Per-object nonces**: Files and chunks use fresh random 192-bit nonces per encryption. Filenames use deterministic SIV nonces derived from `(parent_inode, name)`.
+- **AAD binding**: Context-bound scheme binds ciphertexts to their logical location (`inode_id`, `chunk_idx`, `flags`, `parent_inode`), preventing cut-and-paste and rollback attacks.
+
+### Key rotation implications
+
+| Operation | Current support | Notes |
+|-----------|----------------|-------|
+| Password change | Requires full re-encryption | Master key changes → all subkeys change → all ciphertexts must be rewritten. |
+| Subkey rotation | Not supported | No mechanism to rotate individual subkeys without changing master key. |
+| Scheme upgrade | Supported (legacy → context-bound) | New files use v2; existing v1 files readable but not automatically upgraded. |
+| Master key rotation | Not supported | Would require re-encrypting entire filesystem (all files, chunks, filenames, inodes). |
+
+**Design note**: The filesystem stores `encryption_salt` (16 B) and `encryption_version` (1 B) in the superblock. A key rotation feature would need:
+1. A new salt + Argon2id derivation → new master key.
+2. Re-encryption of every payload, chunk, and filename.
+3. Atomic superblock update with new salt/version.
+4. Crash-safe journaling of the re-encryption operation (supported via existing WAL).
 
 ## IPC challenge-response authentication
 
-The IPC subsystem uses a dedicated `ipc_auth_key` subkey (derived via BLAKE2b domain separation with context `oifs.kdf.v2.ipc.auth.blake2b`) for mutual challenge-response authentication between clients and the master process. The protocol is designed so **the filesystem password never travels on the wire**.
+### Protocol
 
-### Authentication protocol
+1. **Client → Server**: `AuthChallenge { client_nonce[32], has_password }`
+2. **Server → Client**: `AuthChallenge { server_nonce[32], salt[16], encrypted }`
+3. **Client → Server**: `AuthResponse { client_mac[32] }`
+4. **Server → Client**: `AuthVerify { server_mac[32] }` (mutual authentication)
 
-<!-- openwiki: broken internal link [src/ipc.rs#L279-L288] file "src/ipc.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-**Constants** ([src/ipc.rs#L279-L288](src/ipc.rs#L279-L288)):
-- `AUTH_NONCE_LEN = 32` (256-bit nonces)
-- `AUTH_MAC_LEN = 32` (256-bit BLAKE2b MAC tags)
-- `AUTH_SECRET_LEN = 32` (256-bit session secret for unencrypted images)
-- `AUTH_DOMAIN = b"oifs-ipc-auth-v1"` (domain separator for BLAKE2b-MAC)
-
-**Handshake flow**:
-
-1. **Client → Master**: `AuthChallenge { client_nonce[32], has_password: bool }`
-   - Client generates a fresh 32-byte nonce, never sends secrets.
-
-2. **Master → Client**: `AuthChallenge { server_nonce[32], salt[16], encrypted: bool }`
-   - Master generates its own nonce, returns the filesystem's Argon2id salt (for encrypted images) and indicates whether the image is encrypted.
-
-3. **Client derives credential**:
-   - **Encrypted image** (`has_password = true`): Client re-derives the Argon2id master key from the user password + salt, then extracts the `ipc_auth_key` subkey.
-   - **Unencrypted image** (`has_password = false`): Client uses the published session secret from the `.image.master` rendezvous file.
-
-4. **Client → Master**: `AuthResponse { client_mac[32] }`
-   - `client_mac = BLAKE2b-MAC(ipc_auth_key, transcript(dir=0, client_nonce, server_nonce, salt))`
-
-5. **Master verifies client MAC**, then proves it holds the same key:
-   - `server_mac = BLAKE2b-MAC(ipc_auth_key, transcript(dir=1, client_nonce, server_nonce, salt))`
-   - Returns `AuthVerify { server_mac }`
-
-6. **Client verifies `server_mac`** — mutual authentication complete. A rogue master (redirected via tampered rendezvous file) cannot produce a valid `server_mac` without the key.
-
-### Credential types
+### Transcript construction
 
 ```rust
-pub enum AuthCredential {
-    Password(String),      // Encrypted image: user password
-    Secret([u8; 32]),      // Unencrypted image: published session secret
+transcript = direction(1) || client_nonce(32) || server_nonce(32) || salt(16)
+```
+- `direction = 0` for client→server, `1` for server→client (prevents tag reflection).
+- MAC = `BLAKE2b-MAC(ipc_auth_key, transcript, personal="OIFS-IPC-AUTH-V1")` ([repo://src/ipc.rs#L318-L331](repo://src/ipc.rs#L318-L331)).
+
+### Key source
+
+- **Encrypted images**: Client derives `ipc_auth_key` from password + salt (same as master). Password never travels on wire.
+- **Unencrypted images**: Master publishes 32-byte session secret in `.image.master` rendezvous file; client reads and uses directly.
+
+### Security properties
+
+- **10-second handshake timeout** (`AUTH_HANDSHAKE_TIMEOUT`) prevents Slowloris attacks ([repo://src/ipc.rs#L161](repo://src/ipc.rs#L161)).
+- **Authenticated streams are pooled** to avoid repeated handshakes ([repo://src/ipc.rs#L1407-L1412](repo://src/ipc.rs#L1407-L1412)).
+- **Constant-time tag comparison** (`ct_eq`) prevents timing side channels ([repo://src/ipc.rs#L333-L340](repo://src/ipc.rs#L333-L340)).
+
+## Data structures summary
+
+### `EncryptionConfig` (scheme selection)
+
+```rust
+pub const ENCRYPTION_SCHEME_LEGACY: u8 = 1;           // Empty AAD
+pub const ENCRYPTION_SCHEME_CONTEXT_BOUND: u8 = 2;    // Binds inode/chunk/filename context
+```
+
+Stored in `SuperBlock.encryption_version` ([repo://src/superblock.rs#L47](repo://src/superblock.rs#L47)).
+
+### `MasterKey` (opaque 256-bit)
+
+- Directly output of Argon2id or externally supplied.
+- Never used for encryption directly.
+
+### `FileKey` ≡ `EncryptionKey`
+
+```rust
+pub struct EncryptionKey {
+    key: [u8; 32],                 // Master
+    payload_key: [u8; 32],         // File/chunk XChaCha20-Poly1305
+    filename_siv_key: [u8; 32],    // Filename SIV BLAKE2b-512
+    filename_cipher_key: [u8; 32], // Filename XChaCha20-Poly1305
+    ipc_auth_key: [u8; 32],        // IPC BLAKE2b-MAC
 }
 ```
 
-**Security properties**:
-- Password never transmitted; only the derived `ipc_auth_key` (subkey) is used for MAC.
-- Session secret for unencrypted images is stored in `.image.master` with owner-only permissions.
-- Direction byte (`0`/`1`) in transcript prevents tag reflection attacks.
-<!-- openwiki: broken internal link [src/ipc.rs#L301] file "src/ipc.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- 10-second handshake timeout prevents Slowloris-style resource exhaustion ([`AUTH_HANDSHAKE_TIMEOUT`](src/ipc.rs#L301)).
-- Cached authenticated streams (connection pooling) avoid repeated handshakes for subsequent requests.
+All five arrays zeroized on drop.
 
-## Encryption error taxonomy
+### `SubKey` (domain-separated 256-bit)
 
-<!-- openwiki: broken internal link [src/encryption.rs#L902-L921] file "src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-[`EncryptionError`](src/encryption.rs#L902-L921) distinguishes failure modes:
+Produced by `derive_subkey(master, context)`. Four contexts defined as constants ([repo://src/encryption.rs#L13-L16](repo://src/encryption.rs#L13-L16)).
 
-```rust
-pub enum EncryptionError {
-    KeyDerivationFailed,  // Argon2id parameter error or hash extraction failure
-    InvalidKey,           // Key length mismatch (e.g., not 32 bytes for XChaCha20Poly1305)
-    EncryptionFailed,     // AEAD encryption error (should not happen with valid inputs)
-    DecryptionFailed,     // AEAD authentication failure → wrong password or corrupted ciphertext
-}
-```
+## Implementation files
 
-`DecryptionFailed` is the only error that callers typically surface to users ("wrong password or corrupted data"). All other variants indicate programming bugs or unrecoverable system state.
+| File | Responsibility |
+|------|----------------|
+| `src/encryption.rs` | Core primitives: KDF, subkeys, AEAD, SIV filename, short-scalar XChaCha20, AAD builders |
+| `src/disk.rs` | Integration: `build_full_overwrite_buffer_pure`, `plan_write_prepared`, `encryption_key` field in `DiskManagerInner`, read/write paths |
+| `src/superblock.rs` | `encryption_salt`, `encryption_version`, `encrypted` flag persistence |
+| `src/ipc.rs` | Challenge-response handshake using `ipc_auth_key` |
+| `src/disk/chunked.rs` | Seekable 64 KiB chunk encryption with `chunk_aad_stack` |
 
-## Superblock encryption_version semantics
+## Tests and verification
 
-<!-- openwiki: broken internal link [src/superblock.rs#L47] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-`SuperBlock::encryption_version` ([src/superblock.rs#L47](src/superblock.rs#L47)) records the encryption scheme used when the filesystem was created:
+- **Unit tests** ([repo://src/encryption.rs#L916-L1115](repo://src/encryption.rs#L916-L1115)):
+  - Key derivation determinism and salt isolation
+  - Encrypt/decrypt round-trips (payload, in-place, with nonce prefix)
+  - Wrong key / wrong nonce rejection
+  - Filename encryption determinism, tweakability, legacy fallback, tamper detection
+  - Subkey domain separation pairwise distinctness
+  - Short-scalar XChaCha20 byte-for-byte equivalence to reference (exhaustive up to 192 B)
+  - Argon2id parameter constants match OWASP/RFC 9106
 
-| Value | Constant | Description |
-|---|---|---|
-| `0` | (unset) | Unencrypted filesystem; field ignored. |
-| `1` | `ENCRYPTION_SCHEME_LEGACY` | XChaCha20-Poly1305 with empty AAD. Legacy images. |
-| `2` | `ENCRYPTION_SCHEME_CONTEXT_BOUND` | XChaCha20-Poly1305 with structured AAD binding `inode_id` / `chunk_idx` / `flags`. Default for new encrypted images. |
-
-<!-- openwiki: broken internal link [src/disk.rs#L1528] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1535] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-When creating a new encrypted image, `DiskManager::init_or_open_with_key` always writes `ENCRYPTION_SCHEME_CONTEXT_BOUND` ([src/disk.rs#L1528](src/disk.rs#L1528), [src/disk.rs#L1535](src/disk.rs#L1535)). On open, the same AAD helpers (`file_aad_for_scheme`, `chunk_aad_for_scheme`) return empty AAD for `scheme < 2`, preserving read compatibility with legacy images.
-
-Validation in `SuperBlock::validate` rejects:
-- Unencrypted images with non-zero `encryption_version`.
-<!-- openwiki: broken internal link [src/superblock.rs#L461-L466] file "src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- Encrypted images with unknown `encryption_version` (not 1 or 2) ([src/superblock.rs#L461-L466](src/superblock.rs#L461-L466)).
-
-## Integration with DiskManager
-
-<!-- openwiki: broken internal link [src/disk.rs#L1146-L1235] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- **Key loading**: `DiskManager::init_or_open_with_key` ([src/disk.rs#L1146-L1235](src/disk.rs#L1146-L1235)) derives or accepts an `EncryptionKey`, stores it in `DiskManagerInner::encryption_key`.
-<!-- openwiki: broken internal link [src/disk.rs#L1194] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [src/disk.rs#L1201] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- **Scheme selection**: New encrypted images always use `ENCRYPTION_SCHEME_CONTEXT_BOUND` ([src/disk.rs#L1194](src/disk.rs#L1194), [src/disk.rs#L1201](src/disk.rs#L1201)).
-<!-- openwiki: broken internal link [src/disk.rs#L888-L950] file "src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
-- **Write path**: `plan_write_prepared` ([src/disk.rs#L888-L950](src/disk.rs#L888-L950)) builds stack-staged AAD via `file_aad_for_scheme_stack` / `chunk_aad_for_scheme_stack` and passes it to `build_full_overwrite_buffer_pure` or chunk encryption.
-- **Read path**: `read_data_internal` and `read_single_chunk_into` reconstruct the same AAD and verify before returning plaintext.
+- **Kani formal verification** ([repo://src/encryption.rs#L1138-L1164](repo://src/encryption.rs#L1138-L1164)):
+  - AAD kind tags never collide across file/chunk/filename domains
+  - Filename AAD injective in `parent_inode`
+  - `file_aad_stack`, `chunk_aad_stack`, `filename_aad_stack` encode IDs bijectively
 
 ## Related pages
 
-- [Compression & Filters](../architecture/compression_and_filters.md) — pipeline ordering (filter → compress → encrypt)
-- [Inode & Directory](../architecture/inode_and_directory.md) — inode encryption fields, seekable chunk layout, directory entry encryption
-- [Async I/O & Engines](../architecture/async_io_and_engines.md) — parallel chunk decryption with worker pool
-- [Encrypted Workflows](../workflows/encrypted_workflows.md) — creating/opening encrypted images, key rotation considerations
+- [Compression and Filters](../architecture/compression_and_filters.md) — Filter → Compress → Encrypt pipeline
+- [Disk Manager and Persistence](../architecture/disk_manager_and_persistence.md) — Write paths, journaling, durability modes
+- [Encrypted Workflows](../workflows/encrypted_workflows.md) — End-to-end encrypted filesystem operations

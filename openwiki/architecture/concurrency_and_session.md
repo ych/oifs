@@ -1,11 +1,10 @@
 ---
-type: architecture
-title: Concurrency & Session Model
-description: The OifsSession abstraction with three modes — Standalone (direct mmap, zero IPC), Local (Unix Domain Sockets in per-user private directory), Network (TCP + rendezvous file with clock-free active Ping/Pong) — master election via bind_or_connect, transparent failover, session registry with canonical path dedup, poison-recovered locks for registries/caches, and length-prefixed Bincode IPC frame protocol with challenge-response authentication.
-tags: [ipc, master-proxy, session, concurrency, uds, tcp, failover, rwlock, openmode, cow, authentication]
+type: "Reference"
+title: "Concurrency and session"
+openwiki_generated: true
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-22T10:29:12.696Z
+    at: 2026-11-23T20:55:55.458Z
 sources:
   - id: openwiki-source-466dba2e8868026185b26560
     resource: repo://src/auto_defrag.rs
@@ -13,6 +12,8 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-fd65460dcd62d8e13b82908b
     resource: repo://src/disk/caches.rs
+  - id: openwiki-source-c9e5b32aad7cafdb095c81a4
+    resource: repo://src/ffi.rs
   - id: openwiki-source-062270e1dcd4de6ec5011c98
     resource: repo://src/fuse.rs
   - id: openwiki-source-ef0afc6eaf5c925c9975314d
@@ -21,16 +22,17 @@ sources:
     resource: repo://src/lib.rs
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
 ---
+
 
 ## Responsibility and ownership
 
-The session layer owns the process coordination contract while the IPC layer owns the transport. `OifsSession` (`src/session.rs#L60-L79`) decides whether a given process runs in **Direct (Master)** or **Remote (Proxy)** mode and forwards every operation to the right place. `src/ipc.rs` provides the `bind_or_connect` master election, the `IpcServer` request dispatcher, and the length-prefixed framing used on every hop. The actual mutation of the image happens inside a single Master's `DiskManager` (`Arc<RwLock<DiskManagerInner>>`), which provides shared parallel reader access and exclusive writer serialization with a dedicated `sync_mutex` for physical durability flushes.
+The session layer owns the process coordination contract while the IPC layer owns the transport. `OifsSession` ([src/session.rs#L60-L79](repo://src/session.rs#L60-L79)) decides whether a given process runs in **Direct (Master)** or **Remote (Proxy)** mode and forwards every operation to the right place. `src/ipc.rs` provides the `bind_or_connect` master election, the `IpcServer` request dispatcher, and the length-prefixed framing used on every hop. The actual mutation of the image happens inside a single Master's `DiskManager` (`Arc<RwLock<DiskManagerInner>>`), which provides shared parallel reader access and exclusive writer serialization with a dedicated `sync_mutex` for physical durability flushes.
 
 ## Session mode taxonomy
 
-OIFS supports three **SessionMode** variants (`src/ipc.rs#L39-L52`):
+OIFS supports three **SessionMode** variants ([src/ipc.rs#L39-L52](repo://src/ipc.rs#L39-L52)):
 
 | Mode | Transport | IPC Overhead | Use Case |
 |------|-----------|--------------|----------|
@@ -38,7 +40,7 @@ OIFS supports three **SessionMode** variants (`src/ipc.rs#L39-L52`):
 | `Local` | Unix Domain Socket in per-user private runtime directory (`$XDG_RUNTIME_DIR/oifs` or `/tmp/oifs-<uid>/oifs`) | One background `IpcServer` thread on the Master; clients forward over UDS | Multi-process on one machine, containers, CI |
 | `Network` | TCP + rendezvous `.image.master` file in image directory + **clock-free active Ping/Pong** probe | Master binds TCP; clients connect over TCP | NFS/Lustre, multi-node clusters, remote mounts |
 
-**Standalone** is not a third variant of `OifsSession` — it is simply `SessionMode::Standalone` which produces a `Direct` session **without** starting an `IpcServer`. The `OifsSession` enum itself has only two variants (`src/session.rs#L60-L79`):
+**Standalone** is not a third variant of `OifsSession` — it is simply `SessionMode::Standalone` which produces a `Direct` session **without** starting an `IpcServer`. The `OifsSession` enum itself has only two variants ([src/session.rs#L60-L79](repo://src/session.rs#L60-L79)):
 
 ```rust
 pub enum OifsSession {
@@ -50,13 +52,25 @@ pub enum OifsSession {
 - **Direct**: owns the `DiskManager` (and optionally a background `IpcServer`). Used by Master in Local/Network modes, and by **all** processes in Standalone mode.
 - **Remote**: holds an `IpcClient` connection pool to the Master, plus a `dm_fallback` slot used during transparent failover.
 
+### Entry points
+
+Each mode exposes a family of constructors on `OifsSession`:
+
+| Mode | Open existing | Open with password | Create encrypted | Open journaled |
+|------|---------------|-------------------|------------------|----------------|
+| Standalone | `open` / `get_or_open` | `open_with_password` / `get_or_open_with_password` | `create_encrypted` / `get_or_create_encrypted` | `open_journaled` / `get_or_open_journaled` |
+| Local | `open_local` / `get_or_open_local` | `open_local_with_password` / `get_or_open_local_with_password` | `create_encrypted_local` / `get_or_create_encrypted_local` | `open_journaled_local` / `get_or_open_journaled_local` |
+| Network | `open_network` / `get_or_open_network` | `open_network_with_password` / `get_or_open_network_with_password` | `create_encrypted_network` / `get_or_create_encrypted_network` | `open_journaled_network` / `get_or_open_journaled_network` |
+
+All `get_or_open_*` variants are thread-safe and deduplicate via the process-wide session registry (see below).
+
 ## Master election: `bind_or_connect`
 
-Master election is transport-specific and implemented in `bind_or_connect` (`src/ipc.rs#L887-L1010`). The function either binds as Master (returning `MasterOrClient::Master`) or connects as Client (returning `MasterOrClient::Client`).
+Master election is transport-specific and implemented in `bind_or_connect` ([src/ipc.rs#L887-L1010](repo://src/ipc.rs#L887-L1010)). The function either binds as Master (returning `MasterOrClient::Master`) or connects as Client (returning `MasterOrClient::Client`).
 
 ### Local mode (UDS)
 
-1. Deterministic socket path: `get_socket_path` (`src/ipc.rs#L123-L144`) derives `<private_runtime_dir>/oifs_<name>_<hash>.sock` from the canonical image path. The parent directory is created mode `0700`; the socket itself is created mode `0600`. A companion `.tok` file holds the session secret, also `0600`.
+1. **Deterministic socket path**: `get_socket_path` ([src/ipc.rs#L123-L144](repo://src/ipc.rs#L123-L144)) derives `<private_runtime_dir>/oifs_<name>_<hash>.sock` from the canonical image path. The parent directory is created mode `0700`; the socket itself is created mode `0600`. A companion `.tok` file holds the session secret, also `0600`.
 2. Process first **tries to connect** to the existing socket (up to 10 attempts, 15 ms apart).
 3. If connection fails, it **removes any stale socket/token** and attempts to `bind`.
 4. If `bind` fails with `EADDRINUSE`, it retries connecting (up to 15 attempts), then removes the stale socket and retries `bind` once more.
@@ -64,10 +78,10 @@ Master election is transport-specific and implemented in `bind_or_connect` (`src
 
 ### Network mode (TCP + rendezvous file)
 
-1. Rendezvous file path: `get_master_info_path` (`src/ipc.rs#L146-L158`) returns `<image_dir>/.<image_name>.master`.
-2. If the file exists, reads `MasterInfo { addr, pid, auth_token }` and runs **clock-free active Ping/Pong probe** (`is_tcp_master_alive`, `src/ipc.rs#L159-L179`): connects to `addr`, sends `IpcRequest::Ping`, expects `Pong` within 500 ms. If probe succeeds, connects as Client.
+1. **Rendezvous file path**: `get_master_info_path` ([src/ipc.rs#L146-L158](repo://src/ipc.rs#L146-L158)) returns `<image_dir>/.<image_name>.master`.
+2. If the file exists, reads `MasterInfo { addr, pid, auth_token }` and runs **clock-free active Ping/Pong probe** (`is_tcp_master_alive`, [src/ipc.rs#L159-L179](repo://src/ipc.rs#L159-L179)): connects to `addr`, sends `IpcRequest::Ping`, expects `Pong` within 500 ms. If probe succeeds, connects as Client.
 3. If probe fails or file missing: attempts **atomic `create_new`** on the rendezvous file. Winner becomes Master:
-   - Binds TCP listener on `bind_addr` (default `127.0.0.1:0` — loopback only; non-loopback requires explicit opt-in `is_loopback_bind`, `src/ipc.rs#L160-L180`).
+   - Binds TCP listener on `bind_addr` (default `127.0.0.1:0` — loopback only; non-loopback requires explicit opt-in `is_loopback_bind`, [src/ipc.rs#L160-L180](repo://src/ipc.rs#L160-L180)).
    - Generates `auth_secret`, writes `MasterInfo` with hex-encoded token to rendezvous file (mode `0600`).
    - Starts `IpcServer` on the TCP listener.
 4. Losers read the rendezvous file, connect to the published `addr`, and authenticate with the published `auth_token`.
@@ -104,9 +118,9 @@ sequenceDiagram
 
 ## Process-wide session registry
 
-`SESSION_REGISTRY` (`src/session.rs#L77-L81`) is a process-wide `OnceLock<Mutex<HashMap<PathBuf, OifsSession>>>` keyed by the **canonicalized absolute path**. `canonicalize_path` (`src/session.rs#L84-L131`) resolves symlinks (up to 32 hops) so all links pointing at the same image deduplicate to the same registry key.
+`SESSION_REGISTRY` ([src/session.rs#L77-L81](repo://src/session.rs#L77-L81)) is a process-wide `OnceLock<Mutex<HashMap<PathBuf, OifsSession>>>` keyed by the **canonicalized absolute path**. `canonicalize_path` ([src/session.rs#L84-L131](repo://src/session.rs#L84-L131)) resolves symlinks (up to 32 hops) so all links pointing at the same image deduplicate to the same registry key.
 
-`get_or_open_with_mode` (`src/session.rs#L195-L215`):
+`get_or_open_with_mode` ([src/session.rs#L195-L215](repo://src/session.rs#L195-L215)):
 1. Acquires `lock_unpoisoned` on the registry mutex.
 2. If a session exists for the canonical key, returns a `Clone` (which clones the inner `Arc` fields — threads share one Master with natural reference counting).
 3. Otherwise, constructs a new session via `open_with_mode_retry`, inserts it, and returns the clone.
@@ -127,18 +141,18 @@ flowchart TD
 
 ## IPC frame protocol
 
-Every RPC is a **length-prefixed Bincode frame** (`src/ipc.rs#L306-L335`) with a **128 MiB hard cap** (`MAX_FRAME_BYTES`). Frames larger than this are rejected **before any allocation**.
+Every RPC is a **length-prefixed Bincode frame** ([src/ipc.rs#L306-L335](repo://src/ipc.rs#L306-L335)) with a **128 MiB hard cap** (`MAX_FRAME_BYTES`). Frames larger than this are rejected **before any allocation**.
 
-- **Encoding**: `bincode::DefaultOptions` with fixint encoding, trailing bytes allowed, and a per-frame byte limit (`frame_codec`, `src/ipc.rs#L331-L339`).
-- **Thread-local pooled buffers**: Separate read/write buffers (`FRAME_READ_BUF`, `FRAME_WRITE_BUF`) reused across frames; large buffers are shrunk after use (`shrink_frame_buf`, `src/ipc.rs#L354-L358`).
-- **Streaming read**: Payload streamed in 64 KiB chunks into the pooled buffer (`FRAME_READ_CHUNK`), never allocating the announced size up front (`read_framed`, `src/ipc.rs#L370-L403`).
-- **Single dispatcher**: `IpcServer::handle_request` (`src/ipc.rs#L699-L780`) maps each `IpcRequest` variant to a `DiskManager` call. Logic is **never duplicated** across Direct and Remote arms.
+- **Encoding**: `bincode::DefaultOptions` with fixint encoding, trailing bytes allowed, and a per-frame byte limit (`frame_codec`, [src/ipc.rs#L331-L339](repo://src/ipc.rs#L331-L339)).
+- **Thread-local pooled buffers**: Separate read/write buffers (`FRAME_READ_BUF`, `FRAME_WRITE_BUF`) reused across frames; large buffers are shrunk after use (`shrink_frame_buf`, [src/ipc.rs#L354-L358](repo://src/ipc.rs#L354-L358)).
+- **Streaming read**: Payload streamed in 64 KiB chunks into the pooled buffer (`FRAME_READ_CHUNK`), never allocating the announced size up front (`read_framed`, [src/ipc.rs#L370-L403](repo://src/ipc.rs#L370-L403)).
+- **Single dispatcher**: `IpcServer::handle_request` ([src/ipc.rs#L699-L780](repo://src/ipc.rs#L699-L780)) maps each `IpcRequest` variant to a `DiskManager` call. Logic is **never duplicated** across Direct and Remote arms.
 
 ## IPC authentication: challenge-response with mutual proof
 
 Authentication is mandatory for all data operations. Ping is allowed unauthenticated for the active probe.
 
-### Credential types (`src/ipc.rs#L432-L440`)
+### Credential types ([src/ipc.rs#L432-L440](repo://src/ipc.rs#L432-L440))
 
 ```rust
 pub enum AuthCredential {
@@ -177,19 +191,19 @@ pub enum AuthCredential {
 
 ## IpcServer architecture
 
-- **Listener thread** (`src/ipc.rs#L1070-L1140`): non-blocking listener fd, `libc::poll` with 50 ms timeout, accepts connections, spawns **one dedicated worker thread per peer**.
-- **Worker thread** (`src/ipc.rs#L1142-L1300`): per-connection authentication state machine; after auth, loops reading framed requests, dispatches to `handle_request`, writes framed response. Emits `SessionEvent::PeerConnected`, `RequestHandled`, `PeerDisconnected` via bounded channel (`MAX_PENDING_SESSION_EVENTS = 1024`).
+- **Listener thread** ([src/ipc.rs#L1070-L1140](repo://src/ipc.rs#L1070-L1140)): non-blocking listener fd, `libc::poll` with 50 ms timeout, accepts connections, spawns **one dedicated worker thread per peer**.
+- **Worker thread** ([src/ipc.rs#L1142-L1300](repo://src/ipc.rs#L1142-L1300)): per-connection authentication state machine; after auth, loops reading framed requests, dispatches to `handle_request`, writes framed response. Emits `SessionEvent::PeerConnected`, `RequestHandled`, `PeerDisconnected` via bounded channel (`MAX_PENDING_SESSION_EVENTS = 1024`).
 - **Drop**: graceful shutdown — waits up to 1.5 s for active peers, then removes socket/rendezvous file.
 
 ## IpcClient connection pool
 
-- **Bounded pool**: up to `MAX_CLIENT_POOL_STREAMS = 8` concurrent authenticated streams (`src/ipc.rs#L1407-L1412`).
+- **Bounded pool**: up to `MAX_CLIENT_POOL_STREAMS = 8` concurrent authenticated streams ([src/ipc.rs#L1407-L1412](repo://src/ipc.rs#L1407-L1412)).
 - **Checkout protocol**: `CheckedOutStream` RAII guard ensures a stream is either in the pool **or** checked out for one RPC. On panic or I/O error mid-exchange, `Drop` closes the desynchronized socket and decrements `total_streams` — never returns a potentially desynchronized socket to the pool.
 - **Lazy secondary streams**: Single-threaded callers use one socket; concurrent callers open additional streams on demand, each re-authenticating using the cached `ClientAuthCache` (Argon2id key or session secret, zeroized on drop).
 
 ## Transparent failover (self-healing)
 
-A Remote session survives Master loss (crash, power loss, network partition) without caller intervention. Implemented in `send_request` (`src/session.rs#L768-L848`):
+A Remote session survives Master loss (crash, power loss, network partition) without caller intervention. Implemented in `send_request` ([src/session.rs#L768-L848](repo://src/session.rs#L768-L848)):
 
 ```mermaid
 sequenceDiagram
@@ -214,16 +228,16 @@ sequenceDiagram
     end
 ```
 
-- **Lock-free fast path**: `has_fallback: AtomicBool` checked before acquiring `dm_fallback` mutex (`src/session.rs#L773-L779`).
+- **Lock-free fast path**: `has_fallback: AtomicBool` checked before acquiring `dm_fallback` mutex ([src/session.rs#L773-L779](repo://src/session.rs#L773-L779)).
 - **Fallback promotion**: When a Remote process wins election, it pins a local `DiskManager` as `dm_fallback` and continues serving locally — the session **becomes Direct** transparently.
-- **Password persistence**: Remote session stores the password in a `Zeroizing<String>` for automatic reconnection (`src/session.rs#L75-L76`, `#L664`).
+- **Password persistence**: Remote session stores the password in a `Zeroizing<String>` for automatic reconnection ([src/session.rs#L75-L76](repo://src/session.rs#L75-L76), [#L664](repo://src/session.rs#L664)).
 
 ## Reader parallelism and lock hierarchy
 
-Within the Master process, concurrency is managed by a fine-grained hierarchy (`src/disk.rs`):
+Within the Master process, concurrency is managed by a fine-grained hierarchy ([src/disk.rs](repo://src/disk.rs)):
 
 1. **Shared Read Lock** (`inner.read()`): Multiple reader threads calling `read_at` or `read_data` acquire a shared `RwLock` read guard concurrently, executing zero-copy memory reads with no reader-reader contention.
-2. **Dedicated Flush Mutex** (`sync_mutex: Arc<Mutex<()>>`): Physical disk flushes via `flush_range` / `msync` acquire `sync_mutex` **without holding the inner write lock** (`src/disk.rs#L1560`, `#L5397`, `#L5468`), ensuring durable background writebacks never stall concurrent readers.
+2. **Dedicated Flush Mutex** (`sync_mutex: Arc<Mutex<()>>`): Physical disk flushes via `flush_range` / `msync` acquire `sync_mutex` **without holding the inner write lock** ([src/disk.rs#L1560](repo://src/disk.rs#L1560), [#L5397](repo://src/disk.rs#L5397), [#L5468](repo://src/disk.rs#L5468)), ensuring durable background writebacks never stall concurrent readers.
 3. **Exclusive Write Lock** (`inner.write()`): Allocation, bitmap updates, and inode commits acquire an exclusive lock during the commit phase, ensuring full mutual exclusion.
 
 The `DiskManager` struct holds:
@@ -232,11 +246,37 @@ inner: Arc<RwLock<DiskManagerInner>>,   // guards all on-disk metadata
 sync_mutex: Arc<Mutex<()>>,              // serializes msync only
 ```
 
+## ReadSession and FileReadHandle: lock-free read path
+
+`DiskManager::begin_read()` returns a `ReadSession` ([src/disk.rs#L4577-L4584](repo://src/disk.rs#L4577-L4584)) that holds the shared `RwLock` read guard for its entire lifetime. Batching lookups, inode stats, directory listings, and positional reads through a `ReadSession` eliminates per-call `RwLock` atomic reader-count cache-line contention across concurrent reader threads.
+
+```rust
+pub struct ReadSession<'a> {
+    guard: std::sync::RwLockReadGuard<'a, DiskManagerInner>,
+}
+```
+
+**Methods on `ReadSession`** ([src/disk.rs#L8308-L8400](repo://src/disk.rs#L8308-L8400)):
+- `root_inode()` — returns root inode ID
+- `lookup(parent, name)` — directory lookup
+- `read_inode(id)` — inode metadata
+- `list_dir(id)` — directory entries
+- `read_data(id)` — entire file contents
+- `read_at(id, offset, buf)` — positional read
+- `open_file(id)` — pins a validated regular file into a `FileReadHandle`
+
+**`FileReadHandle`** ([src/disk.rs#L8399-L8590](repo://src/disk.rs#L8399-L8590)) eliminates both per-call `RwLock` acquisition and `BoundedInodeCache` lookups:
+- Pre-validates inode type and encryption state at open time
+- Fast single-block `mmap_slice` and `read_at` for raw (uncompressed, unencrypted, non-seekable) files under `IoBackend::Mmap`
+- Falls back to full `read_at_with_guard` for compressed/encrypted/sparse files
+
+**Note**: Because a `ReadSession` holds a shared read lock, concurrent writers wait until all active `ReadSession`s are dropped. Keep sessions scoped to bounded read batches.
+
 ## Poison-recovered locks: `lock_unpoisoned` / `read_unpoisoned` / `write_unpoisoned`
 
 Some mutexes guard **reconstructible in-memory state** (registries, caches, coordination flags) where a panic mid-critical-section cannot leave the data inconsistent. For these, propagating poison would permanently brick the subsystem — one unrelated panic anywhere would make every later acquisition fail.
 
-**Helpers in `src/lib.rs#L42-L68`**:
+**Helpers in `src/lib.rs`** ([src/lib.rs#L42-L68](repo://src/lib.rs#L42-L68)):
 
 ```rust
 pub(crate) fn lock_unpoisoned<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -252,23 +292,23 @@ pub(crate) fn write_unpoisoned<T>(r: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 
 **Where used** (recover from poison):
 
-- `SESSION_REGISTRY` mutex (`src/session.rs#L285`, `#L304`, `#L311`)
-- `IpcClient` connection pool mutex (`src/ipc.rs#L1443`, `#L1454`, `#L1480`, `#L1618`, `#L1646`, `#L1758`)
-- Auto-defrag config/stats/worker mutexes (`src/auto_defrag.rs#L187-L215`)
-- Async flush pending ranges (`src/disk.rs#L555`, `#L580`, `#L1563`, `#L5428`, `#L5471`)
-- Decoded blob cache (`src/disk.rs#L3756`, `#L3761`, `#L4840`, `#L4845`, `#L9088`, `#L9221`)
-- FUSE handle map, parent map (`src/fuse.rs#L2242-L2272`, `#L2665-L#2670`)
-- Sharded directory cache: `read_shard`/`write_shard`/`for_each_mut` (`src/disk/caches.rs#L233`, `#L241`, `#L251`, `#L257`)
+- `SESSION_REGISTRY` mutex ([src/session.rs#L285](repo://src/session.rs#L285), [#L304](repo://src/session.rs#L304), [#L311](repo://src/session.rs#L311))
+- `IpcClient` connection pool mutex ([src/ipc.rs#L1443](repo://src/ipc.rs#L1443), [#L1454](repo://src/ipc.rs#L1454), [#L1480](repo://src/ipc.rs#L1480), [#L1618](repo://src/ipc.rs#L1618), [#L1646](repo://src/ipc.rs#L1646), [#L1758](repo://src/ipc.rs#L1758))
+- Auto-defrag config/stats/worker mutexes ([src/auto_defrag.rs#L187-L215](repo://src/auto_defrag.rs#L187-L215))
+- Async flush pending ranges ([src/disk.rs#L555](repo://src/disk.rs#L555), [#L580](repo://src/disk.rs#L580), [#L1563](repo://src/disk.rs#L1563), [#L5428](repo://src/disk.rs#L5428), [#L5471](repo://src/disk.rs#L5471))
+- Decoded blob cache ([src/disk.rs#L3756](repo://src/disk.rs#L3756), [#L3761](repo://src/disk.rs#L3761), [#L4840](repo://src/disk.rs#L4840), [#L4845](repo://src/disk.rs#L4845), [#L9088](repo://src/disk.rs#L9088), [#L9221](repo://src/disk.rs#L9221))
+- FUSE handle map, parent map ([src/fuse.rs#L2242-L2272](repo://src/fuse.rs#L2242-L2272), [#L2665-L2670](repo://src/fuse.rs#L2665-L2670))
+- Sharded directory cache: `read_shard`/`write_shard`/`for_each_mut` ([src/disk/caches.rs#L233](repo://src/disk/caches.rs#L233), [#L241](repo://src/disk/caches.rs#L241), [#L251](repo://src/disk/caches.rs#L251), [#L257](repo://src/disk/caches.rs#L257))
 
 **Where NOT used** (poison propagates, as required for on-disk consistency):
 - `DiskManagerInner` RwLock — guards bitmap, inode tables, block allocation. A panic here could leave on-disk structures inconsistent; the process must fail fast.
-- Inode cache shards use `.unwrap()` directly (`src/disk/caches.rs#L398`, `#L403`, `#L408`, `#L416`, `#L422`)
+- Inode cache shards use `.unwrap()` directly ([src/disk/caches.rs#L398](repo://src/disk/caches.rs#L398), [#L403](repo://src/disk/caches.rs#L403), [#L408](repo://src/disk/caches.rs#L408), [#L416](repo://src/disk/caches.rs#L416), [#L422](repo://src/disk/caches.rs#L422))
 
 ## 32-shard lock striping for caches
 
 Both the inode cache and directory cache use **32 shards** with **Fibonacci hashing** (`0x517cc1b727220a95`) for uniform distribution, eliminating lock contention across concurrent accesses to different inodes/directories.
 
-### BoundedInodeCache (`src/disk/caches.rs#L354-L423`)
+### BoundedInodeCache ([src/disk/caches.rs#L354-L423](repo://src/disk/caches.rs#L354-L423))
 
 - **32 shards** (`NUM_INODE_CACHE_SHARDS`), each with independent `RwLock<InodeCacheShard>`.
 - **Second-Chance (Clock) eviction**: each entry has an atomic `referenced` bit. On cache hit under shared lock, bit is set (`Relaxed`). Eviction walks the queue, gives referenced entries a second chance (clears bit, re-queues), evicts unreferenced.
@@ -276,7 +316,7 @@ Both the inode cache and directory cache use **32 shards** with **Fibonacci hash
 - **Capacity**: `INODE_CACHE_CAPACITY = 2048` total, ~64 per shard.
 - **Single-entry eviction**: Reaching capacity evicts only one entry (old behavior wiped entire cache).
 
-### ShardedDirCache (`src/disk/caches.rs#L201-L260`)
+### ShardedDirCache ([src/disk/caches.rs#L201-L260](repo://src/disk/caches.rs#L201-L260))
 
 - **32 shards** (`NUM_DIR_CACHE_SHARDS`), each `RwLock<FxHashMap<u64, DirIndex>>`.
 - **Same Fibonacci hashing**: `(dir_inode_id * 0x517cc1b727220a95) & 31`.
@@ -284,16 +324,29 @@ Both the inode cache and directory cache use **32 shards** with **Fibonacci hash
 - On encrypted filesystems, maintains both `stored` (ciphertext names) and `plain` (plaintext names) maps to skip re-encryption.
 - **Lock striping** ensures `create_file`/`delete_file` on one directory never stalls `lookup`/`resolve_path`/`list_dir` on another.
 
-### FxHasher (`src/lib.rs#L101-L164`)
+### ChunkReadCache ([src/disk/caches.rs#L1-L60](repo://src/disk/caches.rs#L1-L60))
+
+- Bounded sub-chunk decompression cache for seekable 64K files (capacity 8 entries).
+- Keyed by `(inode_id, chunk_idx, raw_entry_block, valid_len)` to handle multiple logical chunks mapping to the same physical block.
+- Eliminates repeated decompression/decryption for small positional reads (`read_at` with `< 64 KiB` buffers).
+
+### DecodedBlobCache ([src/disk/caches.rs#L62-L160](repo://src/disk/caches.rs#L62-L160))
+
+- Bounded decoded-payload cache for positional `read_at` on non-seekable compressed/encrypted files.
+- Keyed by `(inode_id, size, compressed_size, first_block, nonce)` — detects mutation across reads.
+- Capacity: 4 entries max, 16 MiB per entry, 32 MiB total.
+- Eliminates the $O(\text{calls} \times \text{file\_size})$ full-file decode cliff when callers issue sequential or random sub-file `read_at` calls on stream-compressed or whole-file encrypted blobs.
+
+### FxHasher ([src/lib.rs#L101-L164](repo://src/lib.rs#L101-L164))
 
 ```rust
 const K: usize = 0x517cc1b727220a95usize;
 ```
-Fast non-cryptographic hash for integer keys; processes 8/4/2/1 bytes at a time with rotate-xor-multiply.
+Fast non-cryptographic hash for integer keys; processes 8/4/2/1 bytes at a time with rotate-xor-multiply. Used as default `BuildHasher` for all internal `FxHashMap`/`FxHashSet`.
 
 ## Out-of-lock pipeline: filter → compress → encrypt
 
-Write operations split into three stages so CPU-bound work happens **without holding filesystem locks** (`src/disk.rs#L5671-L5850`):
+Write operations split into three stages so CPU-bound work happens **without holding filesystem locks** ([src/disk.rs#L5671-L5850](repo://src/disk.rs#L5671-L5850)):
 
 ### Stage 1 — Shared Read Lock (inspection)
 - Acquires `inner.read()`.
@@ -321,7 +374,7 @@ This three-stage design means:
 
 ## Zero-allocation path resolution: `resolve_path_iter` + `resolve_parent`
 
-Path resolution avoids heap allocation by iterating over `&str` slices directly (`src/disk.rs#L6437-L6620`):
+Path resolution avoids heap allocation by iterating over `&str` slices directly ([src/disk.rs#L6437-L6620](repo://src/disk.rs#L6437-L6620)):
 
 ```rust
 fn resolve_path_iter<'a>(
@@ -356,7 +409,7 @@ pub fn resolve_parent(&self, path: &str) -> Result<(u64, String), DiskManagerErr
 
 ## POSIX OpenMode and race safety
 
-`DiskManager::open_file` and `OifsSession::open_file` provide POSIX-standard file creation semantics (`src/session.rs#L870-L888`):
+`DiskManager::open_file` and `OifsSession::open_file` provide POSIX-standard file creation semantics ([src/session.rs#L870-L888](repo://src/session.rs#L870-L888)):
 
 | OpenMode | Behavior |
 |----------|----------|
@@ -376,3 +429,12 @@ All mutations funnel through the **single Master's `DiskManagerInner` mutex** (e
 - **Stream compressed files** use zstd multi-frame append at EOF, or transparent read-modify-recompress for random offsets.
 
 This single-writer model (enforced by the Master-Proxy architecture) is the **sole source of write serialization** — there are no per-block locks or finer-grained coordination.
+
+## FFI integration: `OIFSReadSession` and `OIFSFileHandle`
+
+The C FFI exposes the lock-free read path via opaque handles ([src/ffi.rs#L1345-L1540](repo://src/ffi.rs#L1345-L1540)):
+
+- `oifs_begin_read(handle)` → `OIFSReadSession`: acquires shared `ReadSession` + pins `DiskManager` via `Arc<FfiSharedSession>` (field drop order guarantees read lock lives as long as handles).
+- `oifs_session_open_file(session, path)` / `oifs_session_open_inode(session, inode_id)` → `OIFSFileHandle`: pins `FileReadHandle` with its own `Arc<FfiSharedSession>` so destroying the parent `OIFSReadSession` first does not invalidate the file handle (zero UAF).
+- `oifs_file_read_at(file, offset, buf, len)`: zero-copy for raw mmap files, zero `RwLock` acquisition, zero inode lookup.
+- `oifs_file_size`, `oifs_file_inode_id`, `oifs_file_close`, `oifs_end_read` complete the lifecycle.

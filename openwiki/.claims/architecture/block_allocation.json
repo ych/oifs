@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:af42177fcbee10fea0bb27a81a7ef062e55460151670a277a4714aebb4149737",
+  "pageVersion": "sha256:0bdb958b6a88d3bf8f2f29e42d0331a8717895739d52e1b6f08be20474fb0e80",
   "claims": [
     {
       "id": "claim_08d98b48f3dd4b16b7eb11ae7f170f4f",
@@ -107,10 +107,116 @@
           "version": "repo-lines-v1:sha256:91a05cd60ad76ec65a68fbaa24972256e4ae525d42646c8c4752d907418819e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjMDAwOTdjNzQxOWI2MWZkM2NjZjMzZmQzOWMzZTc1ZWY2ZmUyYzFjMzFiMTU4YzQxZTRiMmI2YTgwZjZhNTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3NzJlYjhlMDNkNzExMzYzMmI0MTAwZTljNWQyZTBjZGNlOTFkZmY4OWQ3ZmIwOGVlZWQ1NzdlOTAwMTZiOWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVlMGZlYThjOGU4ZTBjOTZjNTBjN2Q1OTc1YjEwZGQyMDE0ZDA2N2EyMDk3MDdmMTMzMTU4NjA1YzAxOTQ2MDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFkNjcxZDE3OGMwMWM2MjJmNDQwMGViZmFhOTc1NzU5MmZiM2FlM2EwNjMyYWFhZWIyOTM0ZjZkNTk1YjBjMTQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_dba212ae7b3a4246827a7730593f2adb",
+      "statement": "The v3 layout uses multi-block bitmaps: inode_bitmap_blocks = inode_count.div_ceil(BITMAP_BLOCK_BITS).max(1) and data_bitmap_blocks derived from data_block_start and inode_table_block offsets, with bit index mapping block_id - data_block_start for data bitmap and 0-based inode ID for inode bitmap.",
+      "evidence": [
+        {
+          "resource": "repo://src/superblock.rs#L185-L195",
+          "version": "repo-lines-v1:sha256:29cb46cc2404c57e12b948e2fd9635bca51dcf84ec38cc9f62bb6475fcabca97:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlYzc2YTJkNjBjYjkwMDBhNGE1NjljNTEwYjlhZjI5MDg4YWJjYzYyNGNlOWQ0Zjg1YTBiODY3ZWQxZGIxZTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyMmQ3YTNiMjQwYzM3YzFhYjlmMWJiZmM3M2RjNzIwMzQwZDY2MjBmYmI2YTJjYmVhYzI4Zjg5OTMwZmI1NzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjODljNTM4ZTUyOWJlMjgxZTQ3Y2RmZTU0OTJlZTI2NGY1OWNlODIzZTBkY2Y0MGZhNGViZWFmNjRjZDVmOWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEyZDBhZWZlMDk5ZWQzMjVlNmMzZDI5YjE1NmJlMjJiZjMwZjU0YzAzOWFjMzI4ZDg0OWNkNTQxZjNhMDMyNjIifQ"
+        },
+        {
+          "resource": "repo://src/superblock.rs#L359-L390",
+          "version": "repo-lines-v1:sha256:3bfa0dec487d913fed27ed00ddc8cbb5627f3286020d8059b7c8b5f308cf253f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5Y2VmMjU0MTg4Yzk3YTk2Mzg3MjQ4NDFiYjc4NjdhNjJjYmExM2Q3NjI5MmFiYTkyOTA1N2JiMmY3YjlhZmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM3NTllNmI2MmEwNjU2M2ZjNzI0MWNiOTcxMjg5MGI3YmVhNzEyNWQwNDI2MjI3YmM0YTcwYWJhOTcxNDQzYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEwYmY4ZjE4OTdkMDY2ZGUxMGNhNWUxNmJiOTk3NTZkMjg5ZmJhYWQ1OTM2MWE4M2Y0NzJmMGIwYjg4NmU4NWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a0380d0106e04fe7afe114f0c1ca8fea",
+      "statement": "Bitmap operations process 64 bits per CPU word using chunks_exact(8); find_first_free_from uses hardware tzcnt via (!masked_word).trailing_zeros(), for_each_set_bit uses word &= word - 1 to iterate only set bits, and analyze_fragmentation special-cases word==0 and word==u64::MAX for constant-time dense region scanning.",
+      "evidence": [
+        {
+          "resource": "repo://src/bitmap.rs#L155-L220",
+          "version": "repo-lines-v1:sha256:c4dd29f863f5cedb8175deb38bf8787674afe7ec5f6aeae4c888df8e6d5d5fcb:eyJzZWxlY3RlZExpbmVDb3VudCI6NjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1Y2RlZjgwODVhZTc0YWI2MzZkNjQ1OWY1YzZkNWZiZmIwZGIyNjRmMWIwZDc1YmFjNTE5YzliM2Y2NzE3YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ5ODg3ZWY2OWJhOTczNjNmNjYyOTIyY2FkNGI0MjlhYTkzMDNjNWRlOTE3NDQyMjQzNmJjOWEwYWY4Mjc4OGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM5ZmUyNzRlN2JhMTNiYmE1OGMwNDYzM2E3ODc2MzQ0YThiNDY0OWNkOGFkZTU4MmYzYjQ3MzFkMjdkZTFlMjUifQ"
+        },
+        {
+          "resource": "repo://src/bitmap.rs#L25-L100",
+          "version": "repo-lines-v1:sha256:589c8af5f6958f0f77488546cde14450dbf2ee49ea88edcbd1f2681543ec7370:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlNWUxMjE3Y2UzZjcwZTY1ZGQzZmNkZmQ4ZjEyZmQ0YzFiOTZmZjZlZjJlZmM2MzU1ZGEzZDE2YjA3ZjVjZDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkMGE4Y2JhM2Y4ODgzYzU0NTI3ZjA4OTQ0OTE4YjdiNzI1ZTVjZGYxOTk1NmZmMjZhZDA5NDExNTRiMDVhYzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4MjQwZDc3ZGMyYzYyNjY2MjE0YzExMmUxZjZmZmE0NTk2MWI1Mzk5NTI0MTkzOTg3MTg3ODhkMmVlZjA5YzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxZDI1ZjE0YTY0ZTBhZWZjNjBmYmQ5NDVkMWVlZWVjZjEwYWYxNGEyZWFiN2RjMjBlMzBmYzc0YjM2ODg3N2UifQ"
+        },
+        {
+          "resource": "repo://src/disk/maintenance.rs#L157-L250",
+          "version": "repo-lines-v1:sha256:df5fabd0d147bc0141b082d81b131c6cd1d5731b9e38f7703a18067137e80f94:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmZDI1M2ZlNGEwNjY4NDVmMWY3ZGVkYTA0NjRkZjQ0MTFjOTY5YzNmODgzMTE0NmFlYjRiZjI0NWJiNzI0ODciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwYzZjYzc3YzgwMzY3YzMzM2FmNGI4MzJhYjYzNmJmNmNjYjNjYTliYjU1Zjg0Njk0YjIxYzg5YjU1NTg5MzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0M2Y3Njc1ZWVjZjJlOGEzNjI3MjE2ZTE5MzIxYzFjZjNkM2ZiYjVjMDE3YmM5Y2Q0YzVmYWQ1ZGY4NWU0MzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_751ba91eac5f47a3bc80e6487280eca8",
+      "statement": "Allocation hints (free_block_hint, free_inode_hint) in DiskManagerInner enable amortized O(1) sequential allocation by advancing after each allocation and rewinding on free; find_next_free_wrapped wraps from hint to 0 if needed.",
+      "evidence": [
+        {
+          "resource": "repo://src/allocator.rs#L40-L100",
+          "version": "repo-lines-v1:sha256:a128872a47e1ce9ba00a09bb75e743ca0b9d6d7bfe955e95b24129cf1ec7581e:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkY2Q4Yjc1NGJkMDQ5MjU5ZTM2YjYxY2U4NTBmZDEwM2FlMzVhMDI3NWQwMzllYWJkMzZkZDU0ZDQ1YTJkZmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhY2E4ZjY2ZmRiMzFlZDU0NWNhOGIyNDJkMzViOTZkYTBmZjY2ZTcwOTAzNTc4MGU4YWY1NzM5YzQxM2RhNWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0NDYyNTllYTI3MjNiMWY4NmVlMGIxMWViODA3NzMxZmQzYmNiYTBhYzJjZTk3MGM0ZDliNjAwMGQ3NWVjYWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI2OGM4MDYwMzFiNDMxOTZiNDRjYzk2NzczMGI5ZTBlMzdiMTExZmNhOTJmZjEzMzVmMjFjN2ZhMTZhNGZlZjgifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L2920-L2940",
+          "version": "repo-lines-v1:sha256:5c981485a4a5a502a7904b119810153471c5ff2fff86014e45cdf29b606bec87:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxN2E3YTExZDgzYTg0MjU1ZjI5NmVjMWM0MDM3MDA0Nzc5MTUyYWQ1MzM1ZTgzZTAwOWQxYWM3YWQ3MzJhYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkOTllN2M0OTcxM2MzMzc2Njc3MTI5MWRiY2NjMzc2NGM0OTk1N2U5N2U0NjgyN2U3ODIxMzliM2FiZjk5NDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM2M2U5YjNiOWE3OWE1Y2I4Mzg0OTk3ZjY5Y2NiNzIzNTVlZGIyN2M5Yjk0NDQ3ZmMwZWFmYjQ4NGYwZDNmZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgzZWNlYThkMzZmZTlmNmM0NmM4OWE3MTZlOTNjYjQxYWI5ZWZjZTc2M2NlMTJlNmE3MWRkZWFjMTJiZGM4NWMifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L6140-L6170",
+          "version": "repo-lines-v1:sha256:03eefc456e9ccfe326706e0342a49e9db7f6b82f6d46c95d1af41df061a067e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlZTYxMjFhZjIzN2VkMWZjNTJiODRhMDg3OTY1NDU0MGM0YWUzODEzYTZlZjRhYWMxZTAwMGM1MjQ4Nzk1MGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYTM3YjI1OTgyZmQ1NzBiNTcyODk1MDUzNGUzZWVjZjk3MGM5NDQ2ZTIyZGQ5NGRiZDcxMDY4ODg5NDE5MzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5MmM2MWE0NWRkN2VmNGM4NGQyYTI1MTljNDkyOTY1MjNiOGRhMDg3OTU0ZjIyNTdlYzUzMTdlMGNiZjNlZWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_368772d42569426db1aa049401cf30af",
+      "statement": "BitmapSliceMut provides write-through mirrors for StorageMode::FileIo: it wraps a mutable byte slice with optional file_writeback (File, offset) and dirty_range, auto-flushing via pwrite on Drop, while being a zero-cost wrapper under Mmap.",
+      "evidence": [
+        {
+          "resource": "repo://src/storage.rs#L1609-L1680",
+          "version": "repo-lines-v1:sha256:a2cd3c89c48b9a52724c89c1b143876df9fcc6b688de9caf1bcd5c0b67a5c916:eyJzZWxlY3RlZExpbmVDb3VudCI6NzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5OWFhOWMyYjMzZjlmYzE4YzBkZTQ0ZTFlZmMwN2QzNDI0MTU5ODFmZDgzMTg0MDhlMzczMzkzM2Q5NTYzMTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU2YWM0YWM3YTM2MzE0ZWI4MjBjNGQ1MTI0NzI1MjEzYjYwOWQxNzBmN2RkNDZhYWY5MzNjMWJlY2IxNzc4OTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyZDU3OTVkZTg1OTlmNzQyNjYyODNmMTdhNTdlYjM2NmQ4MzQ4YWQwYjMyYjY0MGYwNWNhNzRmZWM4MTEyMjUifQ"
+        },
+        {
+          "resource": "repo://src/storage.rs#L730-L820",
+          "version": "repo-lines-v1:sha256:840205ee7c683fc49380fbd4c8cf39e329ad19363d52566faf80e3202608aa48:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1ZTZmOTVhYTUwOGIyZDZmNzAyZDRiNjRjZTFiYWMyNTZlYWY1ZjQ2NDljZjNiMDhmZjYxMWI5ZjRjZmJkZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkZmYxMDYyZWJhZmVjZDhlMjFiNjhiMjI5YjU4OTg5ODIxZjcyMTM1ZDQyMzJiYWQyZGJjZWFlMTkwNGQ5MTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk3MjEwYzZmNjA1MDlkN2FhYTgzYTkwOTdhMjIxOGMyNWQyNTAzNjJjNDNhMjBmYTU1YTE5NmZjYTMyY2M1ODMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgxZjRjODk0YTkyZDcyOWUyYTFlNmU2YmY0OGVhYzlkOGYyMjUyMzAxZjVjMjEyN2IwYTgyMjNiMGRiZWI0NmQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a119e0acde6e4ae99afa4031a24b6a8e",
+      "statement": "analyze_fragmentation walks the data bitmap once using 64-bit word fast path, counting used_blocks, free_blocks, free_runs, largest_free_run, total_gap_size, and computes avg_gap_size and fragmentation_ratio = (free_runs - 1) / (free_blocks - 1).",
+      "evidence": [
+        {
+          "resource": "repo://src/disk/maintenance.rs#L157-L250",
+          "version": "repo-lines-v1:sha256:df5fabd0d147bc0141b082d81b131c6cd1d5731b9e38f7703a18067137e80f94:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmZDI1M2ZlNGEwNjY4NDVmMWY3ZGVkYTA0NjRkZjQ0MTFjOTY5YzNmODgzMTE0NmFlYjRiZjI0NWJiNzI0ODciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwYzZjYzc3YzgwMzY3YzMzM2FmNGI4MzJhYjYzNmJmNmNjYjNjYTliYjU1Zjg0Njk0YjIxYzg5YjU1NTg5MzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0M2Y3Njc1ZWVjZjJlOGEzNjI3MjE2ZTE5MzIxYzFjZjNkM2ZiYjVjMDE3YmM5Y2Q0YzVmYWQ1ZGY4NWU0MzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b825636a81d843d4bd17de205a1c02df",
+      "statement": "Block deallocation via free/free_contiguous clears bits and rewinds free_block_hint downward if the freed range starts before the current hint, keeping the allocator's search window compact after truncation or deletion.",
+      "evidence": [
+        {
+          "resource": "repo://src/allocator.rs#L136-L160",
+          "version": "repo-lines-v1:sha256:a9cf54e2140dd8b0ef1d97da50c32a89245331ca931862c9595da6aa6516819a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1OWY1M2YyYzc3Y2QxMzIzOTcyNGNlNzIyZWM0MzhiZjcyYzZhYjNiYTA2OTczMDEwNTczZTcwNzAyZGM5ZmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyNmYyNTU2NjhlYmUyYmExMjIwYzg4YTkyOGI1NWMzODJiYTZmYThlMmQxZjQ5MTUzYmFmODg4ZTEwNjJhMTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg0NzUwYjBlY2M3N2NkZjUxMzc1Y2ExZmY5MGQxODhiMWJkZjgzOWI3ZGUzYWI4NmZlZTUzOTQwNGJmM2Q3NDAifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L5920-L5930",
+          "version": "repo-lines-v1:sha256:bb63de8fe7f1ec8db752fc41c7c3cf72ae3711320deced4c52e31efc874c9eea:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2OTgyNTE3OTI0ZmU4ZDNlMTU2NjcxMTViMWY1YTIwMThlMGQ1NWNlNWEwMDFiMWUyZDVlMzFiOGIyNDEyMmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NGZiY2YxYWJkZDg2MWZhMjc2NTEyYjViZGRmOGY0ZjhjZWZlZThkZjk5ZWY2M2YzZTQwYWEzNmIyODRjZjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU3MWYyZTQ0MWVjN2RkNTBjN2M0OWE5MGY5YjQ3ZGRlMzhmNGEzZGUzYTVlZDU0ZGZkNjJiYmU3Nzg5ZDM1ZDcifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L6230-L6240",
+          "version": "repo-lines-v1:sha256:7a0fd467a2dc3f9dde65e68d0fa2ceddeee7e43f7bfa7c37b303ad816ecbc7fa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZhMGZiNDFhYWUxZDBkZGY5MGZjYjVhZDg4N2ViOWUyZDFjYzllYzUyOWVkNmIzYzQxNDIwNWZkZTA4ZGE2ZWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwZDA3ODVlNjgzZTYxNDg4MDY2YTVhYzBhZGZiZjU1ODE3YmE2ZmRlOWU4Yzk4OWQyYTFlMGI2ODVhMDRmZDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_62897bf6047847379967377bf0c33a88",
+      "statement": "Indirect block allocation uses the same allocate_block/allocate_contiguous path with is_data_block verification ensuring both parent indirect blocks and child blocks reside in the data area, never allocating metadata-region blocks for payload data.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L3030-L3040",
+          "version": "repo-lines-v1:sha256:02a85420fbd22552f07b4a42e39d8c16e85e2f04679ff56b07d98a6111e039f9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiNDI5ZmU4Nzc5Mzg4NzYwZDAwY2I3MzdjNWUwYmEzOTQ0ODA2YjNjOWNmOTY0ZWJhM2ZhMjc1MjYxY2E1YTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0MTE5NThiMmM2OGJkMDRjNjRiNTlmYTVlNTVmYTM2NGMzODA4MDNhMmVmODlmNzc3OWRmYTg1MDBiYWY3YjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVmMzBiM2Q4MWU0ZTBjOWQ2ZjdhY2ZjMjZiYWE0YzU1OTAwNTc0MzhjODg0M2MzZmZmNTUyN2VkY2ZlZDA0NjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZiYWVhMTg4MzQyYWQyZTMzNTU1YTQ3YTc1YWM3NGQxNjBkNjA0MmNhMzJjZjAyM2JkMjM0Zjc0MjVhNzFkNGEifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L6250-L6320",
+          "version": "repo-lines-v1:sha256:f20187346893b119fe998d2271c56bf58bba051aace4715749e9f77cf95a2e03:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmYTk5NDAxNzU0OTgyNGE2OWEwNDczNDUzNTZkOTg5OTU3MzhjN2RiNzNhYmNkNDRjNDgwM2I1NTkxMGU2ZmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNjQ3OWNjMjMwNDQwZmQ0MWU4MjI0MjE4Njc5Njk4NTU5ZDI4OTNiZDY3YjQzODBhZmFiODExYjM4YTU1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM2MTZhOGVlY2I1YzBlZWI2M2I1YmFhN2JiNmQ4OTM1MjA1YzQ3YzU2ZmRhNTQyNzBkYTRiMjA2OTBmMjkyNzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkOWE2ZDgyM2JkNTA4OWUxYzkwNGI1MmIzNDJlZmJjZjc3ZDAzYzhkOTk0MzFkNWQzMWMwZTgwZGUwNDAyNDQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-22T10:29:12.696Z"
+    "at": "2026-11-23T20:55:55.458Z"
   }
 }

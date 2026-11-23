@@ -135,17 +135,17 @@ function appendTextToMessageContent(msg, extraText) {
  */
 function shapeChatCompletionInit(url, init) {
   if (!url.includes("/chat/completions")) {
-    return init;
+    return { init, isPlanner: false };
   }
   if (!init || typeof init.body !== "string") {
-    return init;
+    return { init, isPlanner: false };
   }
 
   let parsed;
   try {
     parsed = JSON.parse(init.body);
   } catch {
-    return init;
+    return { init, isPlanner: false };
   }
 
   if (
@@ -154,7 +154,7 @@ function shapeChatCompletionInit(url, init) {
     !Array.isArray(parsed.tools) ||
     parsed.tools.length === 0
   ) {
-    return init;
+    return { init, isPlanner: false };
   }
 
   let mutated = false;
@@ -186,13 +186,16 @@ function shapeChatCompletionInit(url, init) {
   }
 
   if (!mutated) {
-    return init;
+    return { init, isPlanner };
   }
 
   return {
-    ...init,
-    headers: stripContentLengthHeader(init.headers),
-    body: JSON.stringify(parsed),
+    init: {
+      ...init,
+      headers: stripContentLengthHeader(init.headers),
+      body: JSON.stringify(parsed),
+    },
+    isPlanner,
   };
 }
 
@@ -219,11 +222,22 @@ function recordUsageAndToolCalls(usage, toolCallCount) {
   }
 }
 
+function logPlannerZeroToolResponse(isPlanner, finishReason, contentText) {
+  if (!isPlanner) return;
+  const compact = String(contentText || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const preview = compact.length > 240 ? `${compact.slice(0, 240)}...` : compact;
+  console.log(
+    `[RateLimiter] Planner turn #${stats.plannerTurns} returned 0 tool_calls | finish_reason=${finishReason || "unknown"} | preview=${JSON.stringify(preview)}`
+  );
+}
+
 /**
  * Parse a cloned /chat/completions response (JSON or SSE) for efficiency telemetry.
  * Runs off the hot path via `res.clone()` so it never blocks or mutates the caller's stream.
  */
-function observeChatCompletionResponse(res) {
+function observeChatCompletionResponse(res, isPlanner) {
   stats.chatCompletions++;
 
   let cloned;
@@ -240,6 +254,8 @@ function observeChatCompletionResponse(res) {
       .text()
       .then((text) => {
         let usage = null;
+        let finishReason = null;
+        let contentText = "";
         const toolIndices = new Set();
         for (const rawLine of text.split(/\r?\n/)) {
           const line = rawLine.trim();
@@ -255,14 +271,24 @@ function observeChatCompletionResponse(res) {
           if (chunk && chunk.usage) {
             usage = chunk.usage;
           }
-          const deltaTools = chunk?.choices?.[0]?.delta?.tool_calls;
+          const choice = chunk?.choices?.[0];
+          if (choice?.finish_reason) {
+            finishReason = choice.finish_reason;
+          }
+          if (typeof choice?.delta?.content === "string") {
+            contentText += choice.delta.content;
+          }
+          if (typeof choice?.message?.content === "string") {
+            contentText += choice.message.content;
+          }
+          const deltaTools = choice?.delta?.tool_calls;
           if (Array.isArray(deltaTools)) {
             for (let i = 0; i < deltaTools.length; i++) {
               const tc = deltaTools[i];
               toolIndices.add(tc && tc.index !== undefined ? tc.index : i);
             }
           }
-          const msgTools = chunk?.choices?.[0]?.message?.tool_calls;
+          const msgTools = choice?.message?.tool_calls;
           if (Array.isArray(msgTools)) {
             for (let i = 0; i < msgTools.length; i++) {
               toolIndices.add(i);
@@ -270,6 +296,9 @@ function observeChatCompletionResponse(res) {
           }
         }
         recordUsageAndToolCalls(usage, toolIndices.size);
+        if (toolIndices.size === 0) {
+          logPlannerZeroToolResponse(isPlanner, finishReason, contentText);
+        }
       })
       .catch(() => {});
     return;
@@ -279,9 +308,17 @@ function observeChatCompletionResponse(res) {
     cloned
       .json()
       .then((body) => {
-        const msgTools = body?.choices?.[0]?.message?.tool_calls;
+        const choice = body?.choices?.[0];
+        const msgTools = choice?.message?.tool_calls;
         const toolCount = Array.isArray(msgTools) ? msgTools.length : 0;
         recordUsageAndToolCalls(body?.usage, toolCount);
+        if (toolCount === 0) {
+          logPlannerZeroToolResponse(
+            isPlanner,
+            choice?.finish_reason,
+            choice?.message?.content
+          );
+        }
       })
       .catch(() => {});
   }
@@ -326,7 +363,7 @@ globalThis.fetch = async function (input, init) {
     return origFetch(input, init);
   }
 
-  const effectiveInit = shapeChatCompletionInit(url, init);
+  const { init: effectiveInit, isPlanner } = shapeChatCompletionInit(url, init);
   const isChatCompletion = url.includes("/chat/completions");
 
   // Queue all OpenRouter requests so they are paced sequentially
@@ -382,7 +419,7 @@ globalThis.fetch = async function (input, init) {
             if (res.ok) {
               stats.http2xx++;
               if (isChatCompletion) {
-                observeChatCompletionResponse(res);
+                observeChatCompletionResponse(res, isPlanner);
               }
             } else {
               stats.httpOther++;

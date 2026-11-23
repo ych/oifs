@@ -3,8 +3,7 @@
 # path referenced by existing OpenWiki evidence (`src/`, `include/`, `tests/`,
 # `scripts/release_check.sh`, `.github/workflows/rust.yml`) valid.
 
-# Generated OpenWiki output & GitHub Pages assets
-openwiki/
+# Generated GitHub Pages assets (keep `openwiki/` unignored so OpenWiki can snapshot existing pages during `--update`)
 docs/openwiki-visualizer/
 docs/index.html
 docs/sitemap.xml

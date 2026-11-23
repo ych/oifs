@@ -1,8 +1,9 @@
 # OpenWiki ignore rules for OIFS
-# Keeps indexing and agent search focused on core Rust/C/C++ sources and design docs,
-# preventing wasted exploratory tool-call turns on tests, lockfiles, and generated output.
+# Excludes generated output, lockfiles, and auxiliary metadata while keeping every
+# path referenced by existing OpenWiki evidence (`src/`, `include/`, `tests/`,
+# `scripts/release_check.sh`, `.github/workflows/rust.yml`) valid.
 
-# Generated OpenWiki output & visualizer
+# Generated OpenWiki output & GitHub Pages assets
 openwiki/
 docs/openwiki-visualizer/
 docs/index.html
@@ -16,19 +17,17 @@ docs/similar_projects_comparison.md
 target/
 Cargo.lock
 
-# Integration & benchmark test suites (formal Kani proofs live inside src/*.rs)
-tests/
-benches/
-
 # Auxiliary docs, changelogs, and localized duplicates
 CHANGELOG.md
 README_zh.md
 OPENWIKI_WORKFLOW.local.md
 LICENSE
 
-# CI, scripts, and editor/agent tooling metadata
-.github/
-scripts/
+# Non-source CI/deployment workflows and tooling metadata
+.github/scripts/
+.github/workflows/openwiki-update.yml
+.github/workflows/pages.yml
+.github/workflows/release.yml
 .agent/
 .cargo/
 .cross/

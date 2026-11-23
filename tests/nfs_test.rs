@@ -134,12 +134,33 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     let mut stream = TcpStream::connect(("127.0.0.1", server.port())).unwrap();
 
     // 1. MOUNT v3: NULL, EXPORT, DUMP, bad MNT, good MNT
-    let _ = rpc_roundtrip(&mut stream, 1, MOUNT_PROGRAM, MOUNT_VERSION_3, MNTPROC3_NULL, &[]);
-    let exp = rpc_roundtrip(&mut stream, 2, MOUNT_PROGRAM, MOUNT_VERSION_3, MNTPROC3_EXPORT, &[]);
+    let _ = rpc_roundtrip(
+        &mut stream,
+        1,
+        MOUNT_PROGRAM,
+        MOUNT_VERSION_3,
+        MNTPROC3_NULL,
+        &[],
+    );
+    let exp = rpc_roundtrip(
+        &mut stream,
+        2,
+        MOUNT_PROGRAM,
+        MOUNT_VERSION_3,
+        MNTPROC3_EXPORT,
+        &[],
+    );
     let mut er = XdrReader::new(&exp);
     assert_eq!(er.read_bool(), Some(true));
     assert_eq!(er.read_string(64), Some("/"));
-    let _ = rpc_roundtrip(&mut stream, 3, MOUNT_PROGRAM, MOUNT_VERSION_3, MNTPROC3_DUMP, &[]);
+    let _ = rpc_roundtrip(
+        &mut stream,
+        3,
+        MOUNT_PROGRAM,
+        MOUNT_VERSION_3,
+        MNTPROC3_DUMP,
+        &[],
+    );
 
     let mut bad_mnt = XdrWriter::new();
     bad_mnt.write_string("/nonexistent");
@@ -156,18 +177,39 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     let root_fh = mount_root_via_tcp(&mut stream);
 
     // 2. NFS NULL, GETATTR, FSSTAT, FSINFO, PATHCONF, ACCESS
-    let _ = rpc_roundtrip(&mut stream, 11, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_NULL, &[]);
+    let _ = rpc_roundtrip(
+        &mut stream,
+        11,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_NULL,
+        &[],
+    );
 
     let mut fh_arg = XdrWriter::new();
     fh_arg.write_opaque(&root_fh);
     let fh_arg_bytes = fh_arg.into_bytes();
 
-    let ga = rpc_roundtrip(&mut stream, 12, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_GETATTR, &fh_arg_bytes);
+    let ga = rpc_roundtrip(
+        &mut stream,
+        12,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_GETATTR,
+        &fh_arg_bytes,
+    );
     let mut r = XdrReader::new(&ga);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     assert_eq!(r.read_u32(), Some(2)); // NF3DIR
 
-    let fsstat = rpc_roundtrip(&mut stream, 13, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_FSSTAT, &fh_arg_bytes);
+    let fsstat = rpc_roundtrip(
+        &mut stream,
+        13,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_FSSTAT,
+        &fh_arg_bytes,
+    );
     let mut r = XdrReader::new(&fsstat);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     assert!(skip_post_op_attr(&mut r));
@@ -175,24 +217,57 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     let fbytes = r.read_u64().unwrap();
     assert!(tbytes > 0 && fbytes > 0);
 
-    let fsinfo = rpc_roundtrip(&mut stream, 14, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_FSINFO, &fh_arg_bytes);
+    let fsinfo = rpc_roundtrip(
+        &mut stream,
+        14,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_FSINFO,
+        &fh_arg_bytes,
+    );
     assert_eq!(XdrReader::new(&fsinfo).read_u32(), Some(NFS3_OK));
 
-    let pc = rpc_roundtrip(&mut stream, 15, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_PATHCONF, &fh_arg_bytes);
+    let pc = rpc_roundtrip(
+        &mut stream,
+        15,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_PATHCONF,
+        &fh_arg_bytes,
+    );
     assert_eq!(XdrReader::new(&pc).read_u32(), Some(NFS3_OK));
 
     let mut acc_arg = XdrWriter::new();
     acc_arg.write_opaque(&root_fh);
     acc_arg.write_u32(
-        ACCESS3_READ | ACCESS3_LOOKUP | ACCESS3_MODIFY | ACCESS3_EXTEND | ACCESS3_DELETE | ACCESS3_EXECUTE,
+        ACCESS3_READ
+            | ACCESS3_LOOKUP
+            | ACCESS3_MODIFY
+            | ACCESS3_EXTEND
+            | ACCESS3_DELETE
+            | ACCESS3_EXECUTE,
     );
-    let acc = rpc_roundtrip(&mut stream, 16, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_ACCESS, &acc_arg.into_bytes());
+    let acc = rpc_roundtrip(
+        &mut stream,
+        16,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_ACCESS,
+        &acc_arg.into_bytes(),
+    );
     let mut r = XdrReader::new(&acc);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     skip_post_op_attr(&mut r);
     assert_eq!(
         r.read_u32(),
-        Some(ACCESS3_READ | ACCESS3_LOOKUP | ACCESS3_MODIFY | ACCESS3_EXTEND | ACCESS3_DELETE | ACCESS3_EXECUTE)
+        Some(
+            ACCESS3_READ
+                | ACCESS3_LOOKUP
+                | ACCESS3_MODIFY
+                | ACCESS3_EXTEND
+                | ACCESS3_DELETE
+                | ACCESS3_EXECUTE
+        )
     );
 
     // 3. MKDIR "docs" + CREATE (GUARDED / EXCLUSIVE / UNCHECKED)
@@ -200,7 +275,14 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     mk.write_opaque(&root_fh);
     mk.write_string("docs");
     write_empty_sattr3(&mut mk, None);
-    let mk_res = rpc_roundtrip(&mut stream, 17, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_MKDIR, &mk.into_bytes());
+    let mk_res = rpc_roundtrip(
+        &mut stream,
+        17,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_MKDIR,
+        &mk.into_bytes(),
+    );
     let mut r = XdrReader::new(&mk_res);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     assert_eq!(r.read_bool(), Some(true));
@@ -212,7 +294,14 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     cr.write_string("hello.txt");
     cr.write_u32(CREATE_GUARDED);
     write_empty_sattr3(&mut cr, None);
-    let cr_res = rpc_roundtrip(&mut stream, 18, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_CREATE, &cr.into_bytes());
+    let cr_res = rpc_roundtrip(
+        &mut stream,
+        18,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_CREATE,
+        &cr.into_bytes(),
+    );
     let mut r = XdrReader::new(&cr_res);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     assert_eq!(r.read_bool(), Some(true));
@@ -224,7 +313,14 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     cr_dup.write_string("hello.txt");
     cr_dup.write_u32(CREATE_GUARDED);
     write_empty_sattr3(&mut cr_dup, None);
-    let cr_dup_res = rpc_roundtrip(&mut stream, 19, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_CREATE, &cr_dup.into_bytes());
+    let cr_dup_res = rpc_roundtrip(
+        &mut stream,
+        19,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_CREATE,
+        &cr_dup.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&cr_dup_res).read_u32(), Some(NFS3ERR_EXIST));
 
     // CREATE EXCLUSIVE "excl.txt"
@@ -233,7 +329,14 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     cr_ex.write_string("excl.txt");
     cr_ex.write_u32(CREATE_EXCLUSIVE);
     cr_ex.write_fixed_opaque(&[1, 2, 3, 4, 5, 6, 7, 8]);
-    let cr_ex_res = rpc_roundtrip(&mut stream, 20, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_CREATE, &cr_ex.into_bytes());
+    let cr_ex_res = rpc_roundtrip(
+        &mut stream,
+        20,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_CREATE,
+        &cr_ex.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&cr_ex_res).read_u32(), Some(NFS3_OK));
 
     // 4. WRITE (UNSTABLE + FILE_SYNC), COMMIT, READ, SETATTR truncate
@@ -244,7 +347,14 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     wr.write_u32(payload.len() as u32);
     wr.write_u32(UNSTABLE);
     wr.write_opaque(payload);
-    let wr_res = rpc_roundtrip(&mut stream, 21, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_WRITE, &wr.into_bytes());
+    let wr_res = rpc_roundtrip(
+        &mut stream,
+        21,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_WRITE,
+        &wr.into_bytes(),
+    );
     let mut r = XdrReader::new(&wr_res);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     skip_wcc_data(&mut r);
@@ -255,7 +365,14 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     cm.write_opaque(&file_fh);
     cm.write_u64(0);
     cm.write_u32(0);
-    let cm_res = rpc_roundtrip(&mut stream, 22, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_COMMIT, &cm.into_bytes());
+    let cm_res = rpc_roundtrip(
+        &mut stream,
+        22,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_COMMIT,
+        &cm.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&cm_res).read_u32(), Some(NFS3_OK));
 
     let mut rd = XdrWriter::new();
@@ -263,7 +380,14 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     rd.write_u64(0);
     rd.write_u32(4096);
     let rd_bytes = rd.into_bytes();
-    let rd_res = rpc_roundtrip(&mut stream, 23, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_READ, &rd_bytes);
+    let rd_res = rpc_roundtrip(
+        &mut stream,
+        23,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_READ,
+        &rd_bytes,
+    );
     let mut r = XdrReader::new(&rd_res);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     skip_post_op_attr(&mut r);
@@ -276,10 +400,24 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     sa.write_opaque(&file_fh);
     write_empty_sattr3(&mut sa, Some(5));
     sa.write_bool(false); // guard
-    let sa_res = rpc_roundtrip(&mut stream, 24, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_SETATTR, &sa.into_bytes());
+    let sa_res = rpc_roundtrip(
+        &mut stream,
+        24,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_SETATTR,
+        &sa.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&sa_res).read_u32(), Some(NFS3_OK));
 
-    let rd_res2 = rpc_roundtrip(&mut stream, 25, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_READ, &rd_bytes);
+    let rd_res2 = rpc_roundtrip(
+        &mut stream,
+        25,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_READ,
+        &rd_bytes,
+    );
     let mut r = XdrReader::new(&rd_res2);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     skip_post_op_attr(&mut r);
@@ -294,24 +432,52 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     cr_uni.write_string("caf\u{00e9}.txt");
     cr_uni.write_u32(CREATE_UNCHECKED);
     write_empty_sattr3(&mut cr_uni, None);
-    let _ = rpc_roundtrip(&mut stream, 26, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_CREATE, &cr_uni.into_bytes());
+    let _ = rpc_roundtrip(
+        &mut stream,
+        26,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_CREATE,
+        &cr_uni.into_bytes(),
+    );
 
     let mut lk_nfd = XdrWriter::new();
     lk_nfd.write_opaque(&docs_fh);
     lk_nfd.write_string("cafe\u{0301}.txt");
-    let lk_res = rpc_roundtrip(&mut stream, 27, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_LOOKUP, &lk_nfd.into_bytes());
+    let lk_res = rpc_roundtrip(
+        &mut stream,
+        27,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_LOOKUP,
+        &lk_nfd.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&lk_res).read_u32(), Some(NFS3_OK));
 
     let mut lk_meta = XdrWriter::new();
     lk_meta.write_opaque(&docs_fh);
     lk_meta.write_string("._hello.txt");
-    let lk_meta_res = rpc_roundtrip(&mut stream, 28, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_LOOKUP, &lk_meta.into_bytes());
+    let lk_meta_res = rpc_roundtrip(
+        &mut stream,
+        28,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_LOOKUP,
+        &lk_meta.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&lk_meta_res).read_u32(), Some(NFS3ERR_NOENT));
 
     let mut lk_dotdot = XdrWriter::new();
     lk_dotdot.write_opaque(&docs_fh);
     lk_dotdot.write_string("..");
-    let lk_dd_res = rpc_roundtrip(&mut stream, 29, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_LOOKUP, &lk_dotdot.into_bytes());
+    let lk_dd_res = rpc_roundtrip(
+        &mut stream,
+        29,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_LOOKUP,
+        &lk_dotdot.into_bytes(),
+    );
     let mut r = XdrReader::new(&lk_dd_res);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     assert_eq!(r.read_opaque(64), Some(root_fh.as_slice()));
@@ -322,7 +488,14 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     rn.write_string("hello.txt");
     rn.write_opaque(&root_fh);
     rn.write_string("moved.txt");
-    let rn_res = rpc_roundtrip(&mut stream, 30, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_RENAME, &rn.into_bytes());
+    let rn_res = rpc_roundtrip(
+        &mut stream,
+        30,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_RENAME,
+        &rn.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&rn_res).read_u32(), Some(NFS3_OK));
 
     // Verify moved.txt exists at root and has "Hello"
@@ -333,19 +506,40 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     let mut rm_dir_as_file = XdrWriter::new();
     rm_dir_as_file.write_opaque(&root_fh);
     rm_dir_as_file.write_string("docs");
-    let res = rpc_roundtrip(&mut stream, 31, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_REMOVE, &rm_dir_as_file.into_bytes());
+    let res = rpc_roundtrip(
+        &mut stream,
+        31,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_REMOVE,
+        &rm_dir_as_file.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&res).read_u32(), Some(NFS3ERR_ISDIR));
 
     let mut rmdir_nonempty = XdrWriter::new();
     rmdir_nonempty.write_opaque(&root_fh);
     rmdir_nonempty.write_string("docs");
-    let res = rpc_roundtrip(&mut stream, 32, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_RMDIR, &rmdir_nonempty.into_bytes());
+    let res = rpc_roundtrip(
+        &mut stream,
+        32,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_RMDIR,
+        &rmdir_nonempty.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&res).read_u32(), Some(NFS3ERR_NOTEMPTY));
 
     let mut rmdir_file = XdrWriter::new();
     rmdir_file.write_opaque(&root_fh);
     rmdir_file.write_string("moved.txt");
-    let res = rpc_roundtrip(&mut stream, 33, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_RMDIR, &rmdir_file.into_bytes());
+    let res = rpc_roundtrip(
+        &mut stream,
+        33,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_RMDIR,
+        &rmdir_file.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&res).read_u32(), Some(NFS3ERR_NOTDIR));
 
     // Remove remaining files in docs, then RMDIR docs succeeds
@@ -353,18 +547,44 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
         let mut rm = XdrWriter::new();
         rm.write_opaque(&docs_fh);
         rm.write_string(f);
-        let res = rpc_roundtrip(&mut stream, 34, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_REMOVE, &rm.into_bytes());
+        let res = rpc_roundtrip(
+            &mut stream,
+            34,
+            NFS_PROGRAM,
+            NFS_VERSION_3,
+            NFSPROC3_REMOVE,
+            &rm.into_bytes(),
+        );
         assert_eq!(XdrReader::new(&res).read_u32(), Some(NFS3_OK));
     }
     let mut rmdir_ok = XdrWriter::new();
     rmdir_ok.write_opaque(&root_fh);
     rmdir_ok.write_string("docs");
-    let res = rpc_roundtrip(&mut stream, 35, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_RMDIR, &rmdir_ok.into_bytes());
+    let res = rpc_roundtrip(
+        &mut stream,
+        35,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_RMDIR,
+        &rmdir_ok.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&res).read_u32(), Some(NFS3_OK));
 
     // 8. Unsupported procedures return NFS3ERR_NOTSUPP cleanly
-    for proc_num in [NFSPROC3_READLINK, NFSPROC3_SYMLINK, NFSPROC3_MKNOD, NFSPROC3_LINK] {
-        let res = rpc_roundtrip(&mut stream, 40 + proc_num, NFS_PROGRAM, NFS_VERSION_3, proc_num, &[]);
+    for proc_num in [
+        NFSPROC3_READLINK,
+        NFSPROC3_SYMLINK,
+        NFSPROC3_MKNOD,
+        NFSPROC3_LINK,
+    ] {
+        let res = rpc_roundtrip(
+            &mut stream,
+            40 + proc_num,
+            NFS_PROGRAM,
+            NFS_VERSION_3,
+            proc_num,
+            &[],
+        );
         assert_eq!(XdrReader::new(&res).read_u32(), Some(NFS3ERR_NOTSUPP));
     }
 
@@ -372,14 +592,35 @@ fn test_nfs_mount_and_all_v3_procedures_over_tcp() {
     let stale_fh = NfsFileHandle::new(server.fs().fs_generation() ^ 0xFFFF, 0).to_bytes();
     let mut st = XdrWriter::new();
     st.write_opaque(&stale_fh);
-    let st_res = rpc_roundtrip(&mut stream, 50, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_GETATTR, &st.into_bytes());
+    let st_res = rpc_roundtrip(
+        &mut stream,
+        50,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_GETATTR,
+        &st.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&st_res).read_u32(), Some(NFS3ERR_STALE));
 
     // 10. UMNT & UMNTALL
     let mut um = XdrWriter::new();
     um.write_string("/");
-    let _ = rpc_roundtrip(&mut stream, 60, MOUNT_PROGRAM, MOUNT_VERSION_3, MNTPROC3_UMNT, &um.into_bytes());
-    let _ = rpc_roundtrip(&mut stream, 61, MOUNT_PROGRAM, MOUNT_VERSION_3, MNTPROC3_UMNTALL, &[]);
+    let _ = rpc_roundtrip(
+        &mut stream,
+        60,
+        MOUNT_PROGRAM,
+        MOUNT_VERSION_3,
+        MNTPROC3_UMNT,
+        &um.into_bytes(),
+    );
+    let _ = rpc_roundtrip(
+        &mut stream,
+        61,
+        MOUNT_PROGRAM,
+        MOUNT_VERSION_3,
+        MNTPROC3_UMNTALL,
+        &[],
+    );
 
     drop(stream);
     server.stop();
@@ -436,7 +677,10 @@ fn test_nfs_readdir_and_readdirplus_pagination_over_220_entries() {
             break;
         }
     }
-    assert!(pages > 5, "Expected multi-page READDIR pagination, got {pages} pages");
+    assert!(
+        pages > 5,
+        "Expected multi-page READDIR pagination, got {pages} pages"
+    );
     assert_eq!(collected_rd.len(), 222); // "." + ".." + 220 files
 
     // 2. Multi-page READDIRPLUS with small 1024-byte maxcount budget
@@ -480,7 +724,10 @@ fn test_nfs_readdir_and_readdirplus_pagination_over_220_entries() {
             break;
         }
     }
-    assert!(plus_pages > 15, "Expected multi-page READDIRPLUS, got {plus_pages} pages");
+    assert!(
+        plus_pages > 15,
+        "Expected multi-page READDIRPLUS, got {plus_pages} pages"
+    );
     assert_eq!(collected_plus, collected_rd);
 
     drop(stream);
@@ -515,7 +762,14 @@ fn test_nfs_read_only_enforces_rofs_and_byte_immutability() {
     let mut lk = XdrWriter::new();
     lk.write_opaque(&root_fh);
     lk.write_string("fixed.txt");
-    let lk_res = rpc_roundtrip(&mut stream, 1, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_LOOKUP, &lk.into_bytes());
+    let lk_res = rpc_roundtrip(
+        &mut stream,
+        1,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_LOOKUP,
+        &lk.into_bytes(),
+    );
     let mut r = XdrReader::new(&lk_res);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     let file_fh = r.read_opaque(64).unwrap().to_vec();
@@ -524,7 +778,14 @@ fn test_nfs_read_only_enforces_rofs_and_byte_immutability() {
     rd.write_opaque(&file_fh);
     rd.write_u64(0);
     rd.write_u32(64);
-    let rd_res = rpc_roundtrip(&mut stream, 2, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_READ, &rd.into_bytes());
+    let rd_res = rpc_roundtrip(
+        &mut stream,
+        2,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_READ,
+        &rd.into_bytes(),
+    );
     let mut r = XdrReader::new(&rd_res);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     skip_post_op_attr(&mut r);
@@ -536,7 +797,14 @@ fn test_nfs_read_only_enforces_rofs_and_byte_immutability() {
     let mut acc = XdrWriter::new();
     acc.write_opaque(&root_fh);
     acc.write_u32(ACCESS3_READ | ACCESS3_LOOKUP | ACCESS3_MODIFY | ACCESS3_EXTEND | ACCESS3_DELETE);
-    let acc_res = rpc_roundtrip(&mut stream, 3, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_ACCESS, &acc.into_bytes());
+    let acc_res = rpc_roundtrip(
+        &mut stream,
+        3,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_ACCESS,
+        &acc.into_bytes(),
+    );
     let mut r = XdrReader::new(&acc_res);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     skip_post_op_attr(&mut r);
@@ -550,7 +818,15 @@ fn test_nfs_read_only_enforces_rofs_and_byte_immutability() {
     wr.write_u32(FILE_SYNC);
     wr.write_opaque(b"hack");
     assert_eq!(
-        XdrReader::new(&rpc_roundtrip(&mut stream, 4, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_WRITE, &wr.into_bytes())).read_u32(),
+        XdrReader::new(&rpc_roundtrip(
+            &mut stream,
+            4,
+            NFS_PROGRAM,
+            NFS_VERSION_3,
+            NFSPROC3_WRITE,
+            &wr.into_bytes()
+        ))
+        .read_u32(),
         Some(NFS3ERR_ROFS)
     );
 
@@ -560,7 +836,15 @@ fn test_nfs_read_only_enforces_rofs_and_byte_immutability() {
     cr.write_u32(CREATE_UNCHECKED);
     write_empty_sattr3(&mut cr, None);
     assert_eq!(
-        XdrReader::new(&rpc_roundtrip(&mut stream, 5, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_CREATE, &cr.into_bytes())).read_u32(),
+        XdrReader::new(&rpc_roundtrip(
+            &mut stream,
+            5,
+            NFS_PROGRAM,
+            NFS_VERSION_3,
+            NFSPROC3_CREATE,
+            &cr.into_bytes()
+        ))
+        .read_u32(),
         Some(NFS3ERR_ROFS)
     );
 
@@ -569,7 +853,15 @@ fn test_nfs_read_only_enforces_rofs_and_byte_immutability() {
     mk.write_string("dir");
     write_empty_sattr3(&mut mk, None);
     assert_eq!(
-        XdrReader::new(&rpc_roundtrip(&mut stream, 6, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_MKDIR, &mk.into_bytes())).read_u32(),
+        XdrReader::new(&rpc_roundtrip(
+            &mut stream,
+            6,
+            NFS_PROGRAM,
+            NFS_VERSION_3,
+            NFSPROC3_MKDIR,
+            &mk.into_bytes()
+        ))
+        .read_u32(),
         Some(NFS3ERR_ROFS)
     );
 
@@ -577,7 +869,15 @@ fn test_nfs_read_only_enforces_rofs_and_byte_immutability() {
     rm.write_opaque(&root_fh);
     rm.write_string("fixed.txt");
     assert_eq!(
-        XdrReader::new(&rpc_roundtrip(&mut stream, 7, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_REMOVE, &rm.into_bytes())).read_u32(),
+        XdrReader::new(&rpc_roundtrip(
+            &mut stream,
+            7,
+            NFS_PROGRAM,
+            NFS_VERSION_3,
+            NFSPROC3_REMOVE,
+            &rm.into_bytes()
+        ))
+        .read_u32(),
         Some(NFS3ERR_ROFS)
     );
 
@@ -587,7 +887,15 @@ fn test_nfs_read_only_enforces_rofs_and_byte_immutability() {
     rn.write_opaque(&root_fh);
     rn.write_string("other.txt");
     assert_eq!(
-        XdrReader::new(&rpc_roundtrip(&mut stream, 8, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_RENAME, &rn.into_bytes())).read_u32(),
+        XdrReader::new(&rpc_roundtrip(
+            &mut stream,
+            8,
+            NFS_PROGRAM,
+            NFS_VERSION_3,
+            NFSPROC3_RENAME,
+            &rn.into_bytes()
+        ))
+        .read_u32(),
         Some(NFS3ERR_ROFS)
     );
 
@@ -596,7 +904,15 @@ fn test_nfs_read_only_enforces_rofs_and_byte_immutability() {
     write_empty_sattr3(&mut sa, Some(0));
     sa.write_bool(false);
     assert_eq!(
-        XdrReader::new(&rpc_roundtrip(&mut stream, 9, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_SETATTR, &sa.into_bytes())).read_u32(),
+        XdrReader::new(&rpc_roundtrip(
+            &mut stream,
+            9,
+            NFS_PROGRAM,
+            NFS_VERSION_3,
+            NFSPROC3_SETATTR,
+            &sa.into_bytes()
+        ))
+        .read_u32(),
         Some(NFS3ERR_ROFS)
     );
 
@@ -605,7 +921,10 @@ fn test_nfs_read_only_enforces_rofs_and_byte_immutability() {
     drop(ro_dm);
 
     let after = std::fs::read(&img).unwrap();
-    assert_eq!(before, after, "Read-only NFS mount must be 100% byte-for-byte immutable");
+    assert_eq!(
+        before, after,
+        "Read-only NFS mount must be 100% byte-for-byte immutable"
+    );
 }
 
 #[test]
@@ -651,7 +970,13 @@ fn test_nfs_file_io_and_encrypted_parity_plus_malformed_fuzzing() {
     cr.write_string("secret.bin");
     cr.write_u32(CREATE_GUARDED);
     write_empty_sattr3(&mut cr, None);
-    let call = build_rpc_call(77, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_CREATE, &cr.into_bytes());
+    let call = build_rpc_call(
+        77,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_CREATE,
+        &cr.into_bytes(),
+    );
     let mid = call.len() / 2;
     let frag1_hdr = (mid as u32).to_be_bytes(); // bit 31 = 0 (more fragments)
     let frag2_hdr = (0x8000_0000u32 | ((call.len() - mid) as u32)).to_be_bytes();
@@ -681,14 +1006,28 @@ fn test_nfs_file_io_and_encrypted_parity_plus_malformed_fuzzing() {
     wr.write_u32(data.len() as u32);
     wr.write_u32(FILE_SYNC);
     wr.write_opaque(&data);
-    let wr_res = rpc_roundtrip(&mut stream, 78, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_WRITE, &wr.into_bytes());
+    let wr_res = rpc_roundtrip(
+        &mut stream,
+        78,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_WRITE,
+        &wr.into_bytes(),
+    );
     assert_eq!(XdrReader::new(&wr_res).read_u32(), Some(NFS3_OK));
 
     let mut rd = XdrWriter::new();
     rd.write_opaque(&secret_fh);
     rd.write_u64(0);
     rd.write_u32(data.len() as u32);
-    let rd_res = rpc_roundtrip(&mut stream, 79, NFS_PROGRAM, NFS_VERSION_3, NFSPROC3_READ, &rd.into_bytes());
+    let rd_res = rpc_roundtrip(
+        &mut stream,
+        79,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_READ,
+        &rd.into_bytes(),
+    );
     let mut r = XdrReader::new(&rd_res);
     assert_eq!(r.read_u32(), Some(NFS3_OK));
     skip_post_op_attr(&mut r);

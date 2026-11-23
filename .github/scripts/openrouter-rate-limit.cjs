@@ -26,6 +26,8 @@ const stats = {
   networkErrors: 0,
   chatCompletions: 0,
   parallelToolCallsInjected: 0,
+  plannerTurns: 0,
+  plannerBudgetNudges: 0,
   usageObserved: 0,
   shortOutputTurns: 0,
   singleToolCallTurns: 0,
@@ -93,10 +95,45 @@ function stripContentLengthHeader(headers) {
   return headers;
 }
 
+const BATCH_RULE_MARKER = "[OIFS_BATCH_RULE]";
+const PLANNER_SOFT_TURN_CAP = 20;
+
+function hasToolNamed(tools, targetName) {
+  if (!Array.isArray(tools)) return false;
+  return tools.some((t) => {
+    const name = t?.function?.name || t?.name || "";
+    return name === targetName;
+  });
+}
+
+function appendTextToMessageContent(msg, extraText) {
+  if (!msg || typeof msg !== "object") return false;
+  if (typeof msg.content === "string") {
+    if (!msg.content.includes(BATCH_RULE_MARKER)) {
+      msg.content += extraText;
+      return true;
+    }
+    return false;
+  }
+  if (Array.isArray(msg.content)) {
+    const already = msg.content.some(
+      (part) => typeof part?.text === "string" && part.text.includes(BATCH_RULE_MARKER)
+    );
+    if (!already) {
+      msg.content.push({ type: "text", text: extraText });
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
- * For OpenRouter /chat/completions payloads that declare `tools`, ensure
- * `parallel_tool_calls: true` so capable models can batch exploratory reads
- * into a single turn instead of spending one request per file/grep.
+ * For OpenRouter /chat/completions payloads that declare `tools`:
+ * 1. Ensure `parallel_tool_calls: true` so capable models batch exploratory reads.
+ * 2. Inject a concise batching & incremental-planning rule into the system prompt.
+ * 3. Track planning turns (`submit_plan` tool present) and inject an urgent wrap-up
+ *    nudge if the planner exceeds `PLANNER_SOFT_TURN_CAP` turns, preventing the
+ *    42-turn "Repository planning worker exited without submit_plan" failure.
  */
 function shapeChatCompletionInit(url, init) {
   if (!url.includes("/chat/completions")) {
@@ -117,14 +154,48 @@ function shapeChatCompletionInit(url, init) {
     !parsed ||
     typeof parsed !== "object" ||
     !Array.isArray(parsed.tools) ||
-    parsed.tools.length === 0 ||
-    parsed.parallel_tool_calls === true
+    parsed.tools.length === 0
   ) {
     return init;
   }
 
-  parsed.parallel_tool_calls = true;
-  stats.parallelToolCallsInjected++;
+  let mutated = false;
+
+  if (parsed.parallel_tool_calls !== true) {
+    parsed.parallel_tool_calls = true;
+    stats.parallelToolCallsInjected++;
+    mutated = true;
+  }
+
+  const isPlanner = hasToolNamed(parsed.tools, "submit_plan");
+  if (isPlanner) {
+    stats.plannerTurns++;
+  }
+
+  if (Array.isArray(parsed.messages) && parsed.messages.length > 0) {
+    const sysMsg =
+      parsed.messages.find((m) => m && m.role === "system") || parsed.messages[0];
+    const ruleText = isPlanner
+      ? `\n\n${BATCH_RULE_MARKER} CRITICAL EFFICIENCY RULES:\n1. Issue multiple independent tool calls in parallel in a SINGLE turn whenever possible.\n2. During --update planning, do NOT read unmodified existing openwiki/*.md pages or full test suites. Inspect only the changed source files since the last commit, keep the existing page structure, and call submit_plan within 6-10 turns.`
+      : `\n\n${BATCH_RULE_MARKER} CRITICAL EFFICIENCY RULES:\n1. Issue multiple independent read_file/grep tool calls in parallel in a SINGLE turn instead of one tool call per turn.\n2. Read large contiguous line ranges (400-800 lines) per read_file call rather than small snippets.`;
+
+    if (appendTextToMessageContent(sysMsg, ruleText)) {
+      mutated = true;
+    }
+
+    if (isPlanner && stats.plannerTurns >= PLANNER_SOFT_TURN_CAP) {
+      stats.plannerBudgetNudges++;
+      parsed.messages.push({
+        role: "user",
+        content: `[SYSTEM TURN-BUDGET ALERT]: You have already used ${stats.plannerTurns} planning turns and are approaching the hard step limit. Stop calling exploratory read/grep tools and call \`submit_plan\` IMMEDIATELY in this response using the evidence gathered so far.`,
+      });
+      mutated = true;
+    }
+  }
+
+  if (!mutated) {
+    return init;
+  }
 
   return {
     ...init,
@@ -244,6 +315,7 @@ function printSummary() {
       "[RateLimiter] OpenRouter Run Summary:",
       `requests=${stats.totalRequests} (2xx=${stats.http2xx}, 429=${stats.http429}, other=${stats.httpOther}, netErr=${stats.networkErrors})`,
       `chat=${stats.chatCompletions}`,
+      `planner_turns=${stats.plannerTurns}(nudges=${stats.plannerBudgetNudges})`,
       `parallel_tool_calls_injected=${stats.parallelToolCallsInjected}`,
       `tool_turns(single=${stats.singleToolCallTurns}, multi=${stats.multiToolCallTurns})`,
       `short_output(<${SHORT_OUTPUT_THRESHOLD}tok)=${stats.shortOutputTurns}/${stats.usageObserved} (${shortPct}%)`,

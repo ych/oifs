@@ -574,8 +574,7 @@ pub fn punch_host_file_blocks(fd: RawFd, start_block: u64, block_count: u64) {
                     len as libc::off_t,
                 )
             };
-            if rc == 0
-                || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            if rc == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
             {
                 break;
             }
@@ -967,7 +966,8 @@ impl DiskManager {
                 .open(dst)?;
             loop {
                 // SAFETY: both descriptors are valid open regular files.
-                let rc = unsafe { libc::ioctl(dst_file.as_raw_fd(), FICLONE, src_file.as_raw_fd()) };
+                let rc =
+                    unsafe { libc::ioctl(dst_file.as_raw_fd(), FICLONE, src_file.as_raw_fd()) };
                 if rc == 0 {
                     crate::retry_eintr(|| dst_file.sync_data())?;
                     return Ok(CloneMethod::LinuxFiclone);

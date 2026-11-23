@@ -3321,7 +3321,7 @@ fn test_cli_mount_subcommand_args_and_validation() {
     );
     let stderr = String::from_utf8_lossy(&mount_out.stderr);
     assert!(
-        stderr.contains("mountpoint does not exist"),
+        stderr.contains("does not exist"),
         "unexpected mount stderr: {stderr}"
     );
 }

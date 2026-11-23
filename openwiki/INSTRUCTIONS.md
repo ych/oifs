@@ -38,10 +38,10 @@ Use this map to go directly to the source of truth for any subsystem:
 | C FFI & Modern C++17/C++20 header-only API | `src/ffi.rs`, `include/oifs.h`, `include/oifs.hpp` |
 | CLI & MCP server | `src/bin/oifs.rs`, `src/bin/oifs_mcp.rs` |
 
-## 3. Page Scope & Style Rules
+## 3. Incremental Planning & Page Scope Rules
 
-- **Prefer depth over page proliferation**: Consolidate overlapping `architecture/*`, `workflows/*`, and `testing/*` topics into cohesive pages (~15–20 high-signal pages total) instead of duplicating the same subsystem across multiple thin pages.
+- **Fast incremental planning (`submit_plan` early)**: During `--update`, focus strictly on the files changed since the last documented commit. Do **not** read or reorganize unmodified existing `openwiki/**/*.md` pages during planning—identify only the affected pages (plus at most 1 new page if a brand-new module like `src/nfs.rs` was added) and call `submit_plan` within 5–10 turns.
 - **Stay strictly grounded in current code**: Document symbols, structs, CLI flags, C/C++ APIs, and invariants verified directly in `src/` and `include/`.
-- **Include canonical repository links**: In `quickstart.md` and `architecture/overview.md`, include links to the official GitHub repository (`https://github.com/ych/oifs`) and online documentation site (`https://ych.github.io/oifs/`).
+- **Include canonical repository links**: When updating `quickstart.md` or `architecture/overview.md`, include links to the official GitHub repository (`https://github.com/ych/oifs`) and online documentation site (`https://ych.github.io/oifs/`).
 - **Clean terminology**: Never include internal tracking IDs or ticket codes in documentation.
 - **Keep diagrams compact**: Use valid GitHub-flavored Mermaid diagrams where they genuinely clarify data flow or on-disk layout.

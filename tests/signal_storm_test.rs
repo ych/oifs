@@ -175,10 +175,8 @@ impl SignalStorm {
                 // Send directly to registered threads so their blocking syscalls get EINTR,
                 // plus process-wide delivery so internal background threads (IpcServer,
                 // group-commit, worker pool) also receive signals.
-                let tids: Vec<libc::pthread_t> = targets_bg
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clone();
+                let tids: Vec<libc::pthread_t> =
+                    targets_bg.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 for tid in tids {
                     unsafe {
                         libc::pthread_kill(tid, sig);
@@ -269,8 +267,18 @@ fn test_signal_storm_disk_manager_mmap_and_file_io_strict_wal_encrypted() {
     let dir = tempdir().unwrap();
 
     for (label, mode, durability, encrypted) in [
-        ("mmap_strict_wal", StorageMode::Mmap, DurabilityMode::Strict, false),
-        ("fileio_strict_wal", StorageMode::FileIo, DurabilityMode::Strict, false),
+        (
+            "mmap_strict_wal",
+            StorageMode::Mmap,
+            DurabilityMode::Strict,
+            false,
+        ),
+        (
+            "fileio_strict_wal",
+            StorageMode::FileIo,
+            DurabilityMode::Strict,
+            false,
+        ),
         (
             "mmap_range_async_enc",
             StorageMode::Mmap,
@@ -412,13 +420,27 @@ fn test_signal_storm_cross_image_clone_transfer_and_splice() {
     for i in 0..6 {
         let dst_raw_name = format!("t_raw_{i}.bin");
         let stats_raw = src
-            .transfer_file_to(0, "raw.bin", &dst, 0, &dst_raw_name, TransferOptions::default())
+            .transfer_file_to(
+                0,
+                "raw.bin",
+                &dst,
+                0,
+                &dst_raw_name,
+                TransferOptions::default(),
+            )
             .unwrap_or_else(|e| panic!("transfer raw {i} failed under storm: {e}"));
         assert_eq!(dst.read_data(stats_raw.dst_inode).unwrap(), raw_data);
 
         let dst_seek_name = format!("t_seek_{i}.bin");
         let stats_seek = src
-            .transfer_file_to(0, "seek.bin", &dst, 0, &dst_seek_name, TransferOptions::default())
+            .transfer_file_to(
+                0,
+                "seek.bin",
+                &dst,
+                0,
+                &dst_seek_name,
+                TransferOptions::default(),
+            )
             .unwrap_or_else(|e| panic!("transfer seekable {i} failed under storm: {e}"));
         assert_eq!(dst.read_data(stats_seek.dst_inode).unwrap(), seek_data);
 
@@ -470,9 +492,11 @@ fn test_signal_storm_ipc_local_and_network_survives_eintr() {
 
     // Test both Local UDS and Network TCP IPC modes under intense EINTR.
     for is_network in [false, true] {
-        let img = dir
-            .path()
-            .join(if is_network { "ipc_net.img" } else { "ipc_uds.img" });
+        let img = dir.path().join(if is_network {
+            "ipc_net.img"
+        } else {
+            "ipc_uds.img"
+        });
         let master = if is_network {
             OifsSession::open_network(&img, 16 * 1024 * 1024, None).unwrap()
         } else {
@@ -688,12 +712,9 @@ fn test_signal_storm_async_read_pool_and_group_commit() {
                     .unwrap_or_else(|e| {
                         panic!("write_data_async idx={idx} round={round} failed: {e}")
                     });
-                let read_back = dm_c
-                    .read_at_async(ino, 0, 4096)
-                    .wait()
-                    .unwrap_or_else(|e| {
-                        panic!("read_at_async idx={idx} round={round} failed: {e}")
-                    });
+                let read_back = dm_c.read_at_async(ino, 0, 4096).wait().unwrap_or_else(|e| {
+                    panic!("read_at_async idx={idx} round={round} failed: {e}")
+                });
                 assert_eq!(read_back, payload);
             }
             targets

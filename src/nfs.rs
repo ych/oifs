@@ -1257,9 +1257,9 @@ impl OifsNfsFs {
         let write_len = (count as usize).min(data.len());
         let slice = &data[..write_len];
 
-        if let Err(e) =
-            self.dm
-                .write_data(inode_id, offset, slice, self.options.compression_mode)
+        if let Err(e) = self
+            .dm
+            .write_data(inode_id, offset, slice, self.options.compression_mode)
         {
             let post = self.read_inode_opt(inode_id);
             w.write_u32(disk_error_to_nfs3(&e));
@@ -1604,7 +1604,10 @@ impl OifsNfsFs {
     }
 
     fn build_ordered_dir_entries(&self, dir_id: u64) -> Result<Vec<(u64, String, u64)>, u32> {
-        let mut entries = self.dm.list_dir(dir_id).map_err(|e| disk_error_to_nfs3(&e))?;
+        let mut entries = self
+            .dm
+            .list_dir(dir_id)
+            .map_err(|e| disk_error_to_nfs3(&e))?;
         entries.sort_by(|a, b| a.name.cmp(&b.name));
 
         let parent_id = self.parent_of(dir_id);

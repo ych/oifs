@@ -856,8 +856,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                             }))
                         }
                         Err(_) => {
-                            let stream =
-                                crate::retry_eintr(|| UnixStream::connect(&socket_path))?;
+                            let stream = crate::retry_eintr(|| UnixStream::connect(&socket_path))?;
                             Ok(MasterOrClient::Client {
                                 stream: IpcStream::Unix(stream),
                                 target_path: socket_path,

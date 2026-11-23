@@ -143,8 +143,13 @@ fn test_live_nfs_read_only_mount_immutability() {
 
     {
         let dm = DiskManager::open_journaled(&img, 8 * 1024 * 1024).unwrap();
-        dm.create_file_with_data(0, "readme.txt", b"read-only via NFSv3", CompressionMode::Auto)
-            .unwrap();
+        dm.create_file_with_data(
+            0,
+            "readme.txt",
+            b"read-only via NFSv3",
+            CompressionMode::Auto,
+        )
+        .unwrap();
         dm.flush().unwrap();
     }
     let before = fs::read(&img).unwrap();
@@ -162,5 +167,8 @@ fn test_live_nfs_read_only_mount_immutability() {
     drop(ro_dm);
 
     let after = fs::read(&img).unwrap();
-    assert_eq!(before, after, "Read-only live NFS mount must not mutate image");
+    assert_eq!(
+        before, after,
+        "Read-only live NFS mount must not mutate image"
+    );
 }

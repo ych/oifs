@@ -1,5 +1,5 @@
 // .github/scripts/openrouter-rate-limit.cjs
-// Rate limiter, parallel_tool_calls enabler, and request-efficiency telemetry
+// Rate limiter, prompt-batching helper, and request-efficiency telemetry
 // for OpenRouter requests (enforces <= 18.2 RPM safely under the 20 RPM free-tier limit).
 
 const origFetch = globalThis.fetch;
@@ -25,7 +25,6 @@ const stats = {
   httpOther: 0,
   networkErrors: 0,
   chatCompletions: 0,
-  parallelToolCallsInjected: 0,
   plannerTurns: 0,
   plannerBudgetNudges: 0,
   usageObserved: 0,
@@ -129,11 +128,10 @@ function appendTextToMessageContent(msg, extraText) {
 
 /**
  * For OpenRouter /chat/completions payloads that declare `tools`:
- * 1. Ensure `parallel_tool_calls: true` so capable models batch exploratory reads.
- * 2. Inject a concise batching & incremental-planning rule into the system prompt.
- * 3. Track planning turns (`submit_plan` tool present) and inject an urgent wrap-up
- *    nudge if the planner exceeds `PLANNER_SOFT_TURN_CAP` turns, preventing the
- *    42-turn "Repository planning worker exited without submit_plan" failure.
+ * 1. Inject a concise batching & incremental-planning rule into the system prompt.
+ * 2. Track planning turns (`submit_plan` tool present) and inject an urgent wrap-up
+ *    nudge if the planner exceeds `PLANNER_SOFT_TURN_CAP` turns, preventing
+ *    "Repository planning worker exited without submit_plan" failures.
  */
 function shapeChatCompletionInit(url, init) {
   if (!url.includes("/chat/completions")) {
@@ -160,12 +158,6 @@ function shapeChatCompletionInit(url, init) {
   }
 
   let mutated = false;
-
-  if (parsed.parallel_tool_calls !== true) {
-    parsed.parallel_tool_calls = true;
-    stats.parallelToolCallsInjected++;
-    mutated = true;
-  }
 
   const isPlanner = hasToolNamed(parsed.tools, "submit_plan");
   if (isPlanner) {
@@ -316,7 +308,6 @@ function printSummary() {
       `requests=${stats.totalRequests} (2xx=${stats.http2xx}, 429=${stats.http429}, other=${stats.httpOther}, netErr=${stats.networkErrors})`,
       `chat=${stats.chatCompletions}`,
       `planner_turns=${stats.plannerTurns}(nudges=${stats.plannerBudgetNudges})`,
-      `parallel_tool_calls_injected=${stats.parallelToolCallsInjected}`,
       `tool_turns(single=${stats.singleToolCallTurns}, multi=${stats.multiToolCallTurns})`,
       `short_output(<${SHORT_OUTPUT_THRESHOLD}tok)=${stats.shortOutputTurns}/${stats.usageObserved} (${shortPct}%)`,
       `tokens(prompt=${stats.totalPromptTokens}, completion=${stats.totalCompletionTokens}, avg_out=${avgOut})`,
@@ -420,5 +411,5 @@ globalThis.fetch = async function (input, init) {
 };
 
 console.log(
-  "[RateLimiter] OpenRouter rate-limiter & telemetry initialized (<= 18.2 RPM safe pacing, parallel_tool_calls=true)."
+  "[RateLimiter] OpenRouter rate-limiter & telemetry initialized (<= 18.2 RPM safe pacing)."
 );

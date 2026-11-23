@@ -95,7 +95,7 @@ function stripContentLengthHeader(headers) {
 }
 
 const BATCH_RULE_MARKER = "[OIFS_BATCH_RULE]";
-const PLANNER_SOFT_TURN_CAP = 8;
+const PLANNER_SOFT_TURN_CAP = 14;
 
 function hasToolNamed(tools, targetName) {
   if (!Array.isArray(tools)) return false;
@@ -103,6 +103,17 @@ function hasToolNamed(tools, targetName) {
     const name = t?.function?.name || t?.name || "";
     return name === targetName;
   });
+}
+
+function messagesContainToolCall(messages, targetName) {
+  if (!Array.isArray(messages)) return false;
+  return messages.some(
+    (m) =>
+      m &&
+      m.role === "assistant" &&
+      Array.isArray(m.tool_calls) &&
+      m.tool_calls.some((tc) => (tc?.function?.name || tc?.name || "") === targetName)
+  );
 }
 
 function appendTextToMessageContent(msg, extraText) {
@@ -168,18 +179,23 @@ function shapeChatCompletionInit(url, init) {
     const sysMsg =
       parsed.messages.find((m) => m && m.role === "system") || parsed.messages[0];
     const ruleText = isPlanner
-      ? `\n\n${BATCH_RULE_MARKER} CRITICAL EFFICIENCY & COMPLETION RULES:\n1. Issue multiple independent tool calls in parallel in a SINGLE turn whenever possible.\n2. During --update planning, do NOT read unmodified existing openwiki/*.md pages or full test suites. Inspect only the changed source files since the last commit and keep the existing page structure.\n3. NEVER finish by writing a plain-text summary or plan in your message content — the planning worker FAILS unless you invoke the \`submit_plan\` tool. You MUST call \`submit_plan\` within 6-8 turns.`
+      ? `\n\n${BATCH_RULE_MARKER} CRITICAL EFFICIENCY & COMPLETION RULES:\n1. Issue multiple independent tool calls in parallel in a SINGLE turn whenever possible.\n2. During --update planning, do NOT read unmodified existing openwiki/*.md pages or full test suites. Inspect only the changed source files since the last commit and keep the existing page structure.\n3. Finish by calling \`submit_plan\` once (never end before calling \`submit_plan\`, and once \`submit_plan\` is accepted, stop immediately without calling it again).`
       : `\n\n${BATCH_RULE_MARKER} CRITICAL EFFICIENCY RULES:\n1. Issue multiple independent read_file/grep tool calls in parallel in a SINGLE turn instead of one tool call per turn.\n2. Read large contiguous line ranges (400-800 lines) per read_file call rather than small snippets.`;
 
     if (appendTextToMessageContent(sysMsg, ruleText)) {
       mutated = true;
     }
 
-    if (isPlanner && stats.plannerTurns >= PLANNER_SOFT_TURN_CAP) {
+    if (
+      isPlanner &&
+      stats.plannerTurns >= PLANNER_SOFT_TURN_CAP &&
+      stats.plannerBudgetNudges === 0 &&
+      !messagesContainToolCall(parsed.messages, "submit_plan")
+    ) {
       stats.plannerBudgetNudges++;
       parsed.messages.push({
         role: "user",
-        content: `[SYSTEM TURN-BUDGET ALERT]: You have already used ${stats.plannerTurns} planning turns and are approaching the hard step limit. Stop calling exploratory read/grep tools and call \`submit_plan\` IMMEDIATELY in this response using the evidence gathered so far.`,
+        content: `[SYSTEM TURN-BUDGET ALERT]: You have already used ${stats.plannerTurns} planning turns. Stop calling exploratory read/grep tools and call \`submit_plan\` once using the evidence gathered so far.`,
       });
       mutated = true;
     }

@@ -95,7 +95,7 @@ function stripContentLengthHeader(headers) {
 }
 
 const BATCH_RULE_MARKER = "[OIFS_BATCH_RULE]";
-const PLANNER_SOFT_TURN_CAP = 20;
+const PLANNER_SOFT_TURN_CAP = 8;
 
 function hasToolNamed(tools, targetName) {
   if (!Array.isArray(tools)) return false;
@@ -168,7 +168,7 @@ function shapeChatCompletionInit(url, init) {
     const sysMsg =
       parsed.messages.find((m) => m && m.role === "system") || parsed.messages[0];
     const ruleText = isPlanner
-      ? `\n\n${BATCH_RULE_MARKER} CRITICAL EFFICIENCY RULES:\n1. Issue multiple independent tool calls in parallel in a SINGLE turn whenever possible.\n2. During --update planning, do NOT read unmodified existing openwiki/*.md pages or full test suites. Inspect only the changed source files since the last commit, keep the existing page structure, and call submit_plan within 6-10 turns.`
+      ? `\n\n${BATCH_RULE_MARKER} CRITICAL EFFICIENCY & COMPLETION RULES:\n1. Issue multiple independent tool calls in parallel in a SINGLE turn whenever possible.\n2. During --update planning, do NOT read unmodified existing openwiki/*.md pages or full test suites. Inspect only the changed source files since the last commit and keep the existing page structure.\n3. NEVER finish by writing a plain-text summary or plan in your message content — the planning worker FAILS unless you invoke the \`submit_plan\` tool. You MUST call \`submit_plan\` within 6-8 turns.`
       : `\n\n${BATCH_RULE_MARKER} CRITICAL EFFICIENCY RULES:\n1. Issue multiple independent read_file/grep tool calls in parallel in a SINGLE turn instead of one tool call per turn.\n2. Read large contiguous line ranges (400-800 lines) per read_file call rather than small snippets.`;
 
     if (appendTextToMessageContent(sysMsg, ruleText)) {

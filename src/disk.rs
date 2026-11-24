@@ -317,10 +317,10 @@ pub(crate) struct DiskManagerInner {
     pub inode_cache: BoundedInodeCache,
     /// Sharded per-directory name index: dir_inode_id -> DirIndex
     pub dir_cache: ShardedDirCache,
-    /// Bounded sub-chunk decompression cache for seekable 64K `read_at`
-    pub chunk_read_cache: RwLock<ChunkReadCache>,
-    /// Bounded decoded-payload cache for non-seekable `read_at`
-    pub decoded_blob_cache: Mutex<DecodedBlobCache>,
+    /// Sharded sub-chunk decompression cache for seekable 64K `read_at`
+    pub chunk_read_cache: ChunkReadCache,
+    /// Sharded decoded-payload cache for non-seekable `read_at`
+    pub decoded_blob_cache: DecodedBlobCache,
     /// Durability policy governing flush/msync behavior on mutations
     pub durability_mode: std::sync::atomic::AtomicU8,
     /// Batched dirty-range accumulator for `DurabilityMode::RangeAsync`
@@ -343,11 +343,36 @@ impl DiskManagerInner {
         self.inode_write_gen[(inode_id as usize) & 4095]
     }
 
+    /// True when inodes of this image are decoded straight from the shared mapping
+    /// (format v2+ on `Mmap`), making a separate in-memory inode cache pure overhead.
+    #[inline]
+    pub(crate) fn uses_direct_mmap_inode(&self, inode_id: u64) -> bool {
+        self.backing.as_mmap_slice().is_some()
+            && self.superblock.inode_record_version_for(inode_id)
+                >= crate::inode_format::INODE_FORMAT_V2
+    }
+
+    /// Caches `inode` unless it is served directly from the mapping.
+    #[inline]
+    pub(crate) fn cache_inode(&self, inode_id: u64, inode: Inode) {
+        if !self.uses_direct_mmap_inode(inode_id) {
+            self.inode_cache.insert(inode_id, inode);
+        }
+    }
+
     /// Advances the mutation generation for `inode_id`'s slot.
     #[inline]
     pub(crate) fn bump_inode_gen(&mut self, inode_id: u64) {
         let slot = &mut self.inode_write_gen[(inode_id as usize) & 4095];
         *slot = slot.wrapping_add(1);
+    }
+
+    /// Advances every mutation generation slot (used on whole-image migration/defrag swaps).
+    #[inline]
+    pub(crate) fn bump_all_inode_gens(&mut self) {
+        for slot in self.inode_write_gen.iter_mut() {
+            *slot = slot.wrapping_add(1);
+        }
     }
 
     /// The inode bitmap as one contiguous slice.
@@ -671,26 +696,14 @@ impl DiskManagerInner {
 
     #[inline]
     pub(crate) fn invalidate_payload_caches(&mut self, inode_id: u64) {
-        self.chunk_read_cache
-            .get_mut()
-            .unwrap_or_else(|e| e.into_inner())
-            .invalidate_inode(inode_id);
-        self.decoded_blob_cache
-            .get_mut()
-            .unwrap_or_else(|e| e.into_inner())
-            .invalidate_inode(inode_id);
+        self.chunk_read_cache.invalidate_inode(inode_id);
+        self.decoded_blob_cache.invalidate_inode(inode_id);
     }
 
     #[inline]
     pub(crate) fn clear_payload_caches(&mut self) {
-        self.chunk_read_cache
-            .get_mut()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-        self.decoded_blob_cache
-            .get_mut()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        self.chunk_read_cache.clear();
+        self.decoded_blob_cache.clear();
     }
     /// Decides whether `Drop` should flush `(journal_region, backing)`.
     ///
@@ -736,6 +749,28 @@ impl Drop for DiskManagerInner {
 
 /// Main disk manager interface for the OIFS file system
 ///
+/// Cache-line (128 B) isolates the lock state word from the hot, read-mostly
+/// `DiskManagerInner` fields so reader-count atomics never false-share with them.
+#[repr(align(128))]
+pub(crate) struct CachePadded<T>(pub(crate) T);
+
+impl<T> std::ops::Deref for CachePadded<T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for CachePadded<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+pub(crate) type InnerLock = RwLock<CachePadded<DiskManagerInner>>;
+
 /// Provides thread-safe access to the file system through an Arc<RwLock<>> wrapper.
 /// Supports:
 /// - File and directory creation/deletion
@@ -744,7 +779,7 @@ impl Drop for DiskManagerInner {
 /// - High-concurrency parallel reads across multiple threads
 #[derive(Clone)]
 pub struct DiskManager {
-    inner: Arc<RwLock<DiskManagerInner>>,
+    inner: Arc<InnerLock>,
     /// Dedicated mutex to serialize physical msync calls without blocking readers
     sync_mutex: Arc<Mutex<()>>,
     /// Shared fast-path flag indicating buffered `RangeAsync` ranges are ready to drain
@@ -1402,8 +1437,8 @@ impl DiskManager {
             free_inode_hint: 0,
             inode_cache: BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY),
             dir_cache: ShardedDirCache::new(),
-            chunk_read_cache: RwLock::new(ChunkReadCache::default()),
-            decoded_blob_cache: Mutex::new(DecodedBlobCache::default()),
+            chunk_read_cache: ChunkReadCache::default(),
+            decoded_blob_cache: DecodedBlobCache::default(),
             durability_mode: std::sync::atomic::AtomicU8::new(DurabilityMode::Lazy as u8),
             pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
             async_drain_ready: async_drain_ready.clone(),
@@ -1412,7 +1447,7 @@ impl DiskManager {
             read_only: true,
         };
 
-        let inner = Arc::new(RwLock::new(inner));
+        let inner = Arc::new(RwLock::new(CachePadded(inner)));
         Ok(Self {
             inner: inner.clone(),
             sync_mutex: Arc::new(Mutex::new(())),
@@ -1479,7 +1514,7 @@ impl DiskManager {
     }
 
     #[cfg(test)]
-    pub(crate) fn inner_for_test(&self) -> &Arc<RwLock<DiskManagerInner>> {
+    pub(crate) fn inner_for_test(&self) -> &Arc<InnerLock> {
         &self.inner
     }
 
@@ -1710,8 +1745,8 @@ impl DiskManager {
             free_inode_hint: 0,
             inode_cache: BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY),
             dir_cache: ShardedDirCache::new(),
-            chunk_read_cache: RwLock::new(ChunkReadCache::default()),
-            decoded_blob_cache: Mutex::new(DecodedBlobCache::default()),
+            chunk_read_cache: ChunkReadCache::default(),
+            decoded_blob_cache: DecodedBlobCache::default(),
             durability_mode: std::sync::atomic::AtomicU8::new(DurabilityMode::Lazy as u8),
             pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
             async_drain_ready: async_drain_ready.clone(),
@@ -1720,7 +1755,7 @@ impl DiskManager {
             read_only: false,
         };
 
-        let inner = Arc::new(RwLock::new(inner));
+        let inner = Arc::new(RwLock::new(CachePadded(inner)));
         let dm = Self {
             inner: inner.clone(),
             sync_mutex: Arc::new(Mutex::new(())),
@@ -3176,8 +3211,8 @@ impl DiskManager {
             guard.free_block_hint = sim.free_block_hint;
         }
 
-        guard.inode_cache.insert(new_inode_id, new_inode);
-        guard.inode_cache.insert(parent_inode_id, parent_inode);
+        guard.cache_inode(new_inode_id, new_inode);
+        guard.cache_inode(parent_inode_id, parent_inode);
         let encrypted = guard.encryption_key.is_some();
         if let Some(ix) = guard
             .dir_cache
@@ -3939,8 +3974,8 @@ impl DiskManager {
         guard.free_inode_hint = sim.free_inode_hint;
         guard.free_block_hint = sim.free_block_hint;
 
-        guard.inode_cache.insert(new_inode_id, new_inode);
-        guard.inode_cache.insert(parent_inode_id, parent_inode);
+        guard.cache_inode(new_inode_id, new_inode);
+        guard.cache_inode(parent_inode_id, parent_inode);
         let encrypted = guard.encryption_key.is_some();
         if let Some(ix) = guard
             .dir_cache
@@ -4989,16 +5024,14 @@ impl DiskManager {
             || inode.filter_bitshuffle
         {
             if (inode.size as usize) <= DecodedBlobCache::MAX_ENTRY_BYTES {
-                let cached = crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, inode);
+                let cached = guard.decoded_blob_cache.get(inode_id, inode);
                 let blob = match cached {
                     Some(arc_blob) => arc_blob,
                     None => {
                         let decoded = Arc::new(Self::read_data_internal(guard, inode_id, inode)?);
-                        crate::lock_unpoisoned(&guard.decoded_blob_cache).insert(
-                            inode_id,
-                            inode,
-                            Arc::clone(&decoded),
-                        );
+                        guard
+                            .decoded_blob_cache
+                            .insert(inode_id, inode, Arc::clone(&decoded));
                         decoded
                     }
                 };
@@ -5686,7 +5719,7 @@ impl DiskManager {
 
         guard.free_inode_hint = sim.free_inode_hint;
         guard.free_block_hint = sim.free_block_hint;
-        guard.inode_cache.insert(inode_id, inode);
+        guard.cache_inode(inode_id, inode);
 
         if guard.durability_mode() == DurabilityMode::RangeAsync {
             let mut ranges = vec![
@@ -6253,6 +6286,14 @@ impl DiskManager {
         guard: &DiskManagerInner,
         inode_id: u64,
     ) -> Result<Inode, DiskManagerError> {
+        if guard.uses_direct_mmap_inode(inode_id)
+            && let Some(mmap) = guard.backing.as_mmap_slice()
+        {
+            let (offset, end) = Self::inode_slot_range(guard, inode_id)?;
+            return crate::inode_format::decode_v2(&mmap[offset..end]).map_err(|e| {
+                DiskManagerError::Io(std::io::Error::other(format!("Inode decode failed: {e}")))
+            });
+        }
         // Fast path: check in-memory inode cache
         if let Some(cached) = guard.inode_cache.get(inode_id) {
             return Ok(cached);
@@ -6275,7 +6316,7 @@ impl DiskManager {
 
         // Eviction is handled inside the cache: inserting past capacity drops the
         // single oldest entry instead of wiping the whole cache.
-        guard.inode_cache.insert(inode_id, inode);
+        guard.cache_inode(inode_id, inode);
         Ok(inode)
     }
 
@@ -6286,7 +6327,9 @@ impl DiskManager {
         guard: &DiskManagerInner,
         inode_id: u64,
     ) -> Result<Inode, DiskManagerError> {
-        if let Some(cached) = guard.inode_cache.get(inode_id) {
+        if !guard.uses_direct_mmap_inode(inode_id)
+            && let Some(cached) = guard.inode_cache.get(inode_id)
+        {
             return Ok(cached);
         }
 
@@ -6318,7 +6361,7 @@ impl DiskManager {
         guard.backing.write_all_at(offset as u64, &slot)?;
 
         // Update in-memory inode cache & invalidate decoded payload caches.
-        guard.inode_cache.insert(inode_id, *inode);
+        guard.cache_inode(inode_id, *inode);
         guard.invalidate_payload_caches(inode_id);
         guard.bump_inode_gen(inode_id);
         Ok(())
@@ -7165,7 +7208,7 @@ impl DiskManager {
             guard.free_inode_hint = target_inode_id;
         }
         guard.inode_cache.remove(target_inode_id);
-        guard.inode_cache.insert(parent_inode_id, parent_inode);
+        guard.cache_inode(parent_inode_id, parent_inode);
         {
             let mut cache = guard.dir_cache.write_shard(parent_inode_id);
             if let Some(ix) = cache.get_mut(&parent_inode_id) {
@@ -7878,7 +7921,7 @@ impl DiskManager {
         // Refresh in-memory caches for parents and any overwritten destination in place.
         let encrypted = guard.superblock.encrypted;
         let dst_phys_blk_opt = dst_info.as_ref().map(|&(_, b, _)| b);
-        guard.inode_cache.insert(old_parent_inode_id, old_parent);
+        guard.cache_inode(old_parent_inode_id, old_parent);
         if same_parent {
             let mut cache = guard.dir_cache.write_shard(old_parent_inode_id);
             if let Some(ix) = cache.get_mut(&old_parent_inode_id) {
@@ -7920,7 +7963,7 @@ impl DiskManager {
                 }
             }
             if let Some(np) = new_parent_opt {
-                guard.inode_cache.insert(new_parent_inode_id, np);
+                guard.cache_inode(new_parent_inode_id, np);
             }
             {
                 let mut cache = guard.dir_cache.write_shard(new_parent_inode_id);
@@ -8212,7 +8255,7 @@ impl DiskManager {
                 });
                 Self::commit_journal_tx(guard, &ops)?;
                 Self::apply_journal_ops(guard, &ops)?;
-                guard.inode_cache.insert(inode_id, inode);
+                guard.cache_inode(inode_id, inode);
                 Self::maybe_checkpoint(guard)?;
             } else {
                 Self::write_inode_internal(guard, inode_id, &inode)?;
@@ -8316,7 +8359,7 @@ impl DiskManager {
             {
                 guard.free_block_hint = min_freed;
             }
-            guard.inode_cache.insert(inode_id, inode);
+            guard.cache_inode(inode_id, inode);
 
             if guard.durability_mode() == DurabilityMode::RangeAsync {
                 let mut ranges = vec![
@@ -8673,7 +8716,7 @@ impl DiskManager {
 /// Note: Because a `ReadSession` holds a shared read lock, concurrent writers wait until all
 /// active `ReadSession`s are dropped. Keep sessions scoped to bounded read batches.
 pub struct ReadSession<'a> {
-    guard: std::sync::RwLockReadGuard<'a, DiskManagerInner>,
+    guard: std::sync::RwLockReadGuard<'a, CachePadded<DiskManagerInner>>,
 }
 
 impl<'a> ReadSession<'a> {
@@ -8703,6 +8746,24 @@ impl<'a> ReadSession<'a> {
     #[inline]
     pub fn read_inode(&self, inode_id: u64) -> Result<Inode, DiskManagerError> {
         DiskManager::read_inode_internal(&self.guard, inode_id)
+    }
+
+    /// Reads an allocated inode's metadata without re-acquiring the outer lock.
+    #[inline]
+    pub fn read_allocated_inode(&self, inode_id: u64) -> Result<Inode, DiskManagerError> {
+        if !self.guard.is_inode_allocated(inode_id) {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Inode not allocated",
+            )));
+        }
+        DiskManager::read_inode_internal(&self.guard, inode_id)
+    }
+
+    /// Returns the monotonic mutation generation for `inode_id`'s slot without re-locking.
+    #[inline]
+    pub(crate) fn inode_gen(&self, inode_id: u64) -> u64 {
+        self.guard.inode_gen(inode_id)
     }
 
     /// Lists all directory entries in `dir_inode_id` without re-acquiring the outer lock.
@@ -9408,7 +9469,12 @@ impl DiskManager {
         buf: &mut [u8],
     ) -> Option<Result<usize, DiskManagerError>> {
         let guard = self.inner.try_read().ok()?;
-        let inode = if let Some(cached) = guard.inode_cache.get(inode_id) {
+        let inode = if guard.uses_direct_mmap_inode(inode_id) {
+            match Self::read_inode_internal(&guard, inode_id) {
+                Ok(i) => i,
+                Err(e) => return Some(Err(e)),
+            }
+        } else if let Some(cached) = guard.inode_cache.get(inode_id) {
             cached
         } else if guard.backing.as_mmap_slice().is_some() {
             match Self::read_inode_internal(&guard, inode_id) {
@@ -9452,19 +9518,14 @@ impl DiskManager {
                     buf[..to_read].fill(0);
                     return Some(Ok(to_read));
                 }
-                if let Some(n) = guard
-                    .chunk_read_cache
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .copy_slice_if_hit(
-                        inode_id,
-                        start_chunk,
-                        raw_entry,
-                        chunk_valid_len,
-                        in_chunk,
-                        &mut buf[..to_read],
-                    )
-                {
+                if let Some(n) = guard.chunk_read_cache.copy_slice_if_hit(
+                    inode_id,
+                    start_chunk,
+                    raw_entry,
+                    chunk_valid_len,
+                    in_chunk,
+                    &mut buf[..to_read],
+                ) {
                     return Some(Ok(n));
                 }
             }
@@ -9478,9 +9539,7 @@ impl DiskManager {
             || inode.filter_shuffle
             || inode.filter_bitshuffle
         {
-            if let Some(blob) =
-                crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, &inode)
-            {
+            if let Some(blob) = guard.decoded_blob_cache.get(inode_id, &inode) {
                 let start = file_offset as usize;
                 if start >= blob.len() {
                     return Some(Ok(0));
@@ -9557,19 +9616,14 @@ impl DiskManager {
                         Err(e) => Some(Err(e)),
                     };
                 }
-                if let Some(vec) = guard
-                    .chunk_read_cache
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .copy_slice_to_vec_if_hit(
-                        inode_id,
-                        start_chunk,
-                        raw_entry,
-                        chunk_valid_len,
-                        in_chunk,
-                        to_read,
-                    )
-                {
+                if let Some(vec) = guard.chunk_read_cache.copy_slice_to_vec_if_hit(
+                    inode_id,
+                    start_chunk,
+                    raw_entry,
+                    chunk_valid_len,
+                    in_chunk,
+                    to_read,
+                ) {
                     return Some(Ok(vec));
                 }
             }
@@ -9583,9 +9637,7 @@ impl DiskManager {
             || inode.filter_shuffle
             || inode.filter_bitshuffle
         {
-            if let Some(blob) =
-                crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, inode)
-            {
+            if let Some(blob) = guard.decoded_blob_cache.get(inode_id, inode) {
                 let start = file_offset as usize;
                 if start >= blob.len() {
                     return Some(Ok(Vec::new()));
@@ -9656,7 +9708,7 @@ impl DiskManager {
         if len <= DecodedBlobCache::MAX_ENTRY_BYTES
             && let Ok(guard) = self.inner.try_read()
         {
-            let inode_opt = guard.inode_cache.get(inode_id).or_else(|| {
+            let inode_opt = (if guard.uses_direct_mmap_inode(inode_id) { None } else { guard.inode_cache.get(inode_id) }).or_else(|| {
                 if guard.backing.as_mmap_slice().is_some() {
                     Self::read_inode_internal(&guard, inode_id).ok()
                 } else {
@@ -9692,7 +9744,7 @@ impl DiskManager {
         inode_id: u64,
     ) -> OifsAsyncTask<Result<Vec<u8>, DiskManagerError>> {
         if let Ok(guard) = self.inner.try_read() {
-            let inode_opt = guard.inode_cache.get(inode_id).or_else(|| {
+            let inode_opt = (if guard.uses_direct_mmap_inode(inode_id) { None } else { guard.inode_cache.get(inode_id) }).or_else(|| {
                 if guard.backing.as_mmap_slice().is_some() {
                     Self::read_inode_internal(&guard, inode_id).ok()
                 } else {
@@ -9724,18 +9776,15 @@ impl DiskManager {
                 || inode.filter_bitshuffle)
                 && (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) == 0;
             if cacheable_kind
-                && let Some(blob) =
-                    crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, &inode)
+                && let Some(blob) = guard.decoded_blob_cache.get(inode_id, &inode)
             {
                 return Ok(blob.as_ref().clone());
             }
             let data = Self::read_data_internal(&guard, inode_id, &inode)?;
             if cacheable_kind && data.len() <= DecodedBlobCache::MAX_ENTRY_BYTES {
-                crate::lock_unpoisoned(&guard.decoded_blob_cache).insert(
-                    inode_id,
-                    &inode,
-                    Arc::new(data.clone()),
-                );
+                guard
+                    .decoded_blob_cache
+                    .insert(inode_id, &inode, Arc::new(data.clone()));
             }
             Ok(data)
         })

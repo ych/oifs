@@ -7,8 +7,24 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
 
+static FFI_ACTIVE_ERROR_THREADS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+struct FfiThreadErrorSlot {
+    msg: Option<String>,
+}
+
+impl Drop for FfiThreadErrorSlot {
+    fn drop(&mut self) {
+        if self.msg.take().is_some() {
+            FFI_ACTIVE_ERROR_THREADS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+}
+
 thread_local! {
-    static FFI_LAST_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static FFI_LAST_ERROR: std::cell::RefCell<FfiThreadErrorSlot> =
+        const { std::cell::RefCell::new(FfiThreadErrorSlot { msg: None }) };
 }
 
 // Opaque handle for C
@@ -35,18 +51,48 @@ impl OIFSHandle {
         })
     }
 
+    #[inline]
     pub fn set_last_error(&self, err: Option<String>) {
+        match err {
+            None => {
+                // Lock-free and TLV-free fast path when no thread in the process currently
+                // holds a recorded FFI error (the common case on hot FFI reads).
+                if FFI_ACTIVE_ERROR_THREADS.load(std::sync::atomic::Ordering::Acquire) == 0 {
+                    return;
+                }
+                Self::clear_last_error_slow();
+            }
+            Some(msg) => Self::set_last_error_some(msg),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn clear_last_error_slow() {
         FFI_LAST_ERROR.with(|cell| {
-            if let Some(msg) = err {
-                *cell.borrow_mut() = Some(msg);
-            } else if cell.borrow().is_some() {
-                *cell.borrow_mut() = None;
+            let mut slot = cell.borrow_mut();
+            if slot.msg.take().is_some() {
+                FFI_ACTIVE_ERROR_THREADS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        });
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn set_last_error_some(msg: String) {
+        FFI_LAST_ERROR.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.msg.replace(msg).is_none() {
+                FFI_ACTIVE_ERROR_THREADS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             }
         });
     }
 
     pub fn get_last_error(&self) -> Option<String> {
-        FFI_LAST_ERROR.with(|cell| cell.borrow().clone())
+        if FFI_ACTIVE_ERROR_THREADS.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            return None;
+        }
+        FFI_LAST_ERROR.with(|cell| cell.borrow().msg.clone())
     }
 }
 
@@ -1416,7 +1462,7 @@ pub extern "C" fn oifs_read_at_batch(
 
 struct FfiSharedSession {
     // Field drop order is top-to-bottom: `session` (holding RwLockReadGuard) is dropped
-    // BEFORE `_dm` (owning the Arc<RwLock<DiskManagerInner>>).
+    // BEFORE `_dm` (owning the Arc<InnerLock>).
     session: crate::disk::ReadSession<'static>,
     _dm: Box<DiskManager>,
 }

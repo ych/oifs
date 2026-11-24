@@ -109,6 +109,7 @@ impl DiskManager {
         Self::persist_superblock(&mut guard)?;
         guard.backing.flush()?;
         guard.inode_cache.clear();
+        guard.bump_all_inode_gens();
         guard.clear_payload_caches();
 
         Ok(MigrationStats {
@@ -148,9 +149,9 @@ impl DiskManager {
         Self::analyze_fragmentation_internal(&guard)
     }
 
-    /// Fragmentation analysis driven by an `Arc<RwLock<DiskManagerInner>>`.
+    /// Fragmentation analysis driven by an `Arc<InnerLock>`.
     pub(crate) fn analyze_fragmentation_on(
-        inner: &Arc<RwLock<DiskManagerInner>>,
+        inner: &Arc<InnerLock>,
     ) -> Result<FragmentationStats, DiskManagerError> {
         let guard = inner.read().unwrap();
         Self::analyze_fragmentation_internal(&guard)
@@ -308,6 +309,7 @@ impl DiskManager {
         guard.free_block_hint = superblock.data_block_start;
         guard.free_inode_hint = 0;
         guard.inode_cache = BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY);
+        guard.bump_all_inode_gens();
         guard.dir_cache.clear();
         guard.clear_payload_caches();
         Ok(())
@@ -702,12 +704,12 @@ impl DiskManager {
         Self::defragment_inplace_on(&self.inner)
     }
 
-    /// In-place defragmentation driven by an `Arc<RwLock<DiskManagerInner>>`.
+    /// In-place defragmentation driven by an `Arc<InnerLock>`.
     ///
     /// Exposed separately from [`Self::defragment_inplace`] so the background
     /// auto-defrag coordinator can run a pass without owning a `DiskManager`.
     pub(crate) fn defragment_inplace_on(
-        inner: &Arc<RwLock<DiskManagerInner>>,
+        inner: &Arc<InnerLock>,
     ) -> Result<DefragStats, DiskManagerError> {
         let mut guard = inner.write().unwrap();
         if guard.read_only {
@@ -1515,7 +1517,7 @@ impl DiskManager {
             for (&inode_idx, new_inode) in &touched_inodes {
                 let inode_id = inodes[inode_idx].0;
                 inodes[inode_idx].1 = *new_inode;
-                guard.inode_cache.insert(inode_id, *new_inode);
+                guard.cache_inode(inode_id, *new_inode);
             }
 
             {
@@ -1598,13 +1600,13 @@ impl DiskManager {
         Self::verify_integrity_on(&self.inner)
     }
 
-    /// Structural consistency check driven by an `Arc<RwLock<DiskManagerInner>>`.
+    /// Structural consistency check driven by an `Arc<InnerLock>`.
     ///
     /// Performs a single-pass directory & block-tree traversal using compact `u64` bitsets,
     /// `read_inode_uncached` (zero `inode_cache` pollution), and zero-allocation directory
     /// and block-pointer visitors (`for_each_valid_inode_in_block`, `for_each_inode_block`).
     pub(crate) fn verify_integrity_on(
-        inner: &Arc<RwLock<DiskManagerInner>>,
+        inner: &Arc<InnerLock>,
     ) -> Result<FsckReport, DiskManagerError> {
         let guard = inner.read().unwrap();
         let sb = guard.superblock;

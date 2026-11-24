@@ -29,11 +29,12 @@ use crate::disk::{CompressionMode, DiskManager, DiskManagerError};
 use crate::fx_hash::FxHashMap;
 use crate::inode::{FileType, Inode};
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use std::sync::{Arc, Mutex, RwLock};
 
 // ---------------------------------------------------------------------------
@@ -2210,14 +2211,95 @@ pub struct FuseFileHandle {
     pub is_dir: bool,
 }
 
+const FUSE_FAST_HANDLE_SLOTS: usize = 256;
+
+#[derive(Debug)]
+struct SeqLockFuseHandleSlot {
+    seq: AtomicU64,
+    fh: AtomicU64,
+    inode_id: AtomicU64,
+    meta: AtomicU64,
+}
+
+impl SeqLockFuseHandleSlot {
+    fn empty() -> Self {
+        Self {
+            seq: AtomicU64::new(0),
+            fh: AtomicU64::new(0),
+            inode_id: AtomicU64::new(0),
+            meta: AtomicU64::new(0),
+        }
+    }
+
+    #[inline]
+    fn try_read(&self, fh: u64) -> Option<FuseFileHandle> {
+        let s1 = self.seq.load(Ordering::Acquire);
+        if s1 == 0 || (s1 & 1) != 0 || self.fh.load(Ordering::Relaxed) != fh {
+            return None;
+        }
+        let inode_id = self.inode_id.load(Ordering::Relaxed);
+        let meta = self.meta.load(Ordering::Relaxed);
+        fence(Ordering::Acquire);
+        if self.seq.load(Ordering::Relaxed) == s1 && self.fh.load(Ordering::Relaxed) == fh {
+            Some(FuseFileHandle {
+                inode_id,
+                flags: meta as u32,
+                is_dir: (meta >> 32) != 0,
+            })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn write(&self, fh: u64, handle: FuseFileHandle) {
+        let s = self.seq.load(Ordering::Relaxed);
+        self.seq.store(s.wrapping_add(1), Ordering::Release);
+        fence(Ordering::Release);
+        self.fh.store(fh, Ordering::Relaxed);
+        self.inode_id.store(handle.inode_id, Ordering::Relaxed);
+        let meta = u64::from(handle.flags) | (u64::from(handle.is_dir) << 32);
+        self.meta.store(meta, Ordering::Relaxed);
+        self.seq.store(s.wrapping_add(2), Ordering::Release);
+    }
+
+    #[inline]
+    fn invalidate_any(&self) {
+        if self.fh.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let s = self.seq.load(Ordering::Relaxed);
+        self.seq.store(s.wrapping_add(1), Ordering::Release);
+        fence(Ordering::Release);
+        self.fh.store(0, Ordering::Relaxed);
+        self.seq.store(s.wrapping_add(2), Ordering::Release);
+    }
+
+    #[inline]
+    fn invalidate_if_fh(&self, fh: u64) {
+        if self.fh.load(Ordering::Relaxed) == fh {
+            self.invalidate_any();
+        }
+    }
+
+    #[inline]
+    fn invalidate_if_inode(&self, inode_id: u64) {
+        if self.fh.load(Ordering::Relaxed) != 0 && self.inode_id.load(Ordering::Relaxed) == inode_id
+        {
+            self.invalidate_any();
+        }
+    }
+}
+
 /// Thread-safe handle table mapping FUSE `fh: u64` values to [`FuseFileHandle`] entries.
 ///
-/// All open FUSE handles live in memory and share the single underlying `.img` OS file
-/// descriptor owned by [`DiskManager`].
+/// Hot `get(fh)` lookups use a lock-free monotonic SeqLock table with zero mutex/rwlock
+/// traffic; mutations synchronize through the backing map lock.
 #[derive(Debug)]
 pub struct FuseHandleTable {
     next_fh: AtomicU64,
     handles: RwLock<FxHashMap<u64, FuseFileHandle>>,
+    fast_slots: Box<[SeqLockFuseHandleSlot; FUSE_FAST_HANDLE_SLOTS]>,
 }
 
 impl Default for FuseHandleTable {
@@ -2229,10 +2311,22 @@ impl Default for FuseHandleTable {
 impl FuseHandleTable {
     /// Creates an empty handle table starting handle allocation at `fh = 1`.
     pub fn new() -> Self {
+        let fast_vec: Vec<SeqLockFuseHandleSlot> = (0..FUSE_FAST_HANDLE_SLOTS)
+            .map(|_| SeqLockFuseHandleSlot::empty())
+            .collect();
+        let fast_slots: Box<[SeqLockFuseHandleSlot; FUSE_FAST_HANDLE_SLOTS]> = fast_vec
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("fixed handle slot count"));
         Self {
             next_fh: AtomicU64::new(1),
             handles: RwLock::new(FxHashMap::default()),
+            fast_slots,
         }
+    }
+
+    #[inline]
+    fn fast_slot(&self, fh: u64) -> &SeqLockFuseHandleSlot {
+        &self.fast_slots[(fh as usize) & (FUSE_FAST_HANDLE_SLOTS - 1)]
     }
 
     /// Inserts a new handle and returns its unique non-zero `fh` ID.
@@ -2246,17 +2340,30 @@ impl FuseHandleTable {
             fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
         }
         guard.insert(fh, handle);
+        self.fast_slot(fh).write(fh, handle);
         fh
     }
 
-    /// Looks up an active handle by `fh`.
+    /// Looks up an active handle by `fh` via lock-free SeqLock with shard fallback.
+    #[inline]
     pub fn get(&self, fh: u64) -> Option<FuseFileHandle> {
+        if fh == 0 {
+            return None;
+        }
+        if let Some(hit) = self.fast_slot(fh).try_read(fh) {
+            return Some(hit);
+        }
         crate::read_unpoisoned(&self.handles).get(&fh).copied()
     }
 
     /// Removes and returns an active handle by `fh`.
     pub fn remove(&self, fh: u64) -> Option<FuseFileHandle> {
-        crate::write_unpoisoned(&self.handles).remove(&fh)
+        let mut guard = crate::write_unpoisoned(&self.handles);
+        let removed = guard.remove(&fh);
+        if removed.is_some() && fh != 0 {
+            self.fast_slot(fh).invalidate_if_fh(fh);
+        }
+        removed
     }
 
     /// Returns the number of currently open handles.
@@ -2274,12 +2381,19 @@ impl FuseHandleTable {
         let mut guard = crate::write_unpoisoned(&self.handles);
         if !guard.is_empty() {
             guard.retain(|_, h| h.inode_id != inode_id);
+            for slot in self.fast_slots.iter() {
+                slot.invalidate_if_inode(inode_id);
+            }
         }
     }
 
     /// Drops all open handles (used on `FUSE_DESTROY`).
     pub fn clear(&self) {
-        crate::write_unpoisoned(&self.handles).clear();
+        let mut guard = crate::write_unpoisoned(&self.handles);
+        guard.clear();
+        for slot in self.fast_slots.iter() {
+            slot.invalidate_any();
+        }
     }
 }
 
@@ -2659,16 +2773,39 @@ fn count_allocated_inodes(dm: &DiskManager) -> u64 {
 // Stateful FUSE session (decoupled from DiskManager ownership for FFI reuse)
 // ---------------------------------------------------------------------------
 
+const FUSE_FAST_PARENT_SLOTS: usize = 256;
+const DIR_SNAPSHOT_CACHE_CAP: usize = 8;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DirSnapshotKey {
+    dir_id: u64,
+    write_gen: u64,
+    size: u64,
+    modified_at: u64,
+}
+
+type SortedDirEntries = Arc<[(String, u64)]>;
+
+#[inline]
+fn pack_parent_pair(child: u64, parent: u64) -> Option<u64> {
+    if child > 0 && child <= u32::MAX as u64 && parent <= u32::MAX as u64 {
+        Some((child << 32) | parent)
+    } else {
+        None
+    }
+}
+
 /// Stateful FUSE v7.28 protocol session that can be driven against any `&DiskManager`.
 ///
-/// This type holds the mount options, open-handle table (`fh -> FuseFileHandle`), parent
-/// directory tracking for accurate `..` entries, and `FUSE_INIT` negotiation state.
-/// [`OifsFuseFs`] embeds an `OifsFuseState` together with an `Arc<DiskManager>`, while
-/// FFI wrappers that already own a `DiskManager` can embed `OifsFuseState` directly.
+/// This type holds the mount options, open-handle table (`fh -> FuseFileHandle`), wait-free
+/// parent directory cache for accurate `..` entries, multi-page sorted directory snapshot
+/// cache, and `FUSE_INIT` negotiation state.
 pub struct OifsFuseState {
     options: FuseMountOptions,
     handles: FuseHandleTable,
     parent_map: RwLock<FxHashMap<u64, u64>>,
+    fast_parents: Box<[AtomicU64; FUSE_FAST_PARENT_SLOTS]>,
+    dir_snapshots: RwLock<VecDeque<(DirSnapshotKey, SortedDirEntries)>>,
     append_lock: Mutex<()>,
     initialized: AtomicBool,
     destroyed: AtomicBool,
@@ -2680,10 +2817,18 @@ impl OifsFuseState {
     pub fn new(options: FuseMountOptions) -> Self {
         let mut parents = FxHashMap::default();
         parents.insert(0, 0);
+        let fast_vec: Vec<AtomicU64> = (0..FUSE_FAST_PARENT_SLOTS)
+            .map(|_| AtomicU64::new(0))
+            .collect();
+        let fast_parents: Box<[AtomicU64; FUSE_FAST_PARENT_SLOTS]> = fast_vec
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("fixed parent slot count"));
         Self {
             options,
             handles: FuseHandleTable::new(),
             parent_map: RwLock::new(parents),
+            fast_parents,
+            dir_snapshots: RwLock::new(VecDeque::with_capacity(DIR_SNAPSHOT_CACHE_CAP)),
             append_lock: Mutex::new(()),
             initialized: AtomicBool::new(false),
             destroyed: AtomicBool::new(false),
@@ -2740,16 +2885,37 @@ impl OifsFuseState {
 
     #[inline]
     fn record_parent(&self, child_inode: u64, parent_inode: u64) {
+        if let Some(packed) = pack_parent_pair(child_inode, parent_inode) {
+            self.fast_parents[(child_inode as usize) & (FUSE_FAST_PARENT_SLOTS - 1)]
+                .store(packed, Ordering::Release);
+        }
         crate::write_unpoisoned(&self.parent_map).insert(child_inode, parent_inode);
     }
 
     #[inline]
     fn forget_parent(&self, child_inode: u64) {
+        if child_inode > 0 {
+            let slot = &self.fast_parents[(child_inode as usize) & (FUSE_FAST_PARENT_SLOTS - 1)];
+            let cur = slot.load(Ordering::Relaxed);
+            if cur != 0 && (cur >> 32) == child_inode {
+                slot.store(0, Ordering::Release);
+            }
+        }
         crate::write_unpoisoned(&self.parent_map).remove(&child_inode);
     }
 
     #[inline]
     fn parent_nodeid_of(&self, inode_id: u64) -> u64 {
+        if inode_id == 0 {
+            return FUSE_ROOT_ID;
+        }
+        if inode_id <= u32::MAX as u64 {
+            let packed = self.fast_parents[(inode_id as usize) & (FUSE_FAST_PARENT_SLOTS - 1)]
+                .load(Ordering::Acquire);
+            if (packed >> 32) == inode_id {
+                return inode_to_nodeid(packed & 0xFFFF_FFFF).unwrap_or(FUSE_ROOT_ID);
+            }
+        }
         let parent_inode = crate::read_unpoisoned(&self.parent_map)
             .get(&inode_id)
             .copied()
@@ -3179,6 +3345,46 @@ impl OifsFuseState {
         })
     }
 
+    fn sorted_dir_snapshot(
+        &self,
+        sess: &crate::disk::ReadSession<'_>,
+        dir_id: u64,
+        dir_inode: &Inode,
+    ) -> Result<SortedDirEntries, i32> {
+        let key = DirSnapshotKey {
+            dir_id,
+            write_gen: sess.inode_gen(dir_id),
+            size: dir_inode.size,
+            modified_at: dir_inode.modified_at,
+        };
+        {
+            let guard = crate::read_unpoisoned(&self.dir_snapshots);
+            if let Some((_, entries)) = guard.iter().rev().find(|(k, _)| *k == key) {
+                return Ok(Arc::clone(entries));
+            }
+        }
+        let mut dir_entries = sess.list_dir(dir_id).map_err(|e| disk_error_to_errno(&e))?;
+        dir_entries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.inode.cmp(&b.inode)));
+        let snapshot: SortedDirEntries = Arc::from(
+            dir_entries
+                .into_iter()
+                .map(|e| (e.name, e.inode))
+                .collect::<Vec<_>>(),
+        );
+        {
+            let mut guard = crate::write_unpoisoned(&self.dir_snapshots);
+            if let Some((_, existing)) = guard.iter().rev().find(|(k, _)| *k == key) {
+                return Ok(Arc::clone(existing));
+            }
+            guard.retain(|(k, _)| k.dir_id != dir_id);
+            if guard.len() >= DIR_SNAPSHOT_CACHE_CAP {
+                guard.pop_front();
+            }
+            guard.push_back((key, Arc::clone(&snapshot)));
+        }
+        Ok(snapshot)
+    }
+
     pub fn readdir(
         &self,
         dm: &DiskManager,
@@ -3196,7 +3402,8 @@ impl OifsFuseState {
         } else {
             nodeid_to_inode(nodeid).ok_or(-libc::ENOENT)?
         };
-        let inode = dm
+        let sess = dm.begin_read();
+        let inode = sess
             .read_allocated_inode(inode_id)
             .map_err(|e| disk_error_to_stale_errno(&e))?;
         if inode.mode != FileType::Directory {
@@ -3205,8 +3412,7 @@ impl OifsFuseState {
         let dir_nodeid = inode_to_nodeid(inode_id).ok_or(-libc::EOVERFLOW)?;
         let parent_nodeid = self.parent_nodeid_of(inode_id);
 
-        let mut dir_entries = dm.list_dir(inode_id).map_err(|e| disk_error_to_errno(&e))?;
-        dir_entries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.inode.cmp(&b.inode)));
+        let dir_entries = self.sorted_dir_snapshot(&sess, inode_id, &inode)?;
 
         let start = usize::try_from(offset).unwrap_or(usize::MAX);
         let total_entries = dir_entries.len().saturating_add(2);
@@ -3248,16 +3454,15 @@ impl OifsFuseState {
         }
 
         let child_start = start.saturating_sub(2);
-        let sess = dm.begin_read();
-        for (idx, entry) in dir_entries.into_iter().enumerate().skip(child_start) {
-            let rec_len = fuse_dirent_align(FUSE_DIRENT_HEADER_SIZE + entry.name.len());
+        for (idx, (name, child_id)) in dir_entries.iter().enumerate().skip(child_start) {
+            let rec_len = fuse_dirent_align(FUSE_DIRENT_HEADER_SIZE + name.len());
             if used.saturating_add(rec_len) > budget {
                 break;
             }
-            let child_nodeid = inode_to_nodeid(entry.inode).ok_or(-libc::EOVERFLOW)?;
-            let file_type = match sess.read_inode(entry.inode) {
+            let child_nodeid = inode_to_nodeid(*child_id).ok_or(-libc::EOVERFLOW)?;
+            let file_type = match sess.read_inode(*child_id) {
                 Ok(child_inode) if child_inode.mode == FileType::Directory => {
-                    self.record_parent(entry.inode, inode_id);
+                    self.record_parent(*child_id, inode_id);
                     FUSE_DT_DIR
                 }
                 _ => FUSE_DT_REG,
@@ -3267,7 +3472,7 @@ impl OifsFuseState {
                 ino: child_nodeid,
                 off: (idx as u64) + 3,
                 file_type,
-                name: entry.name,
+                name: name.clone(),
             });
         }
         Ok(page)

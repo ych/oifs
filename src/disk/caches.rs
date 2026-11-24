@@ -1,28 +1,58 @@
 //! In-memory caching structures for `DiskManager`:
-//! - [`ChunkReadCache`]: Bounded sub-chunk decompression cache for seekable 64K files
-//! - [`DecodedBlobCache`]: Bounded decoded-payload cache for whole-file compressed/encrypted blobs
+//! - [`ChunkReadCache`]: 16-shard lock-free empty-bypass chunk decompression cache
+//! - [`DecodedBlobCache`]: 16-shard lock-free empty-bypass decoded-payload cache
 //! - [`DirIndex`] & [`ShardedDirCache`]: 32-shard lock-striped directory name index
-//! - [`BoundedInodeCache`]: 32-shard Second-Chance (Clock) bounded inode cache
+//! - [`BoundedInodeCache`]: Lock-free SeqLock front-end over 32-shard Second-Chance inode cache
 
 use super::*;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+const NUM_PAYLOAD_CACHE_SHARDS: usize = 16;
 
 /// Bounded sub-chunk decompression cache for seekable 64K files.
 ///
-/// Small positional reads (`read_at` with `< 64 KiB` buffers) otherwise decompress
-/// and decrypt the same 64 KiB chunk repeatedly (e.g. 16x per chunk for 4 KiB reads).
+/// Sharded 16 ways with a lock-free `entry_count` fast bypass so non-chunked workloads
+/// pay a single atomic load on invalidation and concurrent seekable readers contend only
+/// on matching `(inode_id, chunk_idx)` shards.
 type ChunkCacheKey = (u64, usize, u64, usize);
+type ChunkCacheShard = RwLock<VecDeque<(ChunkCacheKey, Arc<[u8]>)>>;
 
-#[derive(Default)]
 pub(crate) struct ChunkReadCache {
-    entries: VecDeque<(ChunkCacheKey, Arc<[u8]>)>,
+    shards: [ChunkCacheShard; NUM_PAYLOAD_CACHE_SHARDS],
+    entry_count: AtomicUsize,
+}
+
+impl Default for ChunkReadCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ChunkReadCache {
-    const CAPACITY: usize = 8;
+    const MAX_PER_SHARD: usize = 2;
+
+    pub(crate) fn new() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| RwLock::new(VecDeque::new())),
+            entry_count: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline]
+    fn shard_idx(inode_id: u64, chunk_idx: usize) -> usize {
+        let h = inode_id
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add((chunk_idx as u64).wrapping_mul(0x517C_C1B7_2722_0A95));
+        (h >> 60) as usize
+    }
 
     #[inline]
     pub(crate) fn has_chunk(&self, inode_id: u64, chunk_idx: usize) -> bool {
-        self.entries
+        if self.entry_count.load(Ordering::Acquire) == 0 {
+            return false;
+        }
+        let shard = crate::read_unpoisoned(&self.shards[Self::shard_idx(inode_id, chunk_idx)]);
+        shard
             .iter()
             .rev()
             .any(|((id, idx, _, _), _)| *id == inode_id && *idx == chunk_idx)
@@ -38,9 +68,12 @@ impl ChunkReadCache {
         in_chunk_offset: usize,
         dst: &mut [u8],
     ) -> Option<usize> {
+        if self.entry_count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
         let key = (inode_id, chunk_idx, raw_entry, valid_len);
-        let data = self
-            .entries
+        let shard = crate::read_unpoisoned(&self.shards[Self::shard_idx(inode_id, chunk_idx)]);
+        let data = shard
             .iter()
             .rev()
             .find_map(|(k, v)| if *k == key { Some(v) } else { None })?;
@@ -61,9 +94,12 @@ impl ChunkReadCache {
         in_chunk_offset: usize,
         max_len: usize,
     ) -> Option<Vec<u8>> {
+        if self.entry_count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
         let key = (inode_id, chunk_idx, raw_entry, valid_len);
-        let data = self
-            .entries
+        let shard = crate::read_unpoisoned(&self.shards[Self::shard_idx(inode_id, chunk_idx)]);
+        let data = shard
             .iter()
             .rev()
             .find_map(|(k, v)| if *k == key { Some(v) } else { None })?;
@@ -72,7 +108,7 @@ impl ChunkReadCache {
     }
 
     pub(crate) fn insert(
-        &mut self,
+        &self,
         inode_id: u64,
         chunk_idx: usize,
         raw_entry: u64,
@@ -80,38 +116,77 @@ impl ChunkReadCache {
         data: Arc<[u8]>,
     ) {
         let key = (inode_id, chunk_idx, raw_entry, valid_len);
-        if let Some(pos) = self.entries.iter().position(|(k, _)| *k == key) {
-            self.entries.remove(pos);
+        let mut shard =
+            crate::write_unpoisoned(&self.shards[Self::shard_idx(inode_id, chunk_idx)]);
+        let mut delta: isize = 1;
+        if let Some(pos) = shard.iter().position(|(k, _)| *k == key) {
+            shard.remove(pos);
+            delta -= 1;
         }
-        if self.entries.len() >= Self::CAPACITY {
-            self.entries.pop_front();
+        while shard.len() >= Self::MAX_PER_SHARD {
+            if shard.pop_front().is_some() {
+                delta -= 1;
+            } else {
+                break;
+            }
         }
-        self.entries.push_back((key, data));
+        shard.push_back((key, data));
+        if delta > 0 {
+            self.entry_count.fetch_add(delta as usize, Ordering::AcqRel);
+        } else if delta < 0 {
+            self.entry_count
+                .fetch_sub((-delta) as usize, Ordering::AcqRel);
+        }
     }
 
     #[inline]
     pub(crate) fn invalidate_inode(&mut self, inode_id: u64) {
-        if !self.entries.is_empty() {
-            self.entries.retain(|((id, _, _, _), _)| *id != inode_id);
+        if self.entry_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let mut removed = 0usize;
+        for lock in &mut self.shards {
+            let shard = lock.get_mut().unwrap_or_else(|e| e.into_inner());
+            if !shard.is_empty() {
+                let before = shard.len();
+                shard.retain(|((id, _, _, _), _)| *id != inode_id);
+                removed += before - shard.len();
+            }
+        }
+        if removed > 0 {
+            self.entry_count.fetch_sub(removed, Ordering::Relaxed);
         }
     }
 
     #[inline]
     pub(crate) fn clear(&mut self) {
-        self.entries.clear();
+        if self.entry_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        for lock in &mut self.shards {
+            lock.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+        self.entry_count.store(0, Ordering::Relaxed);
     }
 }
 
-/// Bounded decoded-payload cache for positional `read_at` on non-seekable
+/// Sharded bounded decoded-payload cache for positional `read_at` on non-seekable
 /// compressed/encrypted files.
 ///
-/// Eliminates the $O(\text{calls} \times \text{file\_size})$ full-file decode cliff when
-/// callers issue sequential or random sub-file `read_at` calls on stream-compressed or
-/// whole-file encrypted blobs.
-#[derive(Default)]
+/// Eliminates the $O(\text{calls} \times \text{file\_size})$ full-file decode cliff while
+/// avoiding a single global mutex across concurrent readers.
+type DecodedBlobShard = RwLock<VecDeque<(DecodedBlobKey, Arc<Vec<u8>>)>>;
+
 pub(crate) struct DecodedBlobCache {
-    entries: VecDeque<(DecodedBlobKey, Arc<Vec<u8>>)>,
-    total_bytes: usize,
+    shards: [DecodedBlobShard; NUM_PAYLOAD_CACHE_SHARDS],
+    entry_count: AtomicUsize,
+    total_bytes: AtomicUsize,
+}
+
+impl Default for DecodedBlobCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -124,9 +199,22 @@ struct DecodedBlobKey {
 }
 
 impl DecodedBlobCache {
-    pub(crate) const MAX_ENTRIES: usize = 4;
+    pub(crate) const MAX_ENTRIES_PER_SHARD: usize = 2;
     pub(crate) const MAX_ENTRY_BYTES: usize = 16 * 1024 * 1024;
     pub(crate) const MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+
+    pub(crate) fn new() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| RwLock::new(VecDeque::new())),
+            entry_count: AtomicUsize::new(0),
+            total_bytes: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline]
+    fn shard_idx(inode_id: u64) -> usize {
+        ((inode_id.wrapping_mul(0x9E37_79B9_7F4A_7C15)) >> 60) as usize
+    }
 
     fn key_for(inode_id: u64, inode: &Inode) -> DecodedBlobKey {
         DecodedBlobKey {
@@ -139,50 +227,120 @@ impl DecodedBlobCache {
     }
 
     pub(crate) fn get(&self, inode_id: u64, inode: &Inode) -> Option<Arc<Vec<u8>>> {
+        if self.entry_count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
         let key = Self::key_for(inode_id, inode);
-        self.entries
+        let shard = crate::read_unpoisoned(&self.shards[Self::shard_idx(inode_id)]);
+        shard
             .iter()
             .rev()
             .find_map(|(k, v)| if *k == key { Some(Arc::clone(v)) } else { None })
     }
 
-    pub(crate) fn insert(&mut self, inode_id: u64, inode: &Inode, blob: Arc<Vec<u8>>) {
+    pub(crate) fn insert(&self, inode_id: u64, inode: &Inode, blob: Arc<Vec<u8>>) {
         let len = blob.len();
         if len > Self::MAX_ENTRY_BYTES {
             return;
         }
-        self.invalidate_inode(inode_id);
-        while !self.entries.is_empty()
-            && (self.entries.len() >= Self::MAX_ENTRIES
-                || self.total_bytes.saturating_add(len) > Self::MAX_TOTAL_BYTES)
+        let target_idx = Self::shard_idx(inode_id);
+        let key = Self::key_for(inode_id, inode);
         {
-            if let Some((_, evicted)) = self.entries.pop_front() {
-                self.total_bytes = self.total_bytes.saturating_sub(evicted.len());
+            let mut shard = crate::write_unpoisoned(&self.shards[target_idx]);
+            let mut removed_count = 0usize;
+            let mut removed_bytes = 0usize;
+            if !shard.is_empty() {
+                let mut i = 0;
+                while i < shard.len() {
+                    if shard[i].0.inode_id == inode_id {
+                        if let Some((_, old)) = shard.remove(i) {
+                            removed_count += 1;
+                            removed_bytes += old.len();
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            if removed_count > 0 {
+                self.entry_count.fetch_sub(removed_count, Ordering::AcqRel);
+                self.total_bytes.fetch_sub(removed_bytes, Ordering::AcqRel);
+            }
+
+            while !shard.is_empty()
+                && (shard.len() >= Self::MAX_ENTRIES_PER_SHARD
+                    || self.total_bytes.load(Ordering::Acquire).saturating_add(len)
+                        > Self::MAX_TOTAL_BYTES)
+            {
+                if let Some((_, evicted)) = shard.pop_front() {
+                    self.entry_count.fetch_sub(1, Ordering::AcqRel);
+                    self.total_bytes.fetch_sub(evicted.len(), Ordering::AcqRel);
+                }
+            }
+            shard.push_back((key, blob));
+            self.total_bytes.fetch_add(len, Ordering::AcqRel);
+            self.entry_count.fetch_add(1, Ordering::AcqRel);
+        }
+
+        // Enforce the global memory cap across peer shards without ever holding two shard locks.
+        if self.total_bytes.load(Ordering::Acquire) > Self::MAX_TOTAL_BYTES {
+            for offset in 1..NUM_PAYLOAD_CACHE_SHARDS {
+                if self.total_bytes.load(Ordering::Acquire) <= Self::MAX_TOTAL_BYTES {
+                    break;
+                }
+                let idx = (target_idx + offset) % NUM_PAYLOAD_CACHE_SHARDS;
+                let mut shard = crate::write_unpoisoned(&self.shards[idx]);
+                while !shard.is_empty()
+                    && self.total_bytes.load(Ordering::Acquire) > Self::MAX_TOTAL_BYTES
+                {
+                    if let Some((_, evicted)) = shard.pop_front() {
+                        self.entry_count.fetch_sub(1, Ordering::AcqRel);
+                        self.total_bytes.fetch_sub(evicted.len(), Ordering::AcqRel);
+                    }
+                }
             }
         }
-        self.total_bytes = self.total_bytes.saturating_add(len);
-        self.entries
-            .push_back((Self::key_for(inode_id, inode), blob));
     }
 
     #[inline]
     pub(crate) fn invalidate_inode(&mut self, inode_id: u64) {
-        if !self.entries.is_empty() {
-            self.entries.retain(|(k, v)| {
-                if k.inode_id == inode_id {
-                    self.total_bytes = self.total_bytes.saturating_sub(v.len());
-                    false
+        if self.entry_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let shard = self.shards[Self::shard_idx(inode_id)]
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner());
+        if !shard.is_empty() {
+            let mut removed_count = 0usize;
+            let mut removed_bytes = 0usize;
+            let mut i = 0;
+            while i < shard.len() {
+                if shard[i].0.inode_id == inode_id {
+                    if let Some((_, old)) = shard.remove(i) {
+                        removed_count += 1;
+                        removed_bytes += old.len();
+                    }
                 } else {
-                    true
+                    i += 1;
                 }
-            });
+            }
+            if removed_count > 0 {
+                self.entry_count.fetch_sub(removed_count, Ordering::Relaxed);
+                self.total_bytes.fetch_sub(removed_bytes, Ordering::Relaxed);
+            }
         }
     }
 
     #[inline]
     pub(crate) fn clear(&mut self) {
-        self.entries.clear();
-        self.total_bytes = 0;
+        if self.entry_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        for lock in &mut self.shards {
+            lock.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+        self.entry_count.store(0, Ordering::Relaxed);
+        self.total_bytes.store(0, Ordering::Relaxed);
     }
 }
 
@@ -292,10 +450,9 @@ const NUM_INODE_CACHE_SHARDS: usize = 32;
 
 struct CachedInodeEntry {
     inode: Inode,
-    /// Second-chance (Clock) reference bit: set with `Relaxed` atomics under
-    /// the shard's shared `.read()` lock so hot directory/file inodes survive cold
-    /// sequential scans without requiring a write lock on cache hits.
-    referenced: std::sync::atomic::AtomicBool,
+    /// Second-chance (Clock) reference bit: guarded with a shared load before storing
+    /// `true` so steady-state hot reads leave the cache line in Shared MESI state.
+    referenced: AtomicBool,
 }
 
 /// A single shard of the bounded inode cache with Second-Chance (Clock) eviction.
@@ -317,26 +474,22 @@ impl InodeCacheShard {
     #[inline]
     fn get(&self, inode_id: u64) -> Option<Inode> {
         let entry = self.map.get(&inode_id)?;
-        entry
-            .referenced
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if !entry.referenced.load(Ordering::Relaxed) {
+            entry.referenced.store(true, Ordering::Relaxed);
+        }
         Some(entry.inode)
     }
 
     fn insert(&mut self, inode_id: u64, inode: Inode) {
-        // Re-inserting an existing id refreshes its payload and marks it referenced
-        // without queueing a duplicate eviction slot.
         if let Some(existing) = self.map.get_mut(&inode_id) {
             existing.inode = inode;
-            existing
-                .referenced
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            existing.referenced.store(true, Ordering::Relaxed);
         } else {
             self.map.insert(
                 inode_id,
                 CachedInodeEntry {
                     inode,
-                    referenced: std::sync::atomic::AtomicBool::new(false),
+                    referenced: AtomicBool::new(false),
                 },
             );
             self.order.push_back(inode_id);
@@ -345,10 +498,10 @@ impl InodeCacheShard {
             let Some(candidate) = self.order.pop_front() else {
                 break;
             };
-            let give_second_chance = self.map.get(&candidate).is_some_and(|e| {
-                e.referenced
-                    .swap(false, std::sync::atomic::Ordering::Relaxed)
-            });
+            let give_second_chance = self
+                .map
+                .get(&candidate)
+                .is_some_and(|e| e.referenced.swap(false, Ordering::Relaxed));
             if give_second_chance {
                 self.order.push_back(candidate);
             } else {
@@ -373,14 +526,7 @@ impl InodeCacheShard {
     }
 }
 
-/// Sharded, thread-safe bounded inode cache.
-///
-/// Divides the inode cache into 32 independent shards, each with its own `RwLock`.
-/// Concurrent readers and writers on different inodes access completely separate shards
-/// with zero lock contention.
-///
-/// Inode IDs are uniformly distributed across shards using a 64-bit Fibonacci hashing
-/// bijection, ensuring consecutive sequential inode IDs never map to the same shard.
+/// Sharded, thread-safe bounded inode cache (32 independent `RwLock` shards).
 pub(crate) struct BoundedInodeCache {
     shards: Box<[RwLock<InodeCacheShard>]>,
     num_shards: usize,
@@ -388,20 +534,19 @@ pub(crate) struct BoundedInodeCache {
 
 impl BoundedInodeCache {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
-        if capacity <= 16 {
-            Self {
-                shards: vec![RwLock::new(InodeCacheShard::new(capacity))].into_boxed_slice(),
-                num_shards: 1,
-            }
+        let (num_shards, shard_cap) = if capacity <= 16 {
+            (1, capacity)
         } else {
-            let num_shards = NUM_INODE_CACHE_SHARDS;
-            let shard_cap = std::cmp::max(1, capacity / num_shards);
-            let shards = (0..num_shards)
-                .map(|_| RwLock::new(InodeCacheShard::new(shard_cap)))
-                .collect::<Vec<_>>()
-                .into_boxed_slice();
-            Self { shards, num_shards }
-        }
+            (
+                NUM_INODE_CACHE_SHARDS,
+                std::cmp::max(1, capacity / NUM_INODE_CACHE_SHARDS),
+            )
+        };
+        let shards = (0..num_shards)
+            .map(|_| RwLock::new(InodeCacheShard::new(shard_cap)))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self { shards, num_shards }
     }
 
     #[inline]
@@ -413,24 +558,29 @@ impl BoundedInodeCache {
         }
     }
 
+    #[inline]
     pub(crate) fn get(&self, inode_id: u64) -> Option<Inode> {
-        let idx = self.shard_index(inode_id);
-        self.shards[idx].read().unwrap().get(inode_id)
+        self.shards[self.shard_index(inode_id)]
+            .read()
+            .unwrap()
+            .get(inode_id)
     }
 
     pub(crate) fn insert(&self, inode_id: u64, inode: Inode) {
-        let idx = self.shard_index(inode_id);
-        self.shards[idx].write().unwrap().insert(inode_id, inode);
+        self.shards[self.shard_index(inode_id)]
+            .write()
+            .unwrap()
+            .insert(inode_id, inode);
     }
 
     pub(crate) fn remove(&self, inode_id: u64) {
-        let idx = self.shard_index(inode_id);
-        self.shards[idx].write().unwrap().remove(inode_id);
+        self.shards[self.shard_index(inode_id)]
+            .write()
+            .unwrap()
+            .remove(inode_id);
     }
 
-    /// Drop every cached inode.
-    ///
-    /// Used by a format migration, which rewrites every slot underneath the cache.
+    /// Drop every cached inode (used by format migration).
     pub(crate) fn clear(&self) {
         for shard in self.shards.iter() {
             shard.write().unwrap().clear();
@@ -588,6 +738,81 @@ mod inode_cache_tests {
         );
         assert!(shard.get(102).is_some());
         assert!(shard.get(103).is_some());
+    }
+
+    #[test]
+    fn test_inode_cache_eviction_and_concurrent_readers_writers() {
+        let c = Arc::new(BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY));
+        let mut seed = ino(crate::inode::FileType::File);
+        seed.size = 42;
+        c.insert(7, seed);
+        assert_eq!(c.get(7).unwrap().size, 42);
+        c.remove(7);
+        assert!(c.get(7).is_none());
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut handles = Vec::new();
+        for w in 0..2u64 {
+            let cache = Arc::clone(&c);
+            let stop_flag = Arc::clone(&stop);
+            handles.push(std::thread::spawn(move || {
+                for step in 0..2000u64 {
+                    if stop_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let id = (step % 64) + w * 1000;
+                    let mut entry = ino(crate::inode::FileType::File);
+                    entry.size = step.wrapping_mul(131);
+                    entry.modified_at = id;
+                    cache.insert(id, entry);
+                    if step % 17 == 0 {
+                        cache.remove(id);
+                    }
+                }
+            }));
+        }
+        for r in 0..6u64 {
+            let cache = Arc::clone(&c);
+            handles.push(std::thread::spawn(move || {
+                for step in 0..5000u64 {
+                    let id = ((step + r) % 64) + (r % 2) * 1000;
+                    if let Some(entry) = cache.get(id) {
+                        assert_eq!(entry.modified_at, id);
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_sharded_payload_caches_global_bounds_and_invalidation() {
+        let mut blobs = DecodedBlobCache::new();
+        let big = Arc::new(vec![0xABu8; 10 * 1024 * 1024]);
+        for id in 1..=5u64 {
+            let mut meta = ino(crate::inode::FileType::File);
+            meta.size = big.len() as u64;
+            blobs.insert(id, &meta, Arc::clone(&big));
+        }
+        assert!(blobs.total_bytes.load(Ordering::Relaxed) <= DecodedBlobCache::MAX_TOTAL_BYTES);
+        blobs.invalidate_inode(5);
+        let mut meta5 = ino(crate::inode::FileType::File);
+        meta5.size = big.len() as u64;
+        assert!(blobs.get(5, &meta5).is_none());
+        blobs.clear();
+        assert_eq!(blobs.entry_count.load(Ordering::Relaxed), 0);
+
+        let mut chunks = ChunkReadCache::new();
+        assert!(!chunks.has_chunk(1, 0));
+        chunks.insert(1, 0, 99, 8, Arc::from(b"abcdefgh".as_slice()));
+        assert!(chunks.has_chunk(1, 0));
+        let mut out = [0u8; 4];
+        assert_eq!(chunks.copy_slice_if_hit(1, 0, 99, 8, 2, &mut out), Some(4));
+        assert_eq!(&out, b"cdef");
+        chunks.invalidate_inode(1);
+        assert!(!chunks.has_chunk(1, 0));
     }
 }
 

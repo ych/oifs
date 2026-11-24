@@ -777,26 +777,19 @@ impl DiskManager {
                 continue;
             }
 
-            // Fast path: copy directly under shared read lock (zero Arc clone/drop atomic traffic).
-            let (hit_len, is_sequential) = {
-                let cache = guard
-                    .chunk_read_cache
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner());
-                let hit = cache.copy_slice_if_hit(
-                    inode_id,
-                    chunk_idx,
-                    raw_entry,
-                    chunk_valid_len,
-                    in_chunk_offset,
-                    &mut buf[bytes_read..bytes_read + chunk_to_copy],
-                );
-                let seq = hit.is_none()
-                    && in_chunk_offset == 0
-                    && chunk_idx > 0
-                    && cache.has_chunk(inode_id, chunk_idx - 1);
-                (hit, seq)
-            };
+            // Fast path: copy directly from sharded chunk cache without allocating a 64 KiB temp vec.
+            let hit_len = guard.chunk_read_cache.copy_slice_if_hit(
+                inode_id,
+                chunk_idx,
+                raw_entry,
+                chunk_valid_len,
+                in_chunk_offset,
+                &mut buf[bytes_read..bytes_read + chunk_to_copy],
+            );
+            let is_sequential = hit_len.is_none()
+                && in_chunk_offset == 0
+                && chunk_idx > 0
+                && guard.chunk_read_cache.has_chunk(inode_id, chunk_idx - 1);
             let available = match hit_len {
                 Some(n) => n,
                 None => {
@@ -865,12 +858,14 @@ impl DiskManager {
                                 &decoded[0][in_chunk_offset..in_chunk_offset + avail],
                             );
                         }
-                        let mut cache = guard
-                            .chunk_read_cache
-                            .write()
-                            .unwrap_or_else(|e| e.into_inner());
                         for ((c_idx, c_entry, c_valid), tmp) in targets.into_iter().zip(decoded) {
-                            cache.insert(inode_id, c_idx, c_entry, c_valid, Arc::from(tmp));
+                            guard.chunk_read_cache.insert(
+                                inode_id,
+                                c_idx,
+                                c_entry,
+                                c_valid,
+                                Arc::from(tmp),
+                            );
                         }
                         avail
                     } else {
@@ -889,11 +884,13 @@ impl DiskManager {
                                 .copy_from_slice(&tmp[in_chunk_offset..in_chunk_offset + avail]);
                         }
                         let arc: Arc<[u8]> = Arc::from(tmp);
-                        guard
-                            .chunk_read_cache
-                            .write()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(inode_id, chunk_idx, raw_entry, chunk_valid_len, arc);
+                        guard.chunk_read_cache.insert(
+                            inode_id,
+                            chunk_idx,
+                            raw_entry,
+                            chunk_valid_len,
+                            arc,
+                        );
                         avail
                     }
                 }
@@ -1032,19 +1029,14 @@ impl DiskManager {
                         let raw_entry =
                             Self::resolve_logical_chunk_entry(&guard.backing, &inode, chunk_idx).0;
                         let cache_hit = raw_entry != 0
-                            && guard
-                                .chunk_read_cache
-                                .read()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .copy_slice_if_hit(
-                                    inode_id,
-                                    chunk_idx,
-                                    raw_entry,
-                                    read_len,
-                                    0,
-                                    &mut buf[..read_len],
-                                )
-                                == Some(read_len);
+                            && guard.chunk_read_cache.copy_slice_if_hit(
+                                inode_id,
+                                chunk_idx,
+                                raw_entry,
+                                read_len,
+                                0,
+                                &mut buf[..read_len],
+                            ) == Some(read_len);
                         if !cache_hit {
                             Self::read_single_chunk_into(
                                 guard,
@@ -1701,7 +1693,7 @@ impl DiskManager {
 
             guard.free_inode_hint = sim.free_inode_hint;
             guard.free_block_hint = sim.free_block_hint;
-            guard.inode_cache.insert(inode_id, inode);
+            guard.cache_inode(inode_id, inode);
             guard.invalidate_payload_caches(inode_id);
 
             if guard.durability_mode() == DurabilityMode::RangeAsync {
@@ -1821,7 +1813,7 @@ impl DiskManager {
                 guard.sync_mutation_ranges(&ranges)?;
             }
             guard.invalidate_payload_caches(inode_id);
-            guard.inode_cache.insert(inode_id, inode);
+            guard.cache_inode(inode_id, inode);
             Ok(())
         }
     }
@@ -1959,7 +1951,7 @@ impl DiskManager {
                             guard.free_inode_hint = sim.free_inode_hint;
                             guard.free_block_hint = sim.free_block_hint;
                             guard.invalidate_payload_caches(inode_id);
-                            guard.inode_cache.insert(inode_id, inode);
+                            guard.cache_inode(inode_id, inode);
                             if guard.durability_mode() == DurabilityMode::RangeAsync {
                                 let mut ranges = vec![
                                     guard.data_bitmap_byte_range(),
@@ -2021,7 +2013,7 @@ impl DiskManager {
                                 guard.sync_mutation_ranges(&ranges)?;
                             }
                             guard.invalidate_payload_caches(inode_id);
-                            guard.inode_cache.insert(inode_id, inode);
+                            guard.cache_inode(inode_id, inode);
                         }
                         return Ok(());
                     }
@@ -2039,7 +2031,7 @@ impl DiskManager {
                 Self::commit_journal_tx(guard, &ops)?;
                 Self::apply_journal_ops(guard, &ops)?;
                 guard.invalidate_payload_caches(inode_id);
-                guard.inode_cache.insert(inode_id, inode);
+                guard.cache_inode(inode_id, inode);
                 Self::maybe_checkpoint(guard)?;
             } else {
                 Self::write_inode_internal(guard, inode_id, &inode)?;
@@ -2048,7 +2040,7 @@ impl DiskManager {
                     guard.sync_mutation_ranges(&[range])?;
                 }
                 guard.invalidate_payload_caches(inode_id);
-                guard.inode_cache.insert(inode_id, inode);
+                guard.cache_inode(inode_id, inode);
             }
             return Ok(());
         }
@@ -2237,7 +2229,7 @@ impl DiskManager {
 
             guard.free_inode_hint = sim.free_inode_hint;
             guard.free_block_hint = sim.free_block_hint;
-            guard.inode_cache.insert(inode_id, inode);
+            guard.cache_inode(inode_id, inode);
             guard.invalidate_payload_caches(inode_id);
 
             if guard.durability_mode() == DurabilityMode::RangeAsync {
@@ -2369,7 +2361,7 @@ impl DiskManager {
             guard.sync_mutation_ranges(&[range])?;
         }
         guard.invalidate_payload_caches(inode_id);
-        guard.inode_cache.insert(inode_id, inode);
+        guard.cache_inode(inode_id, inode);
         Ok(())
     }
 }

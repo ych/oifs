@@ -18,12 +18,13 @@
 //!   normalization, macOS Finder metadata storm filtering, and strict `--read-only`
 //!   immutable mounts (`NFS3ERR_ROFS`).
 
+use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -684,6 +685,28 @@ fn generate_session_generation() -> u64 {
     if mixed == 0 { 1 } else { mixed }
 }
 
+const NFS_FAST_PARENT_SLOTS: usize = 256;
+const NFS_DIR_SNAPSHOT_CAP: usize = 8;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct NfsDirSnapshotKey {
+    dir_id: u64,
+    write_gen: u64,
+    size: u64,
+    modified_at: u64,
+}
+
+type NfsSortedDirEntries = Arc<[(String, u64)]>;
+
+#[inline]
+fn pack_parent_pair(child: u64, parent: u64) -> Option<u64> {
+    if child > 0 && child <= u32::MAX as u64 && parent <= u32::MAX as u64 {
+        Some((child << 32) | parent)
+    } else {
+        None
+    }
+}
+
 /// Pure-Rust NFSv3 + MOUNT v3 protocol dispatcher backed by a shared [`DiskManager`].
 pub struct OifsNfsFs {
     dm: Arc<DiskManager>,
@@ -691,6 +714,8 @@ pub struct OifsNfsFs {
     fs_generation: u64,
     write_verf: [u8; 8],
     parent_map: RwLock<FxHashMap<u64, u64>>,
+    fast_parents: Box<[AtomicU64; NFS_FAST_PARENT_SLOTS]>,
+    dir_snapshots: RwLock<VecDeque<(NfsDirSnapshotKey, NfsSortedDirEntries)>>,
 }
 
 impl OifsNfsFs {
@@ -703,12 +728,20 @@ impl OifsNfsFs {
         let write_verf = fs_generation.to_be_bytes();
         let mut parents = FxHashMap::default();
         parents.insert(0, 0);
+        let fast_vec: Vec<AtomicU64> = (0..NFS_FAST_PARENT_SLOTS)
+            .map(|_| AtomicU64::new(0))
+            .collect();
+        let fast_parents: Box<[AtomicU64; NFS_FAST_PARENT_SLOTS]> = fast_vec
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("fixed parent slot count"));
         Self {
             dm,
             options,
             fs_generation,
             write_verf,
             parent_map: RwLock::new(parents),
+            fast_parents,
+            dir_snapshots: RwLock::new(VecDeque::with_capacity(NFS_DIR_SNAPSHOT_CAP)),
         }
     }
 
@@ -741,6 +774,10 @@ impl OifsNfsFs {
         if child == 0 {
             return;
         }
+        if let Some(packed) = pack_parent_pair(child, parent) {
+            self.fast_parents[(child as usize) & (NFS_FAST_PARENT_SLOTS - 1)]
+                .store(packed, Ordering::Release);
+        }
         let mut guard = crate::write_unpoisoned(&self.parent_map);
         guard.insert(child, parent);
     }
@@ -749,6 +786,11 @@ impl OifsNfsFs {
         if child == 0 {
             return;
         }
+        let slot = &self.fast_parents[(child as usize) & (NFS_FAST_PARENT_SLOTS - 1)];
+        let cur = slot.load(Ordering::Relaxed);
+        if cur != 0 && (cur >> 32) == child {
+            slot.store(0, Ordering::Release);
+        }
         let mut guard = crate::write_unpoisoned(&self.parent_map);
         guard.remove(&child);
     }
@@ -756,6 +798,13 @@ impl OifsNfsFs {
     fn parent_of(&self, inode_id: u64) -> u64 {
         if inode_id == 0 {
             return 0;
+        }
+        if inode_id <= u32::MAX as u64 {
+            let packed = self.fast_parents[(inode_id as usize) & (NFS_FAST_PARENT_SLOTS - 1)]
+                .load(Ordering::Acquire);
+            if (packed >> 32) == inode_id {
+                return packed & 0xFFFF_FFFF;
+            }
         }
         let guard = crate::read_unpoisoned(&self.parent_map);
         guard.get(&inode_id).copied().unwrap_or(0)
@@ -1666,13 +1715,44 @@ impl OifsNfsFs {
         w.into_bytes()
     }
 
-    fn sorted_dir_entries(&self, dir_id: u64) -> Result<Vec<crate::directory::DirectoryEntry>, u32> {
-        let mut entries = self
-            .dm
-            .list_dir(dir_id)
-            .map_err(|e| disk_error_to_nfs3(&e))?;
+    fn sorted_dir_entries(
+        &self,
+        sess: &crate::disk::ReadSession<'_>,
+        dir_id: u64,
+        dir_ino: Option<&Inode>,
+    ) -> Result<NfsSortedDirEntries, u32> {
+        let key_opt = dir_ino.map(|ino| NfsDirSnapshotKey {
+            dir_id,
+            write_gen: sess.inode_gen(dir_id),
+            size: ino.size,
+            modified_at: ino.modified_at,
+        });
+        if let Some(key) = key_opt {
+            let guard = crate::read_unpoisoned(&self.dir_snapshots);
+            if let Some((_, entries)) = guard.iter().rev().find(|(k, _)| *k == key) {
+                return Ok(Arc::clone(entries));
+            }
+        }
+        let mut entries = sess.list_dir(dir_id).map_err(|e| disk_error_to_nfs3(&e))?;
         entries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.inode.cmp(&b.inode)));
-        Ok(entries)
+        let snapshot: NfsSortedDirEntries = Arc::from(
+            entries
+                .into_iter()
+                .map(|e| (e.name, e.inode))
+                .collect::<Vec<_>>(),
+        );
+        if let Some(key) = key_opt {
+            let mut guard = crate::write_unpoisoned(&self.dir_snapshots);
+            if let Some((_, existing)) = guard.iter().rev().find(|(k, _)| *k == key) {
+                return Ok(Arc::clone(existing));
+            }
+            guard.retain(|(k, _)| k.dir_id != dir_id);
+            if guard.len() >= NFS_DIR_SNAPSHOT_CAP {
+                guard.pop_front();
+            }
+            guard.push_back((key, Arc::clone(&snapshot)));
+        }
+        Ok(snapshot)
     }
 
     fn nfs_readdir(&self, xid: u32, r: &mut XdrReader<'_>) -> Vec<u8> {
@@ -1695,8 +1775,9 @@ impl OifsNfsFs {
             return begin_accepted_reply(xid, RPC_ACCEPT_GARBAGE_ARGS).into_bytes();
         };
 
-        let dir_ino = self.read_inode_opt(dir_id);
-        let entries = match self.sorted_dir_entries(dir_id) {
+        let sess = self.dm.begin_read();
+        let dir_ino = sess.read_allocated_inode(dir_id).ok();
+        let entries = match self.sorted_dir_entries(&sess, dir_id, dir_ino.as_ref()) {
             Ok(list) => list,
             Err(status) => {
                 w.write_u32(status);
@@ -1737,9 +1818,9 @@ impl OifsNfsFs {
         }
 
         let start_idx = usize::try_from(cookie.saturating_sub(2)).unwrap_or(usize::MAX);
-        for (idx, entry) in entries.into_iter().enumerate().skip(start_idx) {
+        for (idx, (name, ino_id)) in entries.iter().enumerate().skip(start_idx) {
             let entry_cookie = (idx as u64) + 3;
-            let name_padded = xdr_padded_len(entry.name.len()).unwrap_or(entry.name.len());
+            let name_padded = xdr_padded_len(name.len()).unwrap_or(name.len());
             let entry_bytes = 4 + 8 + 4 + name_padded + 8;
             let used = w.len() - start_len;
             if emitted > 0 && used + entry_bytes + 8 > max_bytes {
@@ -1747,8 +1828,8 @@ impl OifsNfsFs {
                 break;
             }
             w.write_bool(true);
-            w.write_u64(entry.inode.saturating_add(1));
-            w.write_string(&entry.name);
+            w.write_u64(ino_id.saturating_add(1));
+            w.write_string(name);
             w.write_u64(entry_cookie);
             emitted += 1;
         }
@@ -1778,8 +1859,9 @@ impl OifsNfsFs {
             return begin_accepted_reply(xid, RPC_ACCEPT_GARBAGE_ARGS).into_bytes();
         };
 
-        let dir_ino = self.read_inode_opt(dir_id);
-        let entries = match self.sorted_dir_entries(dir_id) {
+        let sess = self.dm.begin_read();
+        let dir_ino = sess.read_allocated_inode(dir_id).ok();
+        let entries = match self.sorted_dir_entries(&sess, dir_id, dir_ino.as_ref()) {
             Ok(list) => list,
             Err(status) => {
                 w.write_u32(status);
@@ -1822,7 +1904,7 @@ impl OifsNfsFs {
             let child_ino = if ino_id == dir_id {
                 dir_ino
             } else {
-                self.read_inode_opt(ino_id)
+                sess.read_allocated_inode(ino_id).ok()
             };
             w.write_bool(true);
             w.write_u64(ino_id.saturating_add(1));
@@ -1836,9 +1918,9 @@ impl OifsNfsFs {
         }
 
         let start_idx = usize::try_from(cookie.saturating_sub(2)).unwrap_or(usize::MAX);
-        for (idx, entry) in entries.into_iter().enumerate().skip(start_idx) {
+        for (idx, (name, ino_id)) in entries.iter().enumerate().skip(start_idx) {
             let entry_cookie = (idx as u64) + 3;
-            let name_padded = xdr_padded_len(entry.name.len()).unwrap_or(entry.name.len());
+            let name_padded = xdr_padded_len(name.len()).unwrap_or(name.len());
             let base_dir_bytes = 8 + 4 + name_padded + 8;
             let full_entry_bytes = 136 + name_padded;
             let total_used = w.len() - start_len;
@@ -1851,18 +1933,18 @@ impl OifsNfsFs {
                 break;
             }
 
-            let child_ino = self.read_inode_opt(entry.inode);
+            let child_ino = sess.read_allocated_inode(*ino_id).ok();
             if let Some(ref ino) = child_ino
                 && ino.mode == FileType::Directory
             {
-                self.record_parent(entry.inode, dir_id);
+                self.record_parent(*ino_id, dir_id);
             }
             w.write_bool(true);
-            w.write_u64(entry.inode.saturating_add(1));
-            w.write_string(&entry.name);
+            w.write_u64(ino_id.saturating_add(1));
+            w.write_string(name);
             w.write_u64(entry_cookie);
-            self.write_post_op_attr(&mut w, entry.inode, child_ino.as_ref());
-            self.write_post_op_fh(&mut w, Some(entry.inode));
+            self.write_post_op_attr(&mut w, *ino_id, child_ino.as_ref());
+            self.write_post_op_fh(&mut w, Some(*ino_id));
 
             emitted += 1;
             dir_bytes_used += base_dir_bytes;

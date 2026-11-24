@@ -6,7 +6,11 @@ use oifs::ffi::{
     oifs_close, oifs_create_file_with_data, oifs_last_error, oifs_open, oifs_read_at,
 };
 use oifs::filters::{FilterConfig, recommend_filters};
-use oifs::fuse::{FuseMountOptions, OifsFuseState};
+use oifs::fuse::{FuseFileHandle, FuseHandleTable, FuseMountOptions, OifsFuseState};
+use oifs::nfs::{
+    NFS_PROGRAM, NFS_VERSION_3, NFS3_OK, NfsMountOptions, OifsNfsFs, RPC_MSG_CALL, RPC_VERSION_2,
+    XdrReader, XdrWriter,
+};
 use std::ffi::{CStr, CString};
 use std::sync::{Arc, Barrier};
 use tempfile::tempdir;
@@ -235,4 +239,229 @@ fn test_ipc_server_drop_does_not_stall_1500ms() {
         "IpcServer::drop stalled too long: {elapsed:?}"
     );
     drop(client);
+}
+
+#[test]
+fn test_fuse_handle_table_lock_free_seqlock_concurrency() {
+    let table = Arc::new(FuseHandleTable::new());
+    let mut initial = Vec::new();
+    for i in 0..32u64 {
+        let fh = table.insert(FuseFileHandle {
+            inode_id: 100 + i,
+            flags: libc::O_RDONLY as u32,
+            is_dir: i % 2 == 0,
+        });
+        initial.push((fh, 100 + i));
+    }
+
+    let mut handles = Vec::new();
+    for t in 0..6usize {
+        let tbl = Arc::clone(&table);
+        let init = initial.clone();
+        handles.push(std::thread::spawn(move || {
+            for iter in 0..4000usize {
+                let (fh, expected_ino) = init[(iter + t) % init.len()];
+                if let Some(h) = tbl.get(fh) {
+                    assert_eq!(h.inode_id, expected_ino);
+                }
+            }
+        }));
+    }
+    for t in 0..2u64 {
+        let tbl = Arc::clone(&table);
+        handles.push(std::thread::spawn(move || {
+            for iter in 0..1000u64 {
+                let fh = tbl.insert(FuseFileHandle {
+                    inode_id: 10_000 + t * 2000 + iter,
+                    flags: libc::O_RDWR as u32,
+                    is_dir: false,
+                });
+                assert_eq!(tbl.get(fh).unwrap().inode_id, 10_000 + t * 2000 + iter);
+                tbl.remove(fh);
+                assert!(tbl.get(fh).is_none());
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(table.len(), 32);
+}
+
+#[test]
+fn test_ffi_error_fast_path_recovers_when_error_thread_exits() {
+    let dir = tempdir().unwrap();
+    let img = dir.path().join("ffi_exit_recover.img");
+    let c_img = CString::new(img.to_str().unwrap()).unwrap();
+    let handle = oifs_open(c_img.as_ptr(), 4 * 1024 * 1024);
+    assert!(!handle.is_null());
+
+    let c_ok = CString::new("/ok.txt").unwrap();
+    let payload = b"hello";
+    assert!(
+        oifs_create_file_with_data(
+            handle,
+            c_ok.as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u64,
+            0,
+            0
+        ) >= 0
+    );
+
+    let handle_addr = handle as usize;
+    // Thread triggers an FFI error and exits WITHOUT reading or clearing it.
+    std::thread::spawn(move || {
+        let h = handle_addr as *mut oifs::ffi::OIFSHandle;
+        let c_missing = CString::new("/missing_on_exit.txt").unwrap();
+        let mut out = [0u8; 8];
+        assert_eq!(
+            oifs_read_at(h, c_missing.as_ptr(), 0, out.as_mut_ptr(), 8),
+            -1
+        );
+    })
+    .join()
+    .unwrap();
+
+    // Another thread performing normal calls sees "No error".
+    let mut out = [0u8; 16];
+    assert_eq!(
+        oifs_read_at(handle, c_ok.as_ptr(), 0, out.as_mut_ptr(), 16),
+        5
+    );
+    let mut err_buf = [0i8; 256];
+    assert_eq!(oifs_last_error(handle, err_buf.as_mut_ptr(), 256), 0);
+    let msg = unsafe { CStr::from_ptr(err_buf.as_ptr()) }.to_string_lossy();
+    assert_eq!(msg, "No error");
+    oifs_close(handle);
+}
+
+fn call_nfs_proc(nfs: &OifsNfsFs, xid: u32, proc_num: u32, args: &[u8]) -> Vec<u8> {
+    let mut req = XdrWriter::new();
+    req.write_u32(xid);
+    req.write_u32(RPC_MSG_CALL);
+    req.write_u32(RPC_VERSION_2);
+    req.write_u32(NFS_PROGRAM);
+    req.write_u32(NFS_VERSION_3);
+    req.write_u32(proc_num);
+    // AUTH_NONE cred & verf
+    req.write_u32(0);
+    req.write_opaque(&[]);
+    req.write_u32(0);
+    req.write_opaque(&[]);
+    let mut full = req.into_bytes();
+    full.extend_from_slice(args);
+    nfs.dispatch_rpc(&full)
+}
+
+#[test]
+fn test_dir_snapshot_cache_invalidates_on_direct_disk_mutations() {
+    let dir = tempdir().unwrap();
+    let img = dir.path().join("snapshot_inval.img");
+    let dm = Arc::new(DiskManager::open(&img, 8 * 1024 * 1024).unwrap());
+    let root = dm.superblock().root_inode;
+    for i in 0..80u32 {
+        dm.create_file(root, &format!("f_{i:03}.txt")).unwrap();
+    }
+
+    // 1. FUSE snapshot warm + invalidate after create / rename / delete via DiskManager.
+    let fuse = OifsFuseState::new(FuseMountOptions::default());
+    let mut first_names = Vec::new();
+    let mut off = 0u64;
+    loop {
+        let p = fuse.readdir(&dm, 1, 0, off, 512).unwrap();
+        if p.is_empty() {
+            break;
+        }
+        off = p.last().unwrap().off;
+        first_names.extend(p.into_iter().map(|e| e.name));
+    }
+    assert_eq!(first_names.len(), 82);
+
+    // 2. NFS snapshot warm on READDIR & READDIRPLUS.
+    let nfs = OifsNfsFs::from_arc(Arc::clone(&dm), NfsMountOptions::default());
+    let root_fh = nfs.root_handle().to_bytes();
+    let collect_nfs = |proc_num: u32, is_plus: bool| -> Vec<String> {
+        let mut names = Vec::new();
+        let mut cookie = 0u64;
+        let mut xid = 1u32;
+        loop {
+            let mut args = XdrWriter::new();
+            args.write_opaque(&root_fh);
+            args.write_u64(cookie);
+            args.write_fixed_opaque(&[0u8; 8]);
+            args.write_u32(512);
+            if is_plus {
+                args.write_u32(1024);
+            }
+            let reply = call_nfs_proc(&nfs, xid, proc_num, &args.into_bytes());
+            xid += 1;
+            let mut r = XdrReader::new(&reply);
+            let _xid = r.read_u32().unwrap();
+            assert_eq!(r.read_u32(), Some(1)); // RPC_REPLY
+            assert_eq!(r.read_u32(), Some(0)); // MSG_ACCEPTED
+            assert_eq!(r.read_u32(), Some(0)); // AUTH_NONE
+            let _ = r.read_opaque(400).unwrap();
+            assert_eq!(r.read_u32(), Some(0)); // RPC_ACCEPT_SUCCESS
+            assert_eq!(r.read_u32(), Some(NFS3_OK));
+            if r.read_bool().unwrap() {
+                let _ = r.read_fixed_opaque(21 * 4).unwrap();
+            }
+            let _verf = r.read_fixed_opaque(8).unwrap();
+            while r.read_bool().unwrap() {
+                let _fileid = r.read_u64().unwrap();
+                let name = r.read_string(256).unwrap().to_string();
+                cookie = r.read_u64().unwrap();
+                if is_plus {
+                    if r.read_bool().unwrap() {
+                        let _ = r.read_fixed_opaque(21 * 4).unwrap();
+                    }
+                    if r.read_bool().unwrap() {
+                        let _ = r.read_opaque(64).unwrap();
+                    }
+                }
+                names.push(name);
+            }
+            if r.read_bool().unwrap() {
+                break;
+            }
+        }
+        names
+    };
+    assert_eq!(collect_nfs(16, false).len(), 82);
+    assert_eq!(collect_nfs(17, true).len(), 82);
+
+    // Mutate root directly on DiskManager (bypassing FUSE/NFS).
+    dm.create_file(root, "created_new.txt").unwrap();
+    dm.rename(root, "f_010.txt", root, "renamed_010.txt")
+        .unwrap();
+    dm.delete_file(root, "f_020.txt").unwrap();
+
+    // FUSE readdir must reflect all 3 mutations.
+    let mut fuse_after = Vec::new();
+    let mut off = 0u64;
+    loop {
+        let p = fuse.readdir(&dm, 1, 0, off, 512).unwrap();
+        if p.is_empty() {
+            break;
+        }
+        off = p.last().unwrap().off;
+        fuse_after.extend(p.into_iter().map(|e| e.name));
+    }
+    assert_eq!(fuse_after.len(), 82);
+    assert!(fuse_after.contains(&"created_new.txt".to_string()));
+    assert!(fuse_after.contains(&"renamed_010.txt".to_string()));
+    assert!(!fuse_after.contains(&"f_010.txt".to_string()));
+    assert!(!fuse_after.contains(&"f_020.txt".to_string()));
+
+    // NFS readdir & readdirplus must also reflect all 3 mutations.
+    let nfs_rd_after = collect_nfs(16, false);
+    let nfs_plus_after = collect_nfs(17, true);
+    for names in [nfs_rd_after, nfs_plus_after] {
+        assert_eq!(names.len(), 82);
+        assert!(names.contains(&"created_new.txt".to_string()));
+        assert!(names.contains(&"renamed_010.txt".to_string()));
+        assert!(!names.contains(&"f_010.txt".to_string()));
+        assert!(!names.contains(&"f_020.txt".to_string()));
+    }
 }

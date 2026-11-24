@@ -8,7 +8,7 @@
 //!
 //! Design notes:
 //!
-//! * The worker owns only an `Arc<RwLock<DiskManagerInner>>`, never a
+//! * The worker owns only an `Arc<InnerLock>`, never a
 //!   `DiskManager`, so it can never keep a manager alive past its last owner.
 //! * Every pass takes the inner **write** lock, so it serializes against
 //!   metadata mutations exactly like any other writer; no two defrag passes
@@ -19,11 +19,11 @@
 //! * The worker is a daemon thread that exits as soon as the manager is
 //!   dropped (see `AutoDefragController::shutdown`).
 
-use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::disk::{DefragStats, DiskManagerInner, FragmentationStats};
+use crate::disk::{DefragStats, FragmentationStats, InnerLock};
 
 /// Configuration of the background automatic defragmentation coordinator.
 #[derive(Debug, Clone, PartialEq)]
@@ -164,7 +164,7 @@ pub struct AutoDefragStats {
 /// The controller owns the shared state through `Arc`s so the worker thread can
 /// be a plain function instead of a self-referential closure.
 pub(crate) struct AutoDefragController {
-    inner: Weak<RwLock<DiskManagerInner>>,
+    inner: Weak<InnerLock>,
     config: Arc<Mutex<AutoDefragConfig>>,
     stats: Arc<Mutex<AutoDefragStats>>,
     shutdown: Arc<(Mutex<bool>, Condvar)>,
@@ -172,7 +172,7 @@ pub(crate) struct AutoDefragController {
 }
 
 impl AutoDefragController {
-    pub(crate) fn new(inner: &Arc<RwLock<DiskManagerInner>>) -> Self {
+    pub(crate) fn new(inner: &Arc<InnerLock>) -> Self {
         Self {
             inner: Arc::downgrade(inner),
             config: Arc::new(Mutex::new(AutoDefragConfig::default())),
@@ -252,7 +252,7 @@ impl AutoDefragController {
 
     /// Runs one evaluation cycle: measure fragmentation, maybe defragment.
     fn run_once(
-        inner: &Arc<RwLock<DiskManagerInner>>,
+        inner: &Arc<InnerLock>,
         config: &Arc<Mutex<AutoDefragConfig>>,
         stats: &Arc<Mutex<AutoDefragStats>>,
     ) {
@@ -302,7 +302,7 @@ impl AutoDefragController {
 
 /// Returns the reason a pass must be skipped, or `None` when it may run.
 fn skip_reason(
-    inner: &Arc<RwLock<DiskManagerInner>>,
+    inner: &Arc<InnerLock>,
     config: &AutoDefragConfig,
     frag: &FragmentationStats,
 ) -> Option<String> {
@@ -341,7 +341,7 @@ fn run_worker(
     config: Arc<Mutex<AutoDefragConfig>>,
     stats: Arc<Mutex<AutoDefragStats>>,
     shutdown: Arc<(Mutex<bool>, Condvar)>,
-    inner: Weak<RwLock<DiskManagerInner>>,
+    inner: Weak<InnerLock>,
 ) {
     loop {
         let interval = {

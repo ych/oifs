@@ -1673,8 +1673,8 @@ impl DiskManager {
                 Self::apply_journal_ops(&mut dst_guard, &ops)?;
                 dst_guard.free_inode_hint = sim.free_inode_hint;
                 dst_guard.free_block_hint = sim.free_block_hint;
-                dst_guard.inode_cache.insert(dst_ino, new_inode);
-                dst_guard.inode_cache.insert(dst_parent, dst_parent_inode);
+                dst_guard.cache_inode(dst_ino, new_inode);
+                dst_guard.cache_inode(dst_parent, dst_parent_inode);
                 dst_guard.dir_cache.remove(dst_parent);
 
                 if dst_guard.durability_mode() == DurabilityMode::RangeAsync {
@@ -2352,7 +2352,7 @@ impl DiskManager {
                     Self::apply_journal_ops(&mut dst_guard, &ops)?;
                     dst_guard.free_block_hint = sim.free_block_hint;
                     dst_guard.invalidate_payload_caches(dst_inode_id);
-                    dst_guard.inode_cache.insert(dst_inode_id, cur_dst);
+                    dst_guard.cache_inode(dst_inode_id, cur_dst);
 
                     if dst_guard.durability_mode() == DurabilityMode::RangeAsync {
                         let mut ranges = vec![
@@ -2713,7 +2713,7 @@ impl DiskManager {
                         Self::apply_journal_ops(&mut guard, &ops)?;
                         guard.free_block_hint = sim.free_block_hint;
                         guard.invalidate_payload_caches(src_inode_id);
-                        guard.inode_cache.insert(src_inode_id, inode);
+                        guard.cache_inode(src_inode_id, inode);
                         Self::maybe_checkpoint(&mut guard)?;
                     } else {
                         for unit_idx in slots_to_clear {
@@ -2917,7 +2917,7 @@ impl DiskManager {
                     Self::apply_journal_ops(&mut guard, &ops)?;
                     guard.free_block_hint = sim.free_block_hint;
                     guard.invalidate_payload_caches(src_inode_id);
-                    guard.inode_cache.insert(src_inode_id, inode);
+                    guard.cache_inode(src_inode_id, inode);
                     Self::maybe_checkpoint(&mut guard)?;
                 } else {
                     for (idx, &raw) in table.iter().enumerate().skip(start_unit) {

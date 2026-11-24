@@ -75,7 +75,9 @@ impl DiskManager {
         while cursor < sb.inode_count {
             let inode_id = cursor;
             let bit = inode_id as usize;
-            let allocated = inode_bitmap[bit / 8] & (1 << (bit % 8)) != 0;
+            let byte_idx = bit / 8;
+            let allocated =
+                byte_idx < inode_bitmap.len() && (inode_bitmap[byte_idx] & (1 << (bit % 8)) != 0);
 
             if allocated {
                 // Decode with the *outgoing* format regardless of the cursor: a slot
@@ -88,17 +90,17 @@ impl DiskManager {
                 let inode = crate::inode_format::decode_v1(&raw[..end - start])?;
                 let slot = crate::inode_format::encode_v2(&inode);
                 guard.backing.write_all_at(start as u64, &slot)?;
+                // Flush the rewritten slot before advancing the durable cursor so a
+                // crash never leaves `migration_cursor` pointing past an un-flushed v1 slot.
+                guard.backing.flush_range(start, end - start)?;
                 rewritten += 1;
+
+                guard.superblock.migration_cursor = inode_id + 1;
+                Self::persist_superblock(&mut guard)?;
+                guard.backing.flush_range(0, BLOCK_SIZE)?;
             }
 
             cursor += 1;
-            // Persist progress periodically so an interrupted migration resumes near
-            // where it stopped instead of from zero.
-            if cursor.is_multiple_of(256) {
-                guard.superblock.migration_cursor = cursor;
-                Self::persist_superblock(&mut guard)?;
-                guard.backing.flush()?;
-            }
         }
 
         // All slots rewritten: advertise the new format and clear the cursor.

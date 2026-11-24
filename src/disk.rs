@@ -329,11 +329,27 @@ pub(crate) struct DiskManagerInner {
     pub(crate) async_drain_ready: Arc<std::sync::atomic::AtomicBool>,
     /// Payload-block read engine
     io_engine: IoEngine,
+    /// Per-inode write generation counters (indexed by `inode_id & 4095`) for lock-free
+    /// Stage-1 -> Stage-3 staleness detection even within the same 1-second timestamp.
+    pub(crate) inode_write_gen: Box<[u64; 4096]>,
     /// Whether this mount is strictly read-only (`F_RDLCK`, zero disk writes)
     pub(crate) read_only: bool,
 }
 
 impl DiskManagerInner {
+    /// Returns the monotonic mutation generation for `inode_id`'s slot.
+    #[inline]
+    pub(crate) fn inode_gen(&self, inode_id: u64) -> u64 {
+        self.inode_write_gen[(inode_id as usize) & 4095]
+    }
+
+    /// Advances the mutation generation for `inode_id`'s slot.
+    #[inline]
+    pub(crate) fn bump_inode_gen(&mut self, inode_id: u64) {
+        let slot = &mut self.inode_write_gen[(inode_id as usize) & 4095];
+        *slot = slot.wrapping_add(1);
+    }
+
     /// The inode bitmap as one contiguous slice.
     ///
     /// The bitmap may span several blocks. Under `Mmap`, this borrows the
@@ -1392,6 +1408,7 @@ impl DiskManager {
             pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
             async_drain_ready: async_drain_ready.clone(),
             io_engine: IoEngine::new(requested_io_backend),
+            inode_write_gen: Box::new([0u64; 4096]),
             read_only: true,
         };
 
@@ -1699,6 +1716,7 @@ impl DiskManager {
             pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
             async_drain_ready: async_drain_ready.clone(),
             io_engine: IoEngine::new(requested_io_backend),
+            inode_write_gen: Box::new([0u64; 4096]),
             read_only: false,
         };
 
@@ -2606,22 +2624,59 @@ impl DiskManager {
             return Ok(());
         }
         let bs = sb.block_size as u64;
-        let written = {
+        let is_strict = guard.durability_mode() == DurabilityMode::Strict;
+        let append_res = {
             let mut region = guard.backing.journal_region_mut(&sb)?;
             let hdr_len = crate::journal::JOURNAL_HEADER_LEN.min(region.len());
             let mut prev_hdr = [0u8; crate::journal::JOURNAL_HEADER_LEN];
             prev_hdr[..hdr_len].copy_from_slice(&region[..hdr_len]);
-            let (written, wrap_pad) = {
+            let append_opt = {
                 let mut ring = crate::journal::JournalRing::open(&mut region, bs)?;
-                ring.append(ops)?;
-                (ring.last_write(), ring.last_wrap_pad())
+                if is_strict {
+                    ring.try_append_without_overwrite(ops)?
+                        .map(|_| (ring.last_write(), ring.last_wrap_pad()))
+                } else {
+                    ring.append(ops)?;
+                    Some((ring.last_write(), ring.last_wrap_pad()))
+                }
             };
-            region.mark_append_written(bs as usize, written, wrap_pad);
-            if let Err(e) = region.flush_writeback() {
-                region[..hdr_len].copy_from_slice(&prev_hdr[..hdr_len]);
-                return Err(e.into());
+            if let Some((written, wrap_pad)) = append_opt {
+                region.mark_append_written(bs as usize, written, wrap_pad);
+                if let Err(e) = region.flush_writeback() {
+                    region[..hdr_len].copy_from_slice(&prev_hdr[..hdr_len]);
+                    return Err(e.into());
+                }
+                Some(written)
+            } else {
+                region.mark_clean();
+                None
             }
-            written
+        };
+
+        let written = match append_res {
+            Some(w) => w,
+            None => {
+                // Under Strict durability, flush all previously applied in-place metadata
+                // and checkpoint the ring before overwriting uncheckpointed entries.
+                guard.backing.flush()?;
+                Self::checkpoint_journal(&mut guard.backing, &sb)?;
+
+                let mut region = guard.backing.journal_region_mut(&sb)?;
+                let hdr_len = crate::journal::JOURNAL_HEADER_LEN.min(region.len());
+                let mut prev_hdr = [0u8; crate::journal::JOURNAL_HEADER_LEN];
+                prev_hdr[..hdr_len].copy_from_slice(&region[..hdr_len]);
+                let (written, wrap_pad) = {
+                    let mut ring = crate::journal::JournalRing::open(&mut region, bs)?;
+                    ring.append(ops)?;
+                    (ring.last_write(), ring.last_wrap_pad())
+                };
+                region.mark_append_written(bs as usize, written, wrap_pad);
+                if let Err(e) = region.flush_writeback() {
+                    region[..hdr_len].copy_from_slice(&prev_hdr[..hdr_len]);
+                    return Err(e.into());
+                }
+                written
+            }
         };
 
         // The WAL must reach stable storage *before* the metadata it describes, or a
@@ -2691,6 +2746,7 @@ impl DiskManager {
                     allocated: false,
                 } => {
                     guard.invalidate_payload_caches(*inode_id);
+                    guard.bump_inode_gen(*inode_id);
                 }
                 _ => {}
             }
@@ -5515,6 +5571,15 @@ impl DiskManager {
             Vec::new()
         };
 
+        // Full-rewrite cases (`FullOverwrite`, `Recompress`) must allocate brand-new
+        // Copy-On-Write blocks rather than overwriting the inode's live blocks in place
+        // prior to the WAL commit; otherwise a crash or mid-stage failure corrupts the
+        // pre-transaction payload before recovery sees the new pointers.
+        if case.frees_previous_blocks() {
+            inode.blocks = [0; 12];
+            inode.triple_indirect = 0;
+        }
+
         let mut sim = crate::journal::AllocSim::new_data_only(
             guard,
             guard.free_inode_hint,
@@ -5534,7 +5599,7 @@ impl DiskManager {
         // pointing at free blocks (`missing_blocks` in `fsck`).
         let needed_logical = (new_physical / BLOCK_SIZE as u64) as usize
             + usize::from(new_physical % BLOCK_SIZE as u64 != 0);
-        if rewrites_from_zero {
+        if rewrites_from_zero && !case.frees_previous_blocks() {
             if needed_logical == 0 {
                 inode.blocks = [0; 12];
                 inode.triple_indirect = 0;
@@ -5791,6 +5856,7 @@ impl DiskManager {
             },
             Standard {
                 initial_inode: Inode,
+                initial_gen: u64,
                 existing_decompressed: Option<Vec<u8>>,
                 encryption_key: Option<crate::encryption::EncryptionKey>,
                 encryption_scheme: u8,
@@ -5862,8 +5928,10 @@ impl DiskManager {
 
                 let key = guard.encryption_key.clone();
                 let scheme = guard.superblock.encryption_version;
+                let initial_gen = guard.inode_gen(inode_id);
                 Stage1Prep::Standard {
                     initial_inode: inode,
+                    initial_gen,
                     existing_decompressed: existing,
                     encryption_key: key,
                     encryption_scheme: scheme,
@@ -5871,8 +5939,13 @@ impl DiskManager {
             }
         }; // Shared read-guard is dropped immediately here!
 
-        let (initial_inode, existing_decompressed, encryption_key, encryption_scheme) = match stage1
-        {
+        let (
+            initial_inode,
+            initial_gen,
+            existing_decompressed,
+            encryption_key,
+            encryption_scheme,
+        ) = match stage1 {
             Stage1Prep::Seekable {
                 level,
                 compress,
@@ -5889,11 +5962,13 @@ impl DiskManager {
             }
             Stage1Prep::Standard {
                 initial_inode,
+                initial_gen,
                 existing_decompressed,
                 encryption_key,
                 encryption_scheme,
             } => (
                 initial_inode,
+                initial_gen,
                 existing_decompressed,
                 encryption_key,
                 encryption_scheme,
@@ -5922,6 +5997,12 @@ impl DiskManager {
         // --- STAGE 3: Exclusive Lock Acquisition & Commit ---
         // Acquire exclusive write lock ONLY for block allocation and metadata commit.
         let mut guard = self.inner.write().unwrap();
+        if !guard.is_inode_allocated(inode_id) {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Inode was deleted",
+            )));
+        }
         let mut inode = Self::read_inode_internal(&guard, inode_id)?;
 
         if inode.mode != crate::inode::FileType::File {
@@ -5943,12 +6024,19 @@ impl DiskManager {
         }
 
         // Verify if the inode state remains consistent with Stage 1.
-        let can_use_prepared = inode.size == initial_inode.size
+        let can_use_prepared = guard.inode_gen(inode_id) == initial_gen
+            && inode.size == initial_inode.size
             && inode.compressed_size == initial_inode.compressed_size
             && inode.modified_at == initial_inode.modified_at
             && inode.encrypted == initial_inode.encrypted
+            && inode.encryption_nonce == initial_inode.encryption_nonce
             && inode.flags == initial_inode.flags
-            && inode.blocks == initial_inode.blocks;
+            && inode.blocks == initial_inode.blocks
+            && inode.triple_indirect == initial_inode.triple_indirect
+            && inode.filter_typesize == initial_inode.filter_typesize
+            && inode.filter_delta == initial_inode.filter_delta
+            && inode.filter_shuffle == initial_inode.filter_shuffle
+            && inode.filter_bitshuffle == initial_inode.filter_bitshuffle;
 
         let plan = if can_use_prepared {
             prepared_plan
@@ -6232,6 +6320,7 @@ impl DiskManager {
         // Update in-memory inode cache & invalidate decoded payload caches.
         guard.inode_cache.insert(inode_id, *inode);
         guard.invalidate_payload_caches(inode_id);
+        guard.bump_inode_gen(inode_id);
         Ok(())
     }
 
@@ -6895,6 +6984,75 @@ impl DiskManager {
     /// the WAL ahead of the image, and mount-time recovery finishes the job. Because
     /// every op is an absolute post-image, recovery is idempotent even if a crash
     /// lands halfway through (3).
+    /// Verify that `target_blk` is an allocated leaf directory data block owned by `parent_inode`.
+    fn dir_owns_data_block(backing: &ImageBacking, parent_inode: &Inode, target_blk: u64) -> bool {
+        if target_blk == 0 {
+            return false;
+        }
+        if parent_inode.blocks[..10].contains(&target_blk) {
+            return true;
+        }
+        let scan_leaf = |sib_id: u64| -> bool {
+            sib_id != 0
+                && backing
+                    .with_block(sib_id, |slice| {
+                        slice
+                            .as_chunks::<8>()
+                            .0
+                            .iter()
+                            .any(|c| u64::from_le_bytes(*c) == target_blk)
+                    })
+                    .unwrap_or(false)
+        };
+        if scan_leaf(parent_inode.blocks[10]) {
+            return true;
+        }
+        let dib_id = parent_inode.blocks[11];
+        if dib_id != 0 {
+            let found = backing
+                .with_block(dib_id, |slice| {
+                    slice
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| u64::from_le_bytes(*c))
+                        .any(&scan_leaf)
+                })
+                .unwrap_or(false);
+            if found {
+                return true;
+            }
+        }
+        let tib_id = parent_inode.triple_indirect;
+        if tib_id != 0 {
+            let found = backing
+                .with_block(tib_id, |slice| {
+                    slice
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| u64::from_le_bytes(*c))
+                        .filter(|&dib| dib != 0)
+                        .any(|dib| {
+                            backing
+                                .with_block(dib, |s2| {
+                                    s2.as_chunks::<8>()
+                                        .0
+                                        .iter()
+                                        .map(|c| u64::from_le_bytes(*c))
+                                        .any(&scan_leaf)
+                                })
+                                .unwrap_or(false)
+                        })
+                })
+                .unwrap_or(false);
+            if found {
+                return true;
+            }
+        }
+        false
+    }
+
     fn delete_file_journaled(
         guard: &mut DiskManagerInner,
         parent_inode_id: u64,
@@ -6903,6 +7061,12 @@ impl DiskManager {
         _target_inode_id: u64,
         phys_blk: u64,
     ) -> Result<(), DiskManagerError> {
+        if !guard.is_inode_allocated(parent_inode_id) {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Parent directory not found",
+            )));
+        }
         let mut parent_inode = Self::read_inode_internal(guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
             return Err(DiskManagerError::Io(std::io::Error::other(
@@ -6911,12 +7075,14 @@ impl DiskManager {
         }
 
         let initial_hash = crate::directory::hash_filename(matched_name);
-        let (matched_name, target_inode_id, phys_blk, matched_hash) = if let Ok(Some(id)) =
-            guard.backing.with_block(phys_blk, |s| {
-                crate::directory::find_entry_in_block_with_hash(s, matched_name, initial_hash)
-            }) {
-            (matched_name.to_string(), id, phys_blk, initial_hash)
-        } else {
+        let (matched_name, target_inode_id, phys_blk, matched_hash) =
+            if Self::dir_owns_data_block(&guard.backing, &parent_inode, phys_blk)
+                && let Ok(Some(id)) = guard.backing.with_block(phys_blk, |s| {
+                    crate::directory::find_entry_in_block_with_hash(s, matched_name, initial_hash)
+                })
+            {
+                (matched_name.to_string(), id, phys_blk, initial_hash)
+            } else {
             let target_name = Self::stored_filename(guard, parent_inode_id, name)?;
             let h = crate::directory::hash_filename(target_name.as_ref());
             Self::locate_entry_in_dir(&guard.backing, &parent_inode, target_name.as_ref(), h)
@@ -7119,6 +7285,12 @@ impl DiskManager {
             return res;
         }
 
+        if !guard.is_inode_allocated(parent_inode_id) {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Parent directory not found",
+            )));
+        }
         let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
         if parent_inode.mode != crate::inode::FileType::Directory {
             return Err(DiskManagerError::Io(std::io::Error::other(
@@ -7127,12 +7299,14 @@ impl DiskManager {
         }
 
         let initial_hash = crate::directory::hash_filename(&matched_name);
-        let (matched_name, target_inode_id, phys_blk, matched_hash) = if let Ok(Some(id)) =
-            guard.backing.with_block(phys_blk, |s| {
-                crate::directory::find_entry_in_block_with_hash(s, &matched_name, initial_hash)
-            }) {
-            (matched_name, id, phys_blk, initial_hash)
-        } else {
+        let (matched_name, target_inode_id, phys_blk, matched_hash) =
+            if Self::dir_owns_data_block(&guard.backing, &parent_inode, phys_blk)
+                && let Ok(Some(id)) = guard.backing.with_block(phys_blk, |s| {
+                    crate::directory::find_entry_in_block_with_hash(s, &matched_name, initial_hash)
+                })
+            {
+                (matched_name, id, phys_blk, initial_hash)
+            } else {
             let target_name = Self::stored_filename(&guard, parent_inode_id, name)?;
             let h = crate::directory::hash_filename(target_name.as_ref());
             Self::locate_entry_in_dir(&guard.backing, &parent_inode, target_name.as_ref(), h)
@@ -7230,6 +7404,7 @@ impl DiskManager {
         }
         guard.inode_cache.remove(target_inode_id);
         guard.invalidate_payload_caches(target_inode_id);
+        guard.bump_inode_gen(target_inode_id);
 
         // Update Parent Mtime
         let now = std::time::SystemTime::now()
@@ -8816,7 +8991,7 @@ impl<T> OifsAsyncTask<T> {
         self.wait_on_drop = false;
         let s = self.state.as_ref().expect("missing async state");
         let res = crate::lock_unpoisoned(&s.slot).0.take();
-        res.expect("OifsAsyncTask result already taken")
+        res.expect("OifsAsyncTask background worker panicked or result already consumed")
     }
 }
 
@@ -8876,16 +9051,22 @@ impl<T: Unpin> std::future::Future for OifsAsyncTask<T> {
             return std::task::Poll::Ready(val);
         }
         let s = this.state.as_ref().expect("missing async state");
-        if s.done.load(std::sync::atomic::Ordering::Acquire)
-            && let Some(val) = crate::lock_unpoisoned(&s.slot).0.take()
-        {
+        if s.done.load(std::sync::atomic::Ordering::Acquire) {
             this.wait_on_drop = false;
+            let val = crate::lock_unpoisoned(&s.slot)
+                .0
+                .take()
+                .expect("OifsAsyncTask background worker panicked or result already consumed");
             return std::task::Poll::Ready(val);
         }
         let mut guard = crate::lock_unpoisoned(&s.slot);
         if let Some(val) = guard.0.take() {
             this.wait_on_drop = false;
             return std::task::Poll::Ready(val);
+        }
+        if s.done.load(std::sync::atomic::Ordering::Acquire) {
+            this.wait_on_drop = false;
+            panic!("OifsAsyncTask background worker panicked or result already consumed");
         }
         guard.1 = Some(cx.waker().clone());
         std::task::Poll::Pending
@@ -9347,17 +9528,22 @@ impl DiskManager {
         }
         let dm = self.clone();
         OifsAsyncTask::spawn(move || {
-            let data = dm.read_data(inode_id)?;
-            if data.len() <= DecodedBlobCache::MAX_ENTRY_BYTES
-                && let Ok(guard) = dm.inner.read()
-                && let Some(inode) = guard.inode_cache.get(inode_id)
-                && (inode.compressed_size > 0
-                    || inode.encrypted
-                    || inode.filter_delta
-                    || inode.filter_shuffle
-                    || inode.filter_bitshuffle)
-                && (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) == 0
+            let guard = dm.inner.read().unwrap();
+            let inode = Self::read_inode_internal(&guard, inode_id)?;
+            let cacheable_kind = (inode.compressed_size > 0
+                || inode.encrypted
+                || inode.filter_delta
+                || inode.filter_shuffle
+                || inode.filter_bitshuffle)
+                && (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) == 0;
+            if cacheable_kind
+                && let Some(blob) =
+                    crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, &inode)
             {
+                return Ok(blob.as_ref().clone());
+            }
+            let data = Self::read_data_internal(&guard, inode_id, &inode)?;
+            if cacheable_kind && data.len() <= DecodedBlobCache::MAX_ENTRY_BYTES {
                 crate::lock_unpoisoned(&guard.decoded_blob_cache).insert(
                     inode_id,
                     &inode,

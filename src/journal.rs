@@ -1447,6 +1447,29 @@ impl<'a> JournalRing<'a> {
     /// checkpointed yet, the tail is advanced past them (standard
     /// overwrite-oldest behavior, safe precisely because replay is idempotent).
     pub fn append(&mut self, ops: &[MetadataOp]) -> Result<u64, JournalError> {
+        Ok(self
+            .append_inner(ops, true)?
+            .expect("overwrite-allowed append always succeeds"))
+    }
+
+    /// Append one transaction without overwriting uncheckpointed entries.
+    ///
+    /// Returns `Ok(None)` without mutating the ring or header if appending (or
+    /// wrapping to fit contiguously) would overwrite or collide with an
+    /// uncheckpointed transaction, allowing `Strict` callers to flush and
+    /// checkpoint before appending.
+    pub fn try_append_without_overwrite(
+        &mut self,
+        ops: &[MetadataOp],
+    ) -> Result<Option<u64>, JournalError> {
+        self.append_inner(ops, false)
+    }
+
+    fn append_inner(
+        &mut self,
+        ops: &[MetadataOp],
+        allow_overwrite: bool,
+    ) -> Result<Option<u64>, JournalError> {
         let tx_seq = self.state.tx_seq.wrapping_add(1);
         let frame = encode_frame(tx_seq, ops);
 
@@ -1461,10 +1484,22 @@ impl<'a> JournalRing<'a> {
         let old_head = self.state.head;
         let old_tail = self.state.tail;
         let was_empty = old_head == old_tail;
+        let wraps = old_head.saturating_add(len) > self.ring_bytes;
+
+        if !allow_overwrite && !was_empty {
+            let would_clobber = if wraps {
+                old_tail > old_head || len >= old_tail
+            } else {
+                self.used().saturating_add(len) >= self.ring_bytes
+            };
+            if would_clobber {
+                return Ok(None);
+            }
+        }
 
         // Wrap so the frame stays contiguous.
         self.last_wrap_pad = None;
-        if old_head.saturating_add(len) > self.ring_bytes {
+        if wraps {
             let pad_start = usize::try_from(old_head).unwrap_or(0);
             let ring_len = self.ring().len();
             if pad_start < ring_len {
@@ -1489,7 +1524,7 @@ impl<'a> JournalRing<'a> {
         self.state.tx_seq = tx_seq;
         self.state.cleanly_unmounted = false;
         self.persist();
-        Ok(tx_seq)
+        Ok(Some(tx_seq))
     }
 
     /// Write the current state back into the header block.

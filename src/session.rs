@@ -75,6 +75,8 @@ impl From<std::io::Error> for SessionError {
 /// If another process is already accessing the filesystem, it runs in **Remote (Client)** mode:
 /// - Requests are transparently forwarded to the Master process over a single connection FD.
 /// - Automatically handles seamless failover/reconnection if Master exits.
+type FallbackMasterSlot = Arc<Mutex<Option<(Arc<DiskManager>, Option<Arc<IpcServer>>)>>>;
+
 #[derive(Clone)]
 pub enum OifsSession {
     /// Direct mode with direct disk access (Standalone, or Master with background IPC server)
@@ -86,7 +88,7 @@ pub enum OifsSession {
     },
     /// Client mode with transparent IPC forwarding and self-healing failover
     Remote {
-        client: Arc<IpcClient>,
+        client: Arc<std::sync::RwLock<Arc<IpcClient>>>,
         image_path: PathBuf,
         mode: SessionMode,
         /// The password kept for the automatic reconnection.
@@ -94,7 +96,7 @@ pub enum OifsSession {
         /// It lives in a zeroizing buffer, so it is wiped when the
         /// session is dropped instead of lingering in plain heap memory.
         password: Option<zeroize::Zeroizing<String>>,
-        dm_fallback: Arc<Mutex<Option<Arc<DiskManager>>>>,
+        dm_fallback: FallbackMasterSlot,
         /// Lock-free fast-path flag set once `dm_fallback` has been populated.
         has_fallback: Arc<std::sync::atomic::AtomicBool>,
     },
@@ -104,6 +106,31 @@ static SESSION_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, OifsSession>>> = OnceLo
 
 fn session_registry() -> &'static Mutex<HashMap<PathBuf, OifsSession>> {
     SESSION_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Normalize a path lexically (resolving `.` and `..` without touching disk).
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::Prefix(p) => out.push(p.as_os_str()),
+            std::path::Component::RootDir => out.push(std::path::Component::RootDir.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(std::path::Component::Normal(_))) {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push(std::path::Component::ParentDir.as_os_str());
+                }
+            }
+            std::path::Component::Normal(s) => out.push(s),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
+    }
 }
 
 /// Resolves a path to its canonical, absolute representation, following any symbolic links
@@ -138,22 +165,42 @@ pub(crate) fn canonicalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
     }
 
     if let Ok(canon) = fs::canonicalize(&current) {
-        canon
-    } else {
-        let parent = current.parent().unwrap_or(Path::new(""));
-        let parent_canon = if parent.as_os_str().is_empty() {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        } else {
-            fs::canonicalize(parent)
-                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        };
-
-        if let Some(name) = current.file_name() {
-            parent_canon.join(name)
-        } else {
-            parent_canon
-        }
+        return canon;
     }
+
+    // Walk ancestors upward until we find the deepest existing directory that
+    // can be canonicalized, preserving all non-existent trailing components so
+    // distinct missing paths never collapse onto `current_dir()`.
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let mut probe = current.as_path();
+    let mut base = None;
+    loop {
+        if let Ok(canon) = fs::canonicalize(probe) {
+            base = Some(canon);
+            break;
+        }
+        let Some(name) = probe.file_name() else {
+            break;
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = probe.parent() else {
+            break;
+        };
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        probe = parent;
+    }
+
+    let resolved = if let Some(mut b) = base {
+        for comp in missing.into_iter().rev() {
+            b.push(comp);
+        }
+        b
+    } else {
+        current
+    };
+    normalize_lexical(&resolved)
 }
 
 impl OifsSession {
@@ -296,7 +343,7 @@ impl OifsSession {
                     ..
                 } => {
                     if has_fallback.load(std::sync::atomic::Ordering::Acquire)
-                        && let Some(dm) = crate::lock_unpoisoned(dm_fallback).as_ref()
+                        && let Some((dm, _)) = crate::lock_unpoisoned(dm_fallback).as_ref()
                     {
                         dm.verify_password(password)?;
                     } else {
@@ -686,7 +733,7 @@ impl OifsSession {
                     }
                 }
                 Ok(OifsSession::Remote {
-                    client: Arc::new(client),
+                    client: Arc::new(std::sync::RwLock::new(Arc::new(client))),
                     image_path: path_ref.to_path_buf(),
                     mode,
                     password: password.map(|s| zeroize::Zeroizing::new(s.to_string())),
@@ -798,7 +845,9 @@ impl OifsSession {
                 // 1. Lock-free check on steady-state Remote RPCs: only acquire
                 // `dm_fallback` if this session previously failed over to a local Master.
                 if has_fallback.load(std::sync::atomic::Ordering::Acquire) {
-                    let local_dm = crate::lock_unpoisoned(dm_fallback).clone();
+                    let local_dm = crate::lock_unpoisoned(dm_fallback)
+                        .as_ref()
+                        .map(|(dm, _)| dm.clone());
                     if let Some(dm) = local_dm {
                         return IpcServer::handle_request(&dm, req)
                             .map_err(SessionError::DiskManager);
@@ -806,7 +855,7 @@ impl OifsSession {
                 }
 
                 // 2. Retry loop for high-concurrency master handovers
-                let mut current_client = client.clone();
+                let mut current_client = client.read().unwrap_or_else(|e| e.into_inner()).clone();
                 for attempt in 0..5 {
                     // The request is borrowed, so a `WriteData`
                     // payload is not cloned for every attempt.
@@ -835,18 +884,32 @@ impl OifsSession {
                             };
 
                             match retry_session {
-                                OifsSession::Direct { dm, .. } => {
-                                    {
+                                OifsSession::Direct { dm, server, .. } => {
+                                    let active_dm = {
                                         let mut guard = crate::lock_unpoisoned(dm_fallback);
-                                        *guard = Some(dm.clone());
-                                    }
+                                        if let Some((existing_dm, _)) = guard.as_ref() {
+                                            existing_dm.clone()
+                                        } else {
+                                            // Keep the promoted `IpcServer` alive so other
+                                            // secondary clients can connect to this new Master.
+                                            *guard = Some((dm.clone(), server));
+                                            dm
+                                        }
+                                    };
                                     has_fallback.store(true, std::sync::atomic::Ordering::Release);
-                                    return IpcServer::handle_request(&dm, req)
+                                    return IpcServer::handle_request(&active_dm, req)
                                         .map_err(SessionError::DiskManager);
                                 }
                                 OifsSession::Remote {
-                                    client: new_client, ..
+                                    client: new_client_lock,
+                                    ..
                                 } => {
+                                    let new_client = new_client_lock
+                                        .read()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .clone();
+                                    *client.write().unwrap_or_else(|e| e.into_inner()) =
+                                        new_client.clone();
                                     current_client = new_client;
                                 }
                             }
@@ -1288,5 +1351,25 @@ impl OifsSession {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_canonicalize_path_preserves_distinct_missing_parents() {
+        let p1 = canonicalize_path("/definitely_nonexistent_parent_alpha/sub/disk.img");
+        let p2 = canonicalize_path("/definitely_nonexistent_parent_beta/sub/disk.img");
+        assert_ne!(p1, p2);
+        assert!(p1.ends_with("definitely_nonexistent_parent_alpha/sub/disk.img"));
+        assert!(p2.ends_with("definitely_nonexistent_parent_beta/sub/disk.img"));
+
+        let r1 = canonicalize_path("nonexistent_rel_alpha/foo/../bar.img");
+        let r2 = canonicalize_path("nonexistent_rel_beta/bar.img");
+        assert_ne!(r1, r2);
+        assert!(r1.ends_with("nonexistent_rel_alpha/bar.img"));
+        assert!(r2.ends_with("nonexistent_rel_beta/bar.img"));
     }
 }

@@ -7,6 +7,7 @@ use super::*;
 
 pub(super) struct ChunkedStage1<'a> {
     initial_inode: Inode,
+    initial_gen: u64,
     new_file_size: u64,
     uncompressed_chunks: Vec<(usize, std::borrow::Cow<'a, [u8]>, usize)>,
     encryption_key: Option<crate::encryption::EncryptionKey>,
@@ -1137,8 +1138,10 @@ impl DiskManager {
             (new_file_size, chunks)
         };
 
+        let initial_gen = guard.inode_gen(inode_id);
         Ok(ChunkedStage1 {
             initial_inode: inode,
+            initial_gen,
             new_file_size: stage1_new_file_size,
             uncompressed_chunks,
             encryption_key: guard.encryption_key.clone(),
@@ -1157,6 +1160,7 @@ impl DiskManager {
     ) -> Result<(), DiskManagerError> {
         let ChunkedStage1 {
             initial_inode,
+            initial_gen,
             new_file_size: stage1_new_file_size,
             uncompressed_chunks,
             encryption_key,
@@ -1248,6 +1252,12 @@ impl DiskManager {
 
         // --- STAGE 3: Exclusive Lock Acquisition & Commit ---
         let mut guard = self.inner.write().unwrap();
+        if !guard.is_inode_allocated(inode_id) {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Inode was deleted",
+            )));
+        }
         let inode = Self::read_inode_internal(&guard, inode_id)?;
         if inode.mode != crate::inode::FileType::File {
             return Err(DiskManagerError::Io(std::io::Error::other(
@@ -1255,9 +1265,12 @@ impl DiskManager {
             )));
         }
 
-        let can_use_prepared = inode.size == initial_inode.size
+        let can_use_prepared = guard.inode_gen(inode_id) == initial_gen
+            && inode.size == initial_inode.size
             && inode.compressed_size == initial_inode.compressed_size
             && inode.modified_at == initial_inode.modified_at
+            && inode.encrypted == initial_inode.encrypted
+            && inode.encryption_nonce == initial_inode.encryption_nonce
             && inode.flags == initial_inode.flags
             && inode.blocks == initial_inode.blocks
             && inode.triple_indirect == initial_inode.triple_indirect;

@@ -286,8 +286,7 @@ impl OifsMcpServer {
                 Ok(existing_id) => existing_id,
                 Err(_) => dm.create_file(parent_id, &name)?,
             };
-            let existing = dm.read_data(inode_id).unwrap_or_default();
-            let mut new_content = existing;
+            let mut new_content = dm.read_data(inode_id)?;
             new_content.extend_from_slice(params.content.as_bytes());
             if !params.content.ends_with('\n') {
                 new_content.push(b'\n');

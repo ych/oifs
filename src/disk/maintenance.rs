@@ -567,7 +567,12 @@ impl DiskManager {
                     let guard = temp_dm.inner.read().unwrap();
                     let dir_blks = Self::collect_inode_blocks(&guard.backing, &inode);
                     directory_blocks.extend(dir_blks);
-                } else if inode.mode == crate::inode::FileType::File && inode.size > 0 {
+                } else if inode.mode == crate::inode::FileType::File
+                    && (inode.size > 0
+                        || inode.compressed_size > 0
+                        || inode.blocks.iter().any(|&b| b != 0)
+                        || inode.triple_indirect != 0)
+                {
                     // A seekable 64K file has `compressed_size == 0`
                     // but its payload *is* chunk-compressed. Copying it as a
                     // plain file would leave the seekable flag in place and

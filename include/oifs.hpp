@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -38,6 +39,17 @@ public:
     explicit Error(const char* msg)
         : std::runtime_error(msg != nullptr ? msg : "Unknown OIFS error") {}
 };
+
+namespace detail {
+
+inline std::string to_c_string(std::string_view sv) {
+    if (sv.find('\0') != std::string_view::npos) {
+        throw Error("String contains embedded NUL byte");
+    }
+    return std::string(sv);
+}
+
+}  // namespace detail
 
 /**
  * Checks dynamic library compatibility against the header (or requested) version.
@@ -572,6 +584,8 @@ private:
     uint8_t* prepare_fallback(std::size_t cap) {
         pin_holder_.reset();
         pinned_ = false;
+        data_ = nullptr;
+        size_ = 0;
         fallback_buf_.resize(cap);
         data_ = fallback_buf_.data();
         size_ = cap;
@@ -766,7 +780,7 @@ public:
         if (session_ == nullptr) {
             throw Error("ReadSession::open_file called on closed session");
         }
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         OIFSFileHandle* fh = oifs_session_open_file(session_, c_path.c_str());
         if (fh == nullptr) {
             throw Error("oifs_session_open_file failed for path: " + c_path);
@@ -801,7 +815,12 @@ class AsyncFuture {
 public:
     AsyncFuture() noexcept = default;
 
-    explicit AsyncFuture(OIFSAsyncFuture* fut) : fut_(fut) {
+    explicit AsyncFuture(OIFSAsyncFuture* fut)
+        : fut_(fut, [](OIFSAsyncFuture* p) noexcept {
+              if (p != nullptr) {
+                  oifs_async_free(p);
+              }
+          }) {
         if (fut_ == nullptr) {
             throw Error("Failed to construct AsyncFuture from null OIFSAsyncFuture");
         }
@@ -812,34 +831,19 @@ public:
     AsyncFuture(const AsyncFuture&) = delete;
     AsyncFuture& operator=(const AsyncFuture&) = delete;
 
-    AsyncFuture(AsyncFuture&& other) noexcept : fut_(other.fut_) {
-        other.fut_ = nullptr;
-    }
-
-    AsyncFuture& operator=(AsyncFuture&& other) noexcept {
-        if (this != &other) {
-            reset();
-            fut_ = other.fut_;
-            other.fut_ = nullptr;
-        }
-        return *this;
-    }
+    AsyncFuture(AsyncFuture&&) noexcept = default;
+    AsyncFuture& operator=(AsyncFuture&&) noexcept = default;
 
     explicit operator bool() const noexcept { return fut_ != nullptr; }
-    OIFSAsyncFuture* raw() const noexcept { return fut_; }
+    OIFSAsyncFuture* raw() const noexcept { return fut_.get(); }
 
-    void reset() noexcept {
-        if (fut_ != nullptr) {
-            oifs_async_free(fut_);
-            fut_ = nullptr;
-        }
-    }
+    void reset() noexcept { fut_.reset(); }
 
     /**
      * Non-blocking readiness check. Returns true if the operation has completed.
      */
     bool is_ready() const noexcept {
-        return fut_ != nullptr && oifs_async_poll(fut_) == 1;
+        return fut_ != nullptr && oifs_async_poll(fut_.get()) == 1;
     }
 
     /**
@@ -850,7 +854,7 @@ public:
         if (fut_ == nullptr) {
             throw Error("AsyncFuture::wait called on empty future");
         }
-        int64_t res = oifs_async_wait(fut_);
+        int64_t res = oifs_async_wait(fut_.get());
         if (res < 0) {
             throw Error(last_error());
         }
@@ -865,7 +869,7 @@ public:
             return "Empty AsyncFuture";
         }
         char buf[512] = {0};
-        if (oifs_async_last_error(fut_, buf, sizeof(buf)) == 0) {
+        if (oifs_async_last_error(fut_.get(), buf, sizeof(buf)) == 0) {
             return std::string(buf);
         }
         return "Unknown async error";
@@ -877,21 +881,45 @@ public:
      *
      * - Inline Fast-Path hits (`await_ready() == true`) resume immediately with zero
      *   suspension or thread hop.
-     * - Pending futures suspend and await `oifs_async_wait` on a background thread,
-     *   resuming the coroutine handle upon completion.
+     * - Pending futures suspend and await `oifs_async_wait` on a background thread holding
+     *   a `shared_ptr` to synchronized completion state and the underlying future,
+     *   preventing Use-After-Free if the coroutine frame or `AsyncFuture` is destroyed early.
      */
     class Awaiter {
     public:
-        explicit Awaiter(AsyncFuture& fut) noexcept : fut_(fut) {}
+        explicit Awaiter(AsyncFuture& fut)
+            : fut_(fut), state_(std::make_shared<SharedState>()) {
+            state_->fut = fut.fut_;
+        }
+
+        ~Awaiter() {
+            if (state_) {
+                std::lock_guard<std::mutex> lock(state_->mtx);
+                state_->cancelled = true;
+            }
+        }
+
+        Awaiter(const Awaiter&) = delete;
+        Awaiter& operator=(const Awaiter&) = delete;
 
         bool await_ready() const noexcept { return fut_.is_ready(); }
 
         void await_suspend(std::coroutine_handle<> h) {
             suspended_ = true;
-            OIFSAsyncFuture* raw_fut = fut_.raw();
-            std::thread([this, h, raw_fut]() mutable {
-                result_ = (raw_fut != nullptr) ? oifs_async_wait(raw_fut) : -1;
-                h.resume();
+            auto st = state_;
+            std::thread([st, h]() mutable {
+                int64_t res = (st->fut != nullptr) ? oifs_async_wait(st->fut.get()) : -1;
+                bool should_resume = false;
+                {
+                    std::lock_guard<std::mutex> lock(st->mtx);
+                    if (!st->cancelled) {
+                        st->result = res;
+                        should_resume = true;
+                    }
+                }
+                if (should_resume) {
+                    h.resume();
+                }
             }).detach();
         }
 
@@ -899,15 +927,22 @@ public:
             if (!suspended_) {
                 return fut_.wait();
             }
-            if (result_ < 0) {
+            if (state_->result < 0) {
                 throw Error(fut_.last_error());
             }
-            return result_;
+            return state_->result;
         }
 
     private:
+        struct SharedState {
+            std::mutex mtx{};
+            bool cancelled = false;
+            int64_t result = 0;
+            std::shared_ptr<OIFSAsyncFuture> fut{};
+        };
+
         AsyncFuture& fut_;
-        int64_t result_ = 0;
+        std::shared_ptr<SharedState> state_;
         bool suspended_ = false;
     };
 
@@ -915,7 +950,7 @@ public:
 #endif
 
 private:
-    OIFSAsyncFuture* fut_ = nullptr;
+    std::shared_ptr<OIFSAsyncFuture> fut_{};
 };
 
 /**
@@ -960,7 +995,7 @@ public:
     }
 
     static FileSystem open(std::string_view path, uint64_t size = 0) {
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         OIFSHandle* h = oifs_open(c_path.c_str(), size);
         if (h == nullptr) {
             throw Error("oifs_open failed for path: " + c_path);
@@ -971,8 +1006,8 @@ public:
     static FileSystem open_with_password(std::string_view path,
                                          uint64_t size,
                                          std::string_view password) {
-        std::string c_path(path);
-        std::string c_pwd(password);
+        std::string c_path = detail::to_c_string(path);
+        std::string c_pwd = detail::to_c_string(password);
         OIFSHandle* h = oifs_open_with_password(
             c_path.c_str(), size, c_pwd.empty() ? nullptr : c_pwd.c_str());
         if (h == nullptr) {
@@ -982,8 +1017,9 @@ public:
     }
 
     static FileSystem open_with_options(std::string_view path, const OpenOptions& opts) {
-        std::string c_path(path);
-        const char* pwd_ptr = opts.password.empty() ? nullptr : opts.password.c_str();
+        std::string c_path = detail::to_c_string(path);
+        std::string c_pwd = detail::to_c_string(opts.password);
+        const char* pwd_ptr = c_pwd.empty() ? nullptr : c_pwd.c_str();
         OIFSHandle* h = oifs_open_with_options(c_path.c_str(),
                                                opts.size,
                                                pwd_ptr,
@@ -1013,7 +1049,7 @@ public:
                                         const char* password,
                                         uint8_t storage_mode,
                                         bool journaled = false) {
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         OIFSHandle* h = oifs_open_with_options(
             c_path.c_str(), size, password, storage_mode, journaled ? 1 : 0);
         if (h == nullptr) {
@@ -1023,7 +1059,7 @@ public:
     }
 
     static FileSystem get_or_open(std::string_view path, uint64_t size = 0) {
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         OIFSHandle* h = oifs_get_or_open(c_path.c_str(), size);
         if (h == nullptr) {
             throw Error("oifs_get_or_open failed for path: " + c_path);
@@ -1034,8 +1070,8 @@ public:
     static FileSystem get_or_open_with_password(std::string_view path,
                                                 uint64_t size,
                                                 std::string_view password) {
-        std::string c_path(path);
-        std::string c_pwd(password);
+        std::string c_path = detail::to_c_string(path);
+        std::string c_pwd = detail::to_c_string(password);
         OIFSHandle* h = oifs_get_or_open_with_password(
             c_path.c_str(), size, c_pwd.empty() ? nullptr : c_pwd.c_str());
         if (h == nullptr) {
@@ -1051,8 +1087,8 @@ public:
     static FileSystem open_read_only(std::string_view path,
                                      std::string_view password = {},
                                      StorageMode mode = StorageMode::Mmap) {
-        std::string c_path(path);
-        std::string c_pwd(password);
+        std::string c_path = detail::to_c_string(path);
+        std::string c_pwd = detail::to_c_string(password);
         const char* pwd_ptr = c_pwd.empty() ? nullptr : c_pwd.c_str();
         OIFSHandle* h = oifs_open_read_only(
             c_path.c_str(), pwd_ptr, static_cast<uint8_t>(mode));
@@ -1066,8 +1102,8 @@ public:
      * Clones a whole OIFS container image using the fastest host OS CoW primitive.
      */
     static CloneMethod clone_image(std::string_view src, std::string_view dst) {
-        std::string c_src(src);
-        std::string c_dst(dst);
+        std::string c_src = detail::to_c_string(src);
+        std::string c_dst = detail::to_c_string(dst);
         uint8_t method = OIFS_CLONE_METHOD_STANDARD_COPY;
         if (oifs_clone_image(c_src.c_str(), c_dst.c_str(), &method) != 0) {
             throw Error("oifs_clone_image failed from '" + c_src + "' to '" + c_dst + "'");
@@ -1138,7 +1174,7 @@ public:
 
     void mkdir(std::string_view path) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         if (oifs_mkdir(handle_, c_path.c_str()) != 0) {
             throw Error(last_error());
         }
@@ -1146,7 +1182,7 @@ public:
 
     void delete_file(std::string_view path) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         if (oifs_delete_file(handle_, c_path.c_str()) != 0) {
             throw Error(last_error());
         }
@@ -1154,8 +1190,8 @@ public:
 
     void rename(std::string_view old_path, std::string_view new_path) {
         ensure_open();
-        std::string c_old(old_path);
-        std::string c_new(new_path);
+        std::string c_old = detail::to_c_string(old_path);
+        std::string c_new = detail::to_c_string(new_path);
         if (oifs_rename(handle_, c_old.c_str(), c_new.c_str()) != 0) {
             throw Error(last_error());
         }
@@ -1163,7 +1199,7 @@ public:
 
     void truncate_file(std::string_view path, uint64_t new_size) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         if (oifs_truncate_file(handle_, c_path.c_str(), new_size) != 0) {
             throw Error(last_error());
         }
@@ -1181,7 +1217,7 @@ public:
     std::vector<DirEntry> ls(std::string_view path) const {
         ensure_open();
         std::vector<DirEntry> entries;
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         if (oifs_ls_dir(handle_, c_path.c_str(), &FileSystem::ls_callback, &entries) != 0) {
             throw Error(last_error());
         }
@@ -1190,7 +1226,7 @@ public:
 
     FileStat stat(std::string_view path) const {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         OIFSFileStat raw{};
         if (oifs_stat(handle_, c_path.c_str(), &raw) != 0) {
             throw Error(last_error());
@@ -1213,7 +1249,7 @@ public:
 
     bool exists(std::string_view path) const {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         int32_t rc = oifs_exists(handle_, c_path.c_str());
         if (rc < 0) {
             throw Error(last_error());
@@ -1223,7 +1259,7 @@ public:
 
     uint64_t resolve_path(std::string_view path) const {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         int64_t id = oifs_resolve_path(handle_, c_path.c_str());
         if (id < 0) {
             throw Error(last_error());
@@ -1231,7 +1267,11 @@ public:
         return static_cast<uint64_t>(id);
     }
 
-    std::vector<uint8_t> read_file(std::string_view path) const {
+    static constexpr std::size_t MAX_READ_FILE_BYTES =
+        (sizeof(std::size_t) >= 8) ? static_cast<std::size_t>(2ULL * 1024 * 1024 * 1024) : SIZE_MAX;
+
+    std::vector<uint8_t> read_file(std::string_view path,
+                                   std::size_t max_bytes = MAX_READ_FILE_BYTES) const {
         ensure_open();
         FileStat st = stat(path);
         if (st.is_dir) {
@@ -1240,8 +1280,9 @@ public:
         if (st.size == 0) {
             return {};
         }
-        if (st.size > static_cast<uint64_t>(SIZE_MAX)) {
-            throw Error("File size exceeds addressable memory");
+        if (st.size > static_cast<uint64_t>(max_bytes) ||
+            st.size > static_cast<uint64_t>(SIZE_MAX)) {
+            throw Error("File size exceeds read_file limit");
         }
         std::vector<uint8_t> buf(static_cast<std::size_t>(st.size));
         std::size_t got = read_at(path, 0, MutableByteSpan(buf));
@@ -1254,7 +1295,7 @@ public:
                                    uint32_t policy_flags = OIFS_WRITE_POLICY_DEFAULT,
                                    int32_t zstd_level = 0) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         int64_t id = oifs_create_file_with_data(
             handle_, c_path.c_str(), data.data(), data.size(), policy_flags, zstd_level);
         if (id < 0) {
@@ -1276,7 +1317,7 @@ public:
                                    int32_t zstd_level,
                                    FilterConfig filter) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         OIFSFilterConfig raw_filter = filter.to_c();
         int64_t id = oifs_create_file_with_data_filtered(handle_,
                                                          c_path.c_str(),
@@ -1349,7 +1390,7 @@ public:
 
     void write_file(std::string_view path, ByteView data) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         if (oifs_write_file(handle_, c_path.c_str(), data.data(), data.size()) != 0) {
             throw Error(last_error());
         }
@@ -1361,7 +1402,7 @@ public:
                     uint32_t policy_flags = OIFS_WRITE_POLICY_DEFAULT,
                     int32_t zstd_level = 0) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         if (oifs_write_file_with_policy(handle_,
                                         c_path.c_str(),
                                         offset,
@@ -1388,7 +1429,7 @@ public:
                     int32_t zstd_level,
                     FilterConfig filter) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         OIFSFilterConfig raw_filter = filter.to_c();
         if (oifs_write_file_with_filters(handle_,
                                          c_path.c_str(),
@@ -1469,8 +1510,8 @@ public:
                                    TransferOptions opts = {}) {
         ensure_open();
         dst.ensure_open();
-        std::string c_src(src_path);
-        std::string c_dst(dst_path);
+        std::string c_src = detail::to_c_string(src_path);
+        std::string c_dst = detail::to_c_string(dst_path);
         uint32_t flags = 0;
         if (opts.move_file) {
             flags |= OIFS_TRANSFER_FLAG_MOVE;
@@ -1576,7 +1617,7 @@ public:
 
     std::size_t read_at(std::string_view path, uint64_t offset, MutableByteSpan dst) const {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         int64_t n = oifs_read_at(handle_, c_path.c_str(), offset, dst.data(), dst.size());
         if (n < 0) {
             throw Error(last_error());
@@ -1631,7 +1672,7 @@ public:
                                             uint32_t policy_flags = OIFS_WRITE_POLICY_DEFAULT,
                                             int32_t zstd_level = 0) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         OIFSAsyncFuture* fut = oifs_create_file_with_data_async(
             handle_, c_path.c_str(), data.data(), data.size(), policy_flags, zstd_level);
         if (fut == nullptr) {
@@ -1654,7 +1695,7 @@ public:
                                  uint32_t policy_flags = OIFS_WRITE_POLICY_DEFAULT,
                                  int32_t zstd_level = 0) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         OIFSAsyncFuture* fut = oifs_write_file_async(
             handle_, c_path.c_str(), offset, data.data(), data.size(), policy_flags, zstd_level);
         if (fut == nullptr) {
@@ -1726,7 +1767,7 @@ public:
                                         int32_t zstd_level,
                                         Fn&& cb) {
         ensure_open();
-        std::string c_path(path);
+        std::string c_path = detail::to_c_string(path);
         using DecayFn = std::decay_t<Fn>;
         auto* heap_cb = new DecayFn(std::forward<Fn>(cb));
         OifsAsyncStatusCallback trampoline = [](int64_t status_or_inode, void* user_data) {

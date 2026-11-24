@@ -697,7 +697,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if image.exists() {
                 return Err(format!("Image {:?} already exists.", image).into());
             }
-            let size_bytes = size * 1024 * 1024;
+            let size_bytes = size
+                .checked_mul(1024)
+                .and_then(|v| v.checked_mul(1024))
+                .ok_or("Image size in MB overflows u64")?;
 
             if *encrypt {
                 let password = if let Some(pwd) = cli.password.clone() {
@@ -921,7 +924,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Err(_) => dm.create_file(parent_id, &filename)?,
             };
 
-            let mut existing = dm.read_data(inode_id).unwrap_or_default();
+            let mut existing = dm.read_data(inode_id)?;
             existing.extend_from_slice(content.as_bytes());
             if !*no_newline && !content.ends_with('\n') {
                 existing.push(b'\n');

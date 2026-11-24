@@ -609,17 +609,24 @@ pub fn write_framed<W: Write, T: Serialize>(writer: &mut W, val: &T) -> io::Resu
     })
 }
 
-/// Reads a length-prefixed frame and deserializes it.
+/// Maximum frame size accepted on unauthenticated IPC connections (`AuthChallenge` / `AuthResponse` / `Ping`).
+pub const PRE_AUTH_MAX_FRAME_BYTES: usize = 4096;
+
+/// Reads a length-prefixed frame up to `max_len` (clamped by [`MAX_FRAME_BYTES`]) and deserializes it.
 ///
 /// The payload is streamed in bounded chunks into a pooled buffer: the length
 /// prefix is validated *before* allocating, and the buffer capacity is reused
 /// across frames instead of being reallocated per message.
-pub fn read_framed<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T> {
+pub fn read_framed_with_limit<R: Read, T: DeserializeOwned>(
+    reader: &mut R,
+    max_len: usize,
+) -> io::Result<T> {
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf)?;
-    let len = u32::from_le_bytes(len_buf) as usize;
+    let raw_len = u32::from_le_bytes(len_buf);
+    let len = raw_len as usize;
 
-    if !frame_len_is_valid(len as u32) {
+    if !frame_len_is_valid(raw_len) || len > max_len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Message frame exceeds size limit",
@@ -655,6 +662,11 @@ pub fn read_framed<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T
         shrink_frame_buf(&mut buf);
         result
     })
+}
+
+/// Reads a length-prefixed frame up to [`MAX_FRAME_BYTES`] and deserializes it.
+pub fn read_framed<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T> {
+    read_framed_with_limit(reader, MAX_FRAME_BYTES)
 }
 
 /// The result of attempting to acquire master status or connect to an existing master
@@ -889,45 +901,56 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                 let _ = fs::remove_file(&master_path);
             }
 
-            // 2. Try atomic create_new to become Master
+            // 2. Try atomic create_new to become Master with owner-only `0o600` permissions.
+            use std::os::unix::fs::OpenOptionsExt;
             match OpenOptions::new()
                 .write(true)
                 .create_new(true)
+                .mode(0o600)
                 .open(&master_path)
             {
                 Ok(mut file) => {
-                    let bind_target = bind_addr.as_deref().unwrap_or("127.0.0.1:0");
-                    if !is_loopback_bind(bind_target) {
-                        // The transport is plain TCP. Warn loudly
-                        // instead of exposing the filesystem silently.
-                        eprintln!(
-                            "⚠️  OIFS is binding the IPC master to {bind_target}, which is reachable \
-                             from other machines. The transport is plain TCP without TLS: tunnel it \
-                             over WireGuard/IPsec/SSH or keep the default loopback bind."
-                        );
+                    let init_res = (|| -> io::Result<IpcListener> {
+                        let bind_target = bind_addr.as_deref().unwrap_or("127.0.0.1:0");
+                        if !is_loopback_bind(bind_target) {
+                            // The transport is plain TCP. Warn loudly
+                            // instead of exposing the filesystem silently.
+                            eprintln!(
+                                "⚠️  OIFS is binding the IPC master to {bind_target}, which is reachable \
+                                 from other machines. The transport is plain TCP without TLS: tunnel it \
+                                 over WireGuard/IPsec/SSH or keep the default loopback bind."
+                            );
+                        }
+                        let listener = TcpListener::bind(bind_target)?;
+                        let local_addr = listener.local_addr()?;
+                        let auth_secret = generate_auth_secret();
+
+                        let info = MasterInfo {
+                            addr: local_addr.to_string(),
+                            pid: std::process::id(),
+                            auth_token: hex_encode(&auth_secret),
+                        };
+                        let json = serde_json::to_string(&info)
+                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+                        file.write_all(json.as_bytes())?;
+                        file.flush()?;
+                        // Ensure permissions stay `0o600` even if process umask interfered or
+                        // parent directory had default ACLs.
+                        restrict_permissions(&master_path, 0o600);
+
+                        Ok(IpcListener::Tcp {
+                            listener,
+                            master_file_path: master_path.clone(),
+                            auth_secret,
+                        })
+                    })();
+                    match init_res {
+                        Ok(listener) => Ok(MasterOrClient::Master(listener)),
+                        Err(e) => {
+                            let _ = fs::remove_file(&master_path);
+                            Err(e)
+                        }
                     }
-                    let listener = TcpListener::bind(bind_target)?;
-                    let local_addr = listener.local_addr()?;
-                    let auth_secret = generate_auth_secret();
-
-                    let info = MasterInfo {
-                        addr: local_addr.to_string(),
-                        pid: std::process::id(),
-                        auth_token: hex_encode(&auth_secret),
-                    };
-                    let json = serde_json::to_string(&info)
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-                    file.write_all(json.as_bytes())?;
-                    file.flush()?;
-                    // The rendezvous file carries the session secret: it must
-                    // not be readable by other users.
-                    restrict_permissions(&master_path, 0o600);
-
-                    Ok(MasterOrClient::Master(IpcListener::Tcp {
-                        listener,
-                        master_file_path: master_path,
-                        auth_secret,
-                    }))
                 }
                 Err(e) if is_addr_in_use(&e) => {
                     // Another process won the race. Retry reading info and connecting
@@ -1153,6 +1176,17 @@ impl IpcServer {
             let raw_fd = stream.as_raw_fd();
 
             loop {
+                if shutdown_worker.load(Ordering::Acquire) {
+                    break;
+                }
+                if !authenticated {
+                    let Some(rem) = AUTH_HANDSHAKE_TIMEOUT.checked_sub(handshake_start.elapsed())
+                    else {
+                        break;
+                    };
+                    let _ = stream.set_read_timeout(Some(rem));
+                }
+
                 // Poll between requests so `IpcServer::drop` can cleanly close
                 // idle peer connections without ever aborting an in-flight RPC.
                 let mut pfd = libc::pollfd {
@@ -1177,7 +1211,13 @@ impl IpcServer {
                     break;
                 }
 
-                let Ok(req) = read_framed::<_, IpcRequest>(&mut stream) else {
+                let frame_limit = if authenticated {
+                    MAX_FRAME_BYTES
+                } else {
+                    PRE_AUTH_MAX_FRAME_BYTES
+                };
+                let Ok(req) = read_framed_with_limit::<_, IpcRequest>(&mut stream, frame_limit)
+                else {
                     break;
                 };
                 // The name is only materialized when there is an

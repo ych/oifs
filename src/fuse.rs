@@ -180,6 +180,8 @@ pub const FUSE_BATCH_FORGET: u32 = 42;
 pub const FUSE_RENAME2: u32 = 45;
 /// `renameat2(2)` flag: fail with `EEXIST` if destination already exists.
 pub const FUSE_RENAME_NOREPLACE: u32 = 1 << 0;
+/// macOS / XNU `renamex_np(2)` `RENAME_EXCL` flag (`0x0000_0004`).
+pub const MACOS_RENAME_EXCL: u32 = 1 << 2;
 
 // Standard POSIX mode & dirent file type constants (portable values).
 const POSIX_S_IFDIR: u32 = 0o040000;
@@ -2295,15 +2297,15 @@ pub fn send_fd_scm_rights(sock_fd: RawFd, fd: RawFd) -> std::io::Result<()> {
     let fd_size = std::mem::size_of::<RawFd>() as u32;
     // SAFETY: `CMSG_SPACE` is a pure size calculation macro wrapper.
     let cmsg_space = unsafe { libc::CMSG_SPACE(fd_size) } as usize;
-    let mut cmsg_buf = vec![0u8; cmsg_space];
+    let mut cmsg_buf = vec![0u64; cmsg_space.div_ceil(std::mem::size_of::<u64>())];
 
-    // SAFETY: zeroed `msghdr` initialized with valid stack `iov` and heap `cmsg_buf`.
+    // SAFETY: zeroed `msghdr` initialized with valid stack `iov` and aligned heap `cmsg_buf`.
     unsafe {
         let mut msg: libc::msghdr = std::mem::zeroed();
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = cmsg_buf.as_mut_ptr().cast();
-        msg.msg_controllen = cmsg_buf.len() as _;
+        msg.msg_controllen = cmsg_space as _;
 
         let cmsg = libc::CMSG_FIRSTHDR(&msg);
         if cmsg.is_null() {
@@ -2343,19 +2345,24 @@ pub fn recv_fd_scm_rights(sock_fd: RawFd) -> std::io::Result<OwnedFd> {
     let fd_size = std::mem::size_of::<RawFd>() as u32;
     // SAFETY: `CMSG_SPACE` is a pure size calculation.
     let cmsg_space = unsafe { libc::CMSG_SPACE(fd_size) } as usize;
-    let mut cmsg_buf = vec![0u8; cmsg_space];
+    let mut cmsg_buf = vec![0u64; cmsg_space.div_ceil(std::mem::size_of::<u64>())];
+    #[cfg(target_os = "linux")]
+    let recv_flags = libc::MSG_CMSG_CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let recv_flags = 0;
 
-    // SAFETY: zeroed `msghdr` initialized with valid `iov` and `cmsg_buf` pointers.
+    // SAFETY: zeroed `msghdr` initialized with valid `iov` and aligned `cmsg_buf` pointers.
     unsafe {
         let mut msg: libc::msghdr = std::mem::zeroed();
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = cmsg_buf.as_mut_ptr().cast();
-        msg.msg_controllen = cmsg_buf.len() as _;
+        msg.msg_controllen = cmsg_space as _;
 
         loop {
-            msg.msg_controllen = cmsg_buf.len() as _;
-            let n = libc::recvmsg(sock_fd, &mut msg, 0);
+            msg.msg_controllen = cmsg_space as _;
+            msg.msg_flags = 0;
+            let n = libc::recvmsg(sock_fd, &mut msg, recv_flags);
             if n >= 0 {
                 break;
             }
@@ -2366,9 +2373,23 @@ pub fn recv_fd_scm_rights(sock_fd: RawFd) -> std::io::Result<OwnedFd> {
             return Err(err);
         }
 
+        if (msg.msg_flags & libc::MSG_CTRUNC) != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "SCM_RIGHTS ancillary data truncated",
+            ));
+        }
+
+        let min_cmsg_len = libc::CMSG_LEN(fd_size) as usize;
         let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
         while !cmsg.is_null() {
             if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
+                if ((*cmsg).cmsg_len as usize) < min_cmsg_len {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "truncated SCM_RIGHTS control message",
+                    ));
+                }
                 let mut received_fd: RawFd = -1;
                 std::ptr::copy_nonoverlapping(
                     libc::CMSG_DATA(cmsg),
@@ -2381,6 +2402,7 @@ pub fn recv_fd_scm_rights(sock_fd: RawFd) -> std::io::Result<OwnedFd> {
                         "invalid file descriptor received via SCM_RIGHTS",
                     ));
                 }
+                let _ = libc::fcntl(received_fd, libc::F_SETFD, libc::FD_CLOEXEC);
                 return Ok(OwnedFd::from_raw_fd(received_fd));
             }
             cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
@@ -2495,6 +2517,7 @@ pub fn disk_error_to_errno(err: &DiskManagerError) -> i32 {
                     } else if msg.contains("Not a directory") {
                         -libc::ENOTDIR
                     } else if msg.contains("Cannot read non-file")
+                        || msg.contains("non-file inode")
                         || msg.contains("Cannot write to non-file")
                         || msg.contains("Is a directory")
                         || msg.contains("Cannot truncate a directory")
@@ -2532,6 +2555,28 @@ fn parse_fuse_name(bytes: &[u8]) -> Result<&str, i32> {
         return Err(-libc::ENAMETOOLONG);
     }
     std::str::from_utf8(raw).map_err(|_| -libc::EINVAL)
+}
+
+fn map_rename_flags(platform: FuseAbiPlatform, raw_flags: u32) -> Result<u32, i32> {
+    if raw_flags == 0 {
+        return Ok(0);
+    }
+    match platform {
+        FuseAbiPlatform::Linux => {
+            if raw_flags == FUSE_RENAME_NOREPLACE {
+                Ok(FUSE_RENAME_NOREPLACE)
+            } else {
+                Err(-libc::EINVAL)
+            }
+        }
+        FuseAbiPlatform::MacOs => {
+            if raw_flags == MACOS_RENAME_EXCL {
+                Ok(FUSE_RENAME_NOREPLACE)
+            } else {
+                Err(-libc::EINVAL)
+            }
+        }
+    }
 }
 
 fn parse_fuse_two_names(bytes: &[u8]) -> Result<(&str, &str), i32> {
@@ -3468,7 +3513,7 @@ impl OifsFuseState {
                 // On Linux, `fuse_rename_in` is 8 bytes (`newdir: u64`).
                 // On macOS (macFUSE 4.x/5.x), `fuse_rename_in` may be 16 bytes
                 // (`newdir: u64, flags: u32, padding: u32`) when `FUSE_RENAME` carries flags.
-                let (flags, names_slice) = if platform == FuseAbiPlatform::MacOs
+                let (raw_flags, names_slice) = if platform == FuseAbiPlatform::MacOs
                     && payload.len() > 16
                     && payload[12..16] == [0, 0, 0, 0]
                     && (payload[8] == 0 || payload[9..12] == [0, 0, 0])
@@ -3476,6 +3521,10 @@ impl OifsFuseState {
                     (read_u32_le(payload, 8).unwrap_or(0), &payload[16..])
                 } else {
                     (0, &payload[8..])
+                };
+                let flags = match map_rename_flags(platform, raw_flags) {
+                    Ok(f) => f,
+                    Err(e) => return FuseOutHeader::error_frame(unique, e),
                 };
                 let (old_name, new_name) = match parse_fuse_two_names(names_slice) {
                     Ok(pair) => pair,
@@ -3487,7 +3536,7 @@ impl OifsFuseState {
                 }
             }
             FuseOpcode::Rename2 => {
-                let (Some(newdir), Some(flags)) =
+                let (Some(newdir), Some(raw_flags)) =
                     (read_u64_le(payload, 0), read_u32_le(payload, 8))
                 else {
                     return FuseOutHeader::error_frame(unique, -libc::EINVAL);
@@ -3495,6 +3544,10 @@ impl OifsFuseState {
                 if payload.len() < 16 {
                     return FuseOutHeader::error_frame(unique, -libc::EINVAL);
                 }
+                let flags = match map_rename_flags(platform, raw_flags) {
+                    Ok(f) => f,
+                    Err(e) => return FuseOutHeader::error_frame(unique, e),
+                };
                 let (old_name, new_name) = match parse_fuse_two_names(&payload[16..]) {
                     Ok(pair) => pair,
                     Err(e) => return FuseOutHeader::error_frame(unique, e),

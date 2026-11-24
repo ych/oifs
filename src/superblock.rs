@@ -179,10 +179,11 @@ impl SuperBlock {
         let inode_table_blocks = if total_blocks > metadata_blocks + inode_table_blocks_cap {
             inode_table_blocks_cap
         } else {
-            total_blocks
+            (total_blocks
                 .saturating_sub(metadata_blocks)
                 .saturating_sub(1)
-                / 4
+                / 4)
+                .max(1)
         };
         let inode_count = inode_table_blocks * inodes_per_block;
         let inode_bitmap_blocks = inode_count.div_ceil(Self::BITMAP_BLOCK_BITS).max(1);

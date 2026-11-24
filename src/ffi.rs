@@ -58,6 +58,46 @@ unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, &'static str> {
         .map_err(|_| "Invalid UTF-8 filename")
 }
 
+#[inline]
+fn ffi_slice_bytes_valid(len: usize, elem_size: usize) -> bool {
+    len.checked_mul(elem_size)
+        .is_some_and(|bytes| bytes <= isize::MAX as usize)
+}
+
+#[inline]
+unsafe fn ffi_slice<'a>(buf: *const u8, len: u64) -> Result<&'a [u8], &'static str> {
+    let Ok(len_usize) = usize::try_from(len) else {
+        return Err("Buffer size overflows usize");
+    };
+    if len_usize == 0 {
+        return Ok(&[][..]);
+    }
+    if buf.is_null() {
+        return Err("Null buffer provided with a non-zero size");
+    }
+    if !ffi_slice_bytes_valid(len_usize, 1) {
+        return Err("Buffer size exceeds isize::MAX");
+    }
+    Ok(unsafe { std::slice::from_raw_parts(buf, len_usize) })
+}
+
+#[inline]
+unsafe fn ffi_slice_mut<'a>(buf: *mut u8, len: u64) -> Result<&'a mut [u8], &'static str> {
+    let Ok(len_usize) = usize::try_from(len) else {
+        return Err("Buffer size overflows usize");
+    };
+    if len_usize == 0 {
+        return Ok(&mut [][..]);
+    }
+    if buf.is_null() {
+        return Err("Null buffer provided with a non-zero size");
+    }
+    if !ffi_slice_bytes_valid(len_usize, 1) {
+        return Err("Buffer size exceeds isize::MAX");
+    }
+    Ok(unsafe { std::slice::from_raw_parts_mut(buf, len_usize) })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn oifs_open(path: *const c_char, size: u64) -> *mut OIFSHandle {
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -458,7 +498,7 @@ pub extern "C" fn oifs_read_at(
         let dm = &handle_ref.dm;
         match (|| -> Result<i64, Box<dyn std::error::Error>> {
             let inode_id = dm.resolve_path(filename_str)?;
-            let out_slice = unsafe { std::slice::from_raw_parts_mut(buf, buf_size as usize) };
+            let out_slice = unsafe { ffi_slice_mut(buf, buf_size) }.map_err(std::io::Error::other)?;
             let bytes_read = dm.read_at(inode_id, offset, out_slice)?;
             Ok(bytes_read as i64)
         })() {
@@ -533,16 +573,7 @@ pub extern "C" fn oifs_write_file(
             let (parent_id, name) = dm.resolve_parent(filename_str)?;
             // A null buffer with a non-zero size is a caller error and
             // must not be silently treated as an empty write.
-            let data = if buf.is_null() {
-                if buf_size > 0 {
-                    return Err(
-                        std::io::Error::other("Null buffer provided with a non-zero size").into(),
-                    );
-                }
-                &[][..]
-            } else {
-                unsafe { std::slice::from_raw_parts(buf, buf_size as usize) }
-            };
+            let data = unsafe { ffi_slice(buf, buf_size) }.map_err(std::io::Error::other)?;
             match dm.lookup(parent_id, &name) {
                 Ok(existing_id) => {
                     dm.write_data(existing_id, 0, data, crate::disk::CompressionMode::Auto)?;
@@ -633,16 +664,7 @@ pub extern "C" fn oifs_write_file_with_policy(
                 return Err(crate::disk::DiskManagerError::ReadOnly.into());
             }
             let (parent_id, name) = dm.resolve_parent(filename_str)?;
-            let data = if buf.is_null() {
-                if buf_size > 0 {
-                    return Err(
-                        std::io::Error::other("Null buffer provided with a non-zero size").into(),
-                    );
-                }
-                &[][..]
-            } else {
-                unsafe { std::slice::from_raw_parts(buf, buf_size as usize) }
-            };
+            let data = unsafe { ffi_slice(buf, buf_size) }.map_err(std::io::Error::other)?;
             match dm.lookup(parent_id, &name) {
                 Ok(existing_id) => {
                     dm.write_data(existing_id, offset, data, compression_mode)?;
@@ -1190,10 +1212,6 @@ pub extern "C" fn oifs_create_file_with_data(
         handle_ref.set_last_error(Some("Null argument provided".to_string()));
         return -1;
     }
-    let Ok(len) = usize::try_from(buf_size) else {
-        handle_ref.set_last_error(Some("Buffer size overflows usize".to_string()));
-        return -1;
-    };
     let compression_mode = policy_to_compression_mode(policy_flags, zstd_level);
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let path_str = match unsafe { cstr_to_str(path) } {
@@ -1203,10 +1221,12 @@ pub extern "C" fn oifs_create_file_with_data(
                 return -1;
             }
         };
-        let data = if len == 0 {
-            &[][..]
-        } else {
-            unsafe { std::slice::from_raw_parts(buf, len) }
+        let data = match unsafe { ffi_slice(buf, buf_size) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
         };
         let dm = &handle_ref.dm;
         match (|| -> Result<u64, Box<dyn std::error::Error>> {
@@ -1250,12 +1270,14 @@ pub extern "C" fn oifs_read_at_inode(
         handle_ref.set_last_error(Some("Null buffer provided".to_string()));
         return -1;
     }
-    let Ok(len) = usize::try_from(buf_size) else {
-        handle_ref.set_last_error(Some("Buffer size overflows usize".to_string()));
-        return -1;
-    };
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let out_slice = unsafe { std::slice::from_raw_parts_mut(buf, len) };
+        let out_slice = match unsafe { ffi_slice_mut(buf, buf_size) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
         match handle_ref.dm.read_at(inode_id, offset, out_slice) {
             Ok(n) => {
                 handle_ref.set_last_error(None);
@@ -1300,9 +1322,13 @@ pub extern "C" fn oifs_read_at_batch(
         handle_ref.set_last_error(Some("Null batch items pointer".to_string()));
         return -1;
     }
+    if !ffi_slice_bytes_valid(count, std::mem::size_of::<OIFSReadBatchItem>()) {
+        handle_ref.set_last_error(Some("Batch item count overflows isize::MAX".to_string()));
+        return -1;
+    }
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let slice = unsafe { std::slice::from_raw_parts_mut(items, count) };
-        let mut reqs = Vec::with_capacity(count);
+        let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(count);
         for item in slice.iter_mut() {
             if item.buf.is_null() && item.buf_size > 0 {
                 item.result = -1;
@@ -1311,12 +1337,49 @@ pub extern "C" fn oifs_read_at_batch(
             }
             let Ok(len) = usize::try_from(item.buf_size) else {
                 item.result = -1;
+                handle_ref.set_last_error(Some("Batch item size overflows usize".to_string()));
                 return -1;
             };
-            let buf_slice = if len == 0 {
-                &mut [][..]
-            } else {
-                unsafe { std::slice::from_raw_parts_mut(item.buf, len) }
+            if len > isize::MAX as usize {
+                item.result = -1;
+                handle_ref.set_last_error(Some("Batch item size exceeds isize::MAX".to_string()));
+                return -1;
+            }
+            if len > 0 {
+                let start = item.buf as usize;
+                let Some(end) = start.checked_add(len) else {
+                    item.result = -1;
+                    handle_ref.set_last_error(Some("Batch item address overflow".to_string()));
+                    return -1;
+                };
+                ranges.push((start, end));
+            }
+        }
+        // Creating multiple `&mut [u8]` slices to overlapping ranges is UB even across
+        // distinct batch items; reject overlaps deterministically before building slices.
+        if ranges.len() > 1 {
+            ranges.sort_unstable_by_key(|&(s, _)| s);
+            for w in ranges.windows(2) {
+                if w[0].1 > w[1].0 {
+                    for item in slice.iter_mut() {
+                        item.result = -1;
+                    }
+                    handle_ref.set_last_error(Some(
+                        "Overlapping output buffers in oifs_read_at_batch".to_string(),
+                    ));
+                    return -1;
+                }
+            }
+        }
+        let mut reqs = Vec::with_capacity(count);
+        for item in slice.iter_mut() {
+            let buf_slice = match unsafe { ffi_slice_mut(item.buf, item.buf_size) } {
+                Ok(s) => s,
+                Err(msg) => {
+                    item.result = -1;
+                    handle_ref.set_last_error(Some(msg.to_string()));
+                    return -1;
+                }
             };
             reqs.push(crate::disk::ReadRequest {
                 inode_id: item.inode_id,
@@ -1526,12 +1589,12 @@ pub extern "C" fn oifs_file_read_at(
     if buf.is_null() {
         return if buf_size == 0 { 0 } else { -1 };
     }
-    let Ok(len) = usize::try_from(buf_size) else {
-        return -1;
-    };
     let file_ref = unsafe { &(*file) };
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let out_slice = unsafe { std::slice::from_raw_parts_mut(buf, len) };
+        let out_slice = match unsafe { ffi_slice_mut(buf, buf_size) } {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
         match file_ref.file.read_at(offset, out_slice) {
             Ok(n) => n as i64,
             Err(_) => -1,
@@ -1606,18 +1669,21 @@ pub extern "C" fn oifs_read_at_async(
     if handle.is_null() || (buf.is_null() && buf_size > 0) {
         return ptr::null_mut();
     }
-    let Ok(len) = usize::try_from(buf_size) else {
-        return ptr::null_mut();
-    };
     let handle_ref = unsafe { &(*handle) };
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if len == 0 {
+        let out_slice = match unsafe { ffi_slice_mut(buf, buf_size) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return ptr::null_mut();
+            }
+        };
+        if out_slice.is_empty() {
             return Box::into_raw(Box::new(OIFSAsyncFuture {
                 task: Some(crate::disk::OifsAsyncTask::ready(Ok(0))),
                 last_error: None,
             }));
         }
-        let out_slice = unsafe { std::slice::from_raw_parts_mut(buf, len) };
         if let Some(inline_res) = handle_ref
             .dm
             .try_read_at_inline_into(inode_id, offset, out_slice)
@@ -1630,11 +1696,12 @@ pub extern "C" fn oifs_read_at_async(
         }
 
         let dm = handle_ref.dm.clone();
+        let len = out_slice.len();
         let raw_addr = buf as usize;
         let task = crate::disk::OifsAsyncTask::spawn_with_drop_policy(
             move || {
                 // SAFETY: `wait_on_drop = true` guarantees `OIFSAsyncFuture` will not be destroyed
-                // before this closure returns.
+                // before this closure returns, and `ffi_slice_mut` validated `len <= isize::MAX`.
                 let dst = unsafe { std::slice::from_raw_parts_mut(raw_addr as *mut u8, len) };
                 dm.read_at(inode_id, offset, dst)
                     .map(|n| n as i64)
@@ -1665,9 +1732,6 @@ pub extern "C" fn oifs_create_file_with_data_async(
     if handle.is_null() || path.is_null() || (buf.is_null() && buf_size > 0) {
         return ptr::null_mut();
     }
-    let Ok(len) = usize::try_from(buf_size) else {
-        return ptr::null_mut();
-    };
     let handle_ref = unsafe { &(*handle) };
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if handle_ref.dm.is_read_only() {
@@ -1681,10 +1745,8 @@ pub extern "C" fn oifs_create_file_with_data_async(
         let Ok(path_str) = (unsafe { cstr_to_str(path) }).map(str::to_owned) else {
             return ptr::null_mut();
         };
-        let payload = if len == 0 {
-            Vec::new()
-        } else {
-            unsafe { std::slice::from_raw_parts(buf, len) }.to_vec()
+        let Ok(payload) = (unsafe { ffi_slice(buf, buf_size) }).map(|s| s.to_vec()) else {
+            return ptr::null_mut();
         };
         let mode = policy_to_compression_mode(policy_flags, zstd_level);
         let state = crate::disk::AsyncTaskState::new_pending();
@@ -1721,9 +1783,6 @@ pub extern "C" fn oifs_write_file_async(
     if handle.is_null() || path.is_null() || (buf.is_null() && buf_size > 0) {
         return ptr::null_mut();
     }
-    let Ok(len) = usize::try_from(buf_size) else {
-        return ptr::null_mut();
-    };
     let handle_ref = unsafe { &(*handle) };
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if handle_ref.dm.is_read_only() {
@@ -1737,10 +1796,8 @@ pub extern "C" fn oifs_write_file_async(
         let Ok(path_str) = (unsafe { cstr_to_str(path) }).map(str::to_owned) else {
             return ptr::null_mut();
         };
-        let payload = if len == 0 {
-            Vec::new()
-        } else {
-            unsafe { std::slice::from_raw_parts(buf, len) }.to_vec()
+        let Ok(payload) = (unsafe { ffi_slice(buf, buf_size) }).map(|s| s.to_vec()) else {
+            return ptr::null_mut();
         };
         let mode = policy_to_compression_mode(policy_flags, zstd_level);
         let state = crate::disk::AsyncTaskState::new_pending();
@@ -1949,18 +2006,13 @@ pub extern "C" fn oifs_create_file_with_data_async_cb(
     let Some(cb_fn) = cb else {
         return -1;
     };
-    let Ok(len) = usize::try_from(buf_size) else {
-        return -1;
-    };
     let handle_ref = unsafe { &(*handle) };
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let Ok(path_str) = (unsafe { cstr_to_str(path) }).map(str::to_owned) else {
             return -1;
         };
-        let payload = if len == 0 {
-            Vec::new()
-        } else {
-            unsafe { std::slice::from_raw_parts(buf, len) }.to_vec()
+        let Ok(payload) = (unsafe { ffi_slice(buf, buf_size) }).map(|s| s.to_vec()) else {
+            return -1;
         };
         let mode = policy_to_compression_mode(policy_flags, zstd_level);
         let ud_addr = user_data as usize;
@@ -2009,6 +2061,11 @@ pub extern "C" fn oifs_fuse_dispatch_frame(
 
     if req_buf.is_null() || req_len == 0 {
         handle_ref.set_last_error(Some("Invalid FUSE request buffer".to_string()));
+        return -1;
+    }
+
+    if !ffi_slice_bytes_valid(req_len, 1) || !ffi_slice_bytes_valid(resp_cap, 1) {
+        handle_ref.set_last_error(Some("FUSE buffer length exceeds isize::MAX".to_string()));
         return -1;
     }
 
@@ -2748,11 +2805,6 @@ pub extern "C" fn oifs_create_file_with_data_filtered(
         return -1;
     }
 
-    let Ok(len) = usize::try_from(buf_size) else {
-        handle_ref.set_last_error(Some("Buffer size overflows usize".to_string()));
-        return -1;
-    };
-
     let compression_mode = policy_to_compression_mode(policy_flags, zstd_level);
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2764,10 +2816,12 @@ pub extern "C" fn oifs_create_file_with_data_filtered(
             }
         };
         let filter_config = unsafe { ffi_filter_config_to_rust(filter_cfg) };
-        let data = if len == 0 {
-            &[][..]
-        } else {
-            unsafe { std::slice::from_raw_parts(buf, len) }
+        let data = match unsafe { ffi_slice(buf, buf_size) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
         };
 
         let dm = &handle_ref.dm;
@@ -2836,11 +2890,6 @@ pub extern "C" fn oifs_write_file_with_filters(
         return -1;
     }
 
-    let Ok(len) = usize::try_from(buf_size) else {
-        handle_ref.set_last_error(Some("Buffer size overflows usize".to_string()));
-        return -1;
-    };
-
     let compression_mode = policy_to_compression_mode(policy_flags, zstd_level);
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2852,10 +2901,12 @@ pub extern "C" fn oifs_write_file_with_filters(
             }
         };
         let filter_config = unsafe { ffi_filter_config_to_rust(filter_cfg) };
-        let data = if len == 0 {
-            &[][..]
-        } else {
-            unsafe { std::slice::from_raw_parts(buf, len) }
+        let data = match unsafe { ffi_slice(buf, buf_size) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
         };
 
         let dm = &handle_ref.dm;

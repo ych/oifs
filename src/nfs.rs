@@ -341,11 +341,19 @@ pub const fn parse_record_marking_header(hdr: [u8; 4]) -> (bool, usize) {
     (is_last, frag_len)
 }
 
+/// Maximum number of fragments accepted in a single ONC RPC TCP record.
+const MAX_RPC_FRAGMENTS: usize = 64;
+/// Maximum simultaneous NFSv3 TCP client connections accepted by [`OifsNfsServer`].
+const MAX_CONCURRENT_NFS_CONNS: usize = 256;
+/// Per-socket blocking I/O timeout for NFSv3 TCP client connections.
+const NFS_CONN_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Reads one complete ONC RPC TCP record (reassembling multiple fragments) up to
 /// [`NFS_MAX_FRAME_LEN`]. Returns `Ok(None)` on clean EOF at a record boundary.
 pub fn read_rpc_record<R: Read>(reader: &mut R) -> io::Result<Option<Vec<u8>>> {
     let mut message = Vec::new();
     let mut any_fragment = false;
+    let mut frag_count = 0usize;
 
     loop {
         let mut hdr = [0u8; 4];
@@ -365,8 +373,21 @@ pub fn read_rpc_record<R: Read>(reader: &mut R) -> io::Result<Option<Vec<u8>>> {
             }
         }
         any_fragment = true;
+        frag_count += 1;
+        if frag_count > MAX_RPC_FRAGMENTS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ONC RPC record fragment count exceeds limit",
+            ));
+        }
 
         let (is_last, frag_len) = parse_record_marking_header(hdr);
+        if frag_len == 0 && !is_last {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ONC RPC zero-length non-final fragment",
+            ));
+        }
         let new_total = message.len().checked_add(frag_len).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "ONC RPC record length overflow")
         })?;
@@ -1225,7 +1246,7 @@ impl OifsNfsFs {
             }
         };
         buf.truncate(n);
-        let eof = offset.saturating_add(n as u64) >= inode.size;
+        let eof = n < available || offset.saturating_add(n as u64) >= inode.size;
 
         w.write_u32(NFS3_OK);
         self.write_post_op_attr(&mut w, inode_id, Some(&inode));
@@ -1986,9 +2007,17 @@ impl OifsNfsServer {
 
         let fs_bg = Arc::clone(&fs);
         let shutdown_bg = Arc::clone(&shutdown);
+        let active_conns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let accept_thread = thread::Builder::new()
             .name(format!("oifs-nfs-{port}"))
             .spawn(move || {
+                struct ConnCountGuard(Arc<std::sync::atomic::AtomicUsize>);
+                impl Drop for ConnCountGuard {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::AcqRel);
+                    }
+                }
+
                 let raw_fd = listener.as_raw_fd();
                 let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
@@ -1998,12 +2027,39 @@ impl OifsNfsServer {
                         Ok(true) => loop {
                             match listener.accept() {
                                 Ok((stream, _)) => {
+                                    // Atomically reserve a connection slot up to MAX_CONCURRENT_NFS_CONNS.
+                                    let mut reserved = false;
+                                    let mut cur = active_conns.load(Ordering::Acquire);
+                                    while cur < MAX_CONCURRENT_NFS_CONNS {
+                                        match active_conns.compare_exchange_weak(
+                                            cur,
+                                            cur + 1,
+                                            Ordering::AcqRel,
+                                            Ordering::Acquire,
+                                        ) {
+                                            Ok(_) => {
+                                                reserved = true;
+                                                break;
+                                            }
+                                            Err(actual) => cur = actual,
+                                        }
+                                    }
+                                    if !reserved {
+                                        drop(stream);
+                                        continue;
+                                    }
                                     let _ = stream.set_nonblocking(false);
+                                    let _ = stream.set_read_timeout(Some(NFS_CONN_IO_TIMEOUT));
+                                    let _ = stream.set_write_timeout(Some(NFS_CONN_IO_TIMEOUT));
                                     let fs_w = Arc::clone(&fs_bg);
                                     let sh_w = Arc::clone(&shutdown_bg);
+                                    let conn_guard = ConnCountGuard(Arc::clone(&active_conns));
                                     if let Ok(h) = thread::Builder::new()
                                         .name("oifs-nfs-conn".into())
-                                        .spawn(move || serve_tcp_connection(stream, fs_w, sh_w))
+                                        .spawn(move || {
+                                            let _guard = conn_guard;
+                                            serve_tcp_connection(stream, fs_w, sh_w);
+                                        })
                                     {
                                         workers.push(h);
                                     }

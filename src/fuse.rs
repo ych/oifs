@@ -2267,6 +2267,14 @@ impl FuseHandleTable {
         self.len() == 0
     }
 
+    /// Removes all open handles targeting `inode_id` (used after unlink/rmdir/overwrite).
+    pub fn invalidate_inode(&self, inode_id: u64) {
+        let mut guard = crate::write_unpoisoned(&self.handles);
+        if !guard.is_empty() {
+            guard.retain(|_, h| h.inode_id != inode_id);
+        }
+    }
+
     /// Drops all open handles (used on `FUSE_DESTROY`).
     pub fn clear(&self) {
         crate::write_unpoisoned(&self.handles).clear();
@@ -2447,6 +2455,17 @@ fn logical_file_size(inode: &Inode) -> u64 {
     } else {
         inode.size
     }
+}
+
+/// Maps unallocated-inode `NotFound` errors on active FUSE handles/nodeids to `-ESTALE`.
+#[inline]
+fn disk_error_to_stale_errno(err: &DiskManagerError) -> i32 {
+    if let DiskManagerError::Io(e) = err
+        && e.kind() == std::io::ErrorKind::NotFound
+    {
+        return -libc::ESTALE;
+    }
+    disk_error_to_errno(err)
 }
 
 /// Maps a [`DiskManagerError`] to a negative POSIX `errno` suitable for FUSE replies.
@@ -2731,8 +2750,8 @@ impl OifsFuseState {
     fn resolve_file_inode(&self, dm: &DiskManager, nodeid: u64) -> Result<(u64, Inode), i32> {
         let inode_id = nodeid_to_inode(nodeid).ok_or(-libc::ENOENT)?;
         let inode = dm
-            .read_inode(inode_id)
-            .map_err(|e| disk_error_to_errno(&e))?;
+            .read_allocated_inode(inode_id)
+            .map_err(|e| disk_error_to_stale_errno(&e))?;
         Ok((inode_id, inode))
     }
 
@@ -2744,8 +2763,8 @@ impl OifsFuseState {
             .lookup(parent_inode, name.as_ref())
             .map_err(|e| disk_error_to_errno(&e))?;
         let inode = dm
-            .read_inode(child_inode)
-            .map_err(|e| disk_error_to_errno(&e))?;
+            .read_allocated_inode(child_inode)
+            .map_err(|e| disk_error_to_stale_errno(&e))?;
         if inode.mode == FileType::Directory {
             self.record_parent(child_inode, parent_inode);
         }
@@ -2818,7 +2837,9 @@ impl OifsFuseState {
             return Err(-libc::EISDIR);
         }
         dm.delete_file(parent_inode, name.as_ref())
-            .map_err(|e| disk_error_to_errno(&e))
+            .map_err(|e| disk_error_to_errno(&e))?;
+        self.handles.invalidate_inode(target_inode_id);
+        Ok(())
     }
 
     pub fn rmdir(&self, dm: &DiskManager, parent: u64, name: &str) -> Result<(), i32> {
@@ -2832,13 +2853,14 @@ impl OifsFuseState {
             .lookup(parent_inode, name.as_ref())
             .map_err(|e| disk_error_to_errno(&e))?;
         let target_inode = dm
-            .read_inode(target_inode_id)
-            .map_err(|e| disk_error_to_errno(&e))?;
+            .read_allocated_inode(target_inode_id)
+            .map_err(|e| disk_error_to_stale_errno(&e))?;
         if target_inode.mode != FileType::Directory {
             return Err(-libc::ENOTDIR);
         }
         dm.delete_file(parent_inode, name.as_ref())
             .map_err(|e| disk_error_to_errno(&e))?;
+        self.handles.invalidate_inode(target_inode_id);
         self.forget_parent(target_inode_id);
         Ok(())
     }
@@ -2881,6 +2903,7 @@ impl OifsFuseState {
         if let Some(dst_id) = overwritten_inode_id
             && dst_id != moved_inode_id
         {
+            self.handles.invalidate_inode(dst_id);
             self.forget_parent(dst_id);
         }
         if let Ok(inode) = dm.read_inode(moved_inode_id)
@@ -2984,8 +3007,8 @@ impl OifsFuseState {
             nodeid_to_inode(nodeid).ok_or(-libc::ENOENT)?
         };
         let inode = dm
-            .read_inode(inode_id)
-            .map_err(|e| disk_error_to_errno(&e))?;
+            .read_allocated_inode(inode_id)
+            .map_err(|e| disk_error_to_stale_errno(&e))?;
         if inode.mode == FileType::Directory {
             return Err(-libc::EISDIR);
         }
@@ -3032,8 +3055,8 @@ impl OifsFuseState {
         if is_append {
             let _append_guard = crate::lock_unpoisoned(&self.append_lock);
             let inode = dm
-                .read_inode(inode_id)
-                .map_err(|e| disk_error_to_errno(&e))?;
+                .read_allocated_inode(inode_id)
+                .map_err(|e| disk_error_to_stale_errno(&e))?;
             if inode.mode == FileType::Directory {
                 return Err(-libc::EISDIR);
             }
@@ -3042,8 +3065,8 @@ impl OifsFuseState {
                 .map_err(|e| disk_error_to_errno(&e))?;
         } else {
             let inode = dm
-                .read_inode(inode_id)
-                .map_err(|e| disk_error_to_errno(&e))?;
+                .read_allocated_inode(inode_id)
+                .map_err(|e| disk_error_to_stale_errno(&e))?;
             if inode.mode == FileType::Directory {
                 return Err(-libc::EISDIR);
             }
@@ -3125,8 +3148,8 @@ impl OifsFuseState {
             nodeid_to_inode(nodeid).ok_or(-libc::ENOENT)?
         };
         let inode = dm
-            .read_inode(inode_id)
-            .map_err(|e| disk_error_to_errno(&e))?;
+            .read_allocated_inode(inode_id)
+            .map_err(|e| disk_error_to_stale_errno(&e))?;
         if inode.mode != FileType::Directory {
             return Err(-libc::ENOTDIR);
         }

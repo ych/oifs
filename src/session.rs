@@ -285,8 +285,36 @@ impl OifsSession {
         let mut guard = crate::lock_unpoisoned(registry);
 
         if let Some(session) = guard.get(&canon_key) {
-            if password.is_some() && !session.superblock()?.encrypted {
-                return Err(DiskManagerError::NotEncrypted.into());
+            match session {
+                OifsSession::Direct { dm, .. } => {
+                    dm.verify_password(password)?;
+                }
+                OifsSession::Remote {
+                    password: cached_pwd,
+                    dm_fallback,
+                    has_fallback,
+                    ..
+                } => {
+                    if has_fallback.load(std::sync::atomic::Ordering::Acquire)
+                        && let Some(dm) = crate::lock_unpoisoned(dm_fallback).as_ref()
+                    {
+                        dm.verify_password(password)?;
+                    } else {
+                        let is_encrypted = session.superblock()?.encrypted;
+                        if !is_encrypted && password.is_some() {
+                            return Err(DiskManagerError::NotEncrypted.into());
+                        }
+                        if is_encrypted {
+                            let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
+                            let expected =
+                                cached_pwd.as_ref().ok_or(DiskManagerError::PasswordRequired)?;
+                            if !crate::encryption::ct_eq_slice(pwd.as_bytes(), expected.as_bytes())
+                            {
+                                return Err(DiskManagerError::DecryptionFailed.into());
+                            }
+                        }
+                    }
+                }
             }
             return Ok(session.clone());
         }

@@ -1,5 +1,4 @@
-use argon2::password_hash::SaltString;
-use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version};
+use argon2::{Algorithm, Argon2, Params, Version};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use blake2::{Blake2b512, Digest};
 use chacha20poly1305::{
@@ -33,14 +32,16 @@ pub const KDF_CONTEXT_IPC_AUTH: &[u8] = b"oifs.kdf.v2.ipc.auth.blake2b";
 /// filename AEAD, and `BLAKE2b` IPC authentication).
 #[inline]
 pub fn derive_subkey(master_key: &[u8; 32], context: &[u8]) -> [u8; 32] {
+    debug_assert!(context.len() <= u8::MAX as usize);
     let mut hasher = Blake2b512::new();
     hasher.update(b"OIFS-BLAKE2B-SUBKEY-KDF-V2");
     hasher.update([context.len() as u8]);
     hasher.update(context);
     hasher.update(master_key);
-    let digest = hasher.finalize();
+    let mut digest = hasher.finalize_reset();
     let mut subkey = [0u8; 32];
     subkey.copy_from_slice(&digest[..32]);
+    digest.zeroize();
     subkey
 }
 
@@ -143,27 +144,12 @@ pub fn derive_key_with_params(
         .map_err(|_| EncryptionError::KeyDerivationFailed)?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-    // Convert salt to SaltString format
-    let salt_string =
-        SaltString::encode_b64(salt).map_err(|_| EncryptionError::KeyDerivationFailed)?;
-
-    // Derive key using Argon2id
-    let password_hash = argon2
-        .hash_password(password.as_bytes(), &salt_string)
-        .map_err(|_| EncryptionError::KeyDerivationFailed)?;
-
-    // Extract the hash output as our encryption key
-    let hash = password_hash
-        .hash
-        .ok_or(EncryptionError::KeyDerivationFailed)?;
-
-    let hash_bytes = hash.as_bytes();
-    if hash_bytes.len() < 32 {
-        return Err(EncryptionError::KeyDerivationFailed);
-    }
-
+    // Derive directly into a zeroized stack buffer (avoids leaving master key bytes
+    // in an unzeroized `password_hash::Output` buffer).
     let mut key = [0u8; 32];
-    key.copy_from_slice(&hash_bytes[..32]);
+    argon2
+        .hash_password_into(password.as_bytes(), salt, &mut key)
+        .map_err(|_| EncryptionError::KeyDerivationFailed)?;
     let enc_key = EncryptionKey::from_bytes(key);
     key.zeroize();
 
@@ -519,7 +505,7 @@ fn hchacha20_subkey(key: &[u8; 32], nonce16: &[u8]) -> [u32; 8] {
 
 #[inline]
 fn chacha20_block_words(subkey: &[u32; 8], counter: u32, nonce8: &[u8]) -> [u8; 64] {
-    let init = [
+    let mut init = [
         0x6170_7865,
         0x3320_646e,
         0x7962_2d32,
@@ -545,6 +531,7 @@ fn chacha20_block_words(subkey: &[u32; 8], counter: u32, nonce8: &[u8]) -> [u8; 
         out[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
     }
     s.zeroize();
+    init.zeroize();
     out
 }
 
@@ -638,16 +625,16 @@ fn derive_filename_siv_nonce(key: &EncryptionKey, parent_inode: u64, name: &[u8]
     nonce
 }
 
-#[inline]
-fn ct_eq_slice(a: &[u8], b: &[u8]) -> bool {
+#[inline(never)]
+pub(crate) fn ct_eq_slice(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
     let mut diff = 0u8;
     for (&x, &y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
+        diff |= std::hint::black_box(x ^ y);
     }
-    diff == 0
+    std::hint::black_box(diff) == 0
 }
 
 /// Encrypts a filename deterministically using a 192-bit (24-byte) Synthetic IV (SIV)
@@ -656,16 +643,13 @@ fn ct_eq_slice(a: &[u8], b: &[u8]) -> bool {
 ///
 /// Returns a safe ASCII string starting with `_e_` followed by unpadded Base64URL-encoded
 /// `[24-byte XNonce | ciphertext | 16-byte Poly1305 tag]`.
-/// If the input is already encrypted with `_e_`, it returns it as-is.
+/// Even inputs literally beginning with `_e_` are encrypted and authenticated.
 pub fn encrypt_filename(
     key: &EncryptionKey,
     parent_inode: u64,
     name: &str,
 ) -> Result<String, EncryptionError> {
     if name.is_empty() || name == "." || name == ".." {
-        return Ok(name.to_string());
-    }
-    if name.starts_with(FILENAME_ENC_PREFIX) {
         return Ok(name.to_string());
     }
 
@@ -760,21 +744,22 @@ fn decrypt_filename_legacy_v1(
     }
 }
 
-/// Decrypts a filename encrypted by `encrypt_filename`.
+/// Authenticates and decrypts an encrypted filename (`_e_...`) bound to `parent_inode`.
 ///
-/// Authenticates the 24-byte `XChaCha20-Poly1305` ciphertext with `parent_inode` bound
-/// in the Poly1305 AAD and verifies the 24-byte synthetic nonce in constant time.
-/// Falls back to the legacy 12-byte `ChaCha20-Poly1305` format if needed, or returns
-/// the original name if `name` does not start with `_e_` or fails authentication.
-pub fn decrypt_filename(
+/// Legacy 12-byte `ChaCha20-Poly1305` tokens are accepted only when
+/// `encryption_version < ENCRYPTION_SCHEME_CONTEXT_BOUND`. Any missing prefix,
+/// decode error, Poly1305 failure, or SIV mismatch returns `Err(DecryptionFailed)`.
+pub fn decrypt_filename_authenticated(
     key: &EncryptionKey,
     parent_inode: u64,
     name: &str,
+    encryption_version: u8,
 ) -> Result<String, EncryptionError> {
     if !name.starts_with(FILENAME_ENC_PREFIX) {
-        return Ok(name.to_string());
+        return Err(EncryptionError::DecryptionFailed);
     }
 
+    let allow_legacy_v1 = encryption_version < ENCRYPTION_SCHEME_CONTEXT_BOUND;
     let b64 = &name[FILENAME_ENC_PREFIX.len()..];
     let aad = filename_aad_stack(parent_inode);
 
@@ -782,7 +767,7 @@ pub fn decrypt_filename(
         let mut decode_buf = [0u8; 320];
         let payload_len = match Base64UrlUnpadded::decode(b64, &mut decode_buf) {
             Ok(p) if p.len() >= 28 => p.len(),
-            _ => return Ok(name.to_string()),
+            _ => return Err(EncryptionError::DecryptionFailed),
         };
 
         if payload_len >= 40 {
@@ -824,18 +809,16 @@ pub fn decrypt_filename(
             }
         }
 
-        if let Some(legacy_pt) =
-            decrypt_filename_legacy_v1(key, parent_inode, &decode_buf[..payload_len])
+        if allow_legacy_v1
+            && let Some(legacy_pt) =
+                decrypt_filename_legacy_v1(key, parent_inode, &decode_buf[..payload_len])
         {
             return Ok(legacy_pt);
         }
-        return Ok(name.to_string());
+        return Err(EncryptionError::DecryptionFailed);
     }
 
-    let payload = match Base64UrlUnpadded::decode_vec(b64) {
-        Ok(p) => p,
-        Err(_) => return Ok(name.to_string()),
-    };
+    let payload = Base64UrlUnpadded::decode_vec(b64).map_err(|_| EncryptionError::DecryptionFailed)?;
 
     if payload.len() >= 40 {
         let nonce = &payload[..24];
@@ -859,11 +842,28 @@ pub fn decrypt_filename(
         }
     }
 
-    if let Some(legacy_pt) = decrypt_filename_legacy_v1(key, parent_inode, &payload) {
+    if allow_legacy_v1
+        && let Some(legacy_pt) = decrypt_filename_legacy_v1(key, parent_inode, &payload)
+    {
         return Ok(legacy_pt);
     }
 
-    Ok(name.to_string())
+    Err(EncryptionError::DecryptionFailed)
+}
+
+/// Decrypts a filename encrypted by `encrypt_filename`.
+///
+/// Non-prefixed names pass through unchanged; any `_e_`-prefixed entry must
+/// authenticate cleanly via `decrypt_filename_authenticated` or return `Err(DecryptionFailed)`.
+pub fn decrypt_filename(
+    key: &EncryptionKey,
+    parent_inode: u64,
+    name: &str,
+) -> Result<String, EncryptionError> {
+    if !name.starts_with(FILENAME_ENC_PREFIX) {
+        return Ok(name.to_string());
+    }
+    decrypt_filename_authenticated(key, parent_inode, name, ENCRYPTION_SCHEME_LEGACY)
 }
 
 /// Encryption-related errors
@@ -985,13 +985,38 @@ mod tests {
         let decrypted = decrypt_filename(&key, parent_inode, &encrypted).unwrap();
         assert_eq!(decrypted, original_name);
 
-        // 5. Decrypt with wrong parent_inode falls back gracefully
-        let wrong_dir = decrypt_filename(&key, 999u64, &encrypted).unwrap();
-        assert_ne!(wrong_dir, original_name); // Decryption fails synthetic check
+        // 5. Decrypt with wrong parent_inode fails authentication cleanly
+        let wrong_dir = decrypt_filename(&key, 999u64, &encrypted);
+        assert!(wrong_dir.is_err(), "wrong parent_inode must fail auth");
 
-        // 6. Non-encrypted name passes through unchanged
+        // 6. Plaintext `_e_`-prefixed filenames are encrypted (never stored in plaintext)
+        let prefixed = "_e_literal_secret.txt";
+        let enc_prefixed = encrypt_filename(&key, parent_inode, prefixed).unwrap();
+        assert_ne!(enc_prefixed, prefixed);
+        assert!(!enc_prefixed.contains("literal_secret"));
+        assert_eq!(
+            decrypt_filename_authenticated(
+                &key,
+                parent_inode,
+                &enc_prefixed,
+                ENCRYPTION_SCHEME_CONTEXT_BOUND
+            )
+            .unwrap(),
+            prefixed
+        );
+
+        // 7. Unprefixed names fail strict authenticated decryption, pass legacy decrypt_filename
         let plain = "normal_unencrypted.txt";
         assert_eq!(decrypt_filename(&key, parent_inode, plain).unwrap(), plain);
+        assert!(
+            decrypt_filename_authenticated(
+                &key,
+                parent_inode,
+                plain,
+                ENCRYPTION_SCHEME_CONTEXT_BOUND
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1035,14 +1060,14 @@ mod tests {
                 FILENAME_ENC_PREFIX,
                 Base64UrlUnpadded::encode_string(&tampered)
             );
-            assert_eq!(
-                decrypt_filename(&key, parent_inode, &tampered_tok).unwrap(),
-                tampered_tok,
+            assert!(
+                decrypt_filename(&key, parent_inode, &tampered_tok).is_err(),
                 "Tampered byte at index {idx} must be rejected by Poly1305/SIV"
             );
         }
 
-        // Legacy v1 12-byte ChaCha20Poly1305 encrypted filenames remain readable
+        // Legacy v1 12-byte ChaCha20Poly1305 encrypted filenames remain readable on v1 images
+        // but are rejected on v2+ context-bound images (anti-downgrade).
         let mut hasher = Blake2b512::new();
         hasher.update(b"OIFS_SIV_FILENAME_V1");
         hasher.update(key.as_bytes());
@@ -1064,9 +1089,40 @@ mod tests {
             Base64UrlUnpadded::encode_string(&legacy_raw)
         );
         assert_eq!(
-            decrypt_filename(&key, parent_inode, &legacy_tok).unwrap(),
+            decrypt_filename_authenticated(
+                &key,
+                parent_inode,
+                &legacy_tok,
+                ENCRYPTION_SCHEME_LEGACY
+            )
+            .unwrap(),
             name
         );
+        assert!(
+            decrypt_filename_authenticated(
+                &key,
+                parent_inode,
+                &legacy_tok,
+                ENCRYPTION_SCHEME_CONTEXT_BOUND
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_derive_key_hash_password_into_matches_password_hasher() {
+        use argon2::PasswordHasher;
+        use argon2::password_hash::SaltString;
+
+        let salt = [0x42u8; 16];
+        let pwd = "correct-horse-battery-staple";
+        let params = Params::new(1024, 1, 1, Some(32)).unwrap();
+        let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+        let salt_string = SaltString::encode_b64(&salt).unwrap();
+        let ph = argon2.hash_password(pwd.as_bytes(), &salt_string).unwrap();
+        let ref_bytes = ph.hash.unwrap();
+        let derived = derive_key_with_params(pwd, &salt, 1024, 1, 1).unwrap();
+        assert_eq!(derived.as_bytes(), ref_bytes.as_bytes());
     }
 
     #[test]

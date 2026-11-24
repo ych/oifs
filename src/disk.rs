@@ -307,6 +307,8 @@ pub(crate) struct DiskManagerInner {
     pub superblock: SuperBlock,
     /// Encryption key (if filesystem is encrypted)
     pub encryption_key: Option<crate::encryption::EncryptionKey>,
+    /// Keyed BLAKE2b verifier of the mount password for session re-authentication
+    password_verifier: Option<zeroize::Zeroizing<[u8; 32]>>,
     /// Search hint for sequential O(1) block allocation
     pub free_block_hint: u64,
     /// Search hint for sequential O(1) inode allocation
@@ -339,6 +341,17 @@ impl DiskManagerInner {
     /// in-memory bitmap mirror.
     pub(crate) fn inode_bitmap_slice(&self) -> Option<&[u8]> {
         self.backing.inode_bitmap_slice(&self.superblock)
+    }
+
+    /// Returns `true` when `inode_id` is within the usable inode table and marked allocated.
+    pub(crate) fn is_inode_allocated(&self, inode_id: u64) -> bool {
+        if inode_id >= self.superblock.usable_inode_count() {
+            return false;
+        }
+        let Some(ib) = self.inode_bitmap_slice() else {
+            return false;
+        };
+        crate::bitmap::BitmapRef::new(ib).get(inode_id as usize)
     }
 
     /// The data bitmap as one contiguous slice.
@@ -1326,17 +1339,16 @@ impl DiskManager {
             .validate(backing.len())
             .map_err(DiskManagerError::CorruptedSuperblock)?;
 
-        let encryption_key = if superblock.encrypted {
+        let (encryption_key, password_verifier) = if superblock.encrypted {
             let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
-            Some(crate::encryption::derive_key(
-                pwd,
-                &superblock.encryption_salt,
-            )?)
+            let key = crate::encryption::derive_key(pwd, &superblock.encryption_salt)?;
+            let verifier = Self::compute_password_verifier(&key, pwd);
+            (Some(key), Some(verifier))
         } else {
             if password.is_some() {
                 return Err(DiskManagerError::NotEncrypted);
             }
-            None
+            (None, None)
         };
 
         // Load read-only bitmap & journal mirrors for `StorageMode::FileIo` (no-op for `MmapReadOnly`).
@@ -1369,6 +1381,7 @@ impl DiskManager {
             backing,
             superblock,
             encryption_key,
+            password_verifier,
             free_block_hint,
             free_inode_hint: 0,
             inode_cache: BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY),
@@ -1472,6 +1485,55 @@ impl DiskManager {
         )
     }
 
+    fn compute_password_verifier(
+        key: &crate::encryption::EncryptionKey,
+        pwd: &str,
+    ) -> zeroize::Zeroizing<[u8; 32]> {
+        use blake2::{Blake2b512, Digest};
+        use zeroize::Zeroize;
+        let mut hasher = Blake2b512::new();
+        hasher.update(b"OIFS-PWD-VERIFIER-V1");
+        hasher.update(key.ipc_auth_key());
+        hasher.update(pwd.as_bytes());
+        let mut digest = hasher.finalize_reset();
+        let mut out = zeroize::Zeroizing::new([0u8; 32]);
+        out.copy_from_slice(&digest[..32]);
+        digest.zeroize();
+        out
+    }
+
+    /// Verifies `password` against an already-opened [`DiskManager`] handle (used to enforce
+    /// credential checks when reusing a cached session in `SESSION_REGISTRY`).
+    pub(crate) fn verify_password(&self, password: Option<&str>) -> Result<(), DiskManagerError> {
+        let guard = self.inner.read().unwrap();
+        if !guard.superblock.encrypted {
+            if password.is_some() {
+                return Err(DiskManagerError::NotEncrypted);
+            }
+            return Ok(());
+        }
+        let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
+        let key = guard
+            .encryption_key
+            .as_ref()
+            .ok_or(DiskManagerError::PasswordRequired)?;
+        if let Some(expected) = &guard.password_verifier {
+            let candidate = Self::compute_password_verifier(key, pwd);
+            if crate::encryption::ct_eq_slice(&*candidate, &**expected) {
+                Ok(())
+            } else {
+                Err(DiskManagerError::DecryptionFailed)
+            }
+        } else {
+            let candidate = crate::encryption::derive_key(pwd, &guard.superblock.encryption_salt)?;
+            if crate::encryption::ct_eq_slice(candidate.as_bytes(), key.as_bytes()) {
+                Ok(())
+            } else {
+                Err(DiskManagerError::DecryptionFailed)
+            }
+        }
+    }
+
     fn init_or_open_with_key<P: AsRef<Path>>(
         path: P,
         total_size: u64,
@@ -1482,14 +1544,17 @@ impl DiskManager {
         storage_mode: StorageMode,
     ) -> Result<Self, DiskManagerError> {
         let path = path.as_ref();
-        let exists = path.exists();
+        let existed_before = path.exists();
 
+        // Never pass O_TRUNC before acquiring the exclusive file lock, otherwise a racing
+        // `create_encrypted` call would truncate a live locked `.img` to 0 bytes before
+        // `try_lock_whole_file` rejects it.
         let mut open_opts = OpenOptions::new();
         open_opts
             .read(true)
             .write(true)
             .create(true)
-            .truncate(create_encrypted);
+            .truncate(false);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -1500,11 +1565,25 @@ impl DiskManager {
         }
         let file = open_opts.open(path)?;
 
-        // Acquire Lock using F_SETLK
+        // Acquire Lock using F_SETLK before inspecting or resizing the image.
         Self::try_lock_whole_file(&file)?;
 
-        let is_new = !exists || create_encrypted;
+        let current_len = file.metadata()?.len();
+        let is_new = !existed_before || create_encrypted || current_len == 0;
+        let mut password_verifier = None;
         if is_new {
+            let block_count = total_size / BLOCK_SIZE as u64;
+            let min_blocks = if journal { 41 } else { 8 };
+            if block_count < min_blocks {
+                drop(file);
+                if !existed_before && current_len == 0 {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(DiskManagerError::FileTooSmall);
+            }
+            if create_encrypted && current_len > 0 {
+                file.set_len(0)?;
+            }
             file.set_len(total_size)?;
         }
 
@@ -1526,6 +1605,9 @@ impl DiskManager {
                     sb.encryption_salt = crate::encryption::generate_salt();
                     // New images bind the ciphertext to its file.
                     sb.encryption_version = crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
+                    if let Some(pwd) = password {
+                        password_verifier = Some(Self::compute_password_verifier(&key, pwd));
+                    }
                     encryption_key = Some(key);
                 } else {
                     let pwd = password.unwrap_or_default();
@@ -1534,6 +1616,7 @@ impl DiskManager {
                     // New images bind the ciphertext to its file.
                     sb.encryption_version = crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
                     let key = crate::encryption::derive_key(pwd, &sb.encryption_salt)?;
+                    password_verifier = Some(Self::compute_password_verifier(&key, pwd));
                     encryption_key = Some(key);
                 }
             } else {
@@ -1558,10 +1641,14 @@ impl DiskManager {
 
             if superblock.encrypted {
                 if let Some(key) = existing_key {
+                    if let Some(pwd) = password {
+                        password_verifier = Some(Self::compute_password_verifier(&key, pwd));
+                    }
                     encryption_key = Some(key);
                 } else {
                     let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
                     let key = crate::encryption::derive_key(pwd, &superblock.encryption_salt)?;
+                    password_verifier = Some(Self::compute_password_verifier(&key, pwd));
                     encryption_key = Some(key);
                 }
             } else {
@@ -1601,6 +1688,7 @@ impl DiskManager {
             backing,
             superblock,
             encryption_key,
+            password_verifier,
             free_block_hint,
             free_inode_hint: 0,
             inode_cache: BoundedInodeCache::with_capacity(INODE_CACHE_CAPACITY),
@@ -6054,6 +6142,25 @@ impl DiskManager {
         Ok(slot)
     }
 
+    /// Returns `true` if `inode_id` is currently marked allocated in the inode bitmap.
+    pub fn is_inode_allocated(&self, inode_id: u64) -> bool {
+        let guard = self.inner.read().unwrap();
+        guard.is_inode_allocated(inode_id)
+    }
+
+    /// Reads an inode only if it is currently marked allocated in the inode bitmap.
+    /// Returns `ErrorKind::NotFound` if the inode is unallocated or out of bounds.
+    pub fn read_allocated_inode(&self, inode_id: u64) -> Result<Inode, DiskManagerError> {
+        let guard = self.inner.read().unwrap();
+        if !guard.is_inode_allocated(inode_id) {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Inode not allocated",
+            )));
+        }
+        Self::read_inode_internal(&guard, inode_id)
+    }
+
     fn read_inode_internal(
         guard: &DiskManagerInner,
         inode_id: u64,
@@ -6546,29 +6653,30 @@ impl DiskManager {
             let block_entries = Self::read_dir_entries_from_block(&guard.backing, phys_blk)?;
             let used: usize = block_entries.iter().map(|e| 18 + e.name.len()).sum();
             last_tail = Some((phys_blk, used.min(BLOCK_SIZE) as u16));
-            for e in block_entries {
-                stored_entries.push((e.name.clone(), e.inode, phys_blk, e.hash));
-                entries.push(e);
+            let enc_ver = guard.superblock.encryption_version;
+            for mut e in block_entries {
+                if let Some(key) = &guard.encryption_key {
+                    let Ok(decrypted) = crate::encryption::decrypt_filename_authenticated(
+                        key,
+                        dir_inode_id,
+                        &e.name,
+                        enc_ver,
+                    ) else {
+                        continue;
+                    };
+                    if crate::directory::validate_filename(&decrypted).is_err() {
+                        continue;
+                    }
+                    let raw_name = std::mem::replace(&mut e.name, decrypted);
+                    let raw_hash = e.hash;
+                    e.hash = crate::directory::hash_filename(&e.name);
+                    stored_entries.push((raw_name, e.inode, phys_blk, raw_hash));
+                    entries.push(e);
+                } else {
+                    stored_entries.push((e.name.clone(), e.inode, phys_blk, e.hash));
+                    entries.push(e);
+                }
             }
-        }
-
-        if let Some(key) = &guard.encryption_key {
-            entries.retain_mut(|entry| {
-                if !entry
-                    .name
-                    .starts_with(crate::encryption::FILENAME_ENC_PREFIX)
-                {
-                    return false;
-                }
-                if let Ok(decrypted) =
-                    crate::encryption::decrypt_filename(key, dir_inode_id, &entry.name)
-                    && crate::directory::validate_filename(&decrypted).is_ok()
-                {
-                    entry.hash = crate::directory::hash_filename(&decrypted);
-                    entry.name = decrypted;
-                }
-                true
-            });
         }
 
         // 3. Promote scanned directory to complete index in cache for future O(1) lookups and listings

@@ -735,7 +735,7 @@ impl OifsNfsFs {
     fn decode_handle(&self, r: &mut XdrReader<'_>) -> Result<u64, u32> {
         let bytes = r.read_opaque(64).ok_or(NFS3ERR_BADHANDLE)?;
         let fh = NfsFileHandle::from_bytes(bytes).ok_or(NFS3ERR_BADHANDLE)?;
-        if fh.fs_generation != self.fs_generation {
+        if fh.fs_generation != self.fs_generation || !self.dm.is_inode_allocated(fh.inode_id) {
             return Err(NFS3ERR_STALE);
         }
         Ok(fh.inode_id)
@@ -844,7 +844,7 @@ impl OifsNfsFs {
     }
 
     fn read_inode_opt(&self, inode_id: u64) -> Option<Inode> {
-        self.dm.read_inode(inode_id).ok()
+        self.dm.read_allocated_inode(inode_id).ok()
     }
 
     /// Dispatches one complete ONC RPC v2 request message and returns the serialized
@@ -993,10 +993,13 @@ impl OifsNfsFs {
                 return w.into_bytes();
             }
         };
-        match self.dm.read_inode(inode_id) {
+        match self.dm.read_allocated_inode(inode_id) {
             Ok(inode) => {
                 w.write_u32(NFS3_OK);
                 self.write_fattr3(&mut w, inode_id, &inode);
+            }
+            Err(DiskManagerError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                w.write_u32(NFS3ERR_STALE);
             }
             Err(e) => w.write_u32(disk_error_to_nfs3(&e)),
         }
@@ -1028,6 +1031,11 @@ impl OifsNfsFs {
         if self.is_read_only() {
             w.write_u32(NFS3ERR_ROFS);
             self.write_wcc_data(&mut w, inode_id, pre.as_ref(), pre.as_ref());
+            return w.into_bytes();
+        }
+        if pre.is_none() {
+            w.write_u32(NFS3ERR_STALE);
+            self.write_wcc_data(&mut w, inode_id, None, None);
             return w.into_bytes();
         }
 
@@ -1181,8 +1189,13 @@ impl OifsNfsFs {
             return begin_accepted_reply(xid, RPC_ACCEPT_GARBAGE_ARGS).into_bytes();
         };
 
-        let inode = match self.dm.read_inode(inode_id) {
+        let inode = match self.dm.read_allocated_inode(inode_id) {
             Ok(ino) => ino,
+            Err(DiskManagerError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                w.write_u32(NFS3ERR_STALE);
+                w.write_bool(false);
+                return w.into_bytes();
+            }
             Err(e) => {
                 w.write_u32(disk_error_to_nfs3(&e));
                 w.write_bool(false);
@@ -1244,6 +1257,11 @@ impl OifsNfsFs {
         if self.is_read_only() {
             w.write_u32(NFS3ERR_ROFS);
             self.write_wcc_data(&mut w, inode_id, pre.as_ref(), pre.as_ref());
+            return w.into_bytes();
+        }
+        if pre.is_none() {
+            w.write_u32(NFS3ERR_STALE);
+            self.write_wcc_data(&mut w, inode_id, None, None);
             return w.into_bytes();
         }
         if let Some(ref ino) = pre

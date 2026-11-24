@@ -5,7 +5,7 @@ description: "Covers the pluggable I/O backend system (Mmap, Pread, IoUring), Ex
 tags: ["architecture", "io", "async", "io-uring", "group-commit"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs

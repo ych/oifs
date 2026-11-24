@@ -5,13 +5,13 @@ description: "Complete reference for the oifs and oifs_mcp CLI commands: global 
 tags: ["cli", "reference", "operations", "oifs", "oifs_mcp"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-1d8ff572dc201d9ae2619645
     resource: repo://src/bin/oifs_mcp.rs
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
 
 ## Overview
@@ -23,8 +23,7 @@ The OIFS project provides two command-line executables:
 | `oifs` | [`src/bin/oifs.rs`](../../src/bin/oifs.rs) | Full-featured CLI for creating, inspecting, modifying, and diagnosing OIFS filesystem images. |
 | `oifs_mcp` | [`src/bin/oifs_mcp.rs`](../../src/bin/oifs_mcp.rs) | MCP (Model Context Protocol) server that exposes OIFS as tools for AI agents via stdio. |
 
-<!-- openwiki: broken internal link [../architecture/architecture.md] file "../architecture/architecture.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-Both binaries are built with [`clap`](https://crates.io/crates/clap) using the derive pattern. The `oifs` CLI routes operations through the [`OifsSession`](../architecture/architecture.md) layer, meaning CLI commands automatically participate in multi-process Master-Proxy concurrency when IPC is enabled.
+Both binaries are built with [`clap`](https://crates.io/crates/clap) using the derive pattern. The `oifs` CLI routes operations through the [`OifsSession`](../architecture/overview.md) layer, meaning CLI commands automatically participate in multi-process Master-Proxy concurrency when IPC is enabled.
 
 ---
 
@@ -498,6 +497,8 @@ oifs_mcp [--size <MB>] [IMAGE_PATH]
 
 ### Exposed MCP Tools
 
+The server exposes **8 tools** over stdio ([`src/bin/oifs_mcp.rs`](../../src/bin/oifs_mcp.rs)):
+
 | Tool | Description | Parameters |
 | :--- | :--- | :--- |
 | `write_file` | Write (create or overwrite) a file inside the OIFS sandbox image. Parent directories must already exist. | `path: string`, `content: string` |
@@ -558,5 +559,4 @@ When operating over networked shared storage (NFS, Lustre, AWS EFS, or multi-nod
 - [Quickstart](../quickstart.md) — Getting started with OIFS
 - [Basic Operations](../workflows/basic_operations.md) — Common workflow examples
 - [FSCK Workflow](../workflows/fsck_workflow.md) — Filesystem consistency checking
-<!-- openwiki: broken internal link [../architecture/architecture.md] file "../architecture/architecture.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [Architecture](../architecture/architecture.md) — System architecture and Session modes
+- [Architecture](../architecture/overview.md) — System architecture and Session modes

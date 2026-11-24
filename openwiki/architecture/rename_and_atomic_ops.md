@@ -5,7 +5,7 @@ description: Documents the atomic POSIX rename implementation with WAL transacti
 tags: [rename, wal, encryption, fuse, journaling, atomic-operations]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
@@ -15,7 +15,7 @@ sources:
     resource: repo://src/fuse.rs
   - id: openwiki-source-813113339610c0170804687f
     resource: repo://src/journal.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
 
 # Atomic Rename and Metadata Operations
@@ -29,12 +29,15 @@ This page documents the atomic POSIX rename implementation in OIFS, covering the
 The legacy `FUSE_RENAME` opcode (value `23` on Linux) carries only `newdir: u64` followed by two NUL-terminated names. The macOS FUSE implementation may extend this to 16 bytes with an optional flags field.
 
 ```rust
-// src/fuse.rs:3427-3450
+// src/fuse.rs:3734-3762
 FuseOpcode::Rename => {
-    let Some(newdir) = read_u64_le(payload, 0) else { ... };
+    let Some(newdir) = read_u64_le(payload, 0) else {
+        return FuseOutHeader::error_frame(unique, -libc::EINVAL);
+    };
+    // On Linux, `fuse_rename_in` is 8 bytes (`newdir: u64`).
     // On macOS (macFUSE 4.x/5.x), `fuse_rename_in` may be 16 bytes
     // (`newdir: u64, flags: u32, padding: u32`) when `FUSE_RENAME` carries flags.
-    let (flags, names_slice) = if platform == FuseAbiPlatform::MacOs
+    let (raw_flags, names_slice) = if platform == FuseAbiPlatform::MacOs
         && payload.len() > 16
         && payload[12..16] == [0, 0, 0, 0]
         && (payload[8] == 0 || payload[9..12] == [0, 0, 0])
@@ -43,29 +46,84 @@ FuseOpcode::Rename => {
     } else {
         (0, &payload[8..])
     };
-    let (old_name, new_name) = match parse_fuse_two_names(names_slice) { ... };
-    match self.rename(dm, hdr.nodeid, old_name, newdir, new_name, flags) { ... }
+    let flags = match map_rename_flags(platform, raw_flags) {
+        Ok(f) => f,
+        Err(e) => return FuseOutHeader::error_frame(unique, e),
+    };
+    let (old_name, new_name) = match parse_fuse_two_names(names_slice) {
+        Ok(pair) => pair,
+        Err(e) => return FuseOutHeader::error_frame(unique, e),
+    };
+    match self.rename(dm, hdr.nodeid, old_name, newdir, new_name, flags) {
+        Ok(()) => FuseOutHeader::ok_frame(unique, &[]),
+        Err(e) => FuseOutHeader::error_frame(unique, e),
+    }
 }
 ```
+
+The macOS-specific path parses a 16-byte header (`newdir: u64`, `flags: u32`, `padding: u32`) and extracts flags from bytes 8–11 when the padding bytes 12–15 are zero and the upper flag bytes 9–11 are zero (allowing only the low byte to carry flags).
 
 ### FUSE_RENAME2 (Modern, with Flags)
 
 The modern `FUSE_RENAME2` opcode (value `28` on Linux) uses a fixed 16-byte header (`newdir: u64, flags: u32, padding: u32`) followed by the two names. The only flag currently supported is `FUSE_RENAME_NOREPLACE` (bit 0).
 
 ```rust
-// src/fuse.rs:3452-3465
+// src/fuse.rs:3763-3790
 FuseOpcode::Rename2 => {
-    let (Some(newdir), Some(flags)) = (read_u64_le(payload, 0), read_u32_le(payload, 8)) else { ... };
-    if payload.len() < 16 { return FuseOutHeader::error_frame(unique, -libc::EINVAL); }
-    let (old_name, new_name) = match parse_fuse_two_names(&payload[16..]) { ... };
-    match self.rename(dm, hdr.nodeid, old_name, newdir, new_name, flags) { ... }
+    let (Some(newdir), Some(raw_flags)) =
+        (read_u64_le(payload, 0), read_u32_le(payload, 8))
+    else {
+        return FuseOutHeader::error_frame(unique, -libc::EINVAL);
+    };
+    if payload.len() < 16 {
+        return FuseOutHeader::error_frame(unique, -libc::EINVAL);
+    }
+    let flags = match map_rename_flags(platform, raw_flags) {
+        Ok(f) => f,
+        Err(e) => return FuseOutHeader::error_frame(unique, e),
+    };
+    let (old_name, new_name) = match parse_fuse_two_names(&payload[16..]) {
+        Ok(pair) => pair,
+        Err(e) => return FuseOutHeader::error_frame(unique, e),
+    };
+    match self.rename(dm, hdr.nodeid, old_name, newdir, new_name, flags) {
+        Ok(()) => FuseOutHeader::ok_frame(unique, &[]),
+        Err(e) => FuseOutHeader::error_frame(unique, e),
+    }
+}
+```
+
+Flag validation is centralized in `map_rename_flags`:
+
+```rust
+// src/fuse.rs:2674-2690
+fn map_rename_flags(platform: FuseAbiPlatform, raw_flags: u32) -> Result<u32, i32> {
+    if raw_flags == 0 {
+        return Ok(0);
+    }
+    match platform {
+        FuseAbiPlatform::Linux => {
+            if raw_flags == FUSE_RENAME_NOREPLACE {
+                Ok(FUSE_RENAME_NOREPLACE)
+            } else {
+                Err(-libc::EINVAL)
+            }
+        }
+        FuseAbiPlatform::MacOs => {
+            if raw_flags == MACOS_RENAME_EXCL {
+                Ok(FUSE_RENAME_NOREPLACE)
+            } else {
+                Err(-libc::EINVAL)
+            }
+        }
+    }
 }
 ```
 
 The VFS layer validates flags and enforces `NOREPLACE` semantics before delegating to `DiskManager::rename`:
 
 ```rust
-// src/fuse.rs:2832-2856
+// src/fuse.rs:3080-3110
 pub fn rename(
     &self,
     dm: &DiskManager,
@@ -93,7 +151,7 @@ pub fn rename(
 The WAL (Write-Ahead Log) uses **idempotent post-image** operations. Every `MetadataOp` is an absolute assignment, never a relative delta, making redo replay safe and repeatable. There is **no** `MetadataOp::Rename` or `MetadataOp::LinkCount` variant; renames are composed from primitive operations.
 
 ```rust
-// src/journal.rs:308-337
+// src/journal.rs:308-345
 pub enum MetadataOp {
     /// Set or clear the allocation bit for `inode_id` in the inode bitmap.
     SetInodeBitmap { inode_id: u64, allocated: bool },
@@ -127,7 +185,7 @@ On mount, `JournalRing::recover` replays every valid transaction between `tail` 
 ### Entry Point
 
 ```rust
-// src/disk.rs:7234-7270
+// src/disk.rs:7547-7575
 pub fn rename(
     &self,
     old_parent_inode_id: u64,
@@ -209,7 +267,7 @@ On encrypted filesystems, directory entry names are encrypted using a **determin
 - The plaintext filename bytes
 
 ```rust
-// src/encryption.rs:660-720
+// src/encryption.rs:651-720
 pub fn encrypt_filename(
     key: &EncryptionKey,
     parent_inode: u64,
@@ -226,9 +284,27 @@ pub fn encrypt_filename(
 The payload AEAD is **not** re-encrypted because it is bound to the `inode_id` (which remains constant during rename), not the parent directory.
 
 ```rust
-// src/disk.rs:7298-7299
+// src/disk.rs:7580-7581
 let old_stored = Self::stored_filename(guard, old_parent_inode_id, old_name)?.into_owned();
 let new_stored = Self::stored_filename(guard, new_parent_inode_id, new_name)?.into_owned();
+```
+
+The `stored_filename` helper:
+
+```rust
+// src/disk.rs:2279-2295
+fn stored_filename<'a>(
+    guard: &DiskManagerInner,
+    parent_inode_id: u64,
+    name: &'a str,
+) -> Result<std::borrow::Cow<'a, str>, DiskManagerError> {
+    if let Some(key) = &guard.encryption_key {
+        let enc = crate::encryption::encrypt_filename(key, parent_inode_id, name)?;
+        Ok(std::borrow::Cow::Owned(enc))
+    } else {
+        Ok(std::borrow::Cow::Borrowed(name))
+    }
+}
 ```
 
 ## Durability Guarantees and Ordering
@@ -282,7 +358,7 @@ Because all operations are in one frame, recovery either replays the complete re
 
 `FUSE_RENAME_NOREPLACE` (flag bit 0, value `1`) implements `renameat2(..., RENAME_NOREPLACE)`:
 
-- **VFS check** (`src/fuse.rs:2867`): Before calling `DiskManager::rename`, the VFS performs `dm.lookup(new_parent_inode, newname)`. If the target exists, returns `-EEXIST` immediately.
+- **VFS check** (`src/fuse.rs:3101`): Before calling `DiskManager::rename`, the VFS performs `dm.lookup(new_parent_inode, newname)`. If the target exists, returns `-EEXIST` immediately.
 - **DiskManager behavior**: The internal implementation always performs overwrite semantics (removes existing destination entry). The VFS `NOREPLACE` check prevents the call from reaching `DiskManager` when the flag is set and the target exists.
 - **Atomicity**: The existence check and rename are **not** atomic together in the current implementation (TOCTOU window between VFS lookup and DiskManager rename). This matches typical FUSE semantics where the VFS layer enforces `NOREPLACE`.
 
@@ -309,13 +385,15 @@ Because all operations are in one frame, recovery either replays the complete re
 The `create_file_with_data` helper (used by FUSE `CREATE` with `O_TRUNC` semantics) atomically creates a file and writes initial data in a **single WAL transaction**:
 
 ```rust
-// src/disk.rs:5500-5540
-pub fn create_file_with_data(...) -> Result<u64, DiskManagerError> {
+// src/disk.rs:3754-3900
+fn create_file_with_data_journaled(...) -> Result<u64, DiskManagerError> {
     // AllocSim stages inode + block allocation
     // WAL transaction: SetInodeBitmap(alloc), SetDataBitmapRange(alloc), WriteInode, WriteBlockSlice (data)
     // Single commit_journal_tx + apply_journal_ops
 }
 ```
+
+Under `DurabilityMode::Strict`, small payloads (≤ 2 blocks / 8 KiB) are inlined directly into the WAL frame as zero-padded `WriteBlockSlice` ops, making the file's data durable as part of the single WAL commit barrier.
 
 ### delete_file / mkdir / rmdir
 

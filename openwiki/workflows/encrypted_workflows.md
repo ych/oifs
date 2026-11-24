@@ -5,14 +5,12 @@ description: Step-by-step guide for creating, opening, and using encrypted OIFS 
 tags: [encryption, workflow, cli, security, key-derivation, aead, siv]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
-  - id: openwiki-source-01ceb1b2a92015c2306721dc
-    resource: repo://src/disk/chunked.rs
   - id: openwiki-source-115024023ade9f243c6b4ec3
     resource: repo://src/disk/maintenance.rs
   - id: openwiki-source-88657ea41344918d5e874716
@@ -23,7 +21,7 @@ sources:
     resource: repo://src/session.rs
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
 
 # Encrypted Filesystem Workflows
@@ -197,14 +195,14 @@ Plain directory entries expose filename patterns, extensions, and directory topo
 
 **Output format**: `_e_` + Base64URLUnpadded(`nonce || ciphertext || tag`)
 
-### Decryption & Verification (`decrypt_filename`)
+### Decryption & Verification (`decrypt_filename_authenticated`)
 
 1. Strip `_e_` prefix, decode Base64URL
 2. Split into `nonce (24)`, `ciphertext`, `tag (16)`
 3. Decrypt with `filename_cipher_key`, SIV nonce, and parent-inode-bound AAD
 4. **SIV Verification**: Re-compute synthetic nonce from candidate plaintext; compare in constant time (`ct_eq_slice`)
    - Prevents ciphertext manipulation even if AEAD key were compromised
-5. **Legacy Fallback**: If v2 decryption fails, tries legacy 12-byte `ChaCha20Poly1305` format (`OIFS_SIV_FILENAME_V1`) for backward compatibility
+5. **Legacy Fallback**: If v2 decryption fails, tries legacy 12-byte `ChaCha20Poly1305` format (`OIFS_SIV_FILENAME_V1`) for backward compatibility (only allowed when `encryption_version < 2`)
 
 ### Security Properties
 
@@ -212,7 +210,7 @@ Plain directory entries expose filename patterns, extensions, and directory topo
 - **Directory isolation**: Parent inode in both SIV nonce and AAD prevents cross-directory correlation
 - **Authentication**: Poly1305 tag + SIV verification ensures integrity and origin authentication
 - **Prefix identification**: `_e_` prefix allows instant recognition during directory traversal
-- **Already-encrypted names** (starting with `_e_`) pass through unchanged for compatibility
+- **Already-encrypted names** (starting with `_e_`) are encrypted again (never stored in plaintext)
 
 ---
 
@@ -445,4 +443,4 @@ unset OIFS_PASSWORD
 - **Basic operations**: [Basic Operations Workflow](../workflows/basic_operations.md)
 - **Compression workflows**: [Compression Workflows](../workflows/compression_workflows.md) — pipeline: filter → compress → encrypt
 
-> **Note**: Encrypted filesystems cannot be converted to/from unencrypted format. The encryption scheme version (legacy vs context-bound) is fixed at creation. Backup your password securely — there is **no recovery mechanism**.
+> **Note**: Encrypted filesystems cannot be converted to/from unencrypted format. The encryption scheme version (legacy vs context-bound) is fixed at creation. Backup your password securely — there is **no recovery mechanism**. The system does not currently support keyfiles, key rotation, or re-encryption workflows.

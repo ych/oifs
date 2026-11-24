@@ -1,20 +1,22 @@
 ---
 type: "Reference"
 title: "OIFS FFI Integration Guide"
-openwiki_generated: true
+description: "Embedding OIFS via C/C++ FFI: build linkage, initialization, error handling, and async patterns."
+tags: ["ffi", "c", "cpp", "integration", "embedding"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
   - id: openwiki-source-f9a8a5ec259e5381eba4c51a
     resource: repo://include/oifs.h
+  - id: openwiki-source-b74bd574146fa2bcf5a3aea3
+    resource: repo://include/oifs.hpp
   - id: openwiki-source-c9e5b32aad7cafdb095c81a4
     resource: repo://src/ffi.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
-
 
 # OIFS FFI Integration Guide
 
@@ -99,555 +101,591 @@ if (v_status == OIFS_VERSION_COMPAT_ERR) {  // -1: loaded lib is OLDER → BLOCK
     oifs_loaded_path(path, sizeof(path));
     fprintf(stderr, "FATAL: Outdated liboifs at '%s' (v%s), need >= v%s\n",
             path, oifs_version_string(), OIFS_VERSION_STRING);
-    return 1;
-} else if (v_status == OIFS_VERSION_COMPAT_WARN) {  // 1: loaded lib is NEWER → WARN only
-    fprintf(stderr, "WARN: Newer liboifs (v%s) than headers (v%s)\n",
+    abort();
+} else if (v_status == OIFS_VERSION_COMPAT_WARN) {  // 1: newer lib → WARN, continue
+    fprintf(stderr, "WARN: Newer liboifs (v%s) loaded than compiled with (v%s)\n",
             oifs_version_string(), OIFS_VERSION_STRING);
 }
-// v_status == OIFS_VERSION_COMPAT_OK (0): exact match
 ```
 
-**Compatibility Policy** ([`include/oifs.h#L170-L195`](repo://include/oifs.h#L170-L195), [`src/ffi.rs#L821-L850`](repo://src/ffi.rs#L821-L850)):
-- `OIFS_VERSION_COMPAT_OK` (0): exact match
-- `OIFS_VERSION_COMPAT_WARN` (1): newer library loaded (permitted)
-- `OIFS_VERSION_COMPAT_ERR` (-1): older library loaded (blocked)
+The policy: **only block older versions; do NOT block newer versions**.
 
-C++ equivalent:
+C++ wrapper equivalent:
 ```cpp
-int v = oifs::check_version();  // uses header defaults
-if (v == OIFS_VERSION_COMPAT_ERR) { /* ... */ }
-```
-
-## 4. Opaque Handle Types and Ownership
-
-All public API functions operate on opaque pointers. The Rust definitions are in [`src/ffi.rs#L11-L25`](repo://src/ffi.rs#L11-L25).
-
-| Handle | Purpose | Lifetime Notes |
-|--------|---------|----------------|
-| `OIFSHandle` | Filesystem instance (wraps `DiskManager`) | Owned by caller; close with `oifs_close` / `FileSystem::close()` |
-| `OIFSReadSession` | Amortized read lock + inode cache for batch reads | Created by `oifs_begin_read`; released by `oifs_end_read` |
-| `OIFSFileHandle` | Pinned file within a read session (zero `RwLock` overhead) | Created by `oifs_session_open_file` / `oifs_session_open_inode`; closed by `oifs_file_close` |
-| `OIFSAsyncFuture` | In-flight async operation (inline fast-path or background) | Created by `*_async` functions; waited with `oifs_async_wait`; freed with `oifs_async_free` |
-
-### Handle-Isolated Error State
-
-Each `OIFSHandle` maintains its own `last_error: Mutex<Option<String>>`. Successful calls clear it; failures populate it. Retrieve with `oifs_last_error` / `FileSystem::last_error()`. This avoids global `errno` races in multithreaded hosts.
-
-## 5. Session Lifecycle: Open → Operate → Close
-
-### 5.1 Opening a Filesystem (Standalone Direct Mode)
-
-```c
-// Create new or open existing unencrypted image (size used only on create)
-OIFSHandle* fs = oifs_open("./mydisk.oifs", 10 * 1024 * 1024);
-if (!fs) { /* handle error via oifs_last_error */ }
-
-// Open encrypted image (passphrase → Argon2id → 256-bit AEAD key)
-OIFSHandle* enc_fs = oifs_open_with_password("./secret.oifs", 10 * 1024 * 1024, "passphrase");
-if (!enc_fs) { /* handle error */ }
-
-// Open with explicit storage mode and journaled WAL
-OIFSHandle* fs2 = oifs_open_with_options("./data.oifs", 100 * 1024 * 1024, NULL,
-                                         OIFS_STORAGE_MODE_FILE_IO, 1 /* journaled */);
-
-// Open existing image read-only (shared F_RDLCK, multiple processes allowed on 0444 files)
-OIFSHandle* ro_fs = oifs_open_read_only("./readonly.oifs", NULL, OIFS_STORAGE_MODE_MMAP);
-```
-
-```cpp
-// C++ RAII (auto-closes on destruction)
-oifs::FileSystem fs = oifs::FileSystem::open("./mydisk.oifs", 10 * 1024 * 1024);
-oifs::FileSystem enc = oifs::FileSystem::open_with_password("./secret.oifs", 10_MiB, "passphrase");
-oifs::FileSystem ro = oifs::FileSystem::open_read_only("./readonly.oifs");
-```
-
-### 5.2 Multi-Process IPC: Master-Proxy (Local / Network Modes)
-
-OIFS supports **multi-process access** via a Master-Proxy architecture. The FFI `oifs_get_or_open*` family automatically joins or creates a session registry.
-
-#### Session Modes ([`src/ipc.rs#L39-L52`](repo://src/ipc.rs#L39-L52))
-
-| Mode | Transport | Use Case |
-|------|-----------|----------|
-| **Standalone** (default) | None — direct `mmap` | Single-process, CLI, embedded |
-| **Local** | Unix Domain Socket (`$XDG_RUNTIME_DIR/oifs/...`) | Multi-process on one machine, containers |
-| **Network** | TCP + rendezvous `.image.master` file | NFS/Lustre, multi-node clusters |
-
-#### Master Election (`bind_or_connect`, [`src/ipc.rs#L887-L1010`](repo://src/ipc.rs#L887-L1010))
-
-```mermaid
-sequenceDiagram
-    participant P1 as Process 1
-    participant P2 as Process 2
-    participant FS as Filesystem (rendezvous / socket)
-
-    Note over P1,P2: Local Mode (UDS)
-    P1->>FS: connect(socket) --> fails
-    P1->>FS: bind(socket) --> succeeds
-    P1->>FS: write .tok (auth_secret)
-    P1->>P1: start IpcServer
-
-    P2->>FS: connect(socket) --> succeeds
-    P2->>FS: read .tok --> auth_secret
-    P2->>P1: AuthChallenge/Response over UDS
-    P1->>P2: AuthVerify (mutual proof)
-
-    Note over P1,P2: Network Mode (TCP)
-    P1->>FS: create_new(.master) --> succeeds
-    P1->>FS: write MasterInfo{addr, pid, auth_token}
-    P1->>P1: bind TCP, start IpcServer
-
-    P2->>FS: read .master --> MasterInfo
-    P2->>P1: TCP connect(addr)
-    P2->>P1: Ping (active probe)
-    P1->>P2: Pong
-    P2->>P1: AuthChallenge/Response over TCP
-    P1->>P2: AuthVerify
-```
-
-#### Opening via Session Registry (C)
-
-```c
-// Local mode: joins/creates UDS master at $XDG_RUNTIME_DIR/oifs/...
-OIFSHandle* fs = oifs_get_or_open_local("./shared.oifs", 50 * 1024 * 1024);
-
-// Network mode: joins/creates TCP master via .master rendezvous file
-OIFSHandle* fs_net = oifs_get_or_open_network("./cluster.oifs", 100 * 1024 * 1024);
-
-// With password
-OIFSHandle* enc = oifs_get_or_open_local_with_password("./enc.oifs", 50_MiB, "secret");
-```
-
-#### C++ Equivalents
-
-```cpp
-// Not directly wrapped; use C FFI for IPC modes, then wrap the returned handle
-OIFSHandle* raw = oifs_get_or_open_local("./shared.oifs", 50_MiB);
-oifs::FileSystem fs(raw);  // takes ownership
-```
-
-> **Important**: Only the Master process performs physical I/O. Proxies forward requests over IPC. All handles returned by `oifs_get_or_open*` behave identically from the caller's perspective.
-
-### 5.3 Basic Operations (C)
-
-```c
-// Directory
-oifs_mkdir(fs, "docs");
-
-// Write (auto-creates file if missing)
-const char* data = "Hello OIFS";
-oifs_write_file(fs, "docs/readme.txt", (const uint8_t*)data, strlen(data));
-
-// Read sequential
-uint8_t buf[256];
-int64_t n = oifs_read_file(fs, "docs/readme.txt", buf, sizeof(buf));
-
-// Chunked read at arbitrary offset
-int64_t m = oifs_read_at(fs, "docs/readme.txt", 5, buf, 4);  // reads "OIFS"
-
-// List directory (callback)
-struct Ctx { int count; } ctx = {0};
-oifs_ls(fs, [](const char* name, uint64_t sz, uint64_t mt, void* u) {
-    ((struct Ctx*)u)->count++;
-}, &ctx);
-
-// Delete
-oifs_delete_file(fs, "docs/readme.txt");
-
-// Stat
-OIFSFileStat st;
-oifs_stat(fs, "docs", &st);
-
-// Flush (durability depends on mode)
-oifs_flush(fs);
-
-// Close
-oifs_close(fs);
-```
-
-### 5.4 C++ RAII Operations
-
-```cpp
-oifs::FileSystem fs = oifs::FileSystem::open("./mydisk.oifs", 10_MiB);
-
-fs.mkdir("docs");
-fs.write_file("docs/readme.txt", oifs::ByteView("Hello OIFS"));
-
-auto entries = fs.ls();  // returns vector<DirEntry>
-for (auto& e : entries) { /* ... */ }
-
-auto st = fs.stat("docs/readme.txt");
-std::vector<uint8_t> data = fs.read_file("docs/readme.txt");
-
-fs.delete_file("docs/readme.txt");
-fs.flush();  // throws on error
-// auto-close on scope exit
-```
-
-## 6. Error Handling
-
-### C: `oifs_last_error`
-
-```c
-char err[512];
-if (oifs_write_file(fs, "x", data, len) != 0) {
-    oifs_last_error(fs, err, sizeof(err));
-    fprintf(stderr, "Write failed: %s\n", err);
+int status = oifs::check_version();
+if (status == OIFS_VERSION_COMPAT_ERR) {
+    throw std::runtime_error("Outdated liboifs");
 }
 ```
 
-- Returns 0 on success, -1 on failure (invalid handle or buffer).
-- Each `OIFSHandle` has isolated error state; no global `errno`.
+## 4. Filesystem Handle Lifecycle
 
-### C++: Exceptions
+### Core Types (Opaque)
 
-All C++ methods throw `oifs::Error` (derives from `std::runtime_error`) on failure:
+| C Type | Description |
+|--------|-------------|
+| `OIFSHandle*` | Open filesystem instance (read-write or read-only) |
+| `OIFSReadSession*` | Shared read lock session (amortizes `RwLock` + inode lookups) |
+| `OIFSFileHandle*` | Pinned file within a read session (zero-copy mmap capable) |
+| `OIFSAsyncFuture*` | In-flight or inline-completed async operation |
 
-```cpp
-try {
-    fs.write_file("x", data);
-} catch (const oifs::Error& e) {
-    std::cerr << "Write failed: " << e.what() << "\n";
-}
-```
+### Opening / Creating a Filesystem
 
-### Async Future Errors
+| Function | Use Case |
+|----------|----------|
+| `oifs_open(path, size)` | Open existing or create new unencrypted image |
+| `oifs_open_with_password(path, size, password)` | Open/create **encrypted** image (AES-256-GCM) |
+| `oifs_open_with_options(path, size, password, storage_mode, journaled)` | Full control: `StorageMode::Mmap` / `FileIo`, optional WAL |
+| `oifs_open_read_only(path, password, storage_mode)` | Read-only, shared `F_RDLCK`, multiple processes allowed |
+| `oifs_get_or_open(path, size)` | Multi-process "master-proxy" reuse (opens existing or creates) |
+| `oifs_get_or_open_with_password(path, size, password)` | Encrypted master-proxy reuse |
 
-```c
-OIFSAsyncFuture* fut = oifs_read_at_async(fs, inode, 0, buf, len);
-int64_t res = oifs_async_wait(fut);
-if (res < 0) {
-    char err[512];
-    oifs_async_last_error(fut, err, sizeof(err));
-    fprintf(stderr, "Async read failed: %s\n", err);
-}
-oifs_async_free(fut);
-```
+All open functions return `NULL` on failure. Retrieve diagnostics via `oifs_last_error`.
 
-```cpp
-oifs::AsyncFuture fut = fs.read_at_async(inode, 0, oifs::MutableByteSpan(buf, len));
-try {
-    int64_t n = fut.wait();  // throws on error
-} catch (const oifs::Error& e) { /* ... */ }
-// auto-free on scope exit
-```
-
-## 7. Zero-Copy Reads with PinnableSlice
-
-`PinnableSlice` ([`include/oifs.hpp#L447-L600`](repo://include/oifs.hpp#L447-L600)) provides a RocksDB-style zero-copy / 1-copy fallback abstraction:
-
-- **Zero-copy** (`is_pinned() == true`): On `StorageMode::Mmap` for uncompressed, contiguous extents, the slice points directly into the memory-mapped image. No `memcpy`, no heap allocation.
-- **1-copy fallback** (`is_pinned() == false`): On `FileIo`, compressed, encrypted, sparse, or non-contiguous ranges, data is read into an internal reusable buffer.
-
-### C FFI: `oifs_file_mmap_slice` ([`include/oifs.h#L255-L274`](repo://include/oifs.h#L255-L274))
+### Closing and Flushing
 
 ```c
-// Requires an OIFSReadSession + OIFSFileHandle
-OIFSReadSession* sess = oifs_begin_read(fs);
-OIFSFileHandle* fh = oifs_session_open_file(sess, "large.bin");
+void oifs_close(OIFSHandle *handle);           // Destroys handle; NO implicit flush
+int32_t oifs_flush(OIFSHandle *handle);        // Explicit fsync / WAL checkpoint
+```
 
-const uint8_t* ptr = NULL;
+**Important**: `oifs_close` does **not** auto-flush. Call `oifs_flush` before closing if durability matters.
+
+### Durability Modes
+
+```c
+oifs_set_durability_mode(handle, OIFS_DURABILITY_LAZY);        // OS page-cache (default)
+oifs_set_durability_mode(handle, OIFS_DURABILITY_RANGE_ASYNC); // Batched dirty-range async
+oifs_set_durability_mode(handle, OIFS_DURABILITY_STRICT);      // Synchronous msync/barriers
+```
+
+### Storage Modes
+
+```c
+oifs_open_with_options(..., OIFS_STORAGE_MODE_MMAP, ...);      // Memory-mapped (default)
+oifs_open_with_options(..., OIFS_STORAGE_MODE_FILE_IO, ...);   // pread/pwrite, zero mmap
+```
+
+### I/O Engine Backend
+
+```c
+oifs_set_io_backend(handle, OIFS_IO_BACKEND_MMAP);    // Mmap (default)
+oifs_set_io_backend(handle, OIFS_IO_BACKEND_PREAD);   // Positional read
+oifs_set_io_backend(handle, OIFS_IO_BACKEND_IO_URING); // io_uring (Linux, falls back to pread)
+```
+
+## 5. Directory Operations
+
+```c
+// Root directory listing
+int32_t oifs_ls(OIFSHandle *handle, ListCallback cb, void *user_data);
+
+// Subdirectory listing
+int32_t oifs_ls_dir(OIFSHandle *handle, const char *path, ListCallback cb, void *user_data);
+
+// Create directory
+int32_t oifs_mkdir(OIFSHandle *handle, const char *path);
+```
+
+Callback signature:
+```c
+typedef void (*ListCallback)(const char *name, uint64_t size, uint64_t mtime, void *user_data);
+```
+
+Returns `0` on success, `-1` on error.
+
+## 6. File Operations & Metadata
+
+### Creation, Deletion, Rename
+
+```c
+int32_t oifs_create_file(OIFSHandle *handle, const char *path);
+int32_t oifs_create_or_open_file(OIFSHandle *handle, const char *path);
+int32_t oifs_delete_file(OIFSHandle *handle, const char *path);
+int32_t oifs_rename(OIFSHandle *handle, const char *old_path, const char *new_path);
+```
+
+### Metadata
+
+```c
+typedef struct {
+    uint64_t inode_id;
+    uint64_t size;
+    uint64_t compressed_size;
+    uint64_t created_at;
+    uint64_t modified_at;
+    uint8_t is_dir;
+    uint8_t encrypted;
+    uint8_t seekable_64k;
+    uint8_t filter_typesize;
+    uint8_t filter_delta;
+    uint8_t filter_shuffle;
+    uint8_t filter_bitshuffle;
+    uint8_t _pad;
+} OIFSFileStat;
+
+int32_t oifs_stat(OIFSHandle *handle, const char *path, OIFSFileStat *out_stat);
+int32_t oifs_exists(OIFSHandle *handle, const char *path);  // 1=exists, 0=not, -1=error
+int64_t oifs_resolve_path(OIFSHandle *handle, const char *path);  // Returns inode_id or -1
+```
+
+### Truncation
+
+```c
+int32_t oifs_truncate_file(OIFSHandle *handle, const char *filename, uint64_t new_size);
+```
+
+## 7. Synchronous I/O
+
+### Direct Positional Read
+
+```c
+int64_t oifs_read_at(OIFSHandle *handle, const char *filename, uint64_t offset,
+                     uint8_t *buf, uint64_t buf_size);
+// Returns bytes read (>=0), or -1 on error
+```
+
+### Sequential Read / Write
+
+```c
+int64_t oifs_read_file(OIFSHandle *handle, const char *filename, uint8_t *buf, uint64_t buf_size);
+// Equivalent to oifs_read_at(handle, filename, 0, buf, buf_size)
+
+int32_t oifs_write_file(OIFSHandle *handle, const char *filename,
+                        const uint8_t *buf, uint64_t buf_size);
+// Stream compression (Auto mode) at offset 0; creates file if missing
+```
+
+### Extended Write with Policy
+
+```c
+#define OIFS_WRITE_POLICY_DEFAULT       0x00  // Auto / Full-file stream compression
+#define OIFS_WRITE_POLICY_RAW           0x01  // Never compress
+#define OIFS_WRITE_POLICY_STREAM        0x02  // Stream compression (custom zstd_level)
+#define OIFS_WRITE_POLICY_SEEKABLE_64K  0x08  // Seekable 64KB chunked compression
+
+int32_t oifs_write_file_with_policy(OIFSHandle *handle, const char *filename,
+                                    uint64_t offset, const uint8_t *buf, uint64_t buf_size,
+                                    uint32_t policy_flags, int32_t zstd_level);
+```
+
+### Single-Transaction Create + Write (Atomic)
+
+```c
+int64_t oifs_create_file_with_data(OIFSHandle *handle, const char *path,
+                                   const uint8_t *buf, uint64_t buf_size,
+                                   uint32_t policy_flags, int32_t zstd_level);
+// Returns new inode_id (>=0) or -1
+```
+
+### Inode-Level Direct Read (No Path Resolution)
+
+```c
+int64_t oifs_read_at_inode(OIFSHandle *handle, uint64_t inode_id,
+                           uint64_t offset, uint8_t *buf, uint64_t buf_size);
+```
+
+### Scatter-Gather Batch Read
+
+```c
+typedef struct {
+    uint64_t inode_id;
+    uint64_t offset;
+    uint8_t *buf;
+    uint64_t buf_size;
+    int64_t result;  // Output: bytes read or -1
+} OIFSReadBatchItem;
+
+int32_t oifs_read_at_batch(OIFSHandle *handle, OIFSReadBatchItem *items, size_t count);
+// Executes all reads under single read lock + single I/O submission
+// Returns 0 if all succeeded, -1 if any failed
+```
+
+## 8. Shared Read Session & Zero-Copy Mmap
+
+**Purpose**: Amortize `RwLock` acquisition and inode lookup across many reads.
+
+```c
+// 1. Begin session (acquires shared read lock)
+OIFSReadSession *session = oifs_begin_read(handle);
+
+// 2. Open file(s) by path or inode within the session
+OIFSFileHandle *file = oifs_session_open_file(session, "data/large.bin");
+OIFSFileHandle *file2 = oifs_session_open_inode(session, inode_id);
+
+// 3. Positional read (zero RwLock, zero inode lookup)
+int64_t n = oifs_file_read_at(file, offset, buf, buf_size);
+
+// 4. TRUE ZERO-COPY mmap slice
+const uint8_t *ptr = NULL;
 uint64_t len = 0;
-int32_t rc = oifs_file_mmap_slice(fh, 0, SIZE_MAX, &ptr, &len);
-if (rc == 0) {
-    // Zero-copy: ptr/len valid while fh or sess stays open
-    process_data(ptr, len);
-} else if (rc == 1) {
-    // Fallback: use oifs_file_read_at
-    uint8_t buf[4096];
-    oifs_file_read_at(fh, 0, buf, sizeof(buf));
-}
+int32_t rc = oifs_file_mmap_slice(file, offset, max_len, &ptr, &len);
+// rc == 0: zero-copy succeeded, ptr/len valid while file/session open
+// rc == 1: zero-copy unavailable (FileIo, compressed, encrypted, sparse, non-contiguous)
 // rc == -1: error
 
-oifs_file_close(fh);
-oifs_end_read(sess);
+// 5. Cleanup
+oifs_file_close(file);
+oifs_end_read(session);
 ```
 
-### C++: `FileReadHandle::read_pinnable` ([`include/oifs.hpp#L560-L620`](repo://include/oifs.hpp#L560-L620))
+**Lifetime Safety**: `OIFSFileHandle` internally holds an `Arc` to the session. Destroying the `OIFSReadSession` before `OIFSFileHandle` is safe—mapping stays valid.
+
+## 9. PinnableSlice (RocksDB-Style Zero-Copy / 1-Copy Fallback)
+
+**C++ Only** (`oifs::PinnableSlice` in `include/oifs.hpp`):
 
 ```cpp
-oifs::FileSystem fs = oifs::FileSystem::open("./data.oifs", 100_MiB);
-auto sess = fs.begin_read();
-auto fh = sess.open_file("large.bin");
+oifs::ReadSession session = fs.begin_read();
+oifs::FileReadHandle file = session.open_file("data.bin");
 
-oifs::PinnableSlice slice;
-size_t n = fh.read_pinnable(0, SIZE_MAX, slice);
-
-if (slice.is_zero_copy()) {
-    // Zero-copy mmap view
-    process_data(slice.data(), slice.size());
+// Try zero-copy first
+auto opt = file.try_mmap_view(0, 1_MiB);
+if (opt) {
+    // opt->data() points directly into mmap, zero copies
+    process(opt->data(), opt->size());
 } else {
-    // 1-copy fallback into slice's internal buffer
-    process_data(slice.data(), slice.size());
+    // Automatic 1-copy fallback into internal buffer
+    oifs::PinnableSlice slice;
+    file.read_pinnable(0, 1_MiB, slice);  // slice.is_pinned() == false
+    process(slice.data(), slice.size());
 }
-// slice destructor releases pin; fh/sess destructors close handles
 ```
 
-### Lifetime Safety (Critical)
+## 10. Asynchronous I/O
 
-The C++ `PinnableSlice` holds a `shared_ptr<OIFSFileHandle>` internally (`pin_holder_`). The C FFI `OIFSFileHandle` holds an `Arc<FfiSharedSession>` ([`src/ffi.rs#L1365-L1380`](repo://src/ffi.rs#L1365-L1380)). **This guarantees the mmap remains valid even if the caller destroys `OIFSReadSession` before `OIFSFileHandle` or a pinned slice** — out-of-order destruction cannot cause use-after-free.
-
-## 8. Asynchronous I/O
-
-OIFS async uses an **Inline Fast-Path + Background Pool** architecture ([`docs/cpp_and_async_api_design.md#2.2`](repo://docs/cpp_and_async_api_design.md#2.2)):
-
-- **Fast-Path** (cache/mmap hits): completes immediately on calling thread (`oifs_async_poll == 1`, zero thread hop, ~50 ns).
-- **Slow-Path** (cold reads, compression, encryption): dispatched to persistent background worker pool.
-- **Write Group Commit**: concurrent async writes under `DurabilityMode::Strict` share a single physical `fsync` per batch.
-
-### C: Future + Callback APIs
+### Future / Poll API
 
 ```c
-// Future-based (poll/wait/free)
-OIFSAsyncFuture* fut = oifs_read_at_async(fs, inode_id, offset, buf, len);
-while (oifs_async_poll(fut) == 0) { /* do other work */ }
-int64_t n = oifs_async_wait(fut);  // blocks until ready
-if (n < 0) { /* handle error via oifs_async_last_error */ }
+// Submit async read
+OIFSAsyncFuture *fut = oifs_read_at_async(handle, inode_id, offset, buf, buf_size);
+
+// Submit async single-transaction create+write
+OIFSAsyncFuture *fut = oifs_create_file_with_data_async(handle, path, buf, buf_size,
+                                                        policy_flags, zstd_level);
+
+// Submit async write at offset
+OIFSAsyncFuture *fut = oifs_write_file_async(handle, path, offset, buf, buf_size,
+                                             policy_flags, zstd_level);
+
+// Submit async flush
+OIFSAsyncFuture *fut = oifs_flush_async(handle);
+
+// Poll (non-blocking): 1=ready, 0=pending, -1=invalid
+int32_t ready = oifs_async_poll(fut);
+
+// Block until completion, return result (bytes_read / inode_id / 0) or -1
+int64_t result = oifs_async_wait(fut);
+
+// Get error string on failure
+char err[256]; oifs_async_last_error(fut, err, sizeof(err));
+
+// Release future (drop barrier: waits for background write into buf to finish)
 oifs_async_free(fut);
-
-// Callback-based (completion callback)
-oifs_read_at_async_cb(fs, inode_id, offset, len,
-    [](int64_t status, const uint8_t* data, size_t data_len, void* user) {
-        if (status >= 0) handle_data(data, data_len);
-        else handle_error();
-    }, user_ctx);
-
-// Async write with Group Commit
-OIFSAsyncFuture* wfut = oifs_create_file_with_data_async(fs, "new.bin", data, len, 0, 0);
-// ... wait / free same as above
 ```
 
-**Drop Barrier (UAF Protection)**: If `oifs_async_free` is called while a background read is still writing into the caller's `buf`, it **blocks until the write finishes** ([`src/ffi.rs#L2000-L2020`](repo://src/ffi.rs#L2000-L2020)). The caller's buffer is never accessed after `oifs_async_free` returns.
+**Key Properties**:
 
-### C++: `AsyncFuture` with `co_await` ([`include/oifs.hpp#L650-L720`](repo://include/oifs.hpp#L650-L720))
+| Property | Description |
+|----------|-------------|
+| **Inline Fast-Path** | Hot cache/mmap reads complete immediately on caller thread (`poll==1`) |
+| **Group Commit** | Concurrent async writes under `DURABILITY_STRICT` share a single sync barrier |
+| **Use-After-Free Safe** | `oifs_async_free` blocks until any in-flight write to caller's `buf` completes |
 
-```cpp
-// Requires C++20 coroutines (clang++ -std=c++20 or g++ -std=c++20)
-oifs::AsyncFuture fut = fs.read_at_async(inode_id, offset, oifs::MutableByteSpan(buf, len));
-
-// Synchronous wait (throws on error)
-int64_t n = fut.wait();
-
-// Non-blocking poll
-if (fut.is_ready()) { /* ... */ }
-
-// C++20 coroutine: zero-suspension on Fast-Path hits
-int64_t n = co_await fs.read_at_async(inode_id, offset, oifs::MutableByteSpan(buf, len));
-
-// Async write with Group Commit
-oifs::AsyncFuture wfut = fs.create_file_with_data_async("new.bin", oifs::ByteView(data, len));
-co_await wfut;  // suspends until Group Commit batch flushes
-```
-
-### Callback Adapters (C++)
-
-```cpp
-// Lambda callback for async read
-fs.read_at_async_cb(inode_id, offset, len, [](int64_t status, oifs::ByteView data) {
-    if (status >= 0) process(data);
-    else handle_error();
-});
-
-// Lambda callback for async create
-fs.create_file_with_data_async_cb("new.bin", data, [](int64_t status_or_inode) {
-    if (status_or_inode >= 0) created_inode = status_or_inode;
-});
-```
-
-## 9. Encryption
-
-OIFS uses **XChaCha20-Poly1305** with Argon2id key derivation. The passphrase is never stored.
+### Callback API
 
 ```c
-// Create new encrypted image
-OIFSHandle* enc = oifs_open_with_password("./secret.oifs", 50_MiB, "strong_passphrase");
-// Write/read works transparently
-oifs_write_file(enc, "key.bin", key_data, key_len);
-// Reopen requires same passphrase
-OIFSHandle* enc2 = oifs_open_with_password("./secret.oifs", 0, "strong_passphrase");
-// Wrong passphrase → read fails with auth error
-OIFSHandle* bad = oifs_open_with_password("./secret.oifs", 0, "wrong");
-oifs_read_file(bad, "key.bin", buf, sizeof(buf));  // returns -1
+// Async read with callback
+typedef void (*OifsAsyncReadCallback)(int64_t status_or_len,
+                                      const uint8_t *data, size_t data_len,
+                                      void *user_data);
+
+int32_t oifs_read_at_async_cb(OIFSHandle *handle, uint64_t inode_id,
+                              uint64_t offset, uint64_t len,
+                              OifsAsyncReadCallback cb, void *user_data);
+
+// Async create+write with callback
+typedef void (*OifsAsyncStatusCallback)(int64_t status_or_inode, void *user_data);
+
+int32_t oifs_create_file_with_data_async_cb(OIFSHandle *handle, const char *path,
+                                            const uint8_t *buf, uint64_t buf_size,
+                                            uint32_t policy_flags, int32_t zstd_level,
+                                            OifsAsyncStatusCallback cb, void *user_data);
 ```
 
-```cpp
-auto enc = oifs::FileSystem::open_with_password("./secret.oifs", 50_MiB, "passphrase");
-enc.write_file("key.bin", oifs::ByteView(key_data, key_len));
-// Reopen
-auto enc2 = oifs::FileSystem::open_with_password("./secret.oifs", {}, "passphrase");
-```
+**Callback Rules**: The `data` pointer in read callback is valid only for the callback duration. Never throw C++ exceptions across the extern "C" boundary.
 
-## 10. I/O Backend & Durability Configuration
+## 11. Cross-Image Operations
+
+### Whole-Image CoW Clone
 
 ```c
-// Query current backend
-int backend = oifs_get_io_backend(fs);  // OIFS_IO_BACKEND_MMAP / PREAD / IO_URING
+#define OIFS_CLONE_METHOD_APFS_CLONEFILE    0  // macOS APFS
+#define OIFS_CLONE_METHOD_LINUX_FICLONE     1  // Linux FICLONE ioctl
+#define OIFS_CLONE_METHOD_STANDARD_COPY     2  // Fallback
 
-// Set backend (returns effective backend)
-oifs_set_io_backend(fs, OIFS_IO_BACKEND_IO_URING);
-
-// Durability modes
-oifs_set_durability_mode(fs, OIFS_DURABILITY_LAZY);        // OS page-cache writeback
-oifs_set_durability_mode(fs, OIFS_DURABILITY_RANGE_ASYNC); // Batched dirty-range async flush
-oifs_set_durability_mode(fs, OIFS_DURABILITY_STRICT);      // Sync msync / sync_data barriers
-
-// FileIo cache size
-oifs_set_file_io_cache_bytes(fs, 64 * 1024 * 1024);  // 64 MiB
+int32_t oifs_clone_image(const char *src_path, const char *dst_path, uint8_t *out_method);
+// Creates dst_path using fastest OS CoW primitive
 ```
 
-```cpp
-fs.set_io_backend(oifs::IoBackend::IoUring);
-fs.set_durability_mode(oifs::DurabilityMode::Strict);
-fs.set_file_io_cache_bytes(64 * 1024 * 1024);
-```
-
-## 11. Advanced: Batch Read, Direct Inode I/O, Cross-Image Ops
-
-### Scatter-Gather Batch Read (`oifs_read_at_batch`)
+### 3-Tier File Transfer (Reflink → copy_file_range → Raw Block → Logical Re-encode)
 
 ```c
-OIFSReadBatchItem items[3] = {
-    { .inode_id = 100, .offset = 0,     .buf = buf1, .buf_size = 4096 },
-    { .inode_id = 100, .offset = 4096,  .buf = buf2, .buf_size = 4096 },
-    { .inode_id = 200, .offset = 0,     .buf = buf3, .buf_size = 8192 },
-};
-oifs_read_at_batch(fs, items, 3);
-// Check items[i].result for bytes read or -1
+#define OIFS_TRANSFER_FLAG_MOVE      0x01
+#define OIFS_TRANSFER_FLAG_OVERWRITE 0x02
+
+typedef struct { ... } OIFSTransferStats;
+
+int32_t oifs_transfer_file_to(OIFSHandle *src_handle, const char *src_path,
+                              OIFSHandle *dst_handle, const char *dst_path,
+                              uint32_t flags, OIFSTransferStats *out_stats);
 ```
 
-### Direct Inode Read (bypasses path resolution)
+### Sub-Range Splice
 
 ```c
-int64_t inode = oifs_resolve_path(fs, "deep/nested/file.bin");
-oifs_read_at_inode(fs, inode, offset, buf, len);
+#define OIFS_SPLICE_TRIM_KEEP          0
+#define OIFS_SPLICE_TRIM_PUNCH_HOLE    1
+#define OIFS_SPLICE_TRIM_COLLAPSE      2
+
+typedef struct { ... } OIFSSpliceStats;
+
+int32_t oifs_splice_range_to(OIFSHandle *src_handle, uint64_t src_inode, uint64_t src_off,
+                             OIFSHandle *dst_handle, uint64_t dst_inode, uint64_t dst_off,
+                             uint64_t len, uint8_t trim_mode, OIFSSpliceStats *out_stats);
 ```
 
-### Cross-Image CoW Clone & Transfer
+## 12. Online Maintenance & Diagnostics
 
 ```c
-// Whole-image CoW clone (APFS clonefile / Linux FICLONE / copy fallback)
-uint8_t method;
-oifs_clone_image("./src.img", "./dst.img", &method);
+typedef struct { ... } OIFSFsckReport;
+typedef struct { ... } OIFSFragmentationStats;
+typedef struct { ... } OIFSDefragStats;
 
-// Transfer file between images (Reflink → CopyFileRange → RawBlockCopy → LogicalReencode)
-OIFSTransferStats stats;
-oifs_transfer_file_to(fs1, "file.bin", fs2, "copy.bin", 0, &stats);
+int32_t oifs_verify_integrity(OIFSHandle *handle, OIFSFsckReport *out_report);     // fsck
+int32_t oifs_analyze_fragmentation(OIFSHandle *handle, OIFSFragmentationStats *out_stats);
+int32_t oifs_defragment(OIFSHandle *handle, OIFSDefragStats *out_stats);            // In-place defrag
 ```
 
-## 12. FUSE Kernel Protocol Integration
-
-OIFS can serve as a FUSE filesystem via `oifs_fuse_dispatch_frame` ([`include/oifs.h#L310-L340`](repo://include/oifs.h#L310-L340)):
+## 13. FUSE Kernel Protocol Dispatch
 
 ```c
-// Dispatch raw FUSE ABI v7.28 request frame
-uint8_t req[4096], resp[65536];
-int64_t resp_len = oifs_fuse_dispatch_frame(fs, req, req_len, resp, sizeof(resp));
-// resp contains fuse_out_header + payload
+int64_t oifs_fuse_dispatch_frame(OIFSHandle *handle,
+                                 const uint8_t *req_buf, size_t req_len,
+                                 uint8_t *resp_buf, size_t resp_cap);
+// Dispatches raw FUSE Kernel ABI v7.28 request frame
+// File handles (fh) persist across calls on the same OIFSHandle
+// Read-only handles reject mutating opcodes with -EROFS
 ```
 
-The C++ wrapper provides `FileSystem::fuse_dispatch_frame(ByteView, MutableByteSpan)`.
-
-## 13. Common Pitfalls
-
-| Pitfall | Consequence | Prevention |
-|---------|-------------|------------|
-| **Skipping version handshake** | Silent ABI mismatch, crashes | Always call `OIFS_CHECK_VERSION()` at startup |
-| **Using `OIFSHandle` across threads** | Data races (handle is **not thread-safe**) | Each thread opens its own handle, or use external mutex |
-| **Destroying `OIFSReadSession` before `OIFSFileHandle`** | Use-after-free on mmap (C) | C++ `PinnableSlice`/`FileReadHandle` use `shared_ptr`/`Arc` to prevent this; in C, keep session alive until all file handles closed |
-| **Freeing async buffer before `oifs_async_free`** | Use-after-free on background write | Never free `buf` until after `oifs_async_wait` + `oifs_async_free`; the drop barrier in `oifs_async_free` waits for in-flight writes |
-| **Ignoring `oifs_async_poll` Fast-Path** | Unnecessary thread wakeups | Poll first; Fast-Path hits are already ready |
-| **Not checking `oifs_file_mmap_slice` return code** | Treating fallback as zero-copy | Check `rc`: 0=zero-copy, 1=fallback, -1=error |
-| **Forgetting `oifs_last_error` after failure** | Silent failures | Always retrieve error string on non-zero return |
-| **Using `size` parameter incorrectly** | Confusion on open | `size` only used when **creating** new image; ignored on open existing |
-| **Blocking in async callback** | Deadlocks / thread pool starvation | Callbacks must return quickly; offload heavy work |
-| **Mixing Standalone and IPC handles on same image** | Corruption / lock conflicts | Use `oifs_get_or_open*` for multi-process; `oifs_open*` for single-process only |
-
-### Thread Safety Detail
-
-> **The `OIFSHandle` is not thread-safe** ([`src/ffi.rs#L10-L33`](repo://src/ffi.rs#L10-L33), [`src/ffi.rs#L49-L183`](repo://src/ffi.rs#L49-L183)). Each thread requiring filesystem access should either:
-> - Open its own handle via `oifs_open` / `oifs_get_or_open` (handles are cheap; underlying `DiskManager` is `Arc`-shared)
-> - Or protect all operations with an external mutex
-
-The `DiskManager` internally uses `RwLock` for readers and a dedicated `sync_mutex` for writers, but the FFI handle's `last_error` mutex and method sequences are not atomic across calls.
-
-## 14. Minimal Complete Examples
-
-### C: Create → Write → Read → Close
+## 14. SIMD Numeric Pre-Compression Filters
 
 ```c
-#include <oifs.h>
+typedef struct {
+    uint8_t typesize;   // 1,2,4,8 (0 = disabled)
+    uint8_t delta;      // 1 = enable delta encoding
+    uint8_t shuffle;    // 1 = enable byte shuffle
+    uint8_t bitshuffle; // 1 = enable bit shuffle
+} OIFSFilterConfig;
+
+int64_t oifs_create_file_with_data_filtered(OIFSHandle *handle, const char *path,
+                                            const uint8_t *buf, uint64_t buf_size,
+                                            uint32_t policy_flags, int32_t zstd_level,
+                                            const OIFSFilterConfig *filter_cfg);
+
+int32_t oifs_write_file_with_filters(OIFSHandle *handle, const char *path, uint64_t offset,
+                                     const uint8_t *buf, uint64_t buf_size,
+                                     uint32_t policy_flags, int32_t zstd_level,
+                                     const OIFSFilterConfig *filter_cfg);
+```
+
+Pass `NULL` for `filter_cfg` to disable all filters.
+
+## 15. Error Handling
+
+Every FFI function that can fail provides diagnostics via:
+
+```c
+int32_t oifs_last_error(OIFSHandle *handle, char *buf, uint32_t buf_size);
+// Returns 0 on success, -1 on error. Writes NUL-terminated message to buf.
+
+int32_t oifs_async_last_error(OIFSAsyncFuture *fut, char *buf, uint32_t buf_size);
+// For async futures
+```
+
+**Conventions**:
+- Return codes: `0` = success, `-1` = error (or positive byte counts for reads)
+- `NULL` handle returns `-1` immediately (no error message)
+- All FFI entry points catch Rust panics and convert to error returns
+- C++ wrapper (`oifs.hpp`) throws `oifs::Error` (derived from `std::runtime_error`)
+
+## 16. Thread Safety
+
+**`OIFSHandle` is NOT thread-safe**. Each thread requiring filesystem access should either:
+1. Open its own handle (`oifs_open` / `oifs_open_read_only`), or
+2. Implement external synchronization (mutex) around a shared handle.
+
+`OIFSReadSession` and `OIFSFileHandle` are similarly not thread-safe. The async API is safe for concurrent submission from multiple threads because each call creates its own `OIFSAsyncFuture`.
+
+## 17. Minimal Embedding Examples
+
+### C (Complete Lifecycle)
+
+```c
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <assert.h>
+#include "oifs.h"
 
-int main(void) {
-    int v = OIFS_CHECK_VERSION();
-    if (v == OIFS_VERSION_COMPAT_ERR) return 1;
+int main() {
+    // 1. Version handshake
+    if (OIFS_CHECK_VERSION() == OIFS_VERSION_COMPAT_ERR) return 1;
 
-    OIFSHandle* fs = oifs_open("./demo.oifs", 10 * 1024 * 1024);
-    if (!fs) {
-        char err[256]; oifs_last_error(fs, err, sizeof(err));
-        fprintf(stderr, "open failed: %s\n", err); return 1;
-    }
+    // 2. Open filesystem
+    OIFSHandle *fs = oifs_open("test.img", 16 * 1024 * 1024);
+    if (!fs) { fprintf(stderr, "open failed\n"); return 1; }
 
-    const char* msg = "Hello from C FFI";
-    if (oifs_write_file(fs, "greeting.txt", (const uint8_t*)msg, strlen(msg)) != 0) {
-        char err[256]; oifs_last_error(fs, err, sizeof(err));
-        fprintf(stderr, "write failed: %s\n", err);
-    }
+    // 3. Create directory and file
+    oifs_mkdir(fs, "docs");
+    oifs_create_file(fs, "docs/note.txt");
 
-    uint8_t buf[128];
-    int64_t n = oifs_read_file(fs, "greeting.txt", buf, sizeof(buf));
-    if (n > 0) {
-        fwrite(buf, 1, n, stdout);
-        putchar('\n');
-    }
+    // 4. Write data
+    const char *msg = "Hello OIFS FFI";
+    oifs_write_file(fs, "docs/note.txt", (const uint8_t*)msg, strlen(msg));
 
+    // 5. Read back (chunked)
+    uint8_t buf[128] = {0};
+    int64_t n = oifs_read_at(fs, "docs/note.txt", 0, buf, sizeof(buf));
+    printf("Read %lld bytes: %.*s\n", n, (int)n, buf);
+
+    // 6. List directory
+    struct { int count; } ctx = {0};
+    auto cb = [](const char *name, uint64_t sz, uint64_t mt, void *ud) {
+        ((int*)ud)[0]++; (void)name; (void)sz; (void)mt;
+    };
+    oifs_ls(fs, (ListCallback)cb, &ctx);
+
+    // 7. Cleanup
+    oifs_flush(fs);
     oifs_close(fs);
     return 0;
 }
 ```
 
-### C++: RAII + Zero-Copy + Async
+Compile:
+```bash
+clang -std=c11 -Wall -Wextra -Wpedantic -Werror \
+      -I/path/to/oifs/include \
+      main.c /path/to/oifs/target/release/liboifs.so -o main \
+      -ldl  # Linux only
+LD_LIBRARY_PATH=/path/to/oifs/target/release ./main
+```
+
+### C++17 (RAII Wrapper)
 
 ```cpp
-#include <oifs.hpp>
 #include <iostream>
 #include <vector>
+#include <string>
+#include <memory>
+#include <thread>
+#include "oifs.hpp"
 
 int main() {
-    // Version check
+    // Version handshake
     if (oifs::check_version() == OIFS_VERSION_COMPAT_ERR) return 1;
 
-    // RAII filesystem
-    oifs::FileSystem fs = oifs::FileSystem::open("./demo.oifs", 10_MiB);
+    // RAII FileSystem handle
+    oifs::FileSystem fs = oifs::FileSystem::open("test.img", 20 * 1024 * 1024);
 
-    // Write
-    std::string msg = "Hello from C++ RAII";
-    fs.write_file("greeting.txt", oifs::ByteView(msg));
+    // Write using std::vector<uint8_t>
+    std::string text = "C++17 RAII Test";
+    std::vector<uint8_t> data(text.begin(), text.end());
+    fs.write_file("cpp_test.txt", data);
 
-    // Zero-copy read via PinnableSlice
-    auto sess = fs.begin_read();
-    auto fh = sess.open_file("greeting.txt");
-    oifs::PinnableSlice slice;
-    fh.read_pinnable(0, SIZE_MAX, slice);
-    std::cout.write(reinterpret_cast<const char*>(slice.data()), slice.size()) << '\n';
-    std::cout << (slice.is_zero_copy() ? "zero-copy" : "1-copy fallback") << '\n';
+    // Read back
+    std::vector<uint8_t> read_buf = fs.read_file("cpp_test.txt");
+    assert(read_buf == data);
 
-    // Async read with coroutine (C++20)
-#if defined(OIFS_HAS_CPP20_COROUTINE)
-    auto read_async = [&]() -> oifs::AsyncFuture {
-        std::vector<uint8_t> buf(128);
-        co_return co_await fs.read_at_async(fh.inode_id(), 0, oifs::MutableByteSpan(buf));
+    // Lambda callback for directory listing
+    std::vector<oifs::FileSystem::DirEntry> entries;
+    auto cb = [](const char *name, uint64_t sz, uint64_t mt, void *ud) {
+        auto *vec = static_cast<decltype(entries)*>(ud);
+        vec->push_back({name ? name : "", sz, mt});
     };
-    // Note: co_await requires coroutine context
-#endif
+    fs.ls(cb, &entries);
 
-    return 0;  // auto-close via destructors
+    // Multi-threaded concurrent access (each thread opens own handle)
+    std::vector<std::thread> workers;
+    for (int t = 0; t < 4; ++t) {
+        workers.emplace_back([t] {
+            oifs::FileSystem local_fs = oifs::FileSystem::open("test.img", 0);
+            std::string fname = "worker_" + std::to_string(t) + ".bin";
+            std::vector<uint8_t> payload = {uint8_t(t), 0xAA, 0x55};
+            local_fs.write_file(fname, payload);
+        });
+    }
+    for (auto &th : workers) th.join();
+
+    std::cout << "C++ test passed\n";
+    return 0;
 }
 ```
 
-## 15. Related Pages
+Compile:
+```bash
+clang++ -std=c++17 -Wall -Wextra -Wpedantic -Werror \
+        -I/path/to/oifs/include \
+        main.cpp /path/to/oifs/target/release/liboifs.so -o main
+```
 
-- [Concurrency and Session](../architecture/concurrency_and_session.md) — Master-Proxy IPC, session modes, master election
-- [C FFI and C++ API Surface](../architecture/ffi_interface.md) — Complete API reference, handle ownership diagrams
-- [FFI Usage Workflow](../workflows/ffi_workflow.md) — Step-by-step integration checklist
+### C++20 (Coroutines + std::span)
+
+```cpp
+#include <span>
+#include <coroutine>
+#include "oifs.hpp"
+
+oifs::AsyncFuture read_async(oifs::FileSystem &fs, uint64_t inode, uint64_t off, size_t sz) {
+    std::vector<uint8_t> buf(sz);
+    co_return co_await fs.read_at_async(inode, off, oifs::MutableByteSpan(buf));
+}
+
+int main() {
+    oifs::FileSystem fs = oifs::FileSystem::open("test.img", 16 * 1024 * 1024);
+    // Hot path (mmap cache hit): co_await resumes immediately, zero thread hop
+    auto fut = read_async(fs, some_inode, 0, 4096);
+    std::size_t n = fut.wait();  // or co_await fut in another coroutine
+}
+```
+
+Requires `-std=c++20` and compiler support for `<coroutine>`.
+
+## 18. Common Pitfalls
+
+| Pitfall | Solution |
+|---------|----------|
+| Forgetting `oifs_flush` before `oifs_close` | Always call `oifs_flush` explicitly when durability matters |
+| Using `OIFSHandle` across threads | Open per-thread handles or guard with mutex |
+| Passing non-NULL buffer with zero size to write | Validated as error; pass `NULL` for empty writes |
+| Expecting async callback data to persist | Data valid only within callback; copy if needed |
+| Not checking `OIFS_CHECK_VERSION` at startup | Required—blocks silently on older liboifs |
+| Assuming `oifs_file_mmap_slice` always succeeds | Check return code: `1` = fallback to `oifs_file_read_at` |
+| Destroying `OIFSReadSession` before `OIFSFileHandle` | Safe—Arc keeps mmap alive; but prefer ordered cleanup |
+
+## 19. Formal Verification
+
+The FFI layer includes [Kani](https://github.com/model-checking/kani) proofs in [`src/ffi.rs`](repo://src/ffi.rs#L3180-L3230):
+- `oifs_check_version` policy soundness (never blocks newer, always blocks older)
+- `policy_to_compression_mode` totality and precedence for all symbolic inputs
+
+Run with:
+```bash
+cargo kani --harness proof_oifs_check_version_policy_soundness
+cargo kani --harness proof_policy_to_compression_mode_total_and_panic_free
+```
+
+---
+
+*For the C++ RAII wrapper API reference, see `include/oifs.hpp`. For the stable C ABI, see `include/oifs.h`.*

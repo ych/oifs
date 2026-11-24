@@ -5,7 +5,7 @@ description: "Comprehensive documentation of the OIFS superblock structure, form
 tags: ["superblock", "on-disk-format", "layout", "journal", "encryption", "migration", "fsck"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-22T10:29:12.696Z
+    at: 2026-11-23T20:55:55.458Z
 sources:
   - id: openwiki-source-115024023ade9f243c6b4ec3
     resource: repo://src/disk/maintenance.rs
@@ -15,7 +15,7 @@ sources:
     resource: repo://src/journal.rs
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
 ---
 
 ## Responsibility and ownership
@@ -69,7 +69,7 @@ The filesystem is identified by a 4-byte magic number ([`SuperBlock::MAGIC = 0x4
 | `encrypted` | Boolean flag indicating if cryptographic AEAD encryption is active. |
 | `encryption_salt` | 16-byte random salt used by Argon2id to derive the master key. |
 | `encryption_version` | Cryptographic suite version (`1` = legacy XChaCha20-Poly1305 without AAD, `2` = context-bound with associated data). |
-| `format_version` | On-disk format version. Determines the inode encoding layout and bitmap sizing strategy. Must remain the last field to preserve backward compatibility. |
+| `format_version` | On-disk format version. Determines the inode encoding layout and bitmap sizing strategy. Must remain the last field before `migration_cursor` to preserve backward compatibility. |
 | `migration_cursor` | During format migration, indicates which inode IDs have been converted to the new format. Zero means no migration in progress. |
 
 ### Format versions
@@ -81,7 +81,7 @@ The filesystem is identified by a 4-byte magic number ([`SuperBlock::MAGIC = 0x4
 | 2 | `FORMAT_VERSION_FIXED_INODE` | Fixed 256-byte inode records, single-block bitmaps |
 | 3 | `FORMAT_VERSION_V3_LAYOUT` | **v3 layout** — multi-block bitmaps sized to image, 256-byte inode records, optional journal region |
 
-The `format_version` field is **appended last** so that pre-versioning images (which lack this field entirely) decode with `format_version == 0` from zero padding, which correctly classifies them as legacy. Adding the field in the middle would shift every subsequent field and silently corrupt every existing image.
+The `format_version` field is **appended before `migration_cursor`** so that pre-versioning images (which lack this field entirely) decode with `format_version == 0` from zero padding, which correctly classifies them as legacy. Adding the field in the middle would shift every subsequent field and silently corrupt every existing image.
 
 ### Inode format dispatch
 
@@ -99,27 +99,15 @@ pub fn inode_record_version_for(&self, inode_id: u64) -> u32 {
 
 This per-inode dispatch means a mixed-format image is **safe and resumable**, not corrupt.
 
-## Encryption schemes
+---
 
-Two encryption schemes are supported, identified by `encryption_version` ([`src/encryption.rs`](../../src/encryption.rs#L335-L342)):
-
-| Value | Constant | Scheme |
-|-------|----------|--------|
-| 0 | — | Unencrypted (default) |
-| 1 | `ENCRYPTION_SCHEME_LEGACY` | XChaCha20-Poly1305 **without** associated data |
-| 2 | `ENCRYPTION_SCHEME_CONTEXT_BOUND` | XChaCha20-Poly1305 **with** associated data (AAD) binding ciphertext to inode ID, chunk index, and flags |
-
-When `encrypted == true`, `encryption_version` must be either 1 or 2. When `encrypted == false`, `encryption_version` must be 0. The 16-byte `encryption_salt` is used by Argon2id to derive the master key from the user password.
-
-**Context-bound encryption (v2)** prevents whole-file or chunk ciphertexts from being swapped, reordered, or rolled back without the AEAD authentication failing. The associated data (AAD) includes a domain separator (`"OIFS-AAD-v1"`), a kind byte (`0x01` file / `0x02` chunk / `0x03` filename), the target inode ID, and for chunks the chunk index and flags.
-
-## Block layout geometry
+## On-disk layout geometry
 
 The physical layout varies by format version and journaling mode.
 
 ### Legacy layout (v1/v2, non-journaled)
 
-```text
+```
 [Block 0: SuperBlock]
 [Block 1: Inode Bitmap (1 block = 32,768 bits)]
 [Block 2: Data Bitmap (1 block = 32,768 bits)]
@@ -129,10 +117,11 @@ The physical layout varies by format version and journaling mode.
 
 - Fixed single-block bitmaps cap the data area at **32,768 blocks (128 MiB)** and inodes at **32,768**.
 - Inode table maximum is 1024 blocks for backward compatibility.
+- Inode records use `bincode` encoding (~169 bytes, packed) in v1, or 256-byte fixed records in v2.
 
 ### Journaled layout (v1/v2 with journal)
 
-```text
+```
 [Block 0: SuperBlock]
 [Block 1: Inode Bitmap]
 [Block 2: Data Bitmap]
@@ -149,7 +138,7 @@ The physical layout varies by format version and journaling mode.
 
 The v3 layout introduces **multi-block bitmaps** sized to the image capacity, removing the 128 MiB / 32K inode caps.
 
-```text
+```
 [Block 0: SuperBlock]
 [Block 1..1+I-1: Inode Bitmap (I blocks = ceil(inode_count / 32768))]
 [Block 1+I..1+I+D-1: Data Bitmap (D blocks = ceil(data_blocks / 32768))]
@@ -163,11 +152,12 @@ Key v3 constants ([`src/superblock.rs`](../../src/superblock.rs#L348-L355)):
 ```rust
 pub const FORMAT_VERSION_V3_LAYOUT: u32 = 3;
 pub const BITMAP_BLOCK_BITS: u64 = 4096 * 8;  // 32,768 bits per bitmap block
+pub const INODE_SLOTS_PER_BLOCK: u64 = 16;    // 4096 / 256
 ```
 
 - **Inode bitmap blocks** = `ceil(inode_count / 32768)`, minimum 1
 - **Data bitmap blocks** = `ceil(data_blocks / 32768)`, minimum 1
-- Inode table: 1024 blocks max → 16,384 inodes (256-byte records)
+- Inode table: 1024 blocks max → 16,384 inodes (256-byte records, 16 per block)
 - The historical table size is preserved; only the *reported* inode count changes to match actual capacity
 - Bitmap spans are **implicit** in the recorded block offsets; `validate()` verifies they fit exactly
 
@@ -186,6 +176,45 @@ pub fn journal_header_block(&self) -> u64 {
 ```
 
 Both layouts are distinguished purely by geometry — the `SuperBlock` struct itself is unchanged. A v3 image with `data_bitmap_blocks() == 1` and no journal has identical offsets to a legacy image.
+
+### On-disk layout diagram
+
+<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Parse error on line 2: ...Legacy v1/v2 Layout (non-journaled)] Expecting 'SQE', 'DOUBLECIRCLEEND', 'PE', '-)', 'STADIUMEND', 'SUBROUTINEEND', 'PIPE', 'CYLINDEREND', 'DIAMOND_STOP', 'TAGEND', 'TRAPEND', 'INVTRAPEND', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got 'PS' -->
+```text
+flowchart TD
+    subgraph LegacyLayout [Legacy v1/v2 Layout (non-journaled)]
+        L0[Block 0: SuperBlock]
+        L1[Block 1: Inode Bitmap (32,768 bits)]
+        L2[Block 2: Data Bitmap (32,768 bits)]
+        L3[Blocks 3..3+T-1: Inode Table (T ≤ 1024 blocks)]
+        L4[Blocks 3+T..N-1: Data Blocks]
+    end
+
+    subgraph JournaledLayout [Journaled v1/v2 Layout]
+        J0[Block 0: SuperBlock]
+        J1[Block 1: Inode Bitmap]
+        J2[Block 2: Data Bitmap]
+        J3[Block 3: Journal Header (JRNL)]
+        J4[Blocks 4..35: Journal Ring (32 blocks)]
+        J5[Blocks 36..36+T-1: Inode Table]
+        J6[Blocks 36+T..N-1: Data Blocks]
+    end
+
+    subgraph V3Layout [v3 Layout (format_version = 3)]
+        V0[Block 0: SuperBlock]
+        V1[Blocks 1..1+I-1: Inode Bitmap (I = ceil(inode_count/32768))]
+        V2[Blocks 1+I..1+I+D-1: Data Bitmap (D = ceil(data_blocks/32768))]
+        V3[Blocks 1+I+D..1+I+D+J-1: Journal Region (J=33 or 0)]
+        V4[Blocks 1+I+D+J..1+I+D+J+T-1: Inode Table (T ≤ 1024, 16,384 inodes @ 256B)]
+        V5[Blocks 1+I+D+J+T..N-1: Data Blocks]
+    end
+
+    style LegacyLayout fill:#f9f,stroke:#333
+    style JournaledLayout fill:#bbf,stroke:#333
+    style V3Layout fill:#bfb,stroke:#333
+```
+
+---
 
 ## Migration cursor mechanics
 
@@ -216,12 +245,15 @@ A `bincode` v1 record and a fixed 256-byte v2 record are **not reliably distingu
 
 The process is **idempotent** — safe to call on already-current images and safe to resume after interruption.
 
-### Validation
+### CLI command
 
-`SuperBlock::validate()` enforces:
-- `migration_cursor <= usable_inode_count()`
-- If `format_version >= 3` (v3 layout), bitmap spans must match recorded block offsets exactly
-- Journal region placement must match `has_journal_layout()`
+```bash
+oifs -i <image> migrate
+```
+
+This upgrades a legacy (v1) image to the current inode format (v2) in place. If interrupted, re-running resumes from the persisted cursor.
+
+---
 
 ## Journal region
 
@@ -261,6 +293,24 @@ pub fn is_journaled_layout(sb: &SuperBlock) -> bool {
 
 In v3, the journal region sits **between the data bitmap and the inode table**, so the inode table block is `data_bitmap_block + data_bitmap_blocks() + JOURNAL_RESERVED_BLOCKS`. The superblock's `has_journal_layout()` checks both legacy and v3 geometries.
 
+---
+
+## Encryption schemes
+
+Two encryption schemes are supported, identified by `encryption_version` ([`src/encryption.rs`](../../src/encryption.rs#L335-L342)):
+
+| Value | Constant | Scheme |
+|-------|----------|--------|
+| 0 | — | Unencrypted (default) |
+| 1 | `ENCRYPTION_SCHEME_LEGACY` | XChaCha20-Poly1305 **without** associated data |
+| 2 | `ENCRYPTION_SCHEME_CONTEXT_BOUND` | XChaCha20-Poly1305 **with** associated data (AAD) binding ciphertext to inode ID, chunk index, and flags |
+
+When `encrypted == true`, `encryption_version` must be either 1 or 2. When `encrypted == false`, `encryption_version` must be 0. The 16-byte `encryption_salt` is used by Argon2id to derive the master key from the user password.
+
+**Context-bound encryption (v2)** prevents whole-file or chunk ciphertexts from being swapped, reordered, or rolled back without the AEAD authentication failing. The associated data (AAD) includes a domain separator (`"OIFS-AAD-v1"`), a kind byte (`0x01` file / `0x02` chunk / `0x03` filename), the target inode ID, and for chunks the chunk index and flags.
+
+---
+
 ## On-disk format validation
 
 `SuperBlock::validate(mmap_len)` ([`src/superblock.rs`](../../src/superblock.rs#L430-L500)) enforces:
@@ -279,6 +329,8 @@ In v3, the journal region sits **between the data bitmap and the inode table**, 
 - Migration cursor within usable range
 - Encryption version consistent with `encrypted` flag
 - v3 layout: bitmap spans and journal placement match recorded offsets exactly
+
+---
 
 ## Summary of key invariants
 

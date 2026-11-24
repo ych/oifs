@@ -1,44 +1,58 @@
 ---
 type: "Reference"
-title: "This will FAIL with an error mentioning --allow-remote-ipsc"
-openwiki_generated: true
+title: "CLI Reference"
+description: "Complete reference for the oifs and oifs_mcp CLI commands: global flags, subcommands, arguments, JSON output, and exit codes."
+tags: ["cli", "reference", "operations", "oifs", "oifs_mcp"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-23T20:55:55.458Z
 sources:
+  - id: openwiki-source-1d8ff572dc201d9ae2619645
+    resource: repo://src/bin/oifs_mcp.rs
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
 ---
-
 
 ## Overview
 
-The `oifs` executable ([src/bin/oifs.rs](../../src/bin/oifs.rs)) provides a unified command-line tool for creating, inspecting, modifying, and diagnosing OIFS filesystem images.
+The OIFS project provides two command-line executables:
 
-Built with [`clap`](https://crates.io/crates/clap) using the derive pattern ([`Cli`](repo://src/bin/oifs.rs#L100-L154) and [`Commands`](repo://src/bin/oifs.rs#L156-L212)). The CLI transparently routes operations through the [`OifsSession`](repo://src/session.rs) layer, meaning CLI commands automatically participate in multi-process Master-Proxy concurrency.
+| Binary | Source | Purpose |
+| :--- | :--- | :--- |
+| `oifs` | [`src/bin/oifs.rs`](../../src/bin/oifs.rs) | Full-featured CLI for creating, inspecting, modifying, and diagnosing OIFS filesystem images. |
+| `oifs_mcp` | [`src/bin/oifs_mcp.rs`](../../src/bin/oifs_mcp.rs) | MCP (Model Context Protocol) server that exposes OIFS as tools for AI agents via stdio. |
 
-## Global options
+<!-- openwiki: broken internal link [../architecture/architecture.md] file "../architecture/architecture.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+Both binaries are built with [`clap`](https://crates.io/crates/clap) using the derive pattern. The `oifs` CLI routes operations through the [`OifsSession`](../architecture/architecture.md) layer, meaning CLI commands automatically participate in multi-process Master-Proxy concurrency when IPC is enabled.
 
-Global options apply across all subcommands:
+---
+
+## `oifs` — Complete Command Reference
+
+### Global Options
+
+Global options apply across all subcommands and must appear **before** the subcommand:
 
 | Flag | Long Option | Description |
 | :--- | :--- | :--- |
-| `-i` | `--image <PATH>` | Path to the target `.img` container file (required for all image commands). |
-| `-p` | `--password <STR>` | Passphrase for encrypted images. |
-| | `--ipc` | Enables local IPC (Unix Domain Sockets) mode for multi-process concurrency. |
-| `-n` | `--network` | Enables cross-machine Network TCP mode instead of local UDS (for NFS, Lustre, multi-node clusters). |
-| | `--bind <ADDR>` | Custom host:port to bind in network mode (e.g. `0.0.0.0:9050` or `127.0.0.1:0`). |
-| | `--allow-remote-ipsc` | Allow the IPC master to bind a non-loopback address. Only safe when traffic is tunnelled (WireGuard, IPsec, SSH port forwarding); the IPC transport is plain TCP without TLS. |
-| | `--json` | Formats all command outputs as structured JSON and disables interactive stdin prompts. |
+| `-i` | `--image <PATH>` | Path to the target `.img` container file (required for all image commands except `filter-analyze` and `clone`). |
+| `-p` | `--password <STR>` | Passphrase for encrypted images. **Highest precedence** in password resolution. |
+| | `--ipc` | Enables local IPC (Unix Domain Sockets) mode for multi-process concurrency on the same machine. |
+| `-n` | `--network` | Enables cross-machine Network TCP mode (for NFS, Lustre, multi-node clusters). Implies network mode if `--bind` is also set. |
+| | `--bind <ADDR>` | Custom host:port to bind in network mode (e.g., `0.0.0.0:9050` or `127.0.0.1:0`). |
+| | `--allow-remote-ipc` | Allow the IPC master to bind a non-loopback address. **Only safe when traffic is tunnelled** (WireGuard, IPsec, SSH port forwarding); the IPC transport is plain TCP without TLS. |
+| | `--json` | Formats all command outputs as structured JSON and **disables interactive stdin prompts**. |
 | | `--auto-defrag [THRESHOLD]` | Enable background automatic defragmentation coordinator. Optional fragmentation threshold (ratio of `(free_runs - 1) / (free_blocks - 1)`) above which a defragmentation pass is triggered. Default: `0.25`. Range: `0.0` (all free space contiguous) to `1.0` (every free block isolated). |
 | | `--defrag-interval <SECONDS>` | Interval in seconds between background fragmentation checks. Default: `300` (5 minutes). Minimum: `1`. |
+| | `--no-mmap` | Use pure positional `pread`/`pwrite` file I/O instead of `mmap` (eliminates SIGBUS and mmap hazards on network filesystems). |
+| | `--read-only` | Open the image in read-only mode (shared `F_RDLCK` lock, zero writes, works on `0444` images). |
 | `-h` | `--help` | Prints help information. |
 | `-V` | `--version` | Prints version. |
 
-## Password precedence and security model
+### Password Resolution (3-Tier Hierarchy)
 
-When interacting with encrypted filesystems, `oifs` determines passphrases according to a strict 3-tier precedence hierarchy ([repo://src/bin/oifs.rs#L307-L342]):
+When interacting with encrypted filesystems, `oifs` determines passphrases according to a strict precedence hierarchy ([`src/bin/oifs.rs#L307-L342`](../../src/bin/oifs.rs#L307-L342)):
 
 ```
 1. CLI Argument (--password <PWD>)
@@ -54,378 +68,495 @@ When interacting with encrypted filesystems, `oifs` determines passphrases accor
 
 1. **CLI Flag (`--password <pwd>`)**: Highest precedence. Useful for scripts and automated integration tests.
 2. **Environment Variable (`OIFS_PASSWORD`)**: Preferred for CI/CD environments and background jobs to prevent secrets from appearing in `ps aux` process tables.
-3. **Interactive Masked Prompt**: If neither flag nor environment variable is provided, `read_password` ([repo://src/bin/oifs.rs#L218-L256]) disables terminal echo (`libc::ECHO`) via `libc::tcgetattr` / `libc::tcsetattr`, safely reading the password while masking input against shoulder-surfing. Prompts are printed to `stderr` so stdout remains clean for shell pipes.
+3. **Interactive Masked Prompt**: If neither flag nor environment variable is provided, `read_password` ([`src/bin/oifs.rs#L218-L256`](../../src/bin/oifs.rs#L218-L256)) disables terminal echo (`libc::ECHO`) via `libc::tcgetattr` / `libc::tcsetattr`, safely reading the password while masking input. Prompts are printed to `stderr` so stdout remains clean for shell pipes.
 4. **Non-Interactive `--json` Enforcement**: In `--json` mode, interactive prompts are forbidden. If an encrypted image is opened without `--password` or `OIFS_PASSWORD`, the process immediately aborts with:
    ```json
    {"ok": false, "error": "Encrypted filesystem requires --password or OIFS_PASSWORD env in --json mode"}
    ```
 
-### Password confirmation on creation
+**Password confirmation on creation** (`oifs -i disk.img create --encrypt`):
+- Interactive mode prompts twice (`Enter password: ` and `Confirm password: `) to prevent accidental typos.
+- If the password is fewer than 8 characters, a non-blocking warning is emitted to stderr: `⚠️ Warning: Password is shorter than 8 characters`.
 
-When creating an encrypted image (`oifs -i disk.img create --encrypt`):
-- Interactive mode prompts twice (`Enter password: ` and `Confirm password: `) to prevent accidental typos ([repo://src/bin/oifs.rs#L519-L531]).
-- If the password is fewer than 8 characters, a non-blocking warning is emitted to stderr: `⚠️ Warning: Password is shorter than 8 characters` ([repo://src/bin/oifs.rs#L533-L535]).
+---
 
-## JSON output mode (`--json`)
+### JSON Output Mode (`--json`)
 
 The `--json` flag guarantees machine-readable outputs for automation, AI agent tools, and monitoring scripts:
 
-- **Success Responses**: Emits JSON objects (e.g. `{"ok": true, "message": "..."}`) or formatted diagnostic reports.
-- **Failure Responses**: Intercepts panics and errors in `main` ([repo://src/bin/oifs.rs#L358-L364]), emitting `{"ok": false, "error": "<msg>"}` to stdout and exiting with status code 1.
+- **Success Responses**: Emits JSON objects (e.g., `{"ok": true, "message": "..."}`) or formatted diagnostic reports.
+- **Failure Responses**: Intercepts panics and errors in `main` ([`src/bin/oifs.rs#L358-L364`](../../src/bin/oifs.rs#L358-L364)), emitting `{"ok": false, "error": "<msg>"}` to stdout and exiting with status code 1.
 
-### Common JSON schemas
+#### Common JSON Success Schemas
 
 | Subcommand | Success Schema | Notes |
 | :--- | :--- | :--- |
 | `create` | `{"ok": true, "message": "Filesystem created", "journal": boolean}` | `journal` true if `--journal` was specified |
 | `put` | `{"ok": true, "inode": <u64>, "bytes": <usize>}` | |
 | `get` | `{"ok": true, "bytes": <usize>, "dest": "<path>"}` | |
+| `cat` | `{"ok": true, "path": "<name>", "bytes": <usize>, "content": "<utf8_lossy>"}` | |
 | `append` | `{"ok": true, "inode": <u64>, "total_bytes": <usize>}` | |
 | `mkdir` | `{"ok": true, "inode": <u64>}` | |
 | `rm` | `{"ok": true, "removed": "<path>", "inode": <u64>, "recursive": boolean}` | |
-| `ls` | `[{"name": "...", "kind": "f\|d", "size": <u64>, "comp_size": <u64|null>, "modified": "YYYY-MM-DD HH:MM:SS"}, ...]` | Array of entries |
+| `ls` | `[{"name": "...", "kind": "f\|d", "size": <u64>, "comp_size": <u64\|null>, "modified": "YYYY-MM-DD HH:MM:SS"}, ...]` | Array of entries |
+| `stat` | `{"ok": true, "path": "...", "inode": <u64>, "kind": "file\|directory", "size": <u64>, "compressed_size": <u64>, "encrypted": <bool>, "seekable_64k": <bool>, "created": "YYYY-MM-DD HH:MM:SS", "modified": "YYYY-MM-DD HH:MM:SS"}` | |
+| `info` | `{"ok": true, "image": "...", "block_size": <u32>, "block_count": <u64>, "total_bytes": <u64>, "inode_count": <u64>, "data_block_start": <u64>, "format_version": <u32>, "encrypted": <bool>, "journaled": <bool>, "read_only": <bool>}` | |
 | `analyze` | `{"ok": true, "total_blocks": <u64>, "used_blocks": <u64>, "free_blocks": <u64>, "free_runs": <u64>, "largest_free_run": <u64>, "avg_gap_size": <f64>, "fragmentation_ratio": <f64>}` | |
 | `defrag` | `{"ok": true, "files_processed": <u64>, "bytes_moved": <u64>, "frag_before": <f64>, "frag_after": <f64>}` | |
 | `fsck` | Full `IntegrityReport` (see [fsck workflow](../workflows/fsck_workflow.md)) | |
 | `migrate` | `{"ok": true, "from_version": <u32>, "to_version": <u32>, "inodes_rewritten": <u64>, "already_current": boolean}` | |
 | `truncate` | `{"ok": true, "path": "<path>", "size": <u64>}` | |
+| `mount` | `{"ok": true, "backend": "nfs\|fuse", "mountpoint": "...", "read_only": <bool>, "foreground": <bool>, "allow_other": <bool>}` | |
+| `clone` | `{"ok": true, "src": "...", "dst": "...", "method": "..."}` | Method reflects OS CoW reflink type |
+| `transfer` | See [Transfer JSON](#transfer-json-schemas) below | |
 | `filter-analyze` | Pretty-printed `FilterRecommendation` (see below) | |
 | Error (any) | `{"ok": false, "error": "<message>"}` | Exit code 1 |
 
-## Network mode and Master-Proxy coordination
+---
 
-By default, OIFS runs in **Standalone** mode (no IPC). With `--ipc`, it runs in **Local** mode, creating a Unix domain socket under `/tmp/oifs_<name>_<hash>.sock`.
+### Subcommands
 
-When operating over networked shared storage (NFS, Lustre, AWS EFS, or multi-node clusters):
-- Adding `-n` / `--network` or specifying `--bind` ([repo://src/bin/oifs.rs#L402-L410]) switches to `SessionMode::Network`.
-- The first process creates an atomic `<image>.master` rendezvous file containing the TCP address and PID of the Master.
-- Secondary processes read the rendezvous file, probe connectivity using ping/pong packets, and connect over TCP.
-- The optional `--bind <ADDR>` flag allows binding to explicit network interfaces or port ranges.
+#### `create` — Create a new OIFS image
 
-### `--allow-remote-ipsc` security boundary
-
-The IPC transport is **plain TCP without TLS**. Binding to a non-loopback address (e.g. `0.0.0.0:9050`) exposes the master socket to the network. The CLI **refuses** to bind a non-loopback address unless `--allow-remote-ipsc` is explicitly provided ([repo://src/bin/oifs.rs#L370-L379]):
-
-```bash
-# This will FAIL with an error mentioning --allow-remote-ipsc
-oifs --image /shared/disk.img --network --bind 0.0.0.0:9050 ls
-
-# This SUCCEEDS (operator explicitly acknowledges the risk)
-oifs --image /shared/disk.img --network --bind 0.0.0.0:9050 --allow-remote-ipsc ls
-```
-
-**Only use `--allow-remote-ipsc` when the traffic is tunnelled** (WireGuard, IPsec, SSH port forwarding).
-
-## Auto-defragmentation (`--auto-defrag`, `--defrag-interval`)
-
-The background auto-defragmentation coordinator runs on the Master process and periodically evaluates filesystem fragmentation:
-
-- **Threshold** (`--auto-defrag [THRESHOLD]`): Fragmentation ratio above which a defragmentation pass is triggered. The ratio is `(free_runs - 1) / (free_blocks - 1)`. Default: `0.25`. Value of `0.0` means all free space is contiguous; `1.0` means every free block is isolated.
-- **Interval** (`--defrag-interval <SECONDS>`): Seconds between checks. Default: `300` (5 minutes). Minimum: `1`.
-
-Example:
-```bash
-# Run in background with auto-defrag enabled, checking every 60s, triggering at 30% fragmentation
-oifs -i disk.img --auto-defrag 0.30 --defrag-interval 60 --ipc ls &
-```
-
-The coordinator only runs on the Master. If invoked on a Proxy (client) session, a warning is emitted to stderr (unless `--json`).
-
-## Command reference
-
-### 1. `create`
-Creates a fresh OIFS container image file ([repo://src/bin/oifs.rs#L498-L575]):
 ```bash
 oifs -i <image.img> create [--size <MB>] [--encrypt] [--journal]
 ```
-| Argument | Description |
+
+| Option | Description |
 | :--- | :--- |
-| `--size <MB>` | Image capacity in megabytes (default: `10`). |
-| `--encrypt` | Enables Argon2id + XChaCha20-Poly1305 encryption. |
-| `--journal` | Enable the metadata WAL (journaling) for crash-safe metadata updates. Reserves 33 blocks (1 header + 128 KB ring) between the data bitmap and the inode table. |
+| `--size <MB>` | Size in megabytes (default: 10). |
+| `--encrypt` | Enable encryption (will prompt for password via 3-tier hierarchy). |
+| `--journal` | Enable the metadata WAL (journaling) for crash-safe metadata updates. Reserves 33 blocks (1 header + 128 KB ring) between the data bitmap and the inode table. Uncommitted transactions are replayed automatically on the next mount, so `oifs fsck` is no longer needed after a power loss. |
 
-**Examples:**
-```bash
-# Basic 100MB image
-oifs -i disk.img create --size 100
-
-# Encrypted image with journaling (prompts for password interactively)
-oifs -i secure.img create --size 50 --encrypt --journal
-
-# Encrypted image for CI/CD (password from env)
-OIFS_PASSWORD="secret" oifs -i ci.img create --size 20 --encrypt --json
-```
+**JSON success**: `{"ok": true, "message": "Filesystem created", "journal": true}`
 
 ---
 
-### 2. `put`
-Imports a file from the host filesystem into the image ([repo://src/bin/oifs.rs#L577-L708]):
+#### `put` — Import a file into the image
+
 ```bash
-oifs -i <image.img> put <host_path> [remote_name] [OPTIONS]
+oifs -i <image.img> put <host_path> [remote_name] [--compress] [--no-compress] [--chunked] [--filter <mode>] [--typesize <N>]
 ```
-| Argument | Description |
+
+| Argument / Option | Description |
 | :--- | :--- |
 | `host_path` | File path on host (required). |
-| `remote_name` | Destination path inside OIFS (defaults to host filename). |
-| `--compress` | Forces Zstd compression regardless of payload size. |
-| `--no-compress` | Disables compression completely. |
-| `--chunked` / `--seekable` / `--chunked-64k` | Seekable 64KB chunked compression (Blosc2 seekable frames). |
-| `--filter <none\|delta\|shuffle\|bitshuffle\|both\|numeric\|auto>` | Pre-compression data filter (default: `none`). |
-| `--typesize <1\|2\|4\|8>` | Element width for shuffle/delta transformations (default: `4`). |
+| `remote_name` | Destination filename in OIFS (optional, defaults to host filename). |
+| `--compress` | Always compress the file regardless of size. |
+| `--no-compress` | Never compress the file. |
+| `--chunked` / `--seekable` / `--chunked-64k` | Seekable 64KB chunked compression (sets `INODE_FLAG_SEEKABLE_64K`). |
+| `--filter <mode>` | Pre-compression filter: `none`, `delta`, `shuffle`, `bitshuffle`, `both` (alias `numeric`), or `auto`. Default: `none`. |
+| `--typesize <N>` | Element size in bytes for filter (1, 2, 4, 8). Default: 0 (auto = 4). |
 
-**Filter modes:**
+**Compression mode precedence**: `--chunked` > `--compress` > `--no-compress` > `Auto`.
+
+**Filter modes**:
 - `none` — No pre-filter.
-- `delta` — First-order difference (good for time-series, monotonic data).
-- `shuffle` — Byte shuffle (good for structured records / AoS layouts).
-- `bitshuffle` — Bit-level transpose (good for sparse bitmasks, boolean arrays).
-- `both` / `numeric` — Delta + byte shuffle combined.
-- `auto` — Analyze content and pick the best filter automatically.
+- `delta` — First-order delta (good for time-series, linear data).
+- `shuffle` — Byte shuffle (good for AoS struct arrays).
+- `bitshuffle` — Bit-level transpose (good for boolean masks, sparse bits).
+- `both` / `numeric` — Delta + byte shuffle (good for numeric arrays).
+- `auto` — Analyze file content and recommend optimal filter.
 
-**Examples:**
-```bash
-# Simple import
-oifs -i disk.img put ./data.bin
-
-# Import with explicit name and forced compression
-oifs -i disk.img put ./data.bin archive.dat --compress
-
-# Import with auto-selected filter
-oifs -i disk.img put ./sensors.csv --filter auto
-
-# Import with specific filter and typesize
-oifs -i disk.img put ./array.dat --filter shuffle --typesize 8
-```
+**JSON success**: `{"ok": true, "inode": <u64>, "bytes": <usize>}`
 
 ---
 
-### 3. `filter-analyze`
-Standalone tool that analyzes host data Shannon entropy and evaluates 14 candidate Blosc2 pipelines in parallel ([repo://src/bin/oifs.rs#L170-L198], [repo://src/bin/oifs.rs#L413-L495]):
+#### `filter-analyze` — Analyze a file and recommend optimal compression filters
+
 ```bash
 oifs filter-analyze <host_path> [--json]
 ```
-- Does **not** require `-i / --image`.
-- Recommends optimal `--filter` and `--typesize` parameters based on entropy reduction.
 
-**Example output (human-readable):**
-```
-=== OIFS Filter Recommendation Report for "data.bin" ===
-Original Size:        1048576 bytes
-Baseline Zstd Size:   128450 bytes (Entropy: 0.981 bits/byte)
+Analyzes a host file (no image required) and prints a detailed filter recommendation report including entropy measurements, compression ratios, and the exact `oifs put` command to use.
 
-Filter Pipeline              Entropy   Zstd Size    Ratio   Savings
---------------------------------------------------------------------------------
-none                         0.981     128450      8.16x   87.8%
-delta (ts=4)                 0.112      12450     84.22x   98.8% [*RECOMMENDED*]
-shuffle (ts=4)               0.892      98200     10.68x   90.6%
-...
-
-Recommendation Rationale: Data displays strong linear/temporal correlation; first-order delta collapses dynamic range, shrinking entropy.
-Recommended Blosc2 Filter(s): ["blosc2::Filter::Delta"]
-Command to import with recommended filter:
-  oifs -i <image.img> put "data.bin" --filter delta --typesize 4
-```
-
-**JSON output (`--json`):** Returns a `FilterRecommendation` object with `original_size`, `baseline_compressed_size`, `baseline_entropy`, `candidates` (array of pipeline results), and `best_config`.
+**JSON output**: Pretty-printed `FilterRecommendation` struct with fields:
+- `original_size`, `baseline_compressed_size`, `baseline_entropy`
+- `candidates[]` with `label`, `entropy`, `compressed_size`, `compression_ratio`, `space_savings_percent`
+- `best_config` — the recommended `FilterConfig`
 
 ---
 
-### 4. `get`
-Exports a file from the image to the host filesystem ([repo://src/bin/oifs.rs#L710-L780]):
+#### `get` — Export a file from the image
+
 ```bash
 oifs -i <image.img> get <remote_name> [host_path]
 ```
+
 | Argument | Description |
 | :--- | :--- |
-| `remote_name` | Filename or path inside OIFS (required). |
-| `host_path` | Destination path on host (optional). If omitted, uses the remote filename in the current directory. If a directory is specified (trailing slash or existing dir), the file is placed inside it. |
+| `remote_name` | Filename in OIFS (required). |
+| `host_path` | Destination path on host (optional, defaults to remote filename). If host_path is a directory or ends with `/`, the remote filename is appended. |
 
-**Examples:**
-```bash
-# Export to current directory with same name
-oifs -i disk.img get data.bin
-
-# Export to specific path
-oifs -i disk.img get data.bin /tmp/exported.bin
-
-# Export to a directory (creates data.bin inside it)
-oifs -i disk.img get data.bin /tmp/out/
-```
+**JSON success**: `{"ok": true, "bytes": <usize>, "dest": "<resolved_path>"}`
 
 ---
 
-### 5. `append`
-Appends content to a file inside the image ([repo://src/bin/oifs.rs#L782-L835]):
+#### `cat` — Print file contents to stdout
+
+```bash
+oifs -i <image.img> cat <remote_name>
+```
+
+| Argument | Description |
+| :--- | :--- |
+| `remote_name` | Filename in OIFS (required). |
+
+**Behavior**: Writes raw bytes to stdout (no newline added). In `--json` mode, returns a JSON object with the content as UTF-8 lossy string.
+
+**JSON success**: `{"ok": true, "path": "...", "bytes": <usize>, "content": "<utf8_lossy>"}`
+
+---
+
+#### `info` — Display filesystem superblock and configuration
+
+```bash
+oifs -i <image.img> info
+```
+
+Shows block size, total blocks/bytes, inode capacity, format version, encryption status, journaling status, and read-only state.
+
+---
+
+#### `stat` — Display inode metadata for a file or directory
+
+```bash
+oifs -i <image.img> stat <path>
+```
+
+| Argument | Description |
+| :--- | :--- |
+| `path` | Path in OIFS (required). Use `/` for root directory. |
+
+Shows inode number, type (file/directory), size, compressed size, encryption flag, seekable-64k flag, created/modified timestamps.
+
+---
+
+#### `append` — Append content to a file in the image
+
 ```bash
 oifs -i <image.img> append <remote_name> <content> [--no-newline]
 ```
-| Argument | Description |
+
+| Argument / Option | Description |
 | :--- | :--- |
-| `remote_name` | Destination filename in OIFS (created if it doesn't exist). |
-| `content` | String content to append. |
-| `--no-newline` | Do not append a trailing newline automatically. |
+| `remote_name` | Destination filename in OIFS (creates if not exists). |
+| `content` | Content to append (required). |
+| `--no-newline` | Do not append a newline automatically if content doesn't end with one. |
 
-**Examples:**
-```bash
-# Append with automatic newline
-oifs -i disk.img append log.txt "New log entry"
-
-# Append without newline
-oifs -i disk.img append log.txt "Partial line" --no-newline
-```
+**JSON success**: `{"ok": true, "inode": <u64>, "total_bytes": <usize>}`
 
 ---
 
-### 6. `mkdir`
-Creates a directory inside the image ([repo://src/bin/oifs.rs#L837-L870]):
+#### `mkdir` — Create a directory
+
 ```bash
 oifs -i <image.img> mkdir <dir_name>
 ```
+
 | Argument | Description |
 | :--- | :--- |
-| `dir_name` | Directory path to create (parent directories must exist). |
+| `dir_name` | Directory name/path (parent must exist). |
 
-**Example:**
-```bash
-oifs -i disk.img mkdir docs
-oifs -i disk.img mkdir docs/2024
-```
+**JSON success**: `{"ok": true, "inode": <u64>}`
 
 ---
 
-### 7. `rm`
-Deletes a file or directory inside the image ([repo://src/bin/oifs.rs#L872-L980]):
+#### `rm` — Delete a file or directory
+
 ```bash
-oifs -i <image.img> rm <path> [-r/--recursive]
+oifs -i <image.img> rm <path> [-r|--recursive]
 ```
-| Argument | Description |
+
+| Argument / Option | Description |
 | :--- | :--- |
 | `path` | Path of the file or directory to delete. |
-| `-r`, `--recursive` | Allow deleting a directory that still has contents (recursive traversal). |
+| `-r`, `--recursive` | Allow deleting a directory that still has contents. |
 
-**Safety guards:**
-- Refuses to delete the filesystem root.
-- For non-empty directories, requires `--recursive`.
-- Cycle detection with max traversal depth of 256.
+**Safety**: Never allows deleting the filesystem root. Non-empty directories require `--recursive`.
 
-**Example:**
-```bash
-oifs -i disk.img rm old_file.txt
-oifs -i disk.img rm old_dir --recursive
-```
+**JSON success**: `{"ok": true, "removed": "<path>", "inode": <u64>, "recursive": <bool>}`
 
 ---
 
-### 8. `ls`
-Lists entries in a directory ([repo://src/bin/oifs.rs#L982-L1090]):
+#### `ls` — List files in the root directory or specified path
+
 ```bash
-oifs -i <image.img> ls [path] [-r/--recursive]
+oifs -i <image.img> ls [path] [-r|--recursive]
 ```
-| Argument | Description |
+
+| Argument / Option | Description |
 | :--- | :--- |
 | `path` | Path to list (optional, defaults to root). |
 | `-r`, `--recursive` | List recursively. |
 
-**Output columns (human mode):** Name, Type (d/f), Logical Size, Compressed Size (or `-`), Modified (ISO-8601 local time).
+**Output columns** (non-JSON): `Type`, `Name`, `Size`, `CompSize`, `Modified`. Type: `d` = directory, `-` = file.
 
-**JSON output:** Array of objects with fields `name`, `kind` (`"f"` or `"d"`), `size` (u64), `comp_size` (u64 or null), `modified` (`"YYYY-MM-DD HH:MM:SS"`).
-
-**Example:**
-```bash
-oifs -i disk.img ls -r
-oifs -i disk.img --json ls docs
-```
+**JSON success**: Array of entry objects (see [JSON schemas](#common-json-success-schemas)).
 
 ---
 
-### 9. `analyze`
-Measures free-block scatter and fragmentation ratio ([repo://src/bin/oifs.rs#L1092-L1145]):
+#### `analyze` — Analyze disk fragmentation
+
 ```bash
 oifs -i <image.img> analyze
 ```
-**Output:** Total blocks, used blocks, free blocks, free runs (gaps), largest free run, average gap size, fragmentation ratio (percentage).
 
-**JSON output:** Object with fields `total_blocks`, `used_blocks`, `free_blocks`, `free_runs`, `largest_free_run`, `avg_gap_size`, `fragmentation_ratio`.
+Reports total/used/free blocks, free runs (gaps), largest free run, average gap size, and fragmentation ratio.
 
 ---
 
-### 10. `defrag`
-Performs safe out-of-place defragmentation ([repo://src/bin/oifs.rs#L1147-L1215]):
+#### `defrag` — Defragment the filesystem
+
 ```bash
 oifs -i <image.img> defrag [--mode <safe|inplace>]
 ```
-| Argument | Description |
+
+| Option | Description |
 | :--- | :--- |
-| `--mode safe` (default) | Executes 3-step atomic rename with `.old` backup (crash-safe). |
-| `--mode inplace` | Directly modifies the image in place. **WARNING:** Data loss may occur if interrupted. Requires 3-second confirmation delay in interactive mode. |
+| `--mode <safe|inplace>` | Defragmentation mode (default: `safe`). `safe` uses copy-on-write; `inplace` modifies the image directly (⚠️ data loss risk if interrupted). |
 
-**JSON output:** Object with `files_processed`, `bytes_moved`, `frag_before`, `frag_after`.
+**JSON success**: `{"ok": true, "files_processed": <u64>, "bytes_moved": <u64>, "frag_before": <f64>, "frag_after": <f64>}`
 
 ---
 
-### 11. `fsck`
-Executes structural consistency scanner ([repo://src/bin/oifs.rs#L1278-L1330]):
+#### `fsck` — Check filesystem structural consistency
+
 ```bash
-oifs -i <image.img> fsck [--json]
+oifs -i <image.img> fsck
 ```
-Scans for:
-- Orphan inodes (allocated but not reachable from root)
-- Leaked blocks (marked used but not referenced by any inode)
-- Missing blocks (referenced by inode but marked free)
-- Cross-linked blocks (referenced by multiple inodes)
 
-**JSON output:** Full `IntegrityReport` with boolean `is_clean` and arrays of offending IDs.
+Performs a full structural integrity check: orphan inodes, leaked blocks, missing blocks, cross-linked blocks. Returns non-zero exit code if corruption is found.
 
-**Exit codes:** 0 if clean, 1 if corrupted (unless `--json` where exit code is always 0 and `is_clean` field indicates status).
+**JSON output**: Full `IntegrityReport` object with `is_clean` boolean and arrays of issue IDs.
 
 ---
 
-### 12. `migrate`
-Upgrades a legacy image to the current inode format ([repo://src/bin/oifs.rs#L1217-L1275]):
+#### `migrate` — Upgrade a legacy image to current inode format
+
 ```bash
 oifs -i <image.img> migrate
 ```
-- Resumes interrupted migrations automatically.
-- No-op if already at current format version.
 
-**JSON output:** Object with `from_version`, `to_version`, `inodes_rewritten`, `already_current`.
+Upgrades legacy v1 inode format to current fixed-width format. Resumes interrupted migrations automatically.
+
+**JSON success**: `{"ok": true, "from_version": <u32>, "to_version": <u32>, "inodes_rewritten": <u64>, "already_current": <bool>}`
 
 ---
 
-### 13. `truncate`
-Truncates or extends a file to the specified size ([repo://src/bin/oifs.rs#L1332-L1345]):
+#### `truncate` — Truncate or extend a file to specified size
+
 ```bash
 oifs -i <image.img> truncate <path> --size <bytes>
 ```
-| Argument | Description |
+
+| Argument / Option | Description |
 | :--- | :--- |
 | `path` | Remote path in OIFS. |
-| `--size <bytes>` | New size in bytes (required). |
+| `-s`, `--size <bytes>` | New size in bytes (required). |
 
-**Example:**
+**JSON success**: `{"ok": true, "path": "<path>", "size": <u64>}`
+
+---
+
+#### `mount` — Mount the OIFS image as a FUSE/NFS filesystem
+
 ```bash
-# Truncate to 1KB
-oifs -i disk.img truncate large.dat --size 1024
-
-# Extend with zero-padding
-oifs -i disk.img truncate grow.dat --size 1048576
+oifs -i <image.img> mount <mountpoint> [--backend <auto|nfs|fuse>] [--port <N>] [--foreground] [--allow-other]
 ```
 
-**JSON output:** `{"ok": true, "path": "<path>", "size": <bytes>}`
+| Argument / Option | Description |
+| :--- | :--- |
+| `mountpoint` | Directory where the filesystem will be mounted (required). |
+| `--backend` | Mount backend: `auto` (macOS: nfs, Linux: fuse), `nfs` (built-in local NFSv3, zero kext), or `fuse`. Default: `auto`. |
+| `--port` | Loopback TCP port for NFSv3 backend (0 = OS-assigned ephemeral port). Default: 0. |
+| `--foreground` | Run attached in the foreground and log mount details to stderr. |
+| `--allow-other` | Allow other users to access the mounted filesystem (`allow_other`, FUSE backend only). |
 
-## Exit codes
+**Read-only behavior**: If the image was opened with `--read-only` or the filesystem is read-only, the mount is read-only regardless of backend options.
+
+**JSON success**: `{"ok": true, "backend": "nfs\|fuse", "mountpoint": "...", "read_only": <bool>, "foreground": <bool>, "allow_other": <bool>}`
+
+---
+
+#### `clone` — Clone an entire OIFS image using OS CoW reflink
+
+```bash
+oifs clone <src> <dst>
+```
+
+| Argument | Description |
+| :--- | :--- |
+| `src` | Source OIFS image path (defaults to `--image` if omitted). |
+| `dst` | Destination OIFS image path (must not already exist). |
+
+Uses `APFS clonefile` (macOS) or `FICLONE` (Linux) for instant copy-on-write clones.
+
+**JSON success**: `{"ok": true, "src": "...", "dst": "...", "method": "..."}`
+
+---
+
+#### `transfer` — Fast cross-image file copy or move
+
+```bash
+oifs -i <src.img> transfer --to <dst.img> <src_path> [--dest <dst_path>] [--move] [--overwrite] [--to-password <pwd>] [--offset <N>] [--len <N>] [--dst-offset <N>] [--trim-mode <keep|punch-hole|collapse>]
+```
+
+**Three-tier transfer mechanism** (Direct sessions only):
+1. **FICLONERANGE** — OS reflink for aligned extents (zero-copy).
+2. **copy_file_range** — Kernel copy without user-space roundtrip.
+3. **Raw block copy** — Direct block-level copy (bypasses decompression/recompression).
+
+Falls back to logical re-encode (read + write) if either session is a Remote IPC proxy.
+
+| Argument / Option | Description |
+| :--- | :--- |
+| `--to <PATH>` | Destination OIFS image path (required). |
+| `src_path` | Source file path inside the source image (required). |
+| `--dest <PATH>` | Destination file path inside `--to` image (defaults to `src_path`). |
+| `--move` | Remove source file after destination commits and flushes. |
+| `--overwrite` | Overwrite existing file at destination. |
+| `--to-password <PWD>` | Password for encrypted destination image (optional). |
+| `--offset <N>` | Sub-range byte offset in source file (enables `splice_range_to`). |
+| `--len <N>` | Sub-range byte length to splice (defaults to remaining source bytes from `--offset`). |
+| `--dst-offset <N>` | Sub-range byte offset in destination file (defaults to `--offset` or 0). |
+| `--trim-mode <MODE>` | Source trim mode for sub-range splice: `keep` (default), `punch-hole`, `collapse`. |
+
+##### Transfer JSON Schemas
+
+**Full file transfer**:
+```json
+{
+  "ok": true,
+  "src_inode": <u64>,
+  "dst_inode": <u64>,
+  "logical_bytes": <u64>,
+  "physical_bytes": <u64>,
+  "extents_transferred": <usize>,
+  "method": "Ficlonerange|CopyFileRange|RawBlockCopy|LogicalReencode",
+  "moved": <bool>
+}
+```
+
+**Sub-range splice transfer**:
+```json
+{
+  "ok": true,
+  "src_inode": <u64>,
+  "dst_inode": <u64>,
+  "bytes_spliced": <u64>,
+  "logical_rmw_bytes": <u64>,
+  "body_fast_path_bytes": <u64>,
+  "physical_bytes": <u64>,
+  "extents_transferred": <u64>,
+  "src_blocks_freed": <u64>,
+  "method": "Ficlonerange|CopyFileRange|RawBlockCopy|LogicalReencode",
+  "trim_mode": "keep|punch-hole|collapse"
+}
+```
+
+---
+
+### Exit Codes
 
 | Code | Meaning |
 | :--- | :--- |
-| `0` | Success (or clean fsck). |
-| `1` | General error (invalid arguments, I/O error, corruption detected by fsck, password mismatch, etc.). |
-| `>1` | Not used by `oifs` (reserved for signal termination). |
+| `0` | Success. |
+| `1` | General error (invalid arguments, I/O error, filesystem corruption, etc.). In `--json` mode, error details are printed to stdout as `{"ok": false, "error": "..."}`. |
 
-## Related documentation
+---
 
-- [Configuration](../concepts/configuration.md) — Environment variables and session modes.
-- [Quickstart](../quickstart.md) — End-to-end tutorial.
-- [Basic Operations](../workflows/basic_operations.md) — Common workflows.
-- [Compression Workflows](../workflows/compression_workflows.md) — Filter selection and tuning.
-- [Defragmentation Workflow](../workflows/defragmentation_workflow.md) — Analyze, defrag, auto-defrag.
-- [Encrypted Workflows](../workflows/encrypted_workflows.md) — Password management and key derivation.
-- [FSCK Workflow](../workflows/fsck_workflow.md) — Integrity report schema and repair strategies.
+### Error Message Conventions
+
+- **Human mode** (default): Errors printed to `stderr` with `Error: ` prefix. Warnings/notes printed to `stderr` without prefix (e.g., `⚠️ Warning: ...`, `✅ Created...`).
+- **JSON mode** (`--json`): All output to `stdout` as JSON. Errors are `{"ok": false, "error": "<message>"}`. Interactive prompts are **suppressed**; missing passwords for encrypted images cause immediate abort with JSON error.
+- **Panic handling**: `main` wraps `run_cli` and catches any error, ensuring JSON error format in `--json` mode.
+
+---
+
+## `oifs_mcp` — MCP Server Reference
+
+The `oifs_mcp` binary runs as an MCP (Model Context Protocol) server over stdio, exposing OIFS filesystem operations as tools for AI agents (Cursor, Claude Desktop, etc.).
+
+### Usage
+
+```bash
+oifs_mcp [--size <MB>] [IMAGE_PATH]
+```
+
+| Option / Argument | Description |
+| :--- | :--- |
+| `--size <MB>` | Initial size when creating a new image (default: 10 MB). |
+| `IMAGE_PATH` | Path to the OIFS image file (default: `agent_memory.img`). |
+| `-h`, `--help` | Show usage. |
+
+### Environment
+
+| Variable | Description |
+| :--- | :--- |
+| `OIFS_PASSWORD` | If set, opens (or creates) the image as encrypted. Required to open an existing encrypted image. |
+
+### Exposed MCP Tools
+
+| Tool | Description | Parameters |
+| :--- | :--- | :--- |
+| `write_file` | Write (create or overwrite) a file inside the OIFS sandbox image. Parent directories must already exist. | `path: string`, `content: string` |
+| `read_file` | Read the contents of a file inside the OIFS sandbox image. Returns UTF-8 text content. | `path: string` |
+| `list_dir` | List files and directories at a given path. Returns JSONL (one JSON object per line). | `path: string` |
+| `mkdir` | Create a directory inside the OIFS sandbox image. Parent directories must exist. | `path: string` |
+| `delete_file` | Delete a file from the OIFS sandbox image. | `path: string` |
+| `truncate_file` | Truncate or extend a file to the specified size in bytes. | `path: string`, `size: number` |
+| `append_file` | Append a line to a file (creates if not exists). Ideal for JSONL memory logs. Auto-adds newline if missing. | `path: string`, `content: string` |
+| `status` | Show filesystem status: image path, total/used/free blocks, and fragmentation ratio. | (none) |
+
+### MCP Tool Response Format
+
+All tools return JSON strings. Successful responses include `"ok": true` plus tool-specific fields. Errors return `{"ok": false, "error": "..."}`. Responses are built with `serde_json` to ensure proper escaping.
+
+#### Examples
+
+**write_file success**:
+```json
+{"ok": true, "inode": 123, "bytes": 42}
+```
+
+**read_file success**: Returns raw UTF-8 string content (not JSON-wrapped).
+
+**list_dir success** (JSONL):
+```json
+{"name": "notes", "kind": "dir", "size": 0}
+{"name": "todo.txt", "kind": "file", "size": 128}
+```
+
+**status success**:
+```json
+{"image": "agent_memory.img", "total_blocks": 2560, "used_blocks": 100, "free_blocks": 2460, "fragmentation": 0.02}
+```
+
+**Error (any tool)**:
+```json
+{"ok": false, "error": "File not found: notes/missing.txt"}
+```
+
+---
+
+## Network Mode and Master-Proxy Coordination
+
+By default, OIFS runs in **Standalone** mode (no IPC). With `--ipc`, it runs in **Local** mode, creating a Unix domain socket under `/tmp/oifs_<name>_<hash>.sock`.
+
+When operating over networked shared storage (NFS, Lustre, AWS EFS, or multi-node clusters):
+- Adding `-n` / `--network` or specifying `--bind` switches to `SessionMode::Network`.
+- The master binds to the specified address (default `127.0.0.1:0` for random ephemeral port).
+- Proxies connect to the master via TCP.
+- **Security**: The IPC transport is plain TCP without TLS. Binding to non-loopback addresses requires `--allow-remote-ipc` and should only be done inside a secure tunnel (WireGuard, IPsec, SSH).
+
+---
+
+## Related Pages
+
+- [Configuration](../concepts/configuration.md) — Configuration file and environment variables
+- [Quickstart](../quickstart.md) — Getting started with OIFS
+- [Basic Operations](../workflows/basic_operations.md) — Common workflow examples
+- [FSCK Workflow](../workflows/fsck_workflow.md) — Filesystem consistency checking
+<!-- openwiki: broken internal link [../architecture/architecture.md] file "../architecture/architecture.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [Architecture](../architecture/architecture.md) — System architecture and Session modes

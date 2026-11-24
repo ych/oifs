@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:ec8f0fc31164a9362acd96b785826ecceeb866961a364d4d1cd4ad49c063f955",
+  "pageVersion": "sha256:bd0752173eeea7776a2d8092afdd860c6b75f2722e3b78cfb799bfc0d431cabb",
   "claims": [
     {
       "id": "claim_ccf982a2acb94220b5a4016b54d25dda",
@@ -39,16 +39,16 @@
       "statement": "Master election is transport-specific: Local mode uses a deterministic Unix Domain Socket in a per-user private runtime directory ($XDG_RUNTIME_DIR/oifs or /tmp/oifs-<uid>/oifs) with mode 0600 socket and 0600 token file, Network mode uses an atomic create_new rendezvous .master file plus a clock-free active Ping/Pong probe to detect a dead master.",
       "evidence": [
         {
-          "resource": "repo://src/ipc.rs#L123-L144",
+          "resource": "repo://src/ipc.rs#L132-L153",
           "version": "repo-lines-v1:sha256:fa3349680ede79271650eebfbfd5ff6ff470d006453438d0adbfc119f30b1323:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4NDhkNTFjOTJkOWFhODZkOTAyZDkyODE5ODNkZjk3NjVjOTc0YmMxNjdiNWNiOWYyYjkwZjYxZDI0ZmJkOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlMzZlYjJmMzVlODdkMWNhM2I1NGRjNTQwMDI4MDYwMWU3MWE2MzYyZGVmY2I4Y2IwNjIzMDZkNjRmZDlhNjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4NmFiYTk4NDY3ODdhMjQ3YjJiMzliNzk4NDhjODJhOTU5MTk0NDNhMWYxYzVmOWI4ZWJiZWVlMzkzNDU1OTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFlNmVhNWIzMTJiZjIwMmFlYWFlYjQ1YjFhNjUzNGFlMTRmNTJlMGQzZDlmZWIxODI4YzUwMGE0MThjNDM2YTAifQ"
         },
         {
-          "resource": "repo://src/ipc.rs#L146-L180",
+          "resource": "repo://src/ipc.rs#L155-L189",
           "version": "repo-lines-v1:sha256:aaa6f83c2eb6b7b904c242cdf4d33b0ea440b5fa3a01aa50a9be9074b042c5f1:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMGNkYjk3MmE3YmZiN2VkMjQ2ZjlmZjY3MjM4NWU1NWY0OTY4ZmMxMTA0M2RjNWI2ODRkNTFkZmEzMWRiY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkYzI2YjY3NjU2YjllYTAzNTBlYmJiOGQ0ODkyZWZkYTAyOWE5NGViZDc1MmQ2NDRkNDA0YWU5YzJkMjBlMjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE1M2MzZjNiMGVkMWM5OGFjMTg4YWU2NDMyOTljOTAzZDc5OTYxYzZmOWIxMzE0YmE4Y2YxOWI3MDIzMDg4NTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE2Yzc1M2I4MjVmODBjMDIzYjkyNTMxZmNkNjM4OWJiNTVlNDNlNDhiOGM2MTBiOWI0YWIzYmRmYWU5M2M0ODEifQ"
         },
         {
-          "resource": "repo://src/ipc.rs#L887-L1010",
-          "version": "repo-lines-v1:sha256:813996e955bc703ec59b7f61606dfb7caec56c07c6ba88db2d11a5f7c8efa219:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYzFmZGRhM2I5NTMxYTAwZDhjM2VhYTQ2OTFiMGZkNjI1ODYyMzA0YWVjYjhmN2YwMGE1MGMzNjA0MDg3NTEwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxODNlNjBmMWZhNmYxYmI3MmNmNjEwNDU3MTRhY2ZhYmUyNjA2NDM3N2YzNTJlMWZlNzU2ZWE3OGI0NDE5YWZkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmMjVmMmNlOWZmZjFiODJhNWI0MmJlNTg3NTEyZDU1NzQ2NjNmMjkzZmM2YTE5MWNkM2Q2MzZmMzVlZGQzNDVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjNjVhYmY5YzIyNWZjYmQyN2YzODBiOTc2YWYwNDNhMjY1ODkzY2NmNTg1NmNiYzlmZjExMjAwZWY2ODU3ZWI2In0"
+          "resource": "repo://src/ipc.rs#L898-L1022",
+          "version": "repo-lines-v1:sha256:861fabaa8a84a93016eaccf6e49ed7c0cef408a2f503338b7caa0a0792bd138f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYzFmZGRhM2I5NTMxYTAwZDhjM2VhYTQ2OTFiMGZkNjI1ODYyMzA0YWVjYjhmN2YwMGE1MGMzNjA0MDg3NTEwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxODNlNjBmMWZhNmYxYmI3MmNmNjEwNDU3MTRhY2ZhYmUyNjA2NDM3N2YzNTJlMWZlNzU2ZWE3OGI0NDE5YWZkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmMjVmMmNlOWZmZjFiODJhNWI0MmJlNTg3NTEyZDU1NzQ2NjNmMjkzZmM2YTE5MWNkM2Q2MzZmMzVlZGQzNDVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjNjVhYmY5YzIyNWZjYmQyN2YzODBiOTc2YWYwNDNhMjY1ODkzY2NmNTg1NmNiYzlmZjExMjAwZWY2ODU3ZWI2In0"
         }
       ]
     },
@@ -57,23 +57,23 @@
       "statement": "IPC messages are length-prefixed Bincode frames (128MB cap); IpcServer::handle_request is the single dispatcher mapping each IpcRequest to a DiskManager call; the server thread uses poll to accept connections and spawns a dedicated worker thread per peer to handle requests.",
       "evidence": [
         {
-          "resource": "repo://src/ipc.rs#L1070-L1140",
-          "version": "repo-lines-v1:sha256:6ba6a007d4c3169e371ed31394fd2fb8bcc5d7571f377b21646bf3c43a4c6195:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjZTA3MjgzMGIzOTA0OTJmMzUxZWM3NmFjN2MyYmQyNTk1NjA4NzM3ZDJjOTk1MjVmMzZmNGFhYjM2Y2I4MjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlNDUwMzE5OWJlOGMzOTRkYTRmMTY2ZTcyN2VkOTgwZGRmZDIzZWRjODcxZTgzNmQ5OWNmYzkyOTIyZTBjNjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIyYjI4Njc1OWZhZmQ2MjgwZDYwMjQxOWM4NzljMjJkOTk3YTY1NjE5OWZhMjgwNGFlYjExYzAwMzk2Y2M4ZmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJjZTc3MWI0NzViMDAxNGQwYzkzMmJlY2M1MjIzZTk2MzgzYWIyMzAzOTQwYThiYTc1ZjUxNzg1N2Y0OWExMTkifQ"
+          "resource": "repo://src/ipc.rs#L1088-L1190",
+          "version": "repo-lines-v1:sha256:6a8debe74cdddf4854d2f3fa4801c2b64bad7458955790b4248c34f39cbbf301:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwY2UwNzI4MzBiMzkwNDkyZjM1MWVjNzZhYzdjMmJkMjU5NTYwODczN2QyYzk5NTI1ZjM2ZjRhYWIzNmNiODI3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1ZTQ1MDMxOTliZThjMzk0ZGE0ZjE2NmU3MjdlZDk4MGRkZmQyM2VkYzg3MWU4MzZkOTljZmM5MjkyMmUwYzY2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyMmIyODY3NTlmYWZkNjI4MGQ2MDI0MTljODc5YzIyZDk5N2E2NTYxOTlmYTI4MDRhZWIxMWMwMDM5NmNjOGZkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyY2U3NzFiNDc1YjAwMTRkMGM5MzJiZWNjNTIyM2U5NjM4M2FiMjMwMzk0MGE4YmE3NWY1MTc4NTdmNDlhMTE5In0"
         },
         {
-          "resource": "repo://src/ipc.rs#L1142-L1300",
+          "resource": "repo://src/ipc.rs#L1192-L1350",
           "version": "repo-lines-v1:sha256:9872f9b75cf253a91b4558b970247feffc32c46f0b0839adadf60327a5475192:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxYTlmMWRkYTYwYzY4MzRiZmUzNTU2NTcwZGFiNWU2MTdhZDRiODNjOTE3ZDI5M2Q3NzJkMTgxODk5NjRlZDM5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiOTYwYzcxM2QwN2MyZWFkZjM5MzVlMDNhYjdmNjNiNjRjNDA4Y2E4OGE0ZGQ2OWQ3NjM4OGI4ZWViYmMwMTQ5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5ZWY3YjhhMjhiODgwYTg2ZjQyODg3Y2RkYmM1N2EyNzgxZmQ2Njc3ZDZjMDUyMDlmMzM5MDZhMjg3MTIxNjA2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMGE3MmU1OWM2YzEyMDlhYWI2Mzc1NTlkMjlmMmQ3NDkwOTAzNzBlMTA5YWQyMDRiODU4YTdiM2RlMzBhZjIxIn0"
         },
         {
-          "resource": "repo://src/ipc.rs#L306-L335",
+          "resource": "repo://src/ipc.rs#L317-L346",
           "version": "repo-lines-v1:sha256:f529269d871507799e9ce31901c05308642b8879e98f6ee390122a1cc9f69c2c:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwOWM0MTgyMzBiZjA1MTM0YzQ1MzA3MGMyYjE0MjM3MzgxNTNmNTA3OTRmYjI5MjA4OTIxNGExYjBiMjdhOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc4ODUzZjFkOWNjYjc3NzBmNTc0MTY5YzdhMTkwY2QyZWEwMDNmMTJmMWEyM2QyNWJlY2EzODNlOTQwMmNlOGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmZjI2MDdkMGIyZTQ2M2IxNzBhYzU2ZTNhNDQ3ZDhkYWUxNjQ3NzA4ZWQ2Y2Y5MDNjOTI2ODVkYzNhY2ZhZWYifQ"
         },
         {
-          "resource": "repo://src/ipc.rs#L354-L403",
+          "resource": "repo://src/ipc.rs#L365-L414",
           "version": "repo-lines-v1:sha256:f25b83333012a560345bae543e77da3019d7cbbd68339c60dbb4fe5ac1d25ee7:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3YzE2NTBmYjUxZjkwYTIxYjhjYTdiZmI0ZjUxNGZkYzA1ODUxYjI0M2JjM2ZlMWMxYTg3N2ZkYzFhMjUwNzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMGNkYjk3MmE3YmZiN2VkMjQ2ZjlmZjY3MjM4NWU1NWY0OTY4ZmMxMTA0M2RjNWI2ODRkNTFkZmEzMWRiY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5NTY5MGY5MmExYTc5NjM5NWIxZTNjNmQ3NmE5YzU5YzYzYmM1YWEzNmExZWU5ZTkyMzBlNTY5ZjE4ZjM0YzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5YjQ1MzEyZjZhMzU2MzI5M2NkYzA3MjZmYTlkMDljM2MxMDNhOGI1YjEyNmM1M2M0NmI0Y2I0NDUwNTlmYjcifQ"
         },
         {
-          "resource": "repo://src/ipc.rs#L699-L780",
+          "resource": "repo://src/ipc.rs#L710-L791",
           "version": "repo-lines-v1:sha256:befddb57928acd6fbf748c422fc2a02faa2f8c1e49549ec578aea6b10b04bbda:eyJzZWxlY3RlZExpbmVDb3VudCI6ODIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1NzdlZDExYzMwMTVlMmQ3YTg1MGQzZmYwNDg0Y2QyODk0YWU1ZjBjOWMwYjNmOTFiNmQ3ZDU4NjZhNjMzNTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjNzc0MTY3ZGQ3ZWFmNTAyNDQyNGE1YmYwNDhjMzg4ZWU5ZWFhZjgzNWY3Y2U1YWRkNDE0MDZmYWFiOWRjZTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3ZDI2MGMyMTkyZDVhM2JhM2UzMTI0YTg4Mjk3OGQ2ZjhhODQxNmZhMGI1OTUxOGI5Nzk0ZjJhYjJjMDVkNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwMzc2ZjIwYzFkY2U2OWEwNDAwMmYwNTNjOTM2NGQ0YzNhNjRiMDFmYWNjNTEwOWMxMmE5NWYzZjIyZTQ0ZWQifQ"
         }
       ]
@@ -117,19 +117,19 @@
       "statement": "IPC authentication uses a challenge-response handshake with mutual proof: client sends AuthChallenge with nonce, master replies with AuthChallenge containing its nonce, salt, and encrypted flag; both sides compute keyed BLAKE2b MACs over a domain-separated transcript (direction byte prevents tag interchangeability) using either Argon2id(password, salt) for encrypted images or the published session secret for plain images; master proves it holds the same key via AuthVerify, detecting redirection to a fake master; password never travels on the wire.",
       "evidence": [
         {
-          "resource": "repo://src/ipc.rs#L1142-L1300",
+          "resource": "repo://src/ipc.rs#L1192-L1350",
           "version": "repo-lines-v1:sha256:9872f9b75cf253a91b4558b970247feffc32c46f0b0839adadf60327a5475192:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxYTlmMWRkYTYwYzY4MzRiZmUzNTU2NTcwZGFiNWU2MTdhZDRiODNjOTE3ZDI5M2Q3NzJkMTgxODk5NjRlZDM5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiOTYwYzcxM2QwN2MyZWFkZjM5MzVlMDNhYjdmNjNiNjRjNDA4Y2E4OGE0ZGQ2OWQ3NjM4OGI4ZWViYmMwMTQ5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5ZWY3YjhhMjhiODgwYTg2ZjQyODg3Y2RkYmM1N2EyNzgxZmQ2Njc3ZDZjMDUyMDlmMzM5MDZhMjg3MTIxNjA2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMGE3MmU1OWM2YzEyMDlhYWI2Mzc1NTlkMjlmMmQ3NDkwOTAzNzBlMTA5YWQyMDRiODU4YTdiM2RlMzBhZjIxIn0"
         },
         {
-          "resource": "repo://src/ipc.rs#L1501-L1760",
-          "version": "repo-lines-v1:sha256:4c6b91d3c087b7a48224406fdecc3c4cb6de0285e195330a9a779a520b6ea12d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYmJhZTUyMjg2NWRlODE0Mzg3YjBlODZhMWRjNWE0MGNmYjgyMjNkZDk5ZThjN2M0NzVlYTIzMjE4NTk1NTRjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzY2ZmNmM0MDRiODk4NDJiOTU1YmI0NmQ3NTUyOTVjOGI5ZmNmMjg0MzEyMWQwOTE2NGNlYWQ2ZjhkNzJhOGEyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhNzk4ZDBmZTY5ZWM3OGJiNDM4OGI1Yjc3NTllMmQ1Y2E1ODA5ODc5MGVlYjUyZTdhZTNkNDk1MDQ3NzJkOTYzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyMzFlYTA4Mjg2ZDY4NDExNDIyNGE4YTQ1MzhkMjRjYjQ4YWEzOTE0Y2Q3OTc5NzNjNzcyMzIxOTZjNjU1ZGUwIn0"
+          "resource": "repo://src/ipc.rs#L1551-L1812",
+          "version": "repo-lines-v1:sha256:a412d9b56e635ecf644232f88ae5bc88477985a0a2c3775ff7622f4d2a2669e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYmJhZTUyMjg2NWRlODE0Mzg3YjBlODZhMWRjNWE0MGNmYjgyMjNkZDk5ZThjN2M0NzVlYTIzMjE4NTk1NTRjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzY2ZmNmM0MDRiODk4NDJiOTU1YmI0NmQ3NTUyOTVjOGI5ZmNmMjg0MzEyMWQwOTE2NGNlYWQ2ZjhkNzJhOGEyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhNzk4ZDBmZTY5ZWM3OGJiNDM4OGI1Yjc3NTllMmQ1Y2E1ODA5ODc5MGVlYjUyZTdhZTNkNDk1MDQ3NzJkOTYzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyMzFlYTA4Mjg2ZDY4NDExNDIyNGE4YTQ1MzhkMjRjYjQ4YWEzOTE0Y2Q3OTc5NzNjNzcyMzIxOTZjNjU1ZGUwIn0"
         },
         {
-          "resource": "repo://src/ipc.rs#L432-L440",
+          "resource": "repo://src/ipc.rs#L443-L451",
           "version": "repo-lines-v1:sha256:c31b9bf78e48fe3ef0aa2882fe19a786fdb8605dfac338f7bbbe6e901526e3c9:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWY5NmQ2MjY4YWY2NzhiYzNhZGU4NDMxOTBkZDE4ZjMwNjkxOWIyMTYxNTk0NTdiODg5ZDk1YTg2ZDk0OGQyOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGRjZDg2NjNhMzhlOGQzYjlhNGQxNTQxNzI1MDhjMDI2MWVhMjcyYTdmYzNlZmNlOTg3NmQxMzQ3Y2JhMWUyMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjliMTM4ODgzY2E0YzY5OWNjMWI0ZDZlMWI2ZDE0YTY5MGNiZTMyMDgyMTg3YWMwNzczNTc3ZmY3MTk0NGJlOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2FiMDVhMzNkNTZjOWRjN2RiZDVmMTJkYmJlYWUyZTFiMWI3ZTM3OGQ4MTI1YTNiNTUyYThkMjI2Njk2MTBlNyJ9"
         },
         {
-          "resource": "repo://src/ipc.rs#L441-L480",
+          "resource": "repo://src/ipc.rs#L452-L491",
           "version": "repo-lines-v1:sha256:9d79c6947a3443884e99d5f231a83e6c3f208f85c65ef36215bfa62c76bd1652:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkZGY2Y2ZlMDVhNTE3MWY5ZTk2NmZhN2ZlNDU2NDMyODIxZTU0NDcxOWIwMzgwNDQxZjA1NWViNDIyZWRjMTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMGNkYjk3MmE3YmZiN2VkMjQ2ZjlmZjY3MjM4NWU1NWY0OTY4ZmMxMTA0M2RjNWI2ODRkNTFkZmEzMWRiY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkZmNiMzIzYmY4OTY0YmM1MGQwZGQ0YzM2ZWYzYmNhNzJiZjZkZDFmN2I4NjA0YmUxYWQ2Yzg1YTM2NjE1ZGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmZDViMDVkM2U0ZTRhODRjNjdkZjY3NjEyYmY3MThkZTEwNWE3MWYyNmZmYzA1OTliZjllYjRmM2E4NGYyZjUifQ"
         }
       ]
@@ -143,15 +143,15 @@
           "version": "repo-lines-v1:sha256:ab859493434c77a982e9ff80a712423e28638ce43d61347b171a0203f52b575b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlYzczYjNlNTdjOGY5NTk3YmM5YmQ3ZmJkNTBiYmExMWQ0NjVjZWY4OWMwNDIzZWFlY2JkZTQ1OTZkMTgzNWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1YTE0ZDM5MTIyYzkyMjA4NjQwY2ZhNzhmYzg4NjUxZmZkMzkwNGJlMzc4OWYzMjEzYmMxYTc5Njk0OTQzNzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRhYjEyNTU2ZTE3Y2I2MTYwMjVlZjI3NmNhMWQyYWYzMWYxNTU3M2FiYmRhMzhiYWU0NGFhOGUxOGI5ZDZjNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwNDQyMTM1YmRhMWRlNTI5OTkwNGEzMTZmNjg4ZGFlMzIxODg2MjgzYmYyZDQwODk3MDljOWNmNjQ4N2RiYTYifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L1911-L1911",
+          "resource": "repo://src/disk.rs#L1923-L1923",
           "version": "repo-lines-v1:sha256:ac1f8a144ad763a0625f2140b67febe57c1faf68c292e45cdae1293046876548:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWMxZjhhMTQ0YWQ3NjNhMDYyNWYyMTQwYjY3ZmViZTU3YzFmYWY2OGMyOTJlNDVjZGFlMTI5MzA0Njg3NjU0OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWMxZjhhMTQ0YWQ3NjNhMDYyNWYyMTQwYjY3ZmViZTU3YzFmYWY2OGMyOTJlNDVjZGFlMTI5MzA0Njg3NjU0OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGVjZmY4ZDM1NzM3ZmQ4N2U0MTJkYjk1YzUzMDRmNzg3ZDA4ZjNhYWM0Njk1ZGQ3NTFhYTU4MTQwNWZhM2Q3YyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTQ1ZWJkZTM1ZTJiZTYyYjliMTQzY2FjODIzOGUzYjY3ZmMzYTE4NmE0MTUzMzQzODJmNzY4NGYyZGRmNWIzNyJ9"
         },
         {
-          "resource": "repo://src/disk.rs#L4840-L4840",
+          "resource": "repo://src/disk.rs#L4852-L4852",
           "version": "repo-lines-v1:sha256:60f46200753c754d4450ae6ad440aa88020d6a033b3608e302e05223919f0456:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjBmNDYyMDA3NTNjNzU0ZDQ0NTBhZTZhZDQ0MGFhODgwMjBkNmEwMzNiMzYwOGUzMDJlMDUyMjM5MTlmMDQ1NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjBmNDYyMDA3NTNjNzU0ZDQ0NTBhZTZhZDQ0MGFhODgwMjBkNmEwMzNiMzYwOGUzMDJlMDUyMjM5MTlmMDQ1NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzM2MjdmYzk0NTg4MmI4MDc2ZmQ4Y2RkMWZkZjZlYWM0M2Y1Yzk0MWFiNTlhODY3MDYzNWU4ZTUyMjhjMjczMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjY1MTQyNjU5NTY4NzM5ODk0M2IyNjkwY2FhYjI3M2NmODE2NTM4N2VjNTk0NWMxOGJhMTk0MjYwMjM0NTRiYyJ9"
         },
         {
-          "resource": "repo://src/disk.rs#L4845-L4845",
+          "resource": "repo://src/disk.rs#L4857-L4857",
           "version": "repo-lines-v1:sha256:9eff17ec4e246d3afb8420479a1d26989f677560e1413eb9fa73fba120e30946:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWVmZjE3ZWM0ZTI0NmQzYWZiODQyMDQ3OWExZDI2OTg5ZjY3NzU2MGUxNDEzZWI5ZmE3M2ZiYTEyMGUzMDk0NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWVmZjE3ZWM0ZTI0NmQzYWZiODQyMDQ3OWExZDI2OTg5ZjY3NzU2MGUxNDEzZWI5ZmE3M2ZiYTEyMGUzMDk0NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2RlMjczNzYyZmFkOTU4MjI2NDM2MzFjYzYxM2ZmNGM1ZmJmNTVlYjM0YTM2NmU5ZDhhZTg5Y2RhMmQwZjFjOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDRlZWYzNWRhN2NkNzFlZDY4OWNkMWVhMjg3NWQ3MjVmNWZiOWQ5ZDUzMGNkMDk5MTY0NDc2NjVkZjM5Njk2YiJ9"
         },
         {
@@ -163,11 +163,11 @@
           "version": "repo-lines-v1:sha256:54c0377428e752dea27a93c89873ac9d8983dab8f043b8e6ba40dcc93f0a72ec:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTRjMDM3NzQyOGU3NTJkZWEyN2E5M2M4OTg3M2FjOWQ4OTgzZGFiOGYwNDNiOGU2YmE0MGRjYzkzZjBhNzJlYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTRjMDM3NzQyOGU3NTJkZWEyN2E5M2M4OTg3M2FjOWQ4OTgzZGFiOGYwNDNiOGU2YmE0MGRjYzkzZjBhNzJlYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzM3ODJiZTA4ZGEzNzU2MDcwZjA1N2Y5MzIyOWEzZjc5NDc1NjVlNjg0NTE5MzRjYWU3YTM0MmY1MzZhZGVmYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGQyNjlmNzg0OWUzMzM3N2MwNGNhZjkxYzU1MWFiMmRiZGFhODYzMmRmZWExYzc3MWM3OTIyMzYwYzM5ZjljNyJ9"
         },
         {
-          "resource": "repo://src/ipc.rs#L1443-L1480",
+          "resource": "repo://src/ipc.rs#L1493-L1530",
           "version": "repo-lines-v1:sha256:406819c16f9517b81e95e413b552e0cb133b5e50ce15106e9f9f08c755613a65:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0MDZkMWIyMmEwNzE3NDRhYjQzMjhmZWEyNzdmYzE2YmJmMmIxMTM4MWIzZDMyZmNlNDliZjE2NDJkOTUyMTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0MDZkMWIyMmEwNzE3NDRhYjQzMjhmZWEyNzdmYzE2YmJmMmIxMTM4MWIzZDMyZmNlNDliZjE2NDJkOTUyMTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcyZjdhNzA3N2JkODY4YTc4NjQ2NzdlZWRmNzA1ZjgwYWEyMDEwZGJjYzIyZWY3YmViYzM4YmUwODgxODQzNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1ZTQ3ZTM5MGJjZmE0Nzg2ZTYzZDk1NzY2ZTkyODc4N2I5MzU4OTE4NGJkMWIyOGFiY2YwODI5YmZiOTg2NTQifQ"
         },
         {
-          "resource": "repo://src/lib.rs#L42-L68",
+          "resource": "repo://src/lib.rs#L44-L70",
           "version": "repo-lines-v1:sha256:4ffa254a115af81afa78b49efca5442f23d1ef0d31d0c97d6c1c108fa29e210c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjMmVkNGMyMWUzMGI0NWZiZTFjZGJiZjZiNzhmODhhOGY0OTZmOTBjN2I4M2JlNDBlYjUwODdhNDIwNmQ3YjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdiOWZlMWIyMGU3MTdlODJiMWI1ZDU3ZWQyYTc0YjhkNDY1NjU3MTA4YTBhMmVkZTZmOGJhZGNjYmE1YjZlNjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwZDk1YmRiMjIwN2U3MDU3Y2VjODMzNWNkOTYxYjJmMmM0OTEzM2ZmOWIxYmE2ZjVlY2UzNzI3OGQ0OGZhMTkifQ"
         },
         {
@@ -189,7 +189,7 @@
           "version": "repo-lines-v1:sha256:7dde4a48377d490ef5c37ed201cff909d1586d22e1a91c2d28aed404cb342367:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4YTZlN2EwMjY3NDQ2NTA3ODVhMjExNTQ1NmI2MWRkNzlmNDdiY2NmODY5OGUxM2JjYzZlOTVkYmQ4MTk0NzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE1MjE2MDRiMzVmYzQwYWYwMGNiYTRlZWEyZmQ1ZTJjM2FmMTg2M2IzOTExODVkN2JmNGJiMDllNzJkMGM4YjMifQ"
         },
         {
-          "resource": "repo://src/lib.rs#L101-L164",
+          "resource": "repo://src/lib.rs#L121-L184",
           "version": "repo-lines-v1:sha256:6fe3f2af67b87c0e710bb113f256a23b1ef1728a09512513c53936af66b3804d:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1MGQ0ZjQyZDI2NzY2ZjhhMmU5ZmMwZTZlM2UxZWZlODI2MTkwODE3YWRhMDJmM2JkNTRiNmRlZDE5MWJhNjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUwMWFmOGFmNGU1YTA5NWRkMzBhZjcyZTA1MTU4ZDM5Y2Y2NzFlZTE4ZmU1N2FmYzczZWEwYmFhMzcyMGQ4MGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
@@ -213,7 +213,7 @@
       "statement": "Write operations (write_data_with_filters) execute in three stages: Stage 1 acquires a shared read lock for inspection and metadata collection then drops it; Stage 2 performs CPU-bound filter/compress/encrypt work with zero locks held; Stage 3 acquires the exclusive write lock only for block allocation and metadata commit, then releases it before flushing via sync_mutex. Concurrent readers are never blocked by compression/encryption CPU work.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L5671-L5850",
+          "resource": "repo://src/disk.rs#L5683-L5862",
           "version": "repo-lines-v1:sha256:3018464206ec57cc854cf5e345d35f42ee3a593eb144a475fe996634f0c5e9f9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3ZmI3MzgwZjQyMTNjNWU4NGM2YjFkYjJlOWY5MWRlNDJmMzBiZWQ4MTE4Y2I1YjYyOWNlOGY4MzQ1ZjUyZDQ3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjZWY0MzNlODEwZDM5YjdmYjg0NzdmYmEwNTFhNjk3OTI2YWI3Y2RlNzk4YjQ1YTI1N2ZhOGQwOWZjZDc1NmI5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxNWFkMTc2YjgxZTMyYTkyMmVlYTc3MWQzNzcwMGFlMjBkZjA3YTYxOTZlOWFlNjE0NDFkNTE1NGFlMGZmYTcwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkZDY3NjY1MDAzNWE5ZTJhM2JlYTNmNTg1OTRkMjMyODAzYWI1ZTc0ODE4MDc3YWYxMGQxNTRmNGZhMzQ2Mjg0In0"
         },
         {
@@ -227,7 +227,7 @@
       "statement": "resolve_path_iter and resolve_parent perform zero-allocation path resolution by iterating over &str slices from split('/') without heap allocation. The entire resolution holds a single inner.read() guard. resolve_parent uses rsplit_once('/') to split the path, then delegates the parent portion to resolve_path_iter, returning the final component as an owned String only for the filename.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L6437-L6620",
+          "resource": "repo://src/disk.rs#L6449-L6632",
           "version": "repo-lines-v1:sha256:7fd7e023206daba9e0839c5bee8354d651512f7be0b0d6dc161f9ad9494813c7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTg0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ZTBhYWEzMDgxY2NkYzY3ZTRkYzlkNTU3ZTMyNjBmMTk4NzMxNjhmNDVkOWU2YzQ1ODM3NzQ1NGY5Zjk2Mzc4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhZmQ3NWYwOWY3NGFhMDI2YmMyMmYxMDdhNzQ4ZmE0MzhiNDdkMDNiNDk2YjQyY2UyMzRkOTY1NDdkZDk2Yjc2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5OTliZGVmZWVhY2E2MzQwZTAyOTBkYzg2ZTg4OWM4OWQ1ZTE4OWFhNWJhNDRiNTg1YjNiNzA3MzRmNGE2MmQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NjgzMWIyNzczZDEzNWRiN2IwZTNiODkzYTA4NmQ1OWZiNzNhYjU0ZmUzZWUzZWFhOGQ3NTNlZTBjYmQwMjc4In0"
         }
       ]
@@ -263,18 +263,116 @@
           "version": "repo-lines-v1:sha256:b7a089502215386f9969d158118ce5b4a932d5662dcc2c29755984871abc6dac:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhOWRlM2ExNDg3MmFiNzkwZWI1Nzk5NThkMTNkNGQ5ZjBlOWRkNzIyNDExOWU4YTYwNTg2YzlkMmFjOTczMDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0MGU4MWY4ODI4NTc3MjM2MzJjZGE3YzM4NTY2NzU4NWZhZTc4ZTlmZTE5OWMwNGUxMjZhODIyYTMxMzU0ZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIyNmZhZGU5Y2MyMDNiNzI2MjQxNTAyNDE4MmQ5NDg4Y2NmYmM5NmRkMmMzNDRlMWQ0YWUyYjkwZTcyOGI4ZDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUifQ"
         },
         {
-          "resource": "repo://src/fuse.rs#L2665-L2670",
+          "resource": "repo://src/fuse.rs#L2679-L2684",
           "version": "repo-lines-v1:sha256:bce4cd13b543af34e7a04043c7f85e08b8f6308076d866a92def554fe8e0310d:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTAwYjA0ODIxMDc1OTdlZGE4ZjU4Yzk0M2EyMDI5ZDljN2RkNWQ0MWMxYWMwNDkzNjkxMjhkZjJmZTc3Y2M3ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjM1ODM0ODZjYjQwZjM2MTIzYmZhMjgzZDFlZjI1Mzc0M2RkYThmMjUzNjkyYmIwMTIyMDgxZjgyMDhjM2FlNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmVjZGU5MWRhMjBkMzc1NWM1YmMzYmU3ODViMDkzNGM2ZTU5ZTI2NTdjNjUxZDkzYWQ1NzdhYjI3MDVkYjUzZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzdlMDYzZWY0ZDdmMTgzNGM1MThiYTY3YWNmNDAzOWI2ODA0MTExMmFmZGU2ZmI4NzMyYjJlMDIxM2RhODRjMSJ9"
         },
         {
-          "resource": "repo://src/lib.rs#L78-L85",
-          "version": "repo-lines-v1:sha256:6dd512cf00eef97fecea1c191c3d8a98b80754e4f0e5d1b8ffb16083307127b3:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGM5ZGY0OTJlZjJhZWUwZWI0ZDRiMmI4N2NhMmZlZjI1NjBkZDIyMzQ1MTI3NzlhZjVlZjNkNWZmZGE2ZjhhNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTc3MDk2MjhhNWQzMTJlMTcyYjNiMTQyZDk3MTUzM2YyYTYzZDFlOGU1MzI5OTcxMWUyZDg1NWFlYjAxMGE2MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjQ5ZDBmN2FhNTAyOGYzMWJlOTBjNjY3ZjI1YmVmZjQyNmQwZjYxMTRiNmMyZmVlYTc2ODAwYjcwZTAxYmMzOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTkyNTc4MDA4NDkwZDM2MGZjN2E5YmZlNTU1MGRhYzUxNDgxNTljOWZjMjViMTI5NDc0MzczZTMwNTU4NTg4ZSJ9"
+          "resource": "repo://src/lib.rs#L80-L105",
+          "version": "repo-lines-v1:sha256:6bd9344f0059d4fff23dcfff81b55f189c7b927a6df417d8cef53c1f23ad3ef9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjOWRmNDkyZWYyYWVlMGViNGQ0YjJiODdjYTJmZWYyNTYwZGQyMjM0NTEyNzc5YWY1ZWYzZDVmZmRhNmY4YTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3NzA5NjI4YTVkMzEyZTE3MmIzYjE0MmQ5NzE1MzNmMmE2M2QxZThlNTMyOTk3MTFlMmQ4NTVhZWIwMTBhNjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0OWQwZjdhYTUwMjhmMzFiZTkwYzY2N2YyNWJlZmY0MjZkMGY2MTE0YjZjMmZlZWE3NjgwMGI3MGUwMWJjMzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE5MjU3ODAwODQ5MGQzNjBmYzdhOWJmZTU1NTBkYWM1MTQ4MTU5YzlmYzI1YjEyOTQ3NDM3M2UzMDU1ODU4OGUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_71f46d80174447a1bd689c3f6fa722f4",
+      "statement": "ReadSession holds the filesystem's shared RwLock read guard for its entire lifetime, amortizing lock acquisition across batches of lookups, inode stats, directory listings, and positional reads to eliminate per-call atomic reader-count cache-line contention.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L4577-L4584",
+          "version": "repo-lines-v1:sha256:ffe69d122cc8c92cabcf531867539c35df87656fa9e8f0c53bb9b7db3f3ffb19:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMmEyYTA2OTkyZjQzZWE0MWY3NDc1MmVhM2U1NjA0NzI3MjBhOGIwNmE1ZWZhMmQyNTdlMjczNTQxOWM2ZjQ1ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzk2NTk3ZmFiMjRmZjJkZGJmYmIxNWY5MmVmMTEyYWJmZGM5MTRjZjViMzhmMGI3MjFjNzU1OTVkMjVkMzI1NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMWU2ZjgxYjc4NDQwYWZmOTMyZTAzYjdmMmIwMWQxOWZlYzE3ZmZmZTdhMjNkZTI0MzM0NzlmMjc3NTI2NzZiMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDM3MThiYTNiOWJiOWVjYTcxMjcyOGUxMTMwYTM3NDM2ZWI4NmJiZTdiYzhjNmFkNjE4MDUxMzg3MDZjZTcyMiJ9"
+        },
+        {
+          "resource": "repo://src/disk.rs#L8297-L8400",
+          "version": "repo-lines-v1:sha256:49437d9744d2cc516f8e35a7e92820da450f04871ae7f3194ed90df3f8907faa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzYzY3N2Q0M2FmN2Q1MmI1YzcwN2JmMWRmZjhmMDQ2YWI5ZjM4ZmI5YTYyNTQ3ZmQ4ODA4ZTcwNWM1NjQwN2Y3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5MTFlOGI2MmUzM2JjNDg0MWM4NmE1MmJiZmQ0MjRhZTQxZTBiYmVhODI0MjJkMTBlMGQyMGI5ZjMwNWZiNDBjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyYmU1YWY3ZjQ1MGFmMmFhYjk5YTZlN2Y5ZTJhODhkOTUxYTRlNmY5NjM1ZGI5ZGY0MzBlNjY3OGNkOTNkZjZiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkZGM2YjE5MTRhZDM2NzAwN2JjNWVhN2E5NDA4ZGVjMjk0NGE3NjllNWE1NTI3ZjkwYWFiY2EwMzc5MjkyZjAyIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_4fa3adb70848479380374dcc3d930e03",
+      "statement": "FileReadHandle pins a validated regular file inode within a ReadSession, eliminating both per-call RwLock acquisition and BoundedInodeCache lookups; provides fast single-block mmap_slice and read_at for raw uncompressed files under IoBackend::Mmap.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L8399-L8590",
+          "version": "repo-lines-v1:sha256:22c07fb6c01754ee949a4a02ba299538b4606107cc61c7dde8e9292941636d86:eyJzZWxlY3RlZExpbmVDb3VudCI6MTkyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiNjEwNTY2MmRiMmEyMDE2ODNhNTFlZTBlNTI2ZWUwMGQxOGRkNjBmMGZiNWJhMDhlNTQyYzc4MGQ1ZjNkOTgzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNmIwNDQ5MTQ2OTcyMmU4MzYzYTk0ZTQwNDQ1MzhlMDEzYTJhMjE3ZTM2YjFlNTY4YmE2MGFjYjdiNGM4ZjJlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkZTJiNjVmZGQ1MWRiODczYWNjMjdkNjZhNjEwNzU3ODUzNjAxOWIzYmQ5NTI4NDEzZDA4M2ZiYmI1MjgwODA5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_ef2b3449d7b74dbabc6f545c859951bb",
+      "statement": "ChunkReadCache (capacity 8) caches decompressed sub-chunks for seekable 64K files, keyed by (inode_id, chunk_idx, raw_entry_block, valid_len) to eliminate repeated decompression/decryption for small positional reads.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk/caches.rs#L1-L60",
+          "version": "repo-lines-v1:sha256:6a0e7ecb457c1a64c065278bea3a0c5ccbd1c71a7c6c5234421c467bb4b8b87d:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjNTZkM2Q1MjIzM2RlNGZjNjZkYWU2NzdiZWE2NWU2NGYzZTYzODAzOTYyNGM1MGQ5ZTRiMmFlYjYyN2M5NmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxODU5ZmYxZTI5YTA1Y2MxZDlkYjA5ZDhlMGEyNDJkY2I5YzFhMjIwODFkODUxNWI0MmQwY2I3MzBmMDYyZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljZWUzOTljNzQwNGJhYThiZTlhNDhmMTVlY2Q3Mzg1YzczZGFkNGI0NTAyMWQwMzVhYzdlZDEwNTFlZThhNmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c35da0e97913491c9404da9e1c756533",
+      "statement": "DecodedBlobCache (max 4 entries, 16 MiB each, 32 MiB total) caches fully decoded payloads for non-seekable compressed/encrypted files, keyed by (inode_id, size, compressed_size, first_block, nonce) to detect mutation; eliminates O(calls × file_size) full-file decode cliff for sequential or random sub-file read_at calls.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk/caches.rs#L62-L160",
+          "version": "repo-lines-v1:sha256:b721c304dda9d8cf336499f945008925a85019b69ec7ddb192e9e6dbaf0b3d3d:eyJzZWxlY3RlZExpbmVDb3VudCI6OTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyZjI2OTYyYjg4ZjQxMmU0MThlMWI4ZTgzMWI5YWU5ZWQ4M2Q4MWJiMDY0ZjA2NzhjYTcwYTkyMTRhZmUzNTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI5NGNkYWVmYTU2ODdkMGZhMDA4ZDRiY2YxYTgxYmY3ODk0ODI1MzM4YjU2ZDIzYmU1OWYzZWFmZDE1NDU3MGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiOWQ3OGYzMDljOGM3ZmMxNWIyNmM5ODZhNDJhMzk0ZjA2ZGM0ODYzYTlhMDIyM2M3NTg3YWNlOGVkODhhNWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ee5a7dc7e0a24f9dab796b87debdf9e6",
+      "statement": "Write operations use a three-stage out-of-lock pipeline: Stage 1 (shared read lock) inspects metadata and drops the lock; Stage 2 (zero locks) runs filter, compress, encrypt CPU-bound work; Stage 3 (exclusive write lock) verifies inode unchanged, commits blocks, and flushes via sync_mutex after dropping the write lock.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L5671-L5850",
+          "version": "repo-lines-v1:sha256:844b510e42c8e72219ff2a936ee5f2e51d059aebb2a87fd0f00366312bdb1154:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ZTgyMGQwN2IwNmRhYTAxMmVmMDQ4ZDIyM2MxNzAzMWI1MzZiMTFkYTI3NDA2NzE4NTA4YTcwZTEyNjdjNTZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5NTJkNWJlYTVmYTZjZjE0MDIzOWU3NGFmMTA2YTk5OGI1MTY2MTEzNzZiNzVjYjM4OTNhZGIxY2RkYTlhYTNjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5OTliZGVmZWVhY2E2MzQwZTAyOTBkYzg2ZTg4OWM4OWQ1ZTE4OWFhNWJhNDRiNTg1YjNiNzA3MzRmNGE2MmQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4NTMxYWM0MmFkMmMyYmJkNDgxZjY2NDY2MmNmODIxMWIwODcxNTZjNjU1MmRkY2E5ZTFmZTdiYmUwM2FjMzMyIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_a248a33f24244d868984882994dc0589",
+      "statement": "Path resolution via resolve_path_iter iterates over &str slices from split('/') without heap allocation, holding a single inner.read() guard for the entire resolution; resolve_parent reuses the same iterator.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L6437-L6620",
+          "version": "repo-lines-v1:sha256:8123fe7e131f920c9d4db15fb277ec41738b752ca5c973e2facb1a8a614afb9e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTg0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4ZDc3MjZmZTIwZGJiZjAwMGIyYTM2M2E0Yjc2ZGJiMDRkNjhkYTJmY2UzODhkYjkzMTlhOTQ4ZjFkOTI0NTNlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NWFmZGY2N2VkNGJkNzdhMDg4NDc0NGEyN2ZlYjM4Y2JjZjU2ZGQxZTM1NmM2YjM3YzJiZjBmYzI0ZmNjZGQ4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2N2UzMjNhNDkyMWVhNzBjZTE1YzljNTUzOWUzMjNhZmI1YmEwNDY1YzU2OTcyZjZlZTJmYzEzYTRhMmMyOGUyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2Y3MDBjMzA0MjA1MWQzMGYzN2JiOWJiYmYwOGQ3YjhlYzk2OTFkYWYxYjIwOWIzOGM5MDI3Y2E1YzkwMTk3In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_d62da964ed4d449cb027db010cf069c4",
+      "statement": "POSIX OpenMode (OpenExisting, CreateNew, CreateOrOpen) is implemented with double-checked locking in directory blocks: under concurrent races on non-existent files, exactly one thread succeeds while contenders receive EEXIST, preventing duplicate directory entries or orphan inodes.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L5671-L5850",
+          "version": "repo-lines-v1:sha256:844b510e42c8e72219ff2a936ee5f2e51d059aebb2a87fd0f00366312bdb1154:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ZTgyMGQwN2IwNmRhYTAxMmVmMDQ4ZDIyM2MxNzAzMWI1MzZiMTFkYTI3NDA2NzE4NTA4YTcwZTEyNjdjNTZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5NTJkNWJlYTVmYTZjZjE0MDIzOWU3NGFmMTA2YTk5OGI1MTY2MTEzNzZiNzVjYjM4OTNhZGIxY2RkYTlhYTNjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5OTliZGVmZWVhY2E2MzQwZTAyOTBkYzg2ZTg4OWM4OWQ1ZTE4OWFhNWJhNDRiNTg1YjNiNzA3MzRmNGE2MmQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4NTMxYWM0MmFkMmMyYmJkNDgxZjY2NDY2MmNmODIxMWIwODcxNTZjNjU1MmRkY2E5ZTFmZTdiYmUwM2FjMzMyIn0"
+        },
+        {
+          "resource": "repo://src/session.rs#L870-L888",
+          "version": "repo-lines-v1:sha256:c8158b2e414d418f1df1ad335115c03453911856d265f1eaf2f826e7481b8b0d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNTBkMjYwNzcyY2NkMmI4ZmJkYTQ5ODg5M2U0YTQxMmFiNTY4MTIzYjIxZWFkYjc3OWE0NjFiM2MzMDQxNTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZjZThkMTM3ZmE0NGFjNjY0OGIzYTRhNmY1NmY1MGJhYmE2NzczNDE0NWQwNDc0YTRlNTU1Njk3ZmQyNmJlYzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3fff3402eef74cc7b5fbd7123bfc6b0a",
+      "statement": "Block-level merge policy: disjoint byte offsets in the same block merge in place; overlapping offsets use Last-Writer-Wins due to exclusive lock serialization; seekable 64K compression uses COW (allocates fresh blocks, atomically swaps ChunkEntry pointer, frees old blocks); stream compression uses append or read-modify-recompress.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L5671-L5850",
+          "version": "repo-lines-v1:sha256:844b510e42c8e72219ff2a936ee5f2e51d059aebb2a87fd0f00366312bdb1154:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ZTgyMGQwN2IwNmRhYTAxMmVmMDQ4ZDIyM2MxNzAzMWI1MzZiMTFkYTI3NDA2NzE4NTA4YTcwZTEyNjdjNTZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5NTJkNWJlYTVmYTZjZjE0MDIzOWU3NGFmMTA2YTk5OGI1MTY2MTEzNzZiNzVjYjM4OTNhZGIxY2RkYTlhYTNjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5OTliZGVmZWVhY2E2MzQwZTAyOTBkYzg2ZTg4OWM4OWQ1ZTE4OWFhNWJhNDRiNTg1YjNiNzA3MzRmNGE2MmQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4NTMxYWM0MmFkMmMyYmJkNDgxZjY2NDY2MmNmODIxMWIwODcxNTZjNjU1MmRkY2E5ZTFmZTdiYmUwM2FjMzMyIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_86f50aae8af04ddf86bc1e618c9ce4f6",
+      "statement": "FFI exposes lock-free read path via OIFSReadSession (holds ReadSession + pinned DiskManager via Arc<FfiSharedSession> with field drop order guaranteeing read lock lifetime) and OIFSFileHandle (pins FileReadHandle with its own Arc<FfiSharedSession> so parent session destruction does not invalidate file handles).",
+      "evidence": [
+        {
+          "resource": "repo://src/ffi.rs#L1345-L1540",
+          "version": "repo-lines-v1:sha256:085ec5dbc8601b0a802013a618f7df6431b05f6946926de761be451bf66ba1a6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyZWRhNWU5MDk3ZjNmNDk0MWVmYTU2ZGJkNWVmOTkzZWFkMzRmOWUyYzhlOWMzYzViMTJiOTgwNjZkNzcxZWQ0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmYzhhNTkwM2ZiNTVhMzY1ZmU3ZTdlOGMyYjhiMGUyNDE3YmExY2M1ODMxZTUyZTQxNmFkNGEwYTkzMTkwNTIwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiYTJiZjQ4MDI1NTNmZmJlNmUzY2Q5YTk4MWE3ZGNmNDIzNjgxNTc2ZTUzZTc2NTAwYzE4MTdlODJmZWQzMzBlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyZDZiY2EzNDk2OTIyNDk0Zjc3M2IyNThmZDExMjg1NzE2NzZhYjBiZjJmYzFhYWZkNGRkZThiNjM2OGQ4ZTQwIn0"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-22T10:29:12.696Z"
+    "at": "2026-11-23T20:55:55.458Z"
   }
 }

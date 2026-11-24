@@ -1,10 +1,11 @@
 ---
 type: "Reference"
 title: "Testing and Formal Verification"
-openwiki_generated: true
+description: "Documents OIFS's multi-tiered verification strategy including unit/integration tests (40+ test files), Shuttle DPOR concurrency testing, Bolero property-based fuzzing (16 harnesses), Kani formal verification (92 proofs across 14 modules), TLA+ protocol model checking, crash safety validation, and benchmarks."
+tags: [testing, verification, kani, shuttle, bolero, tla+, crash-safety, benchmarks]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-23T20:55:55.458Z
 sources:
   - id: openwiki-source-69dc9c7ca45b38a30db2f06f
     resource: repo://src/bitmap.rs
@@ -14,15 +15,16 @@ sources:
     resource: repo://src/io_engine.rs
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
+  - id: openwiki-source-4dd40261c9252cfa88de26ff
+    resource: repo://tests/bolero_fuzz_test.rs
   - id: openwiki-source-ac22c6c75748af0e3789862c
     resource: repo://tests/ffi_test.rs
   - id: openwiki-source-8ab3a63a56b627706c5b2737
     resource: repo://tests/integration_test.rs
   - id: openwiki-source-5b30823597738f668b07d33c
     resource: repo://tests/shuttle_concurrency_test.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
 ---
-
 
 # Testing and Formal Verification
 
@@ -42,7 +44,7 @@ OIFS employs a multi-tiered verification strategy designed to ensure absolute da
 │ Concrete values  │       │ Permutes thread  │       │ Mathematical     │
 │ End-to-end I/O   │       │ interleavings    │       │ proofs for ALL   │
 │ FFI, CLI, MCP    │       │ Catches races &  │       │ symbolic inputs  │
-│ 15+ test files   │       │ deadlocks        │       │ ~80 Kani proofs  │
+│ 40+ test files   │       │ deadlocks        │       │ 92 Kani proofs   │
 └──────────────────┘       └──────────────────┘       └──────────────────┘
         ▲                            ▲                            ▲
         │                            │                            │
@@ -54,11 +56,11 @@ OIFS employs a multi-tiered verification strategy designed to ensure absolute da
                         ├──────────────────────────┤
                         │ Arbitrary input gen      │
                         │ Roundtrip invariants     │
-                        │ 12+ harnesses            │
+                        │ 16 harnesses             │
                         └──────────────────────────┘
 ```
 
-1. **Empirical Test Suites (`tests/`)**: Validate end-to-end integration, CLI operations, FFI memory safety, pluggable I/O engines, cross-platform endianness, encryption, defragmentation, fsck, and MCP server integration.
+1. **Empirical Test Suites (`tests/`)**: 40+ test files validate end-to-end integration, CLI operations, FFI memory safety, pluggable I/O engines, cross-platform endianness, encryption, defragmentation, fsck, MCP server integration, crash safety, network mode, FUSE, and format migration.
 2. **Controlled Concurrency Exploration (Shuttle)**: Uses DPOR (Dynamic Partial Order Reduction) to systematically explore thread interleavings, exposing heisenbugs, race conditions, and deadlocks.
 3. **Property-Based Fuzzing (Bolero)**: Generates arbitrary inputs to verify roundtrip invariants, panic-freedom, and semantic equivalence across parsers, codecs, and state machines.
 4. **Formal Verification (AWS Kani Rust Verifier & TLA+)**: Utilizes SAT/SMT solvers (CBMC/CaDiCaL) and formal specification to mathematically prove safety invariants across all possible symbolic inputs and concurrent protocol transitions.
@@ -68,7 +70,7 @@ OIFS employs a multi-tiered verification strategy designed to ensure absolute da
 
 ## Test Suite Structure
 
-The `tests/` directory organizes test cases across specialized functional domains:
+The `tests/` directory organizes ~40 test cases across specialized functional domains:
 
 | Test File | Verification Scope | Key Invariants Checked |
 | :--- | :--- | :--- |
@@ -82,16 +84,67 @@ The `tests/` directory organizes test cases across specialized functional domain
 | `tests/filter_test.rs` | Pre-Compression Filters | Roundtrip fidelity for Delta, ByteShuffle, BitShuffle |
 | `tests/encryption_test.rs` | Cryptography Subsystem | XChaCha20-Poly1305 AEAD integrity, SIV filename encryption |
 | `tests/fsck_test.rs` | Consistency Scanner | Detection of orphan inodes, leaked blocks, and cross-links |
+| `tests/fsck_extended_test.rs` | Extended FSCK | Orphan, leaked, missing, cross-linked block detection |
 | `tests/defrag_test.rs` | Online Defragmentation | 3-step atomic rename, metadata preservation, rollback safety |
+| `tests/defrag_seekable_chunk_test.rs` | Seekable Defrag | COW extent swap crash safety |
 | `tests/cli_test.rs` | Command-Line Interface | Argument parsing, password prompts, `--json` format |
+| `tests/cli_all_commands_test.rs` | Full CLI Coverage | All subcommands, edge cases |
+| `tests/cli_concurrent_process_test.rs` | Multi-Process CLI | IPC mode, master election, concurrent puts/gets |
+| `tests/cli_extended_test.rs` | Extended CLI | Additional flags, error paths |
+| `tests/cli_mkdir_test.rs` | mkdir CLI | Directory creation via CLI |
+| `tests/cli_recursive_test.rs` | Recursive Operations | Recursive delete, copy |
+| `tests/cli_rm_test.rs` | rm CLI | File/directory removal |
 | `tests/ffi_test.rs` | C Shared Library ABI | Handle lifecycle, callback directory streaming, backend switching |
+| `tests/ffi_c_cpp_test.rs` | C/C++ Compiler Integration | Strict `-Wall -Wextra -Wpedantic -Werror`, C11 & C++17 |
+| `tests/ffi_delete_test.rs` | FFI Delete | Delete file via FFI |
+| `tests/ffi_extended_test.rs` | Extended FFI | Additional FFI APIs |
+| `tests/ffi_robustness_test.rs` | FFI Robustness | Error handling, invalid handles |
+| `tests/ffi_version_test.rs` | FFI Version | Version handshake |
 | `tests/mcp_server_test.rs` | MCP Tool Integration | JSON-RPC tool schemas, stdio interaction, agent sandboxing |
-| `tests/shuttle_concurrency_test.rs` | Randomized Threading (DPOR) | Controlled interleavings exploring data-race permutations |
-| `tests/bolero_fuzz_test.rs` | Property / Fuzz Harnesses | Arbitrary input generation, roundtrip invariants, panic-freedom |
+| `tests/shuttle_concurrency_test.rs` | Randomized Threading (DPOR) | 8 controlled interleaving tests exploring data-race permutations |
+| `tests/bolero_fuzz_test.rs` | Property / Fuzz Harnesses | 16 harnesses: roundtrip invariants, panic-freedom, model equivalence |
 | `tests/dir_bench.rs` | Directory Scaling Benchmarks | Create, warm/cold lookup, negative lookup, cache speedup |
 | `tests/journal_bench.rs` | Journal Overhead Benchmarks | Journaled vs legacy, durability mode cost, checkpoint cost |
 | `tests/flush_perf_test.rs` | Flush Latency Benchmark | Exclusive vs shared lock read stall measurement |
 | `tests/perf_comparison.rs` | Implementation Comparisons | Old vs new bitmap lookup, directory scan, filter encoding |
+| `tests/crash_safety_test.rs` | Power-Loss Simulation | Explicit/implicit flush, drop semantics, block overflow |
+| `tests/durability_test.rs` | Durability Modes | Lazy/RangeAsync/Strict mode persistence |
+| `tests/journal_test.rs` | WAL & Recovery | Journal recovery, defrag crash, truncate WAL-first |
+| `tests/concurrency_test.rs` | Basic Concurrency | Reader/writer patterns |
+| `tests/concurrency_stress_test.rs` | High-Contention Stress | Multi-thread read/write, live fsck, indirect block expansion |
+| `tests/session_and_cache_test.rs` | Session/Cache | Session registry, sharded caches |
+| `tests/session_edge_cases_test.rs` | Session Edge Cases | Reopen, fallback, timeout |
+| `tests/session_ipc_test.rs` | IPC Session | Multi-process, network, failover, encryption |
+| `tests/ipc_frame_test.rs` | IPC Framing | Frame encode/decode, length validation |
+| `tests/ipc_security_test.rs` | IPC Security | Authentication, challenge-response |
+| `tests/signal_storm_test.rs` | Signal Handling | Signal delivery under load |
+| `tests/transfer_test.rs` | Data Transfer | Network sync, single-file |
+| `tests/network_single_file_sync_test.rs` | Network Mode | TCP multi-node, master election, ping/pong |
+| `tests/backward_compatibility_test.rs` | Format v1 Compatibility | V1 image open, read, write |
+| `tests/format_migration_test.rs` | v1→v2 Migration | In-place downgrade, detection, fsck |
+| `tests/large_image_bitmap_test.rs` | Multi-Block Bitmaps | >128 MiB images, v3 layout |
+| `tests/large_file_limit_test.rs` | Large File Limits | Boundary conditions |
+| `tests/zeroed_block_reuse_test.rs` | Zeroed Block Reuse | Allocator returns zeroed blocks |
+| `tests/zstd_context_pool_test.rs` | Zstd Context Pool | Thread-local context reuse |
+| `tests/compression_modes_test.rs` | Compression Modes | LZ4, Zstd, Never modes |
+| `tests/encrypted_context_binding_test.rs` | Encryption Context | AAD domain separation |
+| `tests/encrypted_partial_write_test.rs` | Partial Encrypted Writes | Sub-block encryption |
+| `tests/filter_recommendation_and_inode_cache_test.rs` | Filter Recommendation | Auto filter selection, inode cache |
+| `tests/cache_coherence_and_simd_filter_test.rs` | Cache Coherence | Sharded cache, SIMD filters |
+| `tests/batch_read_sharded_dir_and_durability_test.rs` | Batch Reads | Sharded dir, durability |
+| `tests/block_pointer_bounds_test.rs` | Block Pointer Bounds | OOB detection |
+| `tests/contiguous_and_truncate_test.rs` | Contiguous Alloc + Truncate | Contiguous extent, truncate |
+| `tests/get_or_open_test.rs` | Get or Open | Session deduplication |
+| `tests/indirect_blocks_test.rs` | Indirect Blocks | Single/double/triple indirect |
+| `tests/inode_table_bounds_test.rs` | Inode Table Bounds | Inode table limits |
+| `tests/multi_block_directory_test.rs` | Multi-Block Directories | Directory spanning blocks |
+| `tests/nfs_test.rs` / `tests/nfs_live_mount_test.rs` | NFS Integration | NFS mount, operations |
+| `tests/fuse_test.rs` / `tests/fuse_live_mount_test.rs` | FUSE Integration | FUSE mount, operations |
+| `tests/read_only_mode_test.rs` | Read-Only Mode | Read-only mount enforcement |
+| `tests/refactoring_and_perf_test.rs` | Refactoring Validation | Performance regressions |
+| `tests/rename_test.rs` | Rename | Atomic rename, cross-dir |
+| `tests/async_and_ffi_test.rs` | Async + FFI | Async operations via FFI |
+| `tests/cpp_api_test.rs` | C++ API | Extended C++ bindings |
 
 Running the full empirical suite:
 ```bash
@@ -135,7 +188,7 @@ cargo test --test shuttle_concurrency_test test_shuttle_concurrent_file_creation
 
 Bolero (`tests/bolero_fuzz_test.rs`) generates **arbitrary structured inputs** using type-driven generators (`bolero::TypeGenerator`) and checks properties via `bolero::check!()`. Under plain `cargo test`, each harness runs a bounded number of generated cases; for continuous fuzzing, it integrates with libFuzzer, AFL, honggfuzz, or Kani.
 
-### Harness Inventory
+### Harness Inventory (16 Harnesses)
 
 | Harness | Generator Input | Property Verified |
 | :--- | :--- | :--- |
@@ -176,25 +229,26 @@ cargo bolero test --test bolero_fuzz_test --engine kani superblock_validate_neve
 
 ## Formal Verification with AWS Kani
 
-OIFS incorporates **~80 formal proofs** using the **AWS Kani Rust Verifier (CBMC/CaDiCaL SMT solver)**. These proofs are embedded as `#[kani::proof]` functions in `#[cfg(kani)]` modules alongside the production code. They mathematically verify properties across the **entire symbolic input space** — not just concrete test cases.
+OIFS incorporates **92 formal proofs** using the **AWS Kani Rust Verifier (CBMC/CaDiCaL SMT solver)**. These proofs are embedded as `#[kani::proof]` functions in `#[cfg(kani)]` modules alongside the production code across **14 modules**. They mathematically verify properties across the **entire symbolic input space** — not just concrete test cases.
 
 ### Proof Distribution by Module
 
 | Module | Proof Count | Key Properties Verified |
 | :--- | :--- | :--- |
-| `src/bitmap.rs` | 6 | Set-clear idempotency, bit isolation, `find_first_free` correctness, OOB returns false, contiguous free soundness, wrap-around allocator scan soundness |
-| `src/allocator.rs` | 5 | Allocation bounds, allocate-free roundtrip, double allocation uniqueness, exhaustion, OOB free safety |
-| `src/filters.rs` | 18 | Delta bijectivity (128-bit), Shuffle/BitShuffle inverses, composite pipeline invariance, all typesizes |
-| `src/io_engine.rs` | 2 | Extent coalescing coverage preservation, `IoBackend::from_u8` totality |
+| `src/filters.rs` | 16 | Delta bijectivity (128-bit), Shuffle/BitShuffle inverses, composite pipeline invariance, transpose involutions, all typesizes |
 | `src/inode.rs` | 9 | `BlockPath` roundtrip all 262,144 indices, tier boundaries, inode zero-initialization, no dangling pointers, `ChunkEntry` roundtrip all $2^{64}$ states, state predicates, field isolation |
-| `src/superblock.rs` | 8 | Layout ordering non-overlap, durability mode decoding, slice clamping soundness |
-| `src/journal.rs` | 24 | Ring cursor invariants, checkpoint empties ring, CRC32C detects single-bit flips, frame length overflow rejection, `WriteBlockSlice` bounds, ring `used()` invariants, append bounds, `checkpoint_to` monotonicity, all `MetadataOp` idempotence, coalescing equivalence, state encode/decode bijection, `MetadataOp` encode/decode roundtrip, `push_data_bitmap_op` coalescing, `push_block_slice_op` coalescing, ring append state transitions |
-| `src/directory.rs` | 9 | Directory entry find/insert/remove invariants, hash consistency, serialization roundtrips |
-| `src/encryption.rs` | 1 | Key derivation / AEAD properties |
-| `src/ffi.rs` | 1 | FFI boundary safety |
-| `src/ipc.rs` | 2 | IPC frame encode/decode roundtrip |
-| `src/auto_defrag.rs` | 1 | Defragmentation safety |
-| `src/disk.rs` | 12 | Chunked 64K offset/slicing soundness, extent management |
+| `src/superblock.rs` | 8 | Layout ordering non-overlap, journaled non-overlap, inode capacity, root inode fixed, minimum data blocks, validation acceptance |
+| `src/journal.rs` | 21 | Ring cursor invariants, checkpoint empties ring, CRC32C detects single-bit flips, frame length overflow rejection, `WriteBlockSlice` bounds, ring `used()` invariants, append bounds, `checkpoint_to` monotonicity, all `MetadataOp` idempotence, coalescing equivalence, state encode/decode bijection, `MetadataOp` encode/decode roundtrip, `push_data_bitmap_op` coalescing, `push_block_slice_op` coalescing, ring append state transitions |
+| `src/bitmap.rs` | 6 | Set-clear idempotency, bit isolation, `find_first_free` correctness, OOB returns false, contiguous free soundness, wrap-around allocator scan soundness |
+| `src/directory.rs` | 9 | Directory entry find/insert/remove invariants, hash consistency, serialization roundtrips, bounds, hash filter, SipHash panic-free |
+| `src/disk.rs` | 11 | Durability mode conversion, checked arithmetic prevents wrap to block 0, inode byte range bounds, write-from-start size invariant, slice clamping soundness, **64KB chunked compression** slicing conservation, sharded dir cache Fibonacci hashing, indirect hole skip conservation, mmap extent coalescing, incremental compressed size accounting |
+| `src/allocator.rs` | 5 | Allocation bounds, allocate-free roundtrip, double allocation uniqueness, exhaustion, OOB free safety |
+| `src/encryption.rs` | 1 | AAD domain separation, filename AAD injectivity |
+| `src/ffi.rs` | 1 | FFI version check policy soundness |
+| `src/auto_defrag.rs` | 1 | Config sanitization (no NaN, minimum interval) |
+| `src/io_engine.rs` | 2 | Extent push preserves coverage, `IoBackend::from_u8` totality |
+| `src/ipc.rs` | 2 | Frame length validation soundness, zero-length frame liveness |
+| `src/storage.rs` | 1 | Storage abstraction invariants |
 
 ### Notable Proof Categories
 
@@ -202,6 +256,7 @@ OIFS incorporates **~80 formal proofs** using the **AWS Kani Rust Verifier (CBMC
 - **Delta Filter Bijectivity** (`proof_delta_roundtrip_u32`): Proves `delta_decode(delta_encode(x, 4), 4) = x` for all $2^{128}$ possible 16-byte arrays.
 - **Shuffle & BitShuffle Inverses** (`proof_shuffle_roundtrip`, `proof_bitshuffle_roundtrip`): Matrix and byte transposition reconstruct exact original bit layouts.
 - **Composite Pipeline Invariance** (`proof_full_pipeline_roundtrip`): Chained multistage filters (`Delta → Shuffle → BitShuffle`) unapply cleanly in reverse.
+- **Transpose Involutions** (`proof_transpose_8x8_u64_involution`): 8×8 matrix transpose is an exact involution.
 
 #### 2. I/O Engine and Extent Coalescing Verification (`src/io_engine.rs`)
 - **Extent Coalescing Coverage Invariance** (`proof_extent_push_preserves_coverage`): `ExtentList::push` strictly preserves total byte coverage across arbitrary symbolic offsets and lengths; merges iff both disk offset and buffer offset are contiguous.
@@ -217,6 +272,7 @@ OIFS incorporates **~80 formal proofs** using the **AWS Kani Rust Verifier (CBMC
 
 #### 4. Superblock Layout and Durability Proofs (`src/superblock.rs`, `src/disk.rs`)
 - `proof_superblock_layout_ordering`: Metadata regions never overlap for any total block count.
+- `proof_journaled_layout_non_overlapping`: Journal region never overlaps metadata or data areas.
 - `proof_durability_mode_from_u8_soundness`: Total enum decoding and consistency of range-based flushing.
 - `proof_clamp_slice_range_soundness`: Arbitrary symbolic file offsets and slice lengths never cause buffer overflow or range inversion.
 
@@ -278,6 +334,40 @@ java -cp tla2tools.jar tlc2.TLC OifsCowProtection.tla \
 
 ---
 
+## Crash Safety Testing
+
+OIFS validates crash safety through power-loss simulation, journal recovery verification, and fsck validation — documented in detail at [Crash Safety Testing](../testing/crash_safety_testing.md).
+
+### Key Test Areas
+
+| Test File | Crash Safety Focus |
+| :--- | :--- |
+| `tests/crash_safety_test.rs` | Explicit flush, implicit drop flush, block overflow safety |
+| `tests/durability_test.rs` | Lazy/RangeAsync/Strict mode persistence guarantees |
+| `tests/journal_test.rs` | WAL recovery, torn transaction discard, defrag crash midway (pre-commit/post-commit), truncate WAL-first ordering |
+| `tests/fsck_test.rs` / `tests/fsck_extended_test.rs` | Orphan inode, leaked block, missing block, cross-linked block detection |
+| `tests/defrag_test.rs` / `tests/defrag_seekable_chunk_test.rs` | Defrag crash simulation, fsck after crash |
+
+The tests simulate crashes by **directly manipulating on-disk image bytes** between well-defined phases (pre-commit, post-commit, post-apply) and then mounting the resulting image — precisely controlling the crash point at syscall/phase boundaries.
+
+### Running Crash Safety Tests
+
+```bash
+# Core crash safety tests
+cargo test --test crash_safety_test
+
+# Journal recovery and defrag crash tests
+cargo test --test journal_test
+
+# FSCK validation tests
+cargo test --test fsck_test --test fsck_extended_test
+
+# Truncate and defragmentation crash tests
+cargo test --test contiguous_and_truncate_test --test defrag_test --test defrag_seekable_chunk_test
+```
+
+---
+
 ## Benchmarks
 
 OIFS includes ad-hoc benchmark tests (marked `#[ignore]`) to measure performance characteristics. Run with `--ignored` and `--nocapture` to see output.
@@ -311,9 +401,9 @@ cargo test --release --test perf_comparison -- --ignored --nocapture
 
 | Test Type | Command | What It Verifies |
 | :--- | :--- | :--- |
-| **Unit / Integration** | `cargo test` | 15+ test files: end-to-end I/O, FFI, CLI, MCP, encryption, defrag, fsck, io_uring, endianness, filters, concurrency |
+| **Unit / Integration** | `cargo test` | 40+ test files: end-to-end I/O, FFI, CLI, MCP, encryption, defrag, fsck, io_uring, endianness, filters, concurrency, crash safety, network, FUSE, format migration |
 | **Shuttle (DPOR Concurrency)** | `cargo test --test shuttle_concurrency_test` | 8 randomized interleaving tests: file creation races, reader-writer isolation, create-delete races, overlapping writes, compression races, nested dir resolution, sharded cache + read_at |
-| **Kani (SMT Formal Proofs)** | `cargo kani` | ~80 proofs: bitmap ops, allocator, filters (bijectivity), io_engine (extent coalescing), inode (BlockPath, ChunkEntry), superblock, journal (WAL ring, CRC, idempotence, coalescing), directory, encryption, ipc, auto_defrag, disk |
+| **Kani (SMT Formal Proofs)** | `cargo kani` | 92 proofs across 14 modules: bitmap ops, allocator, filters (bijectivity), io_engine (extent coalescing), inode (BlockPath, ChunkEntry), superblock, journal (WAL ring, CRC, idempotence, coalescing), directory, encryption, ipc, auto_defrag, disk, storage, ffi |
 | **Bolero (Property/Fuzz)** | `cargo test --test bolero_fuzz_test` | 16 harnesses: BlockPath/ChunkEntry/Superblock/Inode roundtrips, directory parsers, bitmap model equivalence, filter pipeline, IPC frames, CRC32C, journal decoders/recovery/coalescing, sparse read_at |
 | **Bolero Continuous Fuzzing** | `cargo bolero test --test bolero_fuzz_test <harness>` | LibFuzzer/AFL/honggfuzz/Kani backend for unbounded input generation |
 | **TLA+ (Protocol Model Checking)** | `java -cp tla2tools.jar tlc2.TLC OifsCowProtection.tla` | COW extent swap: NoTornRead, InodePointsToValidData, NoDanglingBlockPointer |
@@ -323,11 +413,17 @@ cargo test --release --test perf_comparison -- --ignored --nocapture
 
 ## Notes on ThreadSanitizer
 
-The repository does not currently define a `tsan` Cargo feature. Data race detection can be performed using the standard Rust ThreadSanitizer support:
+The repository does not define a `tsan` Cargo feature. Data race detection can be performed using the standard Rust ThreadSanitizer support:
 
 ```bash
 # Requires nightly toolchain and clang with TSAN support
-RUSTFLAGS="-Z sanitizer=thread" cargo test --target x86_64-unknown-linux-gnu -Z build-std --features io_uring
+RUSTFLAGS="-Z sanitizer=thread" cargo +nightly test --target x86_64-unknown-linux-gnu -Z build-std --features io_uring
 ```
 
-The existing Shuttle and Kani concurrency proofs provide stronger guarantees than dynamic TSAN analysis for the verified code paths.
+Key areas for TSAN analysis:
+- `src/ipc.rs` — Connection pools, failover synchronization, frame handling
+- `src/disk/caches.rs` — 32-shard `DirCache` and `BoundedInodeCache` with Fibonacci hashing
+- `src/session.rs` — Session registry, transparent failover, `dm_fallback` mutex
+- `src/auto_defrag.rs` — Background worker vs writer races, config mutex
+
+The existing Shuttle and Kani concurrency proofs provide stronger guarantees than dynamic TSAN analysis for the verified code paths. See [TSAN Testing](../testing/tsan_testing.md) for detailed TSAN usage and known suppression patterns.

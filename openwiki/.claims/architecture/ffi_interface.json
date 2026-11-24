@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:c8c763bb652f287239426987e39c4f3f58dd7d9d5dc3c3e5cbf178849d895931",
+  "pageVersion": "sha256:1c87c3601209a8c6aa5c8558f703023e0c1e093892fa67cfab5bf516a3f01d93",
   "claims": [
     {
       "id": "claim_fcdf169ecf30441490a469666b5102dc",
@@ -69,10 +69,102 @@
           "version": "repo-lines-v1:sha256:3d59aee7ce14fff9b4613f25109d285709d6d94de1eb7bc212908c615cc134aa:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMWU4YjYyZTMzYmM0ODQxYzg2YTUyYmJmZDQyNGFlNDFlMGJiZWE4MjQyMmQxMGUwZDIwYjlmMzA1ZmI0MGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0YTZmYjFlNGM4MmIwZWNhZWQ1OGExM2U3ZjU3NmQ4NTJjZmEwNTlhOGVlNGIzOTQxNzE1OTMxYTc3ZTdjOTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjNDhhZjNmNjE5NmE3N2JlMzBjYzQ4NGFjZWE1YzhiMzU4ZGE3MmM5NzVkMDUxMTBiMDAzYmEzNTYyYmY3Y2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliMWJkMDM5MTQwZWU0NDE0Y2NjZWI2YjQ2ZTc0MWYzZDQ5NGM5Mjk0NzRhMTVlMTBhNzdkYWFiYmUyNTJlMTkifQ"
         }
       ]
+    },
+    {
+      "id": "claim_fe8bc44d7cf144afb322ee73a0e638f8",
+      "statement": "The C FFI provides a complete zero-copy read path via oifs_begin_read, oifs_session_open_file/inode, oifs_file_mmap_slice, and oifs_file_read_at, amortizing RwLock acquisition and inode lookups across multiple reads.",
+      "evidence": [
+        {
+          "resource": "repo://include/oifs.h#L240-L270",
+          "version": "repo-lines-v1:sha256:b46f4d609378331d36bdca3aa6cfb4cd2910105270ed03f0a9fa07e2717ba7c5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOWViMmY4MjNlMmQ0ODM1OTA5OGM3ZmM2NjRmOTI0NWM4ZjY5MmFhOGU3MjEzMDVmNThlNWNkODNjZTg2ZjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYjQ0YzFlYzFjMmRiNTcyZGNkZGRhZWU3NGUwODkwOGY5YTk1YTMzOThlZjVmMzhmODBiOTQ3NmJlNThhZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNmMWYyYzk5NDA5MGIzYjdmM2ZiZjI1MzFmNGMwOThhM2ZlMDgwMzgwNzFkMzYxYjMxNDcwZmEzMjRjYzI3N2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmZjQ0YzljMzhhZmZkNWE3NzQ5YTM4NGUwMzUwZDNiZWVhYjY1MzFiZjQ2ZDBkYWFlY2VkN2ZlMTRhYTZiMDEifQ"
+        },
+        {
+          "resource": "repo://src/ffi.rs#L1800-L1950",
+          "version": "repo-lines-v1:sha256:a20a33f08e79f490e58f5f9def636c4de01604d4ce724b4ff60dc474953ee9c6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0OTgxM2RiZTAyZDRiYjM3MjQyOWM3YjZlNWY5NWFhYzU1Njg4OWQ4OWY5NmY1ZGU2YjE3ZmQxNTU4MzZmNGY2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhNmNkMTgwYzQ3ZGM3NmIxMTQ0NTBmYTZkZWI0MTFmOWE5MzU1YzRiNjg0MmRiYWFhN2NiYzgwZjBlMjQ5OTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlZTFkNjhiZWU5Mzk3YmY3ODM1YzY1YzI1MmRmZmU5ZTE4Y2UxZjVlNDE1Mzc0MmMwYmE3YmVlNTc1NmM3YmVmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0OGVkNGM3NjVmNGVkM2NmMGMyNWM4ZmNmMjYwY2FlMjM1NzViYTU1MGVkZjkwYTdiNjA1ZWZhZTFlODBlNzZiIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_44a6c50da0604e25b07d9a4d85357346",
+      "statement": "PinnableSlice in oifs.hpp implements RocksDB-style zero-copy/1-copy fallback: on StorageMode::Mmap with raw contiguous extents it pins the mmap address directly (is_pinned()==true, 0 memcpy), otherwise falls back to internal vector buffer (is_pinned()==false, 1-copy).",
+      "evidence": [
+        {
+          "resource": "repo://include/oifs.hpp#L400-L520",
+          "version": "repo-lines-v1:sha256:c6b0a912581c20864a31061fbfb6bec50a9f78119c2f048b9dad7cfd55204f38:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyNzc2MWI3YjE0Y2VmYTEwY2Q2ZmQzNTExYWUwZjc0ZjJlY2UwZWVmZGFmYjlhMGE1YmMyOGVjOTFhOTE4YTg2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiNGI2Mzg5YjRkOTc3YTBmNTEzMjdmMjg4MWU5NDIyMzI4ZTY4YTA3YTc0NWIyN2ZhMGM4Y2IzMGQwYTc0ZWY5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkNzA0ZWNmYTk5Mjg3N2VkZDRjYmE3MzU5YTYzYjI1NDg1ZDI5MDZmMTEwNjdlYjIxN2VjNTgwYjA1NTk5ZjcyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4NzJhMDMyOTVhYWMzNWZlNGI5YmUyYTkyMTEyZmRhNmM5Njk3MmQxMWExMzE0NDQ5MWNjNDY3ZWEzZjUyMmRlIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_e0da3f07ca4f4fe4a59e921b7bd231df",
+      "statement": "AsyncFuture in oifs.hpp provides C++20 co_await integration: await_ready() returns true for inline fast-path hits (zero suspension), await_suspend() spawns a background thread to wait on oifs_async_wait, and await_resume() returns the result or throws Error.",
+      "evidence": [
+        {
+          "resource": "repo://include/oifs.hpp#L700-L780",
+          "version": "repo-lines-v1:sha256:a8e14823787e255387ff1b7746be1a801ebe4cd382358bb34c1016b96bfb41cc:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3MDQ5MjQ2Zjk0N2YyMTUwNTk3Yzg3YWY0NTk5YjgwMjc2OGQ4MzJjN2UwZjJhOTNkOTIyODdmODE0MjdmYmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhMzliYzY0NzZjMWM1NjNlNzlkOWJmM2IxN2U3OWE0Mzk1MTViNGU3NTMyMGJiZTdmOTY1NTY5ZTE0MDMyY2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY5YThlMWFlNGM0YWY5NTJjYTdlZTI1MTgwNDNiZmJkYmRiMmRhMzVlYTliMDFlNmVlYzEyNDZiMjg5YWMyOTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_47fc82f7ae624287800ad34be9c8fb12",
+      "statement": "The C async API implements an Inline Fast-Path + Background Pool model: oifs_read_at_async probes try_read_at_inline_into for immediate cache/mmap completion (~50ns), otherwise spawns to persistent background pool with drop barrier (wait_on_drop=true) preventing Use-After-Free on caller buffers.",
+      "evidence": [
+        {
+          "resource": "repo://include/oifs.h#L270-L310",
+          "version": "repo-lines-v1:sha256:44a5d4a1a2fb5561e060408ae4ebe86fec654b97c2dc851e1f5928338b9e8e5d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYjQ0YzFlYzFjMmRiNTcyZGNkZGRhZWU3NGUwODkwOGY5YTk1YTMzOThlZjVmMzhmODBiOTQ3NmJlNThhZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwYTk4Y2FmYWRjYWRjOTcwYTkwYTYxZGZkMjRlZDBjMGVjNWZiMDdiZGQwZjU0ZDkyZjI2NjU5MjMyMmUzODIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI1N2IxMGRlZDExZWI3ZjI5ZmE1YWM2YWI4ZTc2ZjhjNjhiNGZhMzIzY2MzN2RhODQ0NGJmZjBkNWRiZjIxZDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzOTZjMzgwZGE2ZDg2MTY0ZjYwOTRjMGM0YTk2ODgxMDcxNDZhMDBjZjM5ZTFhNGI1MWM3OWViOGMzMDg1N2UifQ"
+        },
+        {
+          "resource": "repo://src/ffi.rs#L1950-L2100",
+          "version": "repo-lines-v1:sha256:a507d6b0d2f6959eb368fcb6b2ded38612e2deee319e5101bedc554da458aabc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhNmNkMTgwYzQ3ZGM3NmIxMTQ0NTBmYTZkZWI0MTFmOWE5MzU1YzRiNjg0MmRiYWFhN2NiYzgwZjBlMjQ5OTZjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwNWZiOTg1ZTE2MjBmMzJkNTdjMDE1Nzc5Y2U0OTMwOTk3MWFlOThkOWE0YjE5NzYwMDgwNWNlNGVkNmMxNzNhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiZWYwNDcxODU1ZjFmZmQyM2YzOGQ5ZjNkM2Y1ZjcxMjU2Y2E2OTU3NmQwYzRlNjI0MWY0NDA3NTM4NTFiNTUxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMjBkM2VkNGRiMzM5MzU5NzY5MmQ1ODU0MDg2ZTA5YzI1MDE5MGI1NGNmNWQ5NTY0OWMzZmRhMzMwNGZjYjRhIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_7ed886d810ec46f39ab15f43966cf083",
+      "statement": "Group Commit write pipeline: concurrent async writes under OIFS_DURABILITY_STRICT share a single physical flush() per batch via submit_group_write_op, preserving WAL-first crash consistency while amplifying throughput 10-30x.",
+      "evidence": [
+        {
+          "resource": "repo://include/oifs.h#L270-L310",
+          "version": "repo-lines-v1:sha256:44a5d4a1a2fb5561e060408ae4ebe86fec654b97c2dc851e1f5928338b9e8e5d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYjQ0YzFlYzFjMmRiNTcyZGNkZGRhZWU3NGUwODkwOGY5YTk1YTMzOThlZjVmMzhmODBiOTQ3NmJlNThhZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwYTk4Y2FmYWRjYWRjOTcwYTkwYTYxZGZkMjRlZDBjMGVjNWZiMDdiZGQwZjU0ZDkyZjI2NjU5MjMyMmUzODIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI1N2IxMGRlZDExZWI3ZjI5ZmE1YWM2YWI4ZTc2ZjhjNjhiNGZhMzIzY2MzN2RhODQ0NGJmZjBkNWRiZjIxZDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzOTZjMzgwZGE2ZDg2MTY0ZjYwOTRjMGM0YTk2ODgxMDcxNDZhMDBjZjM5ZTFhNGI1MWM3OWViOGMzMDg1N2UifQ"
+        },
+        {
+          "resource": "repo://src/ffi.rs#L2100-L2250",
+          "version": "repo-lines-v1:sha256:b1c62d59c59a006b76da217ef166c7eadbae9788ac5d6082dfb578e51d493c62:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwNWZiOTg1ZTE2MjBmMzJkNTdjMDE1Nzc5Y2U0OTMwOTk3MWFlOThkOWE0YjE5NzYwMDgwNWNlNGVkNmMxNzNhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5MTFlOGI2MmUzM2JjNDg0MWM4NmE1MmJiZmQ0MjRhZTQxZTBiYmVhODI0MjJkMTBlMGQyMGI5ZjMwNWZiNDBjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2ZDNlZjczYjc5YWM4Y2UxMGUwN2MyMTNkMDY4ZTYyZTEyMjZjYTAxODQ4ZTM3ZGM3YTUyMzdiMThhZjFmNDhiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkY2Q3YmQ2MGFkZWY5YTBjZTdiYjA2OWE3YTFmYzdjZjg0ZTdjNzgyYTUwNDBkOTMzYjFkZTRjMDJjNGYyMTFkIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_93b1616d2f6148d0ae0a6a2d14978c2c",
+      "statement": "OIFSReadSession and OIFSFileHandle both hold Arc<FfiSharedSession> (owning DiskManager + RwLockReadGuard), enabling out-of-order destruction safety: C callers can destroy the session before the file handle or vice versa without UAF.",
+      "evidence": [
+        {
+          "resource": "repo://src/ffi.rs#L1600-L1800",
+          "version": "repo-lines-v1:sha256:18be17d54b5f4952691588bb906eb158c3ea794693e9c4170fafb2ef108a2996:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5NWQ5MjU3MmVjNjg3NGRhYWQ2MWZjOGM0NDY0N2U5MGE5NTg0OGE5MDczZWJmODg2ZWZjYTc0MTM1N2E5YmVmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0OTgxM2RiZTAyZDRiYjM3MjQyOWM3YjZlNWY5NWFhYzU1Njg4OWQ4OWY5NmY1ZGU2YjE3ZmQxNTU4MzZmNGY2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2OWViMWFkZDRhNWVkZjMyYmQ4ZjM0YzZhYjQ5MDYwOGIwMGM3MWM4NmJhNDBiNGRjNmQxZDAwZTk1Mjc1NzJiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5MGFiNjkyYzBkODE1MjdkNzM1YzlkNjVhNjE4YTNmZjM4MDBjMzFmMTIxNjlmYjVkNjY2ZDMzNWJhZDZmMzY0In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_2d7f75cbeba34c2296a67658bbb2218b",
+      "statement": "The C++ RAII wrappers (FileSystem, ReadSession, FileReadHandle, AsyncFuture) are move-only with deleted copy constructors, default move operations, and destructors that call corresponding C FFI close/free functions.",
+      "evidence": [
+        {
+          "resource": "repo://include/oifs.hpp#L550-L700",
+          "version": "repo-lines-v1:sha256:88b4ddf85e60231e9fb674f529d5574a45afe5578d52da6d12cc80ba1d53ec3e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjYmMxODNhODNjNTE5N2IyODQzNDUwNDZiN2ZiMjE3Yzk4ZGEwYjdmOTVkNjAyOTYzMmU5NzBlM2MzYWZkMTk4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NzA0OTI0NmY5NDdmMjE1MDU5N2M4N2FmNDU5OWI4MDI3NjhkODMyYzdlMGYyYTkzZDkyMjg3ZjgxNDI3ZmJlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzMzcyNWY1NjA1YmI5NGJlZmZlZTVmYmU1ZTlkZWQ1YjAwZGM3MDdiNjY4YzE1MjhiZWFhYjA2MDk4MzU0ZmVjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiOTNhYzlkMGExZmFkZjZkNzk2NGU4ZmExMDMzNjc1YjM3OTNiZDcwNGZkNzk4YTEzYmRhMzMzZjM3MThmZGYxIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_7414387e27694390a8ab559934adbe05",
+      "statement": "ByteView, MutableByteSpan, and Span<T> in oifs.hpp provide non-owning contiguous memory views with C++20 std::span interoperability, alignment/size validation for typed spans, and conversion helpers (as_bytes, to_vector).",
+      "evidence": [
+        {
+          "resource": "repo://include/oifs.hpp#L200-L400",
+          "version": "repo-lines-v1:sha256:9cb4155d560149d6c8db4dce8676ef22e02b03bf8903d29f2bc954d25f25b373:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyNzc2MWI3YjE0Y2VmYTEwY2Q2ZmQzNTExYWUwZjc0ZjJlY2UwZWVmZGFmYjlhMGE1YmMyOGVjOTFhOTE4YTg2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyOWI5OGRjNDY3M2UyOWMyMTQ3ZmZhNGFmNDE3YzEzNjQ3MTQ5MjViOTJlNDdkYWRiYTkwNjQ3NjgyNDIwNTM3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0YjMyZTBmNjk4NjBiYWU5OGQxYmQyNzBkYzJhMWE3MmQ2ZjU4NmFmNWZmMTY5ZTc2NTI2ZWM5MDFiY2ZmMjhjIn0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-22T10:29:12.696Z"
+    "at": "2026-11-23T20:55:55.458Z"
   }
 }

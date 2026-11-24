@@ -1,20 +1,20 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d441cf53bc9ae20b60298a8a670bc7187f401583323c2d3d1c668071b11549b0",
+  "pageVersion": "sha256:9ffe8a798452cf89982bc2c7ed381ba5b33a12b07f93d870e58203be68be650e",
   "claims": [
     {
       "id": "claim_7bff251dd3614961bb258446e0d54fea",
       "statement": "The 'create' command in OIFS initializes a new filesystem image with optional encryption and size specification.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L504-L601",
-          "version": "repo-lines-v1:sha256:2c82fc7b2a4dff4dad43d024ad2c9cbec1c8849232c9c0e8b3038057cfcf488b:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjMzMzYjhhYjNlOTE0YzgyZWYwYTAxNTU5OGU0N2RiYWNjNDhkMDhkZTM1NTZiMWNhZmU4OTZiN2IwNDUxY2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2YzIxNTA4YWJiMGI2MzNjZDc3NzI0YmRmMzYzZDM0ZjFiYjU0OGM4OWFlY2IwZDJlZDNiMDg0ZTJlOTQ2MTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxOTdkOWYyOWM1OWE0ODNiYTc5YmY1M2I5Zjc0NjJjYzQzYjc1OTQ0MDdmZmJjYzVlNGZlNTRhM2I3NjFmYmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE4YjRhZDI2N2EwZWUyNmMxZjZjYmE2OTI2ZDdjMjkwNmI2YmQxYjFlMWUxMGNmZjJhMzcyZTlhYWM1MGNlYzYifQ"
+          "resource": "repo://src/bin/oifs.rs#L689-L748",
+          "version": "repo-lines-v1:sha256:4928e9d1b19ef1291e86ca4dc8c79807db6203d7456594ac632642c1c711cc66:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjMzMzYjhhYjNlOTE0YzgyZWYwYTAxNTU5OGU0N2RiYWNjNDhkMDhkZTM1NTZiMWNhZmU4OTZiN2IwNDUxY2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzNTEwYTkwNjRlNTc1MjMwZGY5YWYzOWMyYTBmYmUwOTAxZjU1OTNlNTQyYTViYmQ2YmFiZDJjY2EzNzU1ODkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzYzkzMDU5Zjc1OWE1NjI1ODg2OGVmYjVlYzFiNjRjNWRiNWJhN2UwYzc3MWI5NzkwNDcyYjRmYTdiNzU1MmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVhYzcyNGEyYzEwNGM2ZGFjOThhMjJiZGVkN2NkZjU1NDkyY2I3OWMwMjkyMGU3OTE5MjBiYmIzMTg4YjljOGEifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-20T22:07:36.625Z"
+    "at": "2026-11-23T20:55:55.458Z"
   }
 }

@@ -1,28 +1,30 @@
 ---
 type: "Reference"
-title: "Analyze a host file (no image required)"
-openwiki_generated: true
+title: "Compression Workflows"
+description: "Guide for compression usage: filter analysis, mode selection (auto/always/never/stream/seekable), numerical data optimization, and performance tuning."
+tags: ["compression", "zstd", "filters", "blosc2", "entropy", "seekable-64k", "cli", "performance", "numerical-data", "workflow"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-23T20:55:55.458Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
   - id: openwiki-source-95790d7cf7011b1d80e862fd
     resource: repo://tests/compression_modes_test.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
 ---
 
+# Compression Workflows
 
-## Overview
-
-OIFS integrates **zstd** compression with **Blosc2-style pre-compression filters** to achieve optimal space savings for diverse data patterns. The system supports **three compression modes**, a **flexible filter pipeline**, a **persistent scoped worker pool** for parallel chunk (de)compression, and two **read-acceleration caches** (`DecodedBlobCache` for stream files, `ChunkReadCache` for seekable chunked files).
+OIFS integrates **zstd** compression with **Blosc2-style pre-compression filters** to achieve optimal space savings for diverse data patterns. The system supports **five compression modes**, a **flexible filter pipeline**, a **persistent scoped worker pool** for parallel chunk (de)compression, and two **read-acceleration caches** (`DecodedBlobCache` for stream files, `ChunkReadCache` for seekable chunked files).
 
 This guide covers:
 - Compression mode selection and CLI usage
 - Filter pipeline design and the `filter-analyze` recommendation tool
 - Read-path cache interaction (`read_at` fast paths)
 - Decision flowchart: file size + access pattern → compression mode + filters
+- Numerical data patterns: delta, shuffle, bitshuffle for telemetry/ML
+- Zstd level tuning and context pool sizing
 
 ---
 
@@ -30,18 +32,40 @@ This guide covers:
 
 Compression mode determines **when** and **how** zstd compression is applied during write operations. The mode is stored in the inode metadata and automatically honored on read.
 
-| Mode | CLI Flag | Behavior | Typical Use Case |
-|------|----------|----------|------------------|
-| **Auto** (default) | *(none)* | Compress only when filtered data ≥ 8 KiB **and** compressed result is strictly smaller. | General-purpose cold/warm storage |
-| **Always** | `--compress` | Force zstd compression regardless of size or ratio. | Archival / cold storage where CPU is available |
-| **Never** | `--no-compress` | Store raw bytes; filters still run but output is kept uncompressed. | High-entropy data (already compressed, encrypted) or latency-critical writes |
-| **Seekable 64K** | `--chunked` / `--seekable` / `--chunked-64k` | Fixed 64 KiB logical chunks, each independently compressed/encrypted with COW extent swap. Random-access large files (databases, VM images, scientific arrays) |
+| Mode | CLI Flag | Internal Variant | Behavior | Typical Use Case |
+|------|----------|------------------|----------|------------------|
+| **Auto** (default) | *(none)* | `Auto` | Compress only when filtered data ≥ 8 KiB **and** compressed result is strictly smaller. | General-purpose cold/warm storage |
+| **Always** | `--compress` | `Always` | Force zstd compression regardless of size or ratio (stream mode, level 0). | Archival / cold storage where CPU is available |
+| **Never** | `--no-compress` | `Never` | Store raw bytes; filters still run but output is kept uncompressed. | High-entropy data (already compressed, encrypted) or latency-critical writes |
+| **Stream** | *(API only)* | `Stream { level }` | Full-file stream compression with explicit Zstd level (1–22). | Tuned compression for known data profiles |
+| **Seekable 64K** | `--chunked` / `--seekable` / `--chunked-64k` | `Seekable { chunk_size: 65536, level }` | Fixed 64 KiB logical chunks, each independently compressed/encrypted with COW extent swap. | Random-access large files (databases, VM images, scientific arrays) |
 
-> **Note**: The `--compress` flag in the CLI maps to `CompressionMode::Always` (stream compression with default level 0). There is no per-file CLI option to set an explicit zstd level for stream mode; the level is determined by the session context (default 0).
+### Mode Selection Flowchart
+
+```mermaid
+flowchart TD
+    Start["New file to import"] --> Q1{"Random access<br/>required?"}
+    Q1 -- Yes --> Q2{"File size<br/>> 128 KiB?"}
+    Q2 -- Yes --> M1["Seekable 64K<br/>(--chunked)"]
+    Q2 -- No --> M2["Auto / Stream<br/>(--compress or default)"]
+    Q1 -- No --> Q3{"Data already<br/>high-entropy?"}
+    Q3 -- Yes --> M3["Never<br/>(--no-compress)"]
+    Q3 -- No --> Q4{"Small files<br/>< 8 KiB<br/>or latency-critical?"}
+    Q4 -- Yes --> M4["Never or Auto"]
+    Q4 -- No --> M5["Auto (default)<br/>or Always (--compress)"]
+
+    M1 --> Detail1["Fixed 64 KiB chunks, COW extent swap,\nO(1) random read/write, parallel decode"]
+    M2 --> Detail2["Full-file zstd frame, level 0 (Auto)\nor explicit level 1-22 (Stream API)"]
+    M3 --> Detail3["Filters only, raw storage,\nzero compression CPU"]
+    M4 --> Detail4["Auto skips < 8 KiB;\nNever skips always"]
+    M5 --> Detail5["Auto: keep if smaller;\nAlways: force compress"]
+```
 
 ### Auto Mode Threshold
 
 The 8 KiB threshold is evaluated **after** filters run. If the filtered payload is < 8 KiB, or if zstd does not shrink it, the file is stored as `FLAG_RAW` (uncompressed). This avoids negative compression overhead on small or incompressible data.
+
+**Source**: [`src/disk.rs` lines 881–1057](repo://src/disk.rs#L881-L1057) — `plan_write_prepared` evaluates `CompressionMode::Auto` with the 8 KiB post-filter check.
 
 ---
 
@@ -65,13 +89,14 @@ Before zstd compression, data can be processed through a **filter pipeline** to 
 - Boolean flags: `delta`, `shuffle`, `bitshuffle`
 - `TruncPrecision` is expressed via `FilterPipeline::then(FilterType::TruncPrecision { prec_bits })` directly
 
-**Preset helpers**:
+**Preset helpers** (`src/filters.rs`):
 ```rust
 FilterConfig::none()                    // No filters
 FilterConfig::numeric(typesize)         // Delta + ByteShuffle (standard for numeric data)
 FilterConfig::delta_only(typesize)
 FilterConfig::shuffle_only(typesize)
 FilterConfig::bitshuffle_only(typesize)
+FilterConfig::custom(typesize, delta, shuffle) // custom combination
 ```
 
 ### Filter Pipeline
@@ -87,6 +112,43 @@ let pipeline = FilterPipeline::new(4)   // 4-byte typesize (u32/f32)
     .then(FilterType::ByteShuffle);
 ```
 
+**Source**: [`src/filters.rs` lines 1–100](repo://src/filters.rs#L1-L100) — `FilterPipeline::apply` / `unapply` implementations; [`src/filters.rs` lines 500–600](repo://src/filters.rs#L500-L600) — `FilterConfig` presets.
+
+---
+
+## Numerical Data Patterns
+
+For telemetry, scientific computing, and ML workloads, specific filter combinations dramatically improve compression ratios:
+
+### 1. Time-Series / Sensor Data (Monotonic Sequences)
+**Use**: `FilterConfig::delta_only(typesize)` or `numeric(typesize)`
+
+- **Why**: Delta encoding collapses the dynamic range of monotonically increasing values (timestamps, counters, cumulative metrics)
+- **Typesize**: Match the element width (e.g., 8 for u64 timestamps, 4 for f32 sensor readings)
+- **Result**: Post-delta entropy drops significantly; zstd then compresses the small differences efficiently
+
+### 2. Structured Records / Array-of-Structures (AoS)
+**Use**: `FilterConfig::numeric(typesize)` (Delta + ByteShuffle)
+
+- **Why**: ByteShuffle groups identical-significance bytes across adjacent records, creating long runs of identical bytes that zstd's RLE/LZ77 exploits
+- **Example**: `struct { u32 timestamp; f32 temperature; f32 pressure; }` → use typesize=4
+- **Result**: Often 2–5× better ratio than zstd alone
+
+### 3. Sparse Bitmasks / Boolean Arrays / Bitfields
+**Use**: `FilterConfig::bitshuffle_only(typesize)` or `bitshuffle_only(1)` for bit-packed data
+
+- **Why**: BitShuffle transposes 8×8 bit matrices, aggregating identical bit positions across 64 values — sparse bits become dense runs
+- **Typesize**: 1 for bit-packed; 8 for u64 bitfields
+- **Result**: Dramatic compression for boolean telemetry, feature flags, bloom filters
+
+### 4. Floating-Point Sensor Data (Controlled Lossy)
+**Use**: `FilterPipeline::new(4).then(FilterType::Delta).then(FilterType::TruncPrecision { prec_bits: 16 })`
+
+- **Why**: Zeros least-significant mantissa bits (e.g., keep 16 of 23 bits for f32) before Delta+Shuffle
+- **Result**: 20–30% additional size reduction with bounded precision loss
+
+**Source**: [`src/filters.rs` lines 200–400](repo://src/filters.rs#L200-L400) — `delta_encode_inplace`, `shuffle_encode`, `transpose_bit_blocks_inplace`, `trunc_precision_encode_inplace` implementations with SIMD fast paths for aligned little-endian data.
+
 ---
 
 ## Filter Recommendation: `oifs filter-analyze`
@@ -99,292 +161,232 @@ The `filter-analyze` subcommand (and `--filter auto` in `put`) **analyzes Shanno
 # Analyze a host file (no image required)
 oifs filter-analyze ./data.bin
 
-# JSON output for automation
-oifs filter-analyze ./data.bin --json
-
 # Import with auto-selected filter
-oifs -i disk.img put ./sensors.csv --filter auto
+oifs -i disk.img put ./data.bin --filter auto
 ```
 
 ### What It Evaluates
 
-| Candidate Pipeline | Description |
-|--------------------|-------------|
-| `none` | Raw zstd (baseline) |
-| `delta` (typesize 1, 2, 4, 8) | First-order difference |
-| `shuffle` (typesize 2, 4, 8) | Byte shuffle only |
-| `bitshuffle` (typesize 2, 4, 8) | Bit shuffle only |
-| `delta+shuffle` / `numeric` (typesize 2, 4, 8) | Combined numeric pipeline |
+The analyzer tests these 14 candidate configurations in parallel using the persistent worker pool:
 
-For files > 256 KiB, it samples **three 64 KiB windows** (head, middle, tail, each 8-byte aligned) and scales results. Evaluation runs in parallel across CPU cores via `std::thread::scope`.
+| Candidate | Config | Label |
+|-----------|--------|-------|
+| 1 | No filters | `none` |
+| 2 | Delta only (typesize=1) | `delta(t=1)` |
+| 3 | Delta only (typesize=2) | `delta(t=2)` |
+| 4 | Delta only (typesize=4) | `delta(t=4)` |
+| 5 | Delta only (typesize=8) | `delta(t=8)` |
+| 6 | ByteShuffle only (typesize=2) | `shuffle(t=2)` |
+| 7 | ByteShuffle only (typesize=4) | `shuffle(t=4)` |
+| 8 | ByteShuffle only (typesize=8) | `shuffle(t=8)` |
+| 9 | Delta + ByteShuffle (typesize=2) | `delta+shuffle(t=2)` |
+| 10 | Delta + ByteShuffle (typesize=4) | `delta+shuffle(t=4)` |
+| 11 | Delta + ByteShuffle (typesize=8) | `delta+shuffle(t=8)` |
+| 12 | BitShuffle (typesize=1) | `bitshuffle(t=1)` |
+| 13 | BitShuffle (typesize=2) | `bitshuffle(t=2)` |
+| 14 | BitShuffle (typesize=4) | `bitshuffle(t=4)` |
 
-### Example Output (Human-Readable)
+For each candidate it reports:
+- **Entropy** (bits/byte) after filter
+- **Zstd compressed size** (level 0)
+- **Compression ratio** (original / compressed)
+- **Space savings %**
+
+The best candidate is marked `[*RECOMMENDED*]`.
+
+### Output Example
 
 ```
-=== OIFS Filter Recommendation Report for "data.bin" ===
+=== OIFS Filter Recommendation Report for ./sensor_data.bin ===
 Original Size:        1048576 bytes
-Baseline Zstd Size:   128450 bytes (Entropy: 0.981 bits/byte)
-
-Filter Pipeline              Entropy   Zstd Size    Ratio   Savings
+Baseline Zstd Size:   262144 bytes (Entropy: 5.234 bits/byte)
 --------------------------------------------------------------------------------
-none                         0.981     128450      8.16x   87.8%
-delta (ts=4)                 0.112      12450     84.22x   98.8% [*RECOMMENDED*]
-shuffle (ts=4)               0.892      98200     10.68x   90.6%
+Filter Pipeline               Entropy  Zstd Size    Ratio  Savings
+--------------------------------------------------------------------------------
+none                          5.234    262144      4.00x   75.0%
+delta(t=1)                    4.123    180224      5.82x   82.8%
+delta(t=4)                    3.456    142336      7.37x   86.4%
+delta+shuffle(t=4)            2.891    110592      9.48x   89.5% [*RECOMMENDED*]
+bitshuffle(t=1)               4.890    245760      4.27x   76.5%
 ...
-
+--------------------------------------------------------------------------------
 Recommendation Rationale: Data displays strong linear/temporal correlation; first-order delta collapses dynamic range, shrinking entropy.
-Recommended Blosc2 Filter(s): ["blosc2::Filter::Delta"]
+Recommended Blosc2 Filter(s): ["blosc2::Filter::Delta", "blosc2::Filter::ByteShuffle"]
 Command to import with recommended filter:
-  oifs -i <image.img> put "data.bin" --filter delta --typesize 4
+  oifs -i <image.img> put ./sensor_data.bin --filter both --typesize 4
 ```
 
-### JSON Output Schema
-
-```json
-{
-  "original_size": 1048576,
-  "baseline_entropy": 0.981,
-  "baseline_compressed_size": 128450,
-  "best_config": { "delta": true, "shuffle": false, "bitshuffle": false, "typesize": 4 },
-  "best_report": { ... },
-  "candidates": [ ... ]
-}
-```
-
-### Blosc2 Filter Equivalents
-
-The recommendation report maps OIFS filter combos to native C-Blosc2 filters:
-
-| OIFS Config | Blosc2 Filters |
-|-------------|----------------|
-| `delta` | `blosc2::Filter::Delta` |
-| `shuffle` | `blosc2::Filter::ByteShuffle` |
-| `bitshuffle` | `blosc2::Filter::BitShuffle` |
-| `delta + shuffle` (`numeric`) | `[Delta, ByteShuffle]` |
-| `none` | `blosc2::Filter::None` |
+**Source**: [`src/bin/oifs.rs` lines 1000–1150](repo://src/bin/oifs.rs#L1000-L1150) — `FilterAnalyze` command implementation; [`src/filters.rs` lines 850–950](repo://src/filters.rs#L850-L950) — `recommend_filters` parallel evaluation logic.
 
 ---
 
-## Anti-Inflation Fallback (`FLAG_RAW`)
+## Seekable 64K Chunked Compression
 
-Both stream and seekable chunked compression enforce a **strict size check**: if the compressed payload is **not strictly smaller** than the input (after filters), the chunk/file is stored **uncompressed** with the `FLAG_RAW` bit set in its `ChunkEntry` (seekable) or as a raw stream frame.
-
-This eliminates **negative compression overhead** (CPU waste + size increase) on:
-- Already-compressed data (zip, gz, video, images)
-- Encrypted blobs
-- High-entropy / random data
-- Small payloads where zstd framing overhead exceeds savings
-
----
-
-## Read-Path Caches and `read_at` Interaction
-
-OIFS maintains two distinct bounded caches to accelerate **positional reads** (`read_at` / `read_data_at`) on compressed/encrypted files.
-
-### DecodedBlobCache — Stream Files (Non-Seekable)
-
-| Property | Value |
-|----------|-------|
-| Purpose | Whole-file decoded payload cache for stream-compressed or whole-file encrypted files |
-| Capacity | 4 entries (`MAX_ENTRIES`) |
-| Per-entry limit | 16 MiB (`MAX_ENTRY_BYTES`) |
-| Total cap | 32 MiB (`MAX_TOTAL_BYTES`) |
-| Key | `(inode_id, size, compressed_size, first_block, nonce)` — any metadata change invalidates |
-| Lookup | Shared read lock in `read_at_with_inode`; slices directly from `Arc<Vec<u8>>` |
-| Insert | On cache miss for files ≤ 16 MiB: full decode → insert → slice |
-| Eviction | LRU by insertion order; evicts when count or byte limit exceeded |
-
-**Behavior**: Eliminates the **O(calls × file_size)** full-file decode cliff when callers issue sequential or random sub-file reads on non-seekable blobs.
-
-### ChunkReadCache — Seekable 64K Chunked Files
-
-| Property | Value |
-|----------|-------|
-| Purpose | Per-chunk decompression cache for 64 KiB seekable chunks |
-| Capacity | 8 entries (`CAPACITY`) |
-| Key | `(inode_id, chunk_idx, raw_entry, valid_len)` — chunk rewrite (new `raw_entry`) invalidates |
-| Lookup | `copy_slice_if_hit` copies sub-range directly from cached `Arc<[u8]>` under shared read lock (zero `Arc` clone/drop on hit) |
-| Prefetch | Sequential access detection triggers parallel prefetch of up to **4 subsequent chunks** via `par_for_index`, inserting all under a single write lock |
-
-**Sequential Read-Ahead Logic** (in `read_at_chunked_64k`):
-1. Current chunk **miss** in cache
-2. Previous chunk (`chunk_idx - 1`) **hit** in cache
-3. → Prefetch `min(4, remaining_chunks)` chunks in parallel
-4. Insert prefetched chunks into cache
-
-This gives **near-stream throughput** for sequential scans over chunked files while preserving O(1) random access.
-
----
-
-## Persistent Scoped Worker Pool
-
-Both chunked (de)compression and cache prefetch use a **persistent scoped worker pool** (`zstd_pool::par_for_index`) to avoid per-call thread creation and Zstd context allocation overhead.
+For random-access workloads (databases, VM images, scientific arrays), **Seekable 64K** mode splits files into independent 64 KiB chunks with copy-on-write extent swap.
 
 ### Architecture
 
-- **Thread-local Zstd pools**: Each thread keeps one compressor per level + one decompressor in `thread_local!` storage. On drop, contexts return to a global `Mutex` pool (`MAX_GLOBAL_COMPRESSORS_PER_LEVEL = 32`, `MAX_GLOBAL_DECOMPRESSORS = 32`).
-- **Worker threads**: `num_cpus - 1` threads (clamped to 1..15), named `oifs-chunk-w{N}`, spawned at first `par_for_index` call.
-- **Dispatch**: Generation counter + `Condvar`; calling thread participates via dynamic work-stealing (`next.fetch_add`).
-- **Fallback**: Sequential execution when `total <= 1` or another dispatch holds the pool lock (avoids oversubscription / re-entrant deadlocks).
+```mermaid
+flowchart LR
+    subgraph Write["Write Pipeline (3-Stage Out-of-Lock)"]
+        S1["Stage 1: Shared Read Lock\nInspect inode, borrow full-chunk\nslices (Cow::Borrowed), prep\nRMW buffers only where needed"]
+        S2["Stage 2: Zero Locks (Parallel)\nZstd compress + XChaCha20 encrypt\nacross CPU cores via par_for_index"]
+        S3["Stage 3: Exclusive Write Lock\nAllocSim block allocation,\nWAL transaction commit,\nCOW extent pointer swap"]
+        S1 --> S2 --> S3
+    end
 
-### Used By
+    subgraph Read["Read Pipeline"]
+        R1["read_at_chunked_64k\nChunk-aligned >= 192 KiB?"] -->|Yes| R2["Parallel multi-chunk decode\nvia persistent worker pool\n(zero pthread_create overhead)"]
+        R1 -->|No| R3["Sequential single-chunk decode\nwith ChunkReadCache (8-slot LRU)"]
+        R2 --> R4["Direct into caller buffer\nzero intermediate allocation"]
+        R3 --> R4
+    end
+```
 
-| Operation | Parallelism Scope |
-|-----------|-------------------|
-| `read_at_chunked_64k` (aligned, ≥ 192 KiB) | Full-file parallel decode across chunks |
-| Chunked write pipeline (`write_chunked_64k_pipeline`) | Parallel chunk (re)compression |
-| `ChunkReadCache` sequential prefetch | Up to 4 chunks in parallel |
-| `filter-analyze` candidate evaluation | 14 pipelines in parallel (via `std::thread::scope`) |
+### Key Properties
 
-**Key benefit**: Worker threads keep their **thread-local Zstd contexts warm** across calls — zero `pthread_create` / `ZSTD_createDCtx` churn on steady-state workloads.
+| Property | Detail |
+|----------|--------|
+| **Chunk size** | Fixed 64 KiB (65,536 bytes) logical chunks |
+| **Random read** | O(1) — decode only the needed chunk(s) |
+| **Random write** | COW — allocate new blocks, write compressed/encrypted payload, atomically swap extent pointer |
+| **Parallelism** | `par_for_index` uses persistent `oifs-chunk-w{N}` workers (num_cpus - 1, clamped 1..15) |
+| **Caching** | `ChunkReadCache`: 8-slot LRU per inode, stores `Arc<[u8]>` decoded chunks |
+| **Encryption** | Per-chunk XChaCha20-Poly1305 with chunk-index-bound AAD |
+| **Upgrade path** | Transparent one-time upgrade from legacy whole-file blob to chunked format |
+
+### When to Use Seekable 64K
+
+- Files > 128 KiB with random read/write access patterns
+- Database files (SQLite, LMDB, etc.)
+- Virtual machine disk images
+- Scientific array formats (Zarr, HDF5 chunks)
+- Memory-mapped file replacements
+
+### CLI Usage
+
+```bash
+# Import as seekable chunked (level 3 default)
+oifs -i disk.img put ./large.db --chunked
+
+# Seekable with explicit filter
+oifs -i disk.img put ./array.zarr --chunked --filter both --typesize 8
+```
+
+**Source**: [`src/disk/chunked.rs` lines 1–100](repo://src/disk/chunked.rs#L1-L100) — module overview; [`src/disk/chunked.rs` lines 900–1200](repo://src/disk/chunked.rs#L900-L1200) — 3-stage pipeline `write_chunked_64k_pipeline_with_mode`; [`src/disk/chunked.rs` lines 1200–1400](repo://src/disk/chunked.rs#L1200-L1400) — `read_at_chunked_64k` with parallel fast path and `ChunkReadCache`.
 
 ---
 
-## Decision Flowchart: File Size + Access Pattern → Compression Mode + Filters
+## Zstd Level Tuning and Context Pool Sizing
 
-<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Parse error on line 7: ...M_Rand[Seekable 64K (-chunked)<br/>→ fi Expecting 'SQE', 'DOUBLECIRCLEEND', 'PE', '-)', 'STADIUMEND', 'SUBROUTINEEND', 'PIPE', 'CYLINDEREND', 'DIAMOND_STOP', 'TAGEND', 'TRAPEND', 'INVTRAPEND', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got '(-' -->
-```text
-flowchart TD
-    Start([New file / workload]) --> Size{File size?}
-    
-    Size -->|< 8 KiB| Small[Auto mode<br/>→ likely FLAG_RAW<br/>No filter needed]
-    Size -->|8 KiB – 64 MiB| Medium{Access pattern?}
-    Size -->|> 64 MiB| Large{Access pattern?}
-    
-    Medium -->|Sequential / append-only| M_Seq[Auto mode + filter-analyze<br/>→ delta/shuffle for numeric<br/>→ Stream zstd frames]
-    Medium -->|Random read/write| M_Rand[Seekable 64K (--chunked)<br/>→ filter-analyze per workload<br/>→ COW chunk updates]
-    
-    Large -->|Sequential scan / cold storage| L_Seq[--compress (Always) + filter-analyze<br/>→ Maximum ratio, CPU available<br/>→ Stream multi-frame append]
-    Large -->|Random access / DB / VM image| L_Rand[Seekable 64K (--chunked) + filter-analyze<br/>→ O(1) random read/write<br/>→ ChunkReadCache read-ahead]
-    Large -->|Mixed: mostly sequential,<br/>occasional random| L_Mix[Seekable 64K (--chunked)<br/>→ Best of both worlds<br/>→ Sequential read-ahead + random O(1)]
-    
-    %% Filter selection sub-flow
-    FilterChoice{Data type?} -->|Time-series / monotonic| F_Delta[delta + numeric(typesize)]
-    FilterChoice -->|Structured records (AoS)| F_Shuffle[shuffle / numeric(typesize)]
-    FilterChoice -->|Bitmasks / boolean / sparse| F_Bit[bitshuffle(typesize)]
-    FilterChoice -->|FP sensor data (lossy OK)| F_Trunc[TruncPrecision + bitshuffle]
-    FilterChoice -->|Unknown / mixed| F_Auto[--filter auto (filter-analyze)]
-    
-    M_Seq -.-> FilterChoice
-    M_Rand -.-> FilterChoice
-    L_Seq -.-> FilterChoice
-    L_Rand -.-> FilterChoice
-    L_Mix -.-> FilterChoice
-    
-    Small -.-> Done[Write with recommended config]
-    M_Seq -.-> Done
-    M_Rand -.-> Done
-    L_Seq -.-> Done
-    L_Rand -.-> Done
-    L_Mix -.-> Done
-```
+### Compression Levels
 
-### Quick Reference Table
+| Level Range | Speed | Ratio | Use Case |
+|-------------|-------|-------|----------|
+| 0 (default) | Fastest | Baseline | Auto/Always stream mode default |
+| 1–3 | Fast | Good | Seekable 64K default (level 3); general purpose |
+| 4–9 | Balanced | Better | Archival storage, network transfer |
+| 10–15 | Slow | High | Cold storage, maximum ratio |
+| 16–22 | Very slow | Maximum | Extreme compression, offline processing |
 
-| Scenario | Recommended Mode | Filter Strategy | Cache Benefit |
-|----------|------------------|-----------------|---------------|
-| **Small config / log files** (< 8 KiB) | Auto (default) | `none` (filters add overhead) | N/A (stored raw) |
-| **Append-only time-series** (8 KiB – 64 MiB) | Auto | `delta` (+ `shuffle` for numeric) | `DecodedBlobCache` on re-read |
-| **Large sequential archives** (> 64 MiB, cold) | `--compress` (Always) | `filter-analyze` → `numeric`/`delta` | `DecodedBlobCache` (≤ 16 MiB files) |
-| **Database / VM image / random access** | `--chunked` (Seekable 64K) | `filter-analyze` per column/table | `ChunkReadCache` + **sequential read-ahead** |
-| **Scientific arrays (FP32/64)** | `--chunked` | `bitshuffle` (+ `TruncPrecision` if lossy OK) | `ChunkReadCache` read-ahead |
-| **Bitmaps / boolean masks** | `--chunked` | `bitshuffle(typesize=1)` | `ChunkReadCache` |
-| **Mixed sequential + random** | `--chunked` | `filter-analyze` | Both caches (mode-dependent) |
+**Stream mode** (Auto/Always/Stream): Single zstd frame for entire file. Level configurable via `Stream { level }` API variant (CLI only exposes `Always` at level 0).
 
----
+**Seekable mode**: Per-chunk compression. CLI `--chunked` uses level 3. API accepts explicit level.
 
-## Recommended Workflows by Data Pattern
+### Thread-Local Context Pool (`zstd_pool.rs`)
 
-### 1. Numeric Sequential Data (Timestamps, Sensor Readings, IDs)
+Eliminates per-call `CCtx`/`DCtx` allocation overhead (hundreds of KB internal tables):
 
-```bash
-# Auto-detect (recommended)
-oifs -i disk.img put ./sensor.csv --filter auto
+- **Compressors**: Thread-local `HashMap<i32, Compressor>` + global pool (32 per level)
+- **Decompressors**: Thread-local `Option<Decompressor>` + global pool (32 total)
+- **Hot path**: `compress_frame(data, level)` / `decompress_frame_into(source, dest)` borrow thread-local first, then global, then allocate
 
-# Explicit: delta + byte shuffle for 32-bit integers
-oifs -i disk.img put ./sensor.csv --filter both --typesize 4
-```
-
-**Read path**: Stream mode → `DecodedBlobCache` serves subsequent `read_at` calls from cached whole-file decode.
-
-### 2. Floating-Point Sensor Data (Lossy Compression Acceptable)
-
-```bash
-# Bit shuffle + truncate to 16 mantissa bits (half precision)
-# Requires programmatic FilterPipeline; no direct CLI flag for TruncPrecision yet
-```
-
+**Pool limits** (constants in `src/zstd_pool.rs`):
 ```rust
-let pipeline = FilterPipeline::new(4)  // f32
-    .then(FilterType::TruncPrecision { prec_bits: 16 })
-    .then(FilterType::BitShuffle);
-session.write_data_with_filters(file_id, 0, &data, CompressionMode::Auto, pipeline.to_config())?;
+const MAX_GLOBAL_DECOMPRESSORS: usize = 32;
+const MAX_GLOBAL_COMPRESSORS_PER_LEVEL: usize = 32;
 ```
 
-**Read path**: Bit shuffle reversed automatically; truncation is **not** reversed (lossy).
+### Persistent Scoped Worker Pool
 
-### 3. Binary / Bitfield Data (Flags, Masks, Bloom Filters)
+`par_for_index(total, f)` executes work in parallel using persistent `oifs-chunk-w{N}` threads:
 
-```bash
-# Bit shuffle for 1-byte elements (bit arrays)
-oifs -i disk.img put ./bitmap.bin --filter bitshuffle --typesize 1
-```
+- **Worker count**: `num_cpus - 1`, clamped to 1..15
+- **Wake strategy**: Exact `workers_to_wake(total, num_workers)` — caller participates inline, wakes only needed workers
+- **Zero oversubscription**: `try_lock` on dispatch mutex; falls back to inline sequential if pool busy
+- **Work stealing**: Dynamic `AtomicUsize::fetch_add` across workers + caller
 
-### 4. Structured Records / Array-of-Structures (Mixed Fields)
-
-```bash
-# Byte shuffle groups same-significance bytes (e.g., all MSBs together)
-oifs -i disk.img put ./records.bin --filter shuffle --typesize 8
-```
-
-### 5. Maximum Compression Ratio (Archival, CPU Available)
-
-```bash
-# Force compression + auto filter selection
-oifs -i disk.img put ./archive.dat --compress --filter auto
-```
-
-### 6. Random-Access Large Files (Databases, VM Images, > 64 MiB)
-
-```bash
-# Seekable 64K chunked mode
-oifs -i disk.img put ./database.db --chunked --filter auto
-```
-
-**Read path**: `read_at_chunked_64k` decodes **only the touched 64 KiB chunk** directly into caller's buffer. Sequential scans trigger **prefetch of up to 4 chunks** into `ChunkReadCache`.
+**Source**: [`src/zstd_pool.rs` lines 1–150](repo://src/zstd_pool.rs#L1-L150) — thread-local/global context pools; [`src/zstd_pool.rs` lines 150–425](repo://src/zstd_pool.rs#L150-L425) — `par_for_index`, `WorkerPool`, `workers_to_wake` with Kani proof.
 
 ---
 
-## Cache Invalidation Summary
+## Read-Path Caches
 
-Both caches are **automatically invalidated** on any operation that mutates the logical payload or its metadata:
+### DecodedBlobCache (Stream Files)
 
-| Operation | Invalidation |
-|-----------|--------------|
-| **Write** (any `write_data_with_filters`, including chunked) | `invalidate_payload_caches(inode_id)` |
-| **Truncate** (`truncate`, `truncate_chunked_64k`) | `invalidate_payload_caches(inode_id)` |
-| **Delete** (journal replay `SetInodeBitmap { allocated: false }`) | `invalidate_payload_caches(inode_id)` |
-| **Migrate** (v1→v2 inode rewrite) | `guard.clear_payload_caches()` (both caches, all inodes) |
-| **Defragment** (safe mode live-reload, in-place) | `guard.clear_payload_caches()` |
-| **Reload** (after safe defrag atomic swap) | `guard.clear_payload_caches()` |
+- **Purpose**: Caches fully-decoded plaintext of compressed/encrypted stream files
+- **Capacity**: Bounded by `MAX_CACHED_DECODED_BLOBS` and `MAX_CACHED_DECODED_BYTES`
+- **Eviction**: LRU by access time
+- **Hit path**: `read_data` / `read_at` copies directly from cached `Arc<[u8]>`
 
-The cache key includes `compressed_size`, `first_block`, and `nonce`, so **any metadata change** (even without data modification) naturally misses and re-populates.
+### ChunkReadCache (Seekable Files)
+
+- **Purpose**: Caches individual decoded 64 KiB chunks
+- **Capacity**: 8 slots per inode (fixed)
+- **Eviction**: LRU
+- **Hit path**: `read_at_chunked_64k` copies slice directly from cached `Arc<[u8]>`
+- **Prefetch**: Sequential access triggers 4-chunk read-ahead via `par_for_index`
+
+**Source**: [`src/disk/caches.rs`](repo://src/disk/caches.rs) — `DecodedBlobCache` and `ChunkReadCache` implementations.
 
 ---
 
-## Implementation Notes
+## Decision Guide: File Size + Access Pattern → Mode + Filters
 
-- **Filter config persistence**: Compact bit-packed fields in inode (`filter_typesize`, `filter_delta`, `filter_shuffle`, `filter_bitshuffle`).
-- **Zero-copy filter staging**: `apply_filters_cow` returns `Cow::Borrowed` when no filter runs, eliminating intermediate copies on the common unfiltered path.
-- **Compression ordering**: filter → compress → encrypt. This preserves compressibility while keeping ciphertext entropy flat.
-- **Kani proofs**: All filter round-trips (including composite pipelines and unaligned tails) are formally verified via `#[kani::proof]` in `src/filters.rs`.
-- **Native C-Blosc2**: Available via `blosc2_compress` / `blosc2_decompress` in `filters.rs` when the `blosc2` feature is enabled.
+| Scenario | Recommended Mode | Filter | Rationale |
+|----------|------------------|--------|-----------|
+| Small config files (< 8 KiB) | `Auto` (default) | `none` | Auto skips compression; no filter overhead |
+| Large log files (append-only) | `Auto` / `Always` | `delta(t=4)` + `shuffle` | Timestamps + structured fields |
+| Time-series DB (InfluxDB, Timescale) | `Seekable 64K` | `delta(t=8)` + `shuffle` | Random reads, monotonic timestamps |
+| ML training data (float32 arrays) | `Seekable 64K` | `numeric(t=4)` or `TruncPrecision` | AoS layout, controlled lossy OK |
+| Boolean feature matrices | `Seekable 64K` | `bitshuffle(t=1)` | Sparse bitmaps |
+| VM disk images | `Seekable 64K` | `none` / `shuffle(t=4)` | High entropy, random access |
+| Already compressed (zip, gz, png) | `Never` | `none` | Zero gain, wastes CPU |
+| Encrypted blobs | `Never` | `none` | High entropy, incompressible |
+| Archival (write once, read rarely) | `Stream { level: 10-15 }` | `auto` | Maximum ratio, CPU available |
+
+---
+
+## CLI Quick Reference
+
+| Command | Flags | Effect |
+|---------|-------|--------|
+| `put` | `--compress` | `CompressionMode::Always` (stream, level 0) |
+| `put` | `--no-compress` | `CompressionMode::Never` |
+| `put` | `--chunked` / `--seekable` / `--chunked-64k` | `CompressionMode::Seekable { chunk_size: 65536, level: 3 }` |
+| `put` | `--filter auto` | Run `recommend_filters`, apply best config |
+| `put` | `--filter delta\|shuffle\|bitshuffle\|both\|none` | Preset `FilterConfig` |
+| `put` | `--typesize 1\|2\|4\|8` | Element size for filter (default 4) |
+| `filter-analyze` | `<file>` | Print recommendation report (no image needed) |
+
+**Source**: [`src/bin/oifs.rs` lines 350–500](repo://src/bin/oifs.rs#L350-L500) — `Put` command flag parsing and mode selection; [`src/bin/oifs.rs` lines 1000–1150](repo://src/bin/oifs.rs#L1000-L1150) — `FilterAnalyze` command.
+
+---
+
+## Performance Tuning Checklist
+
+1. **Profile first**: Run `oifs filter-analyze` on representative data
+2. **Match typesize**: Use the actual element width (u8=1, u16/i16/f16=2, u32/i32/f32=4, u64/i64/f64=8)
+3. **Choose mode by access pattern**: Seekable for random access, Stream for sequential
+4. **Tune Zstd level**: Level 3 for seekable (default); 1–3 for streaming hot data; 10+ for cold archival
+5. **Monitor pool contention**: If `par_for_index` falls back to inline often, consider reducing concurrent operations
+6. **Cache sizing**: `ChunkReadCache` is fixed at 8 slots; `DecodedBlobCache` bounded by memory budget
+7. **Avoid double compression**: Don't compress already-compressed/encrypted data — use `--no-compress`
 
 ---
 
 ## Related Pages
 
-- [CLI Reference](../operations/cli_reference.md#2-put) — `put`, `filter-analyze`, `get`, `append` command details
-- [Compression and Filters Architecture](../architecture/compression_and_filters.md) — Deep dive on pipeline, caches, worker pool, COW chunked layout
-- [Async I/O and Engines](../architecture/async_io_and_engines.md) — Session modes, Master-Proxy concurrency
-- [Encrypted Workflows](./encrypted_workflows.md) — Encryption interaction with compression modes
+- [Compression Pipeline and SIMD Filters](../architecture/compression_and_filters.md) — Architecture deep-dive
+- [Configuration](../concepts/configuration.md) — All runtime knobs and environment variables
+- [CLI Reference](../operations/cli_reference.md) — Complete command reference

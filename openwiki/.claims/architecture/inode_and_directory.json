@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a28a286a9a61210863115ac816712779aa6031c85f76d6e627d66958948f1f6e",
+  "pageVersion": "sha256:db7d1c19a4d2572782e8ec80bf75774927bcd0aa443530cf3f396e0b40423482",
   "claims": [
     {
       "id": "claim_eee6149ed80a41e688eb92aa53776a94",
@@ -57,7 +57,7 @@
       "statement": "DirIndex promotion logic promotes directories to complete in-memory indexes after 8 cold scans or on negative lookup, using a 32-shard ShardedDirCache with Fibonacci hashing for O(1) lookups and O(1) inserts via tail_offset tracking.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2139-L2280",
+          "resource": "repo://src/disk.rs#L2151-L2292",
           "version": "repo-lines-v1:sha256:4a7efaa8866ccfd9579b4e04374f3700b74b1239e5caf7a83061140738636631:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ZTdmYTBmMzFhZWNhYjZlZjdkNmNkMzc3NmY3Y2YxMzAzMTg0OWRjMGZiYjJlNzVhYzlmMjVhYTM5ZGI3NDYzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmZDhkZTUyZTM3ZGFkYWZhM2JmZTViMzEyMGFlZWFlNGI2NTA1NDM1ZjhjMzNhZWM3Y2E0NTI5NjQ2MWFjYTJhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5OTliZGVmZWVhY2E2MzQwZTAyOTBkYzg2ZTg4OWM4OWQ1ZTE4OWFhNWJhNDRiNTg1YjNiNzA3MzRmNGE2MmQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzYTRkMTA4ZDEyNmUzNzlkNTUwZDczOWJjOTVjMjM1MTZlMjY1MjcwMDRjYzI1YmVjMWY3ZWY2NTUzZmIwNzQ0In0"
         },
         {
@@ -115,6 +115,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-22T10:29:12.696Z"
+    "at": "2026-11-23T20:55:55.458Z"
   }
 }

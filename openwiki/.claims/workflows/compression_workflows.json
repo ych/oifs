@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:0fb049d1dd2f32fa6bd135fa78e30b2f7b4c87c045b314c007862a42425a8394",
+  "pageVersion": "sha256:3734f751070ec0076d5aba54e72ebcc5fa93c7c0ceb9b93fd7e7e7b472577645",
   "claims": [
     {
       "id": "claim_269cf6c26a6f4bf59d8a091af2ac4c4c",
       "statement": "OIFS supports five compression modes: Always (compress all data regardless of size), Never (store data uncompressed with compressed_size = 0), Auto (default: compress when data size >= 8KB and only if compression reduces size), Stream (full-file stream compression with explicit Zstd compression level), and Seekable (seekable chunked compression with 64KB independent chunks and explicit Zstd level).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L122-L141",
+          "resource": "repo://src/disk.rs#L125-L144",
           "version": "repo-lines-v1:sha256:37d238f80248c74a1d3e75f5573cc3e2617215d653068336962b725654d33c4a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyOTYxNjVmMTdkODUyNzhkNzI3ODYwMDRiZDQ5MjlhMGI2ZTRlMjQxNGJmZjI3ODBmMWM5ZDQ4OTYwZWUxMzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMGNkYjk3MmE3YmZiN2VkMjQ2ZjlmZjY3MjM4NWU1NWY0OTY4ZmMxMTA0M2RjNWI2ODRkNTFkZmEzMWRiY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ0ZThhYjg1YzJjYmQ5NjRiMmY1Y2ZkMjVjOTY5YTBiZTFlYWY1OTViOTA5ZmM2NmYwNzk2MzBiYTAzNDdkNTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMxZDYxZjhlZmQyNTNmMGVjNTk3ZjY4MjQxODM2N2QzNzk5NjZhOTU0N2FkMzU5OWQ1M2ZhNzI1MjMzZTk1MWEifQ"
         },
         {
@@ -27,6 +27,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-20T22:07:36.625Z"
+    "at": "2026-11-23T20:55:55.458Z"
   }
 }

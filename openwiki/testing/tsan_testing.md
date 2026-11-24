@@ -1,10 +1,11 @@
 ---
 type: "Reference"
-title: "Requires nightly toolchain and clang with TSAN support"
-openwiki_generated: true
+title: "Thread Sanitizer (TSAN) Testing"
+description: "Document TSAN-based concurrency testing: data race detection in sharded caches, IPC, session management, and async task pipeline."
+tags: ["testing", "concurrency", "tsan", "data-races", "ipc", "session"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-23T20:55:55.458Z
 sources:
   - id: openwiki-source-886fbb2336c3635ef8adb3c3
     resource: repo://.github/workflows/rust.yml
@@ -28,9 +29,8 @@ sources:
     resource: repo://tests/session_ipc_test.rs
   - id: openwiki-source-5b30823597738f668b07d33c
     resource: repo://tests/shuttle_concurrency_test.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
 ---
-
 
 ThreadSanitizer (TSan) is a dynamic data race detector that can be used with OIFS to identify memory safety issues arising from concurrent access. The project includes specialized stress tests designed to expose data races, atomicity violations, and other concurrency-related bugs when executed under TSan's instrumentation. **There is no `tsan` Cargo feature and no CI integration for ThreadSanitizer**; tests are run locally using the nightly toolchain with `-Zsanitizer=thread`.
 
@@ -49,6 +49,7 @@ Alternatively, for a specific test binary:
 cargo +nightly test -Zsanitizer=thread --test concurrency_stress
 cargo +nightly test -Zsanitizer=thread --test rwlock_concurrency_test
 cargo +nightly test -Zsanitizer=thread --test session_ipc_test
+cargo +nightly test -Zsanitizer=thread --test shuttle_concurrency_test
 ```
 
 The existing Shuttle model checking and Kani formal verification provide stronger guarantees than dynamic TSAN analysis for the verified code paths, as they systematically explore thread interleavings or prove properties over all inputs.
@@ -72,9 +73,9 @@ The primary high-contention stress suite (`tests/concurrency_stress_test.rs`) co
    - 4 threads expanding files across direct/indirect block boundary (40KB → 80KB)
    - Tests indirect table allocation safety, pointer initialization, and block indexing
 
-4. **Disjoint Range Writes** (`test_stress_disjoint_range_writes`)
-   - Multiple threads writing non-overlapping ranges concurrently
-   - Validates no cross-range interference
+4. **Disjoint Range Writes** (`test_stress_concurrent_disjoint_slices_same_file`)
+   - Multiple threads writing non-overlapping ranges to the same file concurrently
+   - Validates no cross-range interference under TSan
 
 ### rwlock_concurrency_test.rs
 
@@ -98,209 +99,165 @@ The `session_ipc_test.rs` suite (`tests/session_ipc_test.rs`) stresses multi-pro
 
 | Test | Focus |
 |------|-------|
-| `test_multi_process_transparent_proxy_and_concurrency` | 2 clients + master, concurrent writes from both clients, cross-client reads, peer count tracking |
-| `test_event_notification_on_master` | `SessionEvent` channel delivery (`PeerConnected`, `RequestHandled`, `PeerDisconnected`) under concurrent client activity |
-| `test_stale_socket_recovery` | Master election recovery when stale UDS socket exists |
-| `test_encrypted_filesystem_with_session` / `test_encrypted_ipc_authentication_handshake_security` | Challenge-response authentication handshake with Argon2id/BLAKE2b-MAC under concurrent access |
-| `test_network_mode_transparent_proxy_and_concurrency` | TCP transport + rendezvous file, active Ping/Pong probe, concurrent operations |
-| `test_network_mode_stale_rendezvous_recovery_and_active_probe` | Stale rendezvous file cleanup via active probe |
-
-The IPC layer uses a bounded connection pool (`MAX_CLIENT_POOL_STREAMS = 8`) with RAII `CheckedOutStream` guards. On connection failure, the transparent failover logic in `OifsSession::send_request` (`src/session.rs#L749-L848`) re-runs master election up to 5 times, using `lock_unpoisoned` on the `dm_fallback` mutex to pin a new local `DiskManager` if the client promotes to master.
+| `test_multi_process_transparent_proxy_and_concurrency` | Multiple clients writing concurrently through Master; cross-client reads |
+| `test_event_notification_on_master` | `SessionEvent` delivery ordering under concurrent client connect/disconnect |
+| `test_stale_socket_recovery` | Master promotion when stale UDS socket is detected |
+| `test_encrypted_filesystem_with_session` | Encrypted IPC session with authenticated clients |
+| `test_encrypted_ipc_authentication_handshake_security` | Handshake protocol under rogue client attacks |
+| `test_network_mode_transparent_proxy_and_concurrency` | TCP transport with rendezvous file + active ping probe |
+| `test_network_mode_stale_rendezvous_recovery_and_active_probe` | Network failover with dead master detection |
 
 ### shuttle_concurrency_test.rs
 
-Shuttle model checking (`tests/shuttle_concurrency_test.rs`) is **complementary to ThreadSanitizer**. While TSan detects races in the specific schedules exercised during test execution, Shuttle's randomized scheduler systematically explores thread interleavings across many runs (`shuttle::check_random(..., 50)`):
+Shuttle model checking (`tests/shuttle_concurrency_test.rs`) is complementary to ThreadSanitizer: Shuttle systematically explores thread interleavings of pure-Rust logic while TSAN detects races in actual native execution including FFI, I/O, and OS interactions.
 
-- Concurrent file creation, read/write, create/delete races
-- Overlapping offset writes on the same file (3 threads, overlapping ranges)
-- Concurrent compression/decompression race
-- Nested directory creation and path resolution race
-- Same-filename creation race (proves double-checked locking in directory index)
-- Sharded `DirCache` promotion and indirect `read_at` under randomized schedules
+## Tested Concurrency Hotspots
 
-Shuttle provides stronger guarantees for the explored state space but only for the modeled operations; TSan catches races in actual native execution including FFI, I/O, and OS interactions.
+### 1. IPC Message Handling (`src/ipc.rs`)
 
-## lock_unpoisoned / read_unpoisoned Patterns
+**Thread interactions**: The `IpcClient` uses a connection pool (`MAX_CLIENT_POOL_STREAMS = 8`) protected by a `Mutex<ClientPoolState>`. Threads checkout streams via `checkout_stream()` which uses a `Condvar` for waiting. `CheckedOutStream` RAII guards ensure connection pool consistency on panic.
 
-OIFS uses poison-recovered locking for caches, registries, and coordination primitives where a panic mid-critical-section **cannot leave the guarded data inconsistent**. The helpers are defined in `src/lib.rs#L42-L68`:
+- **Lock hierarchy**: Pool mutex → stream checkout → RPC frame exchange → return to pool
+- **TSAN coverage**: Pool contention under concurrent `send()` calls, secondary stream creation, authentication handshake race conditions
+- **SessionMode interactions**: Both `SessionMode::Local` (UDS) and `SessionMode::Network` (TCP + rendezvous file) exercise the same client pool logic; network mode adds active ping probe failover
 
-```rust
-/// Lock a mutex, recovering from poisoning.
-pub(crate) fn lock_unpoisoned<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
+### 2. Sharded Caches (`src/disk/caches.rs`)
 
-/// Acquire a read lock, recovering from poisoning.
-pub(crate) fn read_unpoisoned<T>(r: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    r.read().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
+Three independent sharded caches with 32-way lock striping using Fibonacci hashing (`0x517cc1b727220a95`):
 
-/// Acquire a write lock, recovering from poisoning.
-/// Only use where a panic cannot leave data inconsistent.
-pub(crate) fn write_unpoisoned<T>(r: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
-    r.write().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-```
+- **BoundedInodeCache**: 32 `RwLock<InodeCacheShard>` with Second-Chance (Clock) eviction; `AtomicBool` reference bits set under shared read lock
+- **ShardedDirCache**: 32 `RwLock<FxHashMap<u64, DirIndex>>` for directory name indexes
+- **ChunkReadCache** / **DecodedBlobCache**: Single `RwLock`/`Mutex` each (small bounded capacity)
 
-### Rationale and TSAN Safety
+**TSAN verification targets**:
+- Concurrent `get()` (shared read lock) vs `insert()` (exclusive write lock) on different shards
+- Reference bit `AtomicBool` updates under `Ordering::Relaxed` during cache hits
+- Eviction queue manipulation under write lock without cross-shard interference
+- `invalidate_inode()` clearing entries across all shards
 
-**Why recover poison?**
-- These locks guard **reconstructible in-memory state** (caches, registries, coordination flags)
-- A panic in a cache operation leaves the cache data valid — it may be stale or partial, but not corrupted
-- Propagating poison would permanently brick the subsystem (every future acquisition fails)
-- One unrelated panic anywhere would cascade into total failure
+### 3. Session Management (`src/session.rs`)
 
-**Where NOT used (poison propagates):**
-- `DiskManagerInner` state behind the main `RwLock` — guards on-disk consistency
-- `sync_mutex` — guards physical durability flush ordering
-- I/O stream state — a panic mid-frame would desynchronize the protocol
+**SessionMode thread interactions**:
 
-**TSAN implications:**
-- `lock_unpoisoned`/`read_unpoisoned` use `Mutex::lock().unwrap_or_else(...)` which **acquires the lock normally** before checking poison
-- TSAN sees standard lock acquire/release semantics — happens-before edges are preserved
-- No false positives from the recovery logic itself; the lock is held during the entire critical section
-- The pattern is TSAN-safe because the underlying synchronization primitive is used correctly
+- **Standalone**: Direct `DiskManager` access, zero IPC overhead, no background threads
+- **Local**: Master process spawns `IpcServer` with background thread; clients connect via UDS in `/tmp`
+- **Network**: Master binds TCP + writes `.image.master` rendezvous file; active ping probe detects dead master; clients failover to local `DiskManager` via `dm_fallback` protected by `Mutex` + lock-free `has_fallback` `AtomicBool`
 
-### Call Sites
+**TSAN verification targets**:
+- Registry `OnceLock<Mutex<HashMap<PathBuf, OifsSession>>>` under concurrent `get_or_open_*` calls
+- Master promotion race when stale socket/rendezvous file detected
+- Failover: `has_fallback.load(Acquire)` → `dm_fallback.lock()` → local execution
+- Event channel (`sync_channel`) delivery to Master under concurrent client requests
 
-| Component | Lock Type | Guarded State | Why Recovery Safe |
-|-----------|-----------|---------------|-------------------|
-| `SESSSION_REGISTRY` (`src/session.rs#L77`) | `Mutex` | `HashMap<PathBuf, OifsSession>` | Registry entries are `Arc`-cloned; panic during insert leaves map valid |
-| `IpcClient.pool` (`src/ipc.rs#L1407`) | `Mutex` | `VecDeque<Stream>`, `total_streams` | `CheckedOutStream` RAII ensures streams returned or closed on panic |
-| `IpcServer.pool` (`src/ipc.rs#L1618`) | `Mutex` | Accepted stream pool | Same RAII pattern |
-| `AutoDefragController.config/stats/worker/shutdown` (`src/auto_defrag.rs`) | `Mutex` | Configuration, statistics, worker handle | Purely in-memory coordination; panic leaves values readable |
-| `ChunkReadCache`, `DecodedBlobCache`, `DirCache` shards (`src/disk.rs`) | `RwLock` | Cache entries | Caches are pure optimization; stale entries evicted naturally |
-| `BoundedInodeCache` shards (`src/disk/caches.rs`) | `RwLock` | `FxHashMap<u64, CachedInodeEntry>` + `VecDeque` order | Second-chance bits are `AtomicBool`; order updated under lock |
+### 4. OifsAsyncTask Group-Commit Thread Safety (`src/disk.rs`)
 
-## DirCache 32-Shard Locking and Contention Profile
+The `OifsAsyncTask<T>` type implements an inline fast-path for cache hits and a background thread pool for slow paths:
 
-The directory index cache (`ShardedDirCache` in `src/disk/caches.rs#L202-L274`) divides `dir_inode_id → DirIndex` across **32 independent `RwLock` shards** using a 64-bit Fibonacci hashing bijection:
+- **Inline Fast-Path**: `OifsAsyncTask::ready()` returns immediately completed task (~50 ns) for:
+  - `Mmap` raw file reads (mmap slice available)
+  - Warm `ChunkReadCache` hits (seekable 64K chunks)
+  - Warm `DecodedBlobCache` hits (stream-compressed whole-file)
+  - Warm `FileIo` `DataPageCache` hits
 
-```rust
-const NUM_DIR_CACHE_SHARDS: usize = 32;
+- **Background Slow-Path**: `OifsAsyncTask::spawn()` submits to persistent worker pool (2–8 threads named `oifs-async-{idx}`)
+  - Cache misses, cold reads, compressed/encrypted payload decoding
+  - Uses `lock_unpoisoned` on queue mutex + `Condvar` for work distribution
 
-fn shard_index(&self, dir_inode_id: u64) -> usize {
-    (dir_inode_id.wrapping_mul(0x517cc1b727220a95) as usize) & (self.num_shards - 1)
-}
-```
+**TSAN verification targets**:
+- Fast-path `is_ready()` race with background completion
+- `try_take()` / `wait()` / `poll()` concurrent access to shared `AsyncTaskState`
+- Worker pool job submission and completion under contention
+- `wait_on_drop` FFI guard preventing use-after-free
 
-### Contention Characteristics
+### 5. DiskManager Lock Hierarchy
 
-- **Read-heavy workloads** (`lookup`, `resolve_path`, `list_dir`): Acquire `read_shard` (shared `RwLockReadGuard`). Multiple readers on **different directories** never contend — they hit different shards. Readers on the **same directory** share the shard read lock (highly concurrent).
-- **Write operations** (`create_file`, `delete_file`, `build_dir_index`, `list_dir` promotion): Acquire `write_shard` (exclusive `RwLockWriteGuard`). Only blocks other operations on directories mapping to the **same shard**.
-- **Cache maintenance** (`clear`, `for_each_mut`): Iterates all 32 shards, taking write lock on each sequentially.
+Two-tier locking strategy validated under TSAN:
 
-### TSAN Observations
+1. **`RwLock<DiskManagerInner>`**: Primary guard for all metadata and inode operations
+   - Read lock: `read_data`, `read_at`, `lookup`, `list_dir`, `begin_read()`
+   - Write lock: `write_data`, `create_file`, `delete_file`, `flush`, `truncate`
 
-Under ThreadSanitizer:
-- No data races on `DirIndex` fields (`complete`, `plain_complete`, `cold_scans`, `may_have_holes`, `tail_offset`, `stored`, `plain`) — all accesses are protected by the shard's `RwLock`
-- The Fibonacci hash ensures uniform shard distribution, minimizing false sharing
-- `read_unpoisoned`/`write_unpoisoned` used for shard access — TSAN sees proper acquire/release
+2. **`sync_mutex: Arc<Mutex<()>>`**: Dedicated mutex serializing physical `msync`/`fdatasync` calls
+   - Acquired **inside** write lock critical section for `DurabilityMode::Strict` and `RangeAsync` batch drains
+   - Prevents readers from blocking on I/O syscalls
 
-The companion `BoundedInodeCache` also uses 32 shards with the same hashing scheme, protecting `FxHashMap<u64, CachedInodeEntry>` + `VecDeque<u64>` order under `RwLock`. The `referenced` bit in `CachedInodeEntry` is an `AtomicBool` updated with `Relaxed` ordering under the **shared read lock** — this is intentional: hot inodes get a reference bit set without upgrading to write lock, and TSAN correctly sees the atomic operation as race-free.
+**TSAN verification targets**:
+- No lock-order inversion: `sync_mutex` always acquired after `RwLock` write guard
+- Concurrent readers proceed while `sync_mutex` held by flusher
+- `RangeAsync` batch drain runs `flush_async_batch()` outside write lock (only `sync_mutex`)
 
-## Auto-Defrag Daemon vs Writer Races
-
-The background automatic defragmentation coordinator (`src/auto_defrag.rs`) runs as a daemon thread that periodically measures fragmentation and runs in-place defragmentation passes.
-
-### Synchronization Design
-
-- The worker owns only a `Weak<Arc<RwLock<DiskManagerInner>>>` — it cannot keep the manager alive past its last owner
-- **Every defrag pass takes the inner `RwLock` write lock** (`DiskManager::defragment_inplace_on`), so it serializes against **all metadata mutations** exactly like any other writer
-- No two defrag passes can overlap (single worker thread)
-- The worker sleeps on a `Condvar` with the configured `check_interval` (minimum 10 ms, enforced by `MIN_CHECK_INTERVAL`)
-
-### Race Scenarios and TSAN Coverage
-
-| Scenario | Synchronization | TSAN Verification |
-|----------|-----------------|-------------------|
-| Defrag pass vs `write_data`/`create_file`/`delete_file` | Both take inner write lock | Mutual exclusion verified — no concurrent write/write |
-| Defrag pass vs `read_at`/`read_data` | Defrag: write lock; Readers: read lock | RW exclusion verified — readers see consistent state |
-| Defrag pass vs `flush`/`flush_async` | Defrag: inner write lock; Flush: `sync_mutex` + inner read lock | Lock hierarchy: `sync_mutex` acquired before inner read lock; defrag takes inner write lock directly — no deadlock, TSAN sees proper ordering |
-| Config update during pass | `AutoDefragController.config` mutex (`lock_unpoisoned`) | Configuration read at start of each cycle; changes picked up next tick |
-
-The `run_once` function (`src/auto_defrag.rs#L255-L299`) reads the config, checks fragmentation under read lock, then performs the defrag under write lock. The `skip_reason` check reads the superblock's `has_journal_layout` under `read_unpoisoned` — a read-only snapshot that cannot be left inconsistent by a panic.
-
-## IPC Client Failover Synchronization
-
-Transparent failover in `OifsSession::send_request` (`src/session.rs#L749-L848`) handles Master loss (crash, network partition) without caller intervention:
+## Poison Recovery Helpers (`src/lib.rs`)
 
 ```rust
-// Lock-free fast path: only acquire dm_fallback if previously failed over
-if has_fallback.load(Acquire) {
-    let local_dm = crate::lock_unpoisoned(dm_fallback).clone();
-    if let Some(dm) = local_dm {
-        return IpcServer::handle_request(&dm, req).map_err(...);
-    }
-}
-
-// Retry loop: re-run master election up to 5 times
-for attempt in 0..5 {
-    match current_client.send(&req) {
-        Ok(data) => return Ok(data),
-        Err(io_err) if Self::is_connection_error(&io_err) => {
-            // Re-elect: may become new Master (Direct) or connect to new Master (Remote)
-            let retry_session = Self::open_with_mode(...)?;
-            match retry_session {
-                OifsSession::Direct { dm, .. } => {
-                    // Pin local DiskManager as fallback
-                    *crate::lock_unpoisoned(dm_fallback) = Some(dm.clone());
-                    has_fallback.store(true, Release);
-                    return IpcServer::handle_request(&dm, req).map_err(...);
-                }
-                OifsSession::Remote { client: new_client, .. } => {
-                    current_client = new_client;
-                }
-            }
-        }
-        ...
-    }
-}
+pub(crate) fn lock_unpoisoned<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T>
+pub(crate) fn read_unpoisoned<T>(r: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T>
+pub(crate) fn write_unpoisoned<T>(r: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T>
 ```
 
-### Synchronization Primitives
+These helpers recover from mutex/RwLock poisoning for **caches, registries, and coordination primitives** where a panic cannot leave data inconsistent. They are deliberately **not** used for:
+- `DiskManagerInner` (guards on-disk consistency — propagates poison)
+- `sync_mutex` (serializes physical flush — propagates poison)
+- Any lock guarding stream state mid-frame (recovering would silently desynchronize protocol)
 
-| Primitive | Type | Purpose |
-|-----------|------|---------|
-| `dm_fallback` | `Arc<Mutex<Option<Arc<DiskManager>>>>` | Holds promoted local `DiskManager` after failover to Master |
-| `has_fallback` | `Arc<AtomicBool>` | Lock-free flag to avoid mutex on steady-state Remote RPCs |
-| `client.pool` | `Arc<Mutex<VecDeque<Stream>>>` | Connection pool with `CheckedOutStream` RAII guards |
+## Known False Positives and Suppression Strategies
 
-### TSAN Considerations
+### Expected TSAN Reports (Not Bugs)
 
-- `has_fallback.load(Acquire)` / `store(Release)` establishes happens-before between failover detection and `dm_fallback` access
-- `lock_unpoisoned(dm_fallback)` acquires the mutex normally — TSAN sees standard mutex semantics
-- `CheckedOutStream` Drop impl closes socket on panic, preventing desynchronized socket reuse — no data race on stream state
-- Connection pool mutex guards `VecDeque` + `total_streams` counter atomically
+1. **`AtomicBool` reference bit in `BoundedInodeCache`**
+   - `referenced.store(true, Relaxed)` under shared read lock while eviction thread reads under write lock
+   - Intentional relaxed-ordering Clock algorithm; no data race on inode payload
 
-## Suppressing False Positives
+2. **`lock_unpoisoned` / `read_unpoisoned` recovery**
+   - `PoisonError::into_inner()` accesses mutex internals after another thread panicked
+   - By design: recovering thread observes consistent state because guarded data is reconstructible
 
-When running under ThreadSanitizer, the following patterns may appear but are **not real data races**:
+3. **`sync_mutex` handoff during `RangeAsync` drain**
+   - Background drain takes `sync_mutex` while writer holds `RwLock` write guard
+   - Lock hierarchy validated: `RwLock` write → `sync_mutex` always; no inversion
 
-1. **`AtomicBool`/`AtomicUsize` with `Ordering::Relaxed`** for coordination flags (`stop_flag`, `has_fallback`, cache `referenced` bits) — intentionally race-free by design, TSAN correctly understands atomic operations
-2. **Poison recovery in `lock_unpoisoned`/`read_unpoisoned`** — the lock is acquired before poison check; TSAN sees proper acquire/release
-3. **`Weak::upgrade` in auto-defrag worker** — race between upgrade and last `Arc` drop is benign; worker exits cleanly on `None`
-4. **`OnceLock` initialization in `SESSSION_REGISTRY`** — Rust's `OnceLock` is thread-safe; TSAN may report on internal initialization but it's a false positive
+4. **`OnceLock` session registry initialization**
+   - First `get_or_open` call initializes `OnceLock`; concurrent callers wait
+   - Standard library internal synchronization; not a user-data race
 
-To suppress known benign reports, create a suppression file:
+### Suppression Recommendations
+
+If using TSAN suppressions file (`--suppressions=`), consider entries for:
+
+```
+# AtomicBool reference bit under Clock algorithm
+race:^oifs::disk::caches::InodeCacheShard::get
+
+# Poison recovery helpers
+race:^oifs::lock_unpoisoned
+race:^oifs::read_unpoisoned
+race:^oifs::write_unpoisoned
+```
+
+**Do not suppress** reports involving:
+- `DiskManagerInner` field accesses
+- `sync_mutex` guard acquisition/release
+- `IpcClient` pool state mutations
+- `OifsAsyncTask` `AsyncTaskState` slot access
+- Session registry `HashMap` operations
+
+## Complementary Verification Tools
+
+| Tool | Scope | Strength |
+|------|-------|----------|
+| **ThreadSanitizer** | Native execution with FFI, I/O, OS syscalls | Dynamic detection of actual data races in production-like runs |
+| **Shuttle** (`shuttle_concurrency_test.rs`) | Pure-Rust logic with deterministic scheduler | Systematic interleaving exploration; finds races TSAN might miss due to scheduling |
+| **Kani** (`kani_proofs` in `ipc.rs`, `disk.rs`) | Formal verification of frame validation, bounds checks | Mathematical proofs over all inputs for critical invariants |
+
+Run all three locally for maximum concurrency confidence:
 
 ```bash
-# tsan.suppr
-race:^rust_begin_unwind
-race:^std::sync::OnceLock
+# TSAN (dynamic)
+cargo +nightly test -Zsanitizer=thread --tests
+
+# Shuttle (systematic interleaving)
+cargo test --test shuttle_concurrency_test
+
+# Kani (formal proofs)
+cargo kani --test ipc_frame_test
+cargo kani --test bolero_fuzz_test
 ```
-
-Run with:
-```bash
-TSAN_OPTIONS="suppressions=tsan.suppr" cargo +nightly test -Zsanitizer=thread ...
-```
-
-## Relationship to Other Verification Methods
-
-| Method | Approach | Guarantees | Complementarity |
-|--------|----------|------------|-----------------|
-| **ThreadSanitizer** | Dynamic analysis of native execution | Empirical race freedom on exercised schedules | Catches races in FFI, I/O, OS interactions; real hardware memory model |
-| **Shuttle** | Systematic randomized scheduling of `std::thread` | Exhaustive exploration of modeled interleavings (within bound) | Proves race freedom for pure-Rust logic under all explored schedules |
-| **Kani** | Formal verification via CBMC | Mathematical proofs over all inputs for verified functions | Proves absence of specific bug classes (overflow, panic, memory safety) for modeled code |
-
-**No `tsan` Cargo feature exists.** The project relies on Shuttle and Kani for concurrency verification in CI; ThreadSanitizer is a local development tool for additional dynamic analysis.

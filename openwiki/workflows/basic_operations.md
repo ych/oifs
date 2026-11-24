@@ -1,15 +1,15 @@
 ---
 type: workflow
 title: Basic File/Directory Operations
-description: End-to-end flows for create_file, create_directory, lookup, open_file (OpenExisting/CreateNew/CreateOrOpen), read_data, read_at, read_at_batch, write_data (with filters/compression), write_data_with_filters, truncate, delete_file, list_dir, resolve_path, resolve_parent, and flush. Shows both Direct (DiskManager) and Remote (IPC) paths.
+description: End-to-end flows for create/read/update/delete files, directory management, metadata inspection, and truncate/extend. Covers Direct (DiskManager) and Remote (IPC) paths, image creation options, read-only mounts, and JSON output mode.
 tags: [filesystem, cli, tutorial, basic-operations, architecture]
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+    at: 2026-11-23T20:55:55.458Z
+generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
 ---
 
 # Basic File/Directory Operations
@@ -33,262 +33,454 @@ This guide documents the end-to-end flows for core filesystem operations in OIFS
 
 ---
 
-## Directory Index Caching (`DirIndex` Promotion on Cold Scans)
+## Creating a Filesystem Image
 
-OIFS maintains a **sharded, thread-safe directory index cache** (`ShardedDirCache`) that maps `dir_inode_id → DirIndex`. Each `DirIndex` stores:
+### CLI
 
-| Field | Purpose |
-|-------|---------|
-| `complete: bool` | `true` once every on-disk entry is present in `stored` (and `plain` on encrypted FS). When `complete`, **hits and misses are O(1)**. |
-| `plain_complete: bool` | `true` when plaintext map covers all stored entries (encrypted FS only). |
-| `cold_scans: u32` | Count of targeted scans that missed the cache. After `DIR_INDEX_BUILD_AFTER_SCANS` (8) cold scans, a **full directory scan promotes the index to `complete`**. |
-| `may_have_holes: bool` | Set when deletions create free space in earlier blocks; affects `create_file` tail-block fast path. |
-| `tail_offset: Option<(phys_blk, next_insert_off)>` | Cached location for appending new entries without re-scanning. |
-| `stored: FxHashMap<String, (inode_id, phys_blk, stored_hash)>` | On-disk name → location. Ciphertext on encrypted FS. |
-| `plain: FxHashMap<String, (inode_id, plain_hash)>` | Plaintext name → location (encrypted FS only; avoids re-encryption on lookup). |
+```bash
+# Create a 10 MB unencrypted image
+oifs -i disk.img create --size 10
 
-### Promotion Flow
+# Create with metadata journaling (WAL)
+oifs -i disk.img create --size 10 --journal
 
-```mermaid
-sequenceDiagram
-    participant Caller
-    participant DiskManager
-    participant ShardedDirCache
-    participant Disk
+# Create encrypted (prompts for password)
+oifs -i disk.img create --size 10 --encrypt
 
-    Caller->>DiskManager: lookup(parent, "file.txt")
-    DiskManager->>ShardedDirCache: read_shard(parent).get(parent)
-    alt Cache hit & complete
-        ShardedDirCache-->>DiskManager: (inode_id, phys_blk) → O(1) return
-    else Cache miss or !complete
-        DiskManager->>Disk: locate_entry_in_dir() [cold scan]
-        Disk-->>DiskManager: (inode_id, phys_blk) or NotFound
-        DiskManager->>ShardedDirCache: increment cold_scans
-        alt cold_scans >= 8
-            DiskManager->>Disk: full directory scan (all blocks)
-            Disk-->>DiskManager: all entries
-            DiskManager->>ShardedDirCache: write_shard(parent).insert(complete DirIndex)
-        end
-    end
+# Create encrypted with journaling
+oifs -i disk.img create --size 10 --encrypt --journal
+
+# Non-interactive password via env (CI/CD safe)
+OIFS_PASSWORD=secret oifs -i disk.img create --size 10 --encrypt --json
 ```
 
-- **Positive lookups** are cached immediately.
-- **Negative lookups** (NotFound) also trigger promotion after the first scan, because the scan already paid the cost.
-- `list_dir` promotes the index to `complete` on the first call if it isn't already.
-- `create_file` / `delete_file` invalidate the parent's cache (`may_have_holes`, `tail_offset`, `stored`/`plain` entries) and remove the target's own index (its inode may be reused).
+### Programmatic (Session API)
+
+```rust
+use oifs::{OifsSession, session::SessionMode};
+
+// Unencrypted, no journal
+let session = OifsSession::open_with_mode("disk.img", 10 * 1024 * 1024, SessionMode::Standalone, None, false)?;
+
+// Unencrypted, with journal
+let session = OifsSession::open_journaled_with_mode("disk.img", 10 * 1024 * 1024, SessionMode::Standalone, None, false)?;
+
+// Encrypted, no journal (password required)
+let session = OifsSession::open_with_mode("disk.img", 10 * 1024 * 1024, SessionMode::Standalone, Some("password"), true)?;
+
+// Encrypted, with journal
+let session = OifsSession::open_journaled_with_mode("disk.img", 10 * 1024 * 1024, SessionMode::Standalone, Some("password"), true)?;
+```
+
+### Key Details
+
+| Option | Description |
+|--------|-------------|
+| `--size <MB>` | Total image capacity in megabytes (default: 10). Must be ≥ 4 MB for viable layout. |
+| `--journal` | Enables metadata WAL. Reserves 33 blocks (1 header + 128 KB ring) between the data bitmap and inode table. Uncommitted transactions replay automatically on next mount — `fsck` not required after power loss. |
+| `--encrypt` | Enables XChaCha20-Poly1305 encryption. Password derived via Argon2id. If `--journal` is also set, the WAL region is encrypted too. |
+| **Password precedence** | `--password` flag > `OIFS_PASSWORD` env > interactive masked prompt (disabled in `--json` mode). |
 
 ---
 
-## Write Data Decision Tree
+## Read-Only Mount Workflow
 
-`DiskManager::write_data_with_filters` selects one of four **write cases** based on file state and write parameters. The decision is made **during a read-lock inspection (Stage 1)**, then CPU-heavy filtering/compression/encryption runs **lock-free (Stage 2)**, and finally an exclusive lock commits blocks and metadata (Stage 3).
+Open an image read-only (shared `F_RDLCK`, zero writes, works on `0444` files):
 
-### WriteCase Enum
+```bash
+# CLI
+oifs -i disk.img --read-only info
+oifs -i disk.img --read-only cat /file.txt
+oifs -i disk.img --read-only get /file.txt ./output.txt
+
+# JSON mode requires env or flag (no interactive prompt)
+OIFS_PASSWORD=secret oifs -i encrypted.img --read-only --json cat /file.txt
+```
 
 ```rust
-enum WriteCase {
-    FullOverwrite,      // Replace entire payload from offset 0
-    CompressedAppend,   // Append a fresh Zstd frame to a compressed stream
-    Recompress,         // Read-modify-rebuild: decode, splice, re-encode from 0
-    Raw,                // Direct memcpy into existing/allocated blocks
+// Programmatic
+let session = OifsSession::open_with_mode(
+    "disk.img",
+    0,                    // total_size ignored for read-only
+    SessionMode::Standalone,
+    Some("password"),     // if encrypted
+    false,
+)?;
+// Or use the dedicated read-only opener:
+let dm = DiskManager::open_read_only_with_storage_mode(
+    "disk.img",
+    Some("password"),     // None for unencrypted
+    StorageMode::default(),
+)?;
+let session = OifsSession::Direct { dm: Arc::new(dm), server: None, event_rx: Arc::new(Mutex::new(None)), mode: SessionMode::Standalone };
+```
+
+**Constraints:** All mutating operations (`put`, `mkdir`, `rm`, `append`, `truncate`, `write`, `create_file`, etc.) return `DiskManagerError::ReadOnly`. Background auto-defrag is disabled in read-only mode.
+
+---
+
+## Core Operations
+
+All operations are available via both the **CLI** (`oifs` subcommands) and the **Session API** (`OifsSession`). The Session API works identically in Direct and Remote modes.
+
+### Path Resolution
+
+Paths use `/` as separator. No `..` traversal is supported (explicitly rejected). Path components are validated via `directory::validate_filename` — empty names, `.`, `..`, `/`, `\`, and null bytes are rejected; max length 255 bytes.
+
+| API | Purpose |
+|-----|---------|
+| `resolve_path(path: &str) -> Result<u64>` | Resolves full path (e.g., `"docs/file.txt"`) to inode ID. Splits on `/`, filters empty and `.` components, walks from root. |
+| `resolve_parent(path: &str) -> Result<(u64, String)>` | Returns `(parent_inode_id, filename)` for creating/looking up entries. `resolve_parent("a/b/c") → (inode_of_b, "c")`. Root parent is root inode. |
+
+Both APIs exist on `OifsSession` and `DiskManager`. In Remote mode they are IPC requests (`IpcRequest::ResolvePath`, `IpcRequest::ResolveParent`).
+
+---
+
+### `put` — Import a Host File into OIFS
+
+```bash
+# CLI: import file.txt to /file.txt (auto-detects dest name)
+oifs -i disk.img put ./file.txt
+
+# Import to specific name
+oifs -i disk.img put ./file.txt /data/myfile.txt
+
+# Compression control
+oifs -i disk.img put ./file.txt --compress        # force Zstd
+oifs -i disk.img put ./file.txt --no-compress     # store raw
+oifs -i disk.img put ./file.txt --chunked         # seekable 64 KiB chunks
+
+# Pre-compression filters (for structured/columnar data)
+oifs -i disk.img put ./data.bin --filter delta --typesize 8
+oifs -i disk.img put ./data.bin --filter shuffle --typesize 4
+oifs -i disk.img put ./data.bin --filter both --typesize 4
+oifs -i disk.img put ./data.bin --filter auto     # analyze & pick best
+
+# JSON output
+oifs -i disk.img --json put ./file.txt
+# {"ok": true, "inode": 123, "bytes": 4096}
+```
+
+```rust
+// Session API
+let (parent, name) = session.resolve_parent("/data/myfile.txt")?;
+let inode_id = session.create_file(parent, &name)?;
+let data = std::fs::read("./file.txt")?;
+session.write_data_with_filters(
+    inode_id,
+    0,
+    &data,
+    CompressionMode::Auto,              // or Always, Never, Seekable { chunk_size, level }
+    FilterConfig::none(),               // or FilterConfig::delta(8), .shuffle(4), .numeric(4), .auto()
+)?;
+session.flush()?;
+```
+
+**Details:**
+
+- Creates the file atomically via `create_file_with_data_with_filters` (journaled images: single WAL transaction; small payloads ≤ 8 KiB are data-journaled).
+- Compression modes: `Auto` (heuristic), `Always`, `Never`, `Seekable { chunk_size: 64 KiB, level }`, `Stream { level }`.
+- Filter pipeline runs **before** compression: delta → shuffle/bitshuffle → Zstd.
+- `--filter auto` runs `filters::recommend_filters` on the input bytes and selects the best config (delta, shuffle, both/bitshuffle, or none).
+
+---
+
+### `get` — Export a File from OIFS to Host
+
+```bash
+# CLI
+oifs -i disk.img get /file.txt                    # writes ./file.txt
+oifs -i disk.img get /file.txt ./out.txt          # explicit destination
+oifs -i disk.img get /dir/file.txt ./outdir/      # destination is directory
+oifs -i disk.img --json get /file.txt
+# {"ok": true, "bytes": 4096, "dest": "file.txt"}
+```
+
+```rust
+// Session API
+let inode_id = session.resolve_path("/file.txt")?;
+let data = session.read_data(inode_id)?;
+std::fs::write("./out.txt", data)?;
+```
+
+**Details:** Automatically decompresses, decrypts, and un-applies filters. Validates the remote filename component (rejects path separators, null bytes, etc.).
+
+---
+
+### `cat` — Print File Contents to Stdout
+
+```bash
+# CLI (raw bytes to stdout, no newline added)
+oifs -i disk.img cat /file.txt
+
+# JSON mode wraps in object with UTF-8 lossy content
+oifs -i disk.img --json cat /file.txt
+# {"ok": true, "path": "/file.txt", "bytes": 123, "content": "hello world"}
+```
+
+```rust
+let inode_id = session.resolve_path("/file.txt")?;
+let data = session.read_data(inode_id)?;
+std::io::stdout().lock().write_all(&data)?;
+```
+
+---
+
+### `append` — Append Text to a File
+
+```bash
+# CLI (adds newline unless --no-newline)
+oifs -i disk.img append /log.txt "new line"
+oifs -i disk.img append /log.txt "no newline" --no-newline
+
+# Creates file if it doesn't exist
+oifs -i disk.img --json append /new.txt "first line"
+```
+
+```rust
+let (parent, name) = session.resolve_parent("/log.txt")?;
+let inode_id = match session.lookup(parent, &name) {
+    Ok(id) => id,
+    Err(_) => session.create_file(parent, &name)?,
+};
+let mut existing = session.read_data(inode_id).unwrap_or_default();
+existing.extend_from_slice(b"new line\n");
+session.write_data(inode_id, 0, &existing, CompressionMode::Auto)?;
+session.flush()?;
+```
+
+**Details:** Reads entire file, appends in memory, rewrites from offset 0 (whole-file overwrite). Not an efficient streaming append — use `write_data` with offset for that.
+
+---
+
+### `mkdir` — Create a Directory
+
+```bash
+# CLI
+oifs -i disk.img mkdir /data
+oifs -i disk.img mkdir /data/subdir
+oifs -i disk.img --json mkdir /data
+# {"ok": true, "inode": 456}
+```
+
+```rust
+let (parent, name) = session.resolve_parent("/data/subdir")?;
+let dir_id = session.create_directory(parent, &name)?;
+session.flush()?;
+```
+
+**Details:** Validates parent is a directory, name doesn't exist. Creates inode with `FileType::Directory`, zero size, empty block pointers.
+
+---
+
+### `ls` — List Directory Entries
+
+```bash
+# CLI (flat, non-recursive by default)
+oifs -i disk.img ls
+oifs -i disk.img ls /data
+oifs -i disk.img ls /data --recursive
+
+# JSON output (array of entries)
+oifs -i disk.img --json ls /data
+# [
+#   {"name": "file.txt", "kind": "f", "size": 1024, "comp_size": 512, "modified": "2024-01-15 14:30:00"},
+#   {"name": "subdir", "kind": "d", "size": 0, "comp_size": null, "modified": "2024-01-15 14:25:00"}
+# ]
+```
+
+```rust
+let target = session.resolve_path("/data")?;
+let entries = session.list_dir(target)?;
+for e in entries {
+    let inode = session.read_inode(e.inode)?;
+    println!("{}  {}  {}", e.name, inode.size, if inode.mode == FileType::Directory { "d" } else { "f" });
 }
 ```
 
-### Decision Logic (simplified from `plan_write_prepared`)
-
-<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Parse error on line 2: ...te_data_with_filters(inode_id, offset, d Expecting 'SQE', 'DOUBLECIRCLEEND', 'PE', '-)', 'STADIUMEND', 'SUBROUTINEEND', 'PIPE', 'CYLINDEREND', 'DIAMOND_STOP', 'TAGEND', 'TRAPEND', 'INVTRAPEND', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got 'PS' -->
-```text
-flowchart TD
-    A[write_data_with_filters(inode_id, offset, data, mode, filter)] --> B{is_full_overwrite?}
-    B -->|offset==0 AND (size==0 OR data.len>=size OR transformed)| C[FullOverwrite]
-    B -->|NO| D{transformed?}
-    D -->|compressed OR encrypted OR filtered| E{may_append_zstd_frame?}
-    E -->|offset==size AND unencrypted AND no filter| F[CompressedAppend]
-    E -->|otherwise| G[Recompress]
-    D -->|plain uncompressed| H[Raw]
-```
-
-#### Case Details
-
-| Case | When | Behavior |
-|------|------|----------|
-| **FullOverwrite** | `offset == 0` and (empty file, new data ≥ old size, or payload is transformed) | Build new payload (filter → compress → encrypt) from `data`; free all old blocks; write new blocks from 0. |
-| **CompressedAppend** | Appending at EOF (`offset == size`) to a **compressed, unencrypted, unfiltered** file with reasonable frame overhead (`compressed_size ≤ size + size/4 + 4KB`) | Compress `data` as independent Zstd frame; append to physical stream; **no decompression of existing data**. |
-| **Recompress** | Transformed file (compressed/encrypted/filtered) but not eligible for `CompressedAppend` | Read full decoded content (via `read_data_internal`), splice `data` at `offset`, rebuild full payload (filter → compress → encrypt), rewrite from 0. |
-| **Raw** | Uncompressed, unencrypted, unfiltered file | Direct `memcpy` into existing/allocated blocks (sparse holes zero-filled). Borrows caller's slice (`Cow::Borrowed`). |
-
-> **Key invariant:** A transformed payload (compressed, encrypted, or filtered) is **always a single contiguous blob covering the entire logical file**. It can never be patched in-place — any write that isn't a pure raw append must rebuild the whole payload (`Recompress` or `FullOverwrite`).
+**Details:** Returns `Vec<DirectoryEntry>` (`inode`, `hash`, `name`). If the directory's `DirIndex` cache is `complete`, results are served from memory without disk reads. First `ls` on a cold directory triggers a full scan and promotes the index to `complete`.
 
 ---
 
-## Read Operations
-
-### `read_data(inode_id) → Vec<u8>`
-
-Returns the **fully decoded** file contents (decrypted, decompressed, unfiltered). Used by `get`, `append`, `truncate` on transformed files, and internal rebuild paths.
-
-**Fast paths:**
-- **Zero-copy mmap** for unencrypted, compressed, contiguous files on `IoBackend::Mmap` (memcpy single slice → Zstd decompress in-place).
-- **Decoded blob cache** (≤ 16 MiB): caches fully decoded content keyed by `(inode_id, inode_version)`. Subsequent `read_at` on the same file hit the cache instead of full-file decode.
-
-### `read_at(inode_id, file_offset, buf) → usize`
-
-Positional read into caller-provided buffer. **Coalesces physically contiguous block runs** into extents.
-
-<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Parse error on line 5: ...-> E[io_engine.read(ReadTarget{buf, ext Expecting 'SQE', 'DOUBLECIRCLEEND', 'PE', '-)', 'STADIUMEND', 'SUBROUTINEEND', 'PIPE', 'CYLINDEREND', 'DIAMOND_STOP', 'TAGEND', 'TRAPEND', 'INVTRAPEND', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got 'PS' -->
-```text
-flowchart LR
-    A[read_at] --> B{IoBackend?}
-    B -->|Mmap| C[walk_payload_blocks → memcpy from mmap]
-    B -->|Pread/IoUring| D[walk_payload_blocks → build ExtentList]
-    D --> E[io_engine.read(ReadTarget{buf, extents})]
-```
-
-- For **transformed files** (compressed/encrypted): falls back to decoded blob cache (≤ 16 MiB) or full `read_data_internal` decode.
-- For **seekable 64K chunked files**: decompresses only the affected 64 KiB chunks.
-- Sparse holes are zero-filled immediately.
-
-### `read_at_batch(requests: &mut [ReadRequest]) → Vec<Result<usize, Error>>`
-
-**Batched positional reads under a single read lock.** Critical for `IoBackend::IoUring`: all extents from all requests are submitted in **one ring submission**, letting the device reorder and execute them concurrently.
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant DiskManager
-    participant IoEngine
-
-    Client->>DiskManager: read_at_batch([req1, req2, req3])
-    DiskManager->>DiskManager: acquire inner.read()
-    loop each request
-        DiskManager->>DiskManager: read_at_prepare → ExtentList (or direct mmap copy)
-    end
-    DiskManager->>IoEngine: read(&[ReadTarget{buf1, ext1}, {buf2, ext2}, ...])
-    IoEngine-->>DiskManager: all I/O complete
-    DiskManager-->>Client: [Ok(n1), Ok(n2), Err(e3)...]
-```
-
-- Compressed/encrypted requests are decoded individually (cannot be batched at payload level).
-- If the batched engine call fails, **all requests that depended on it** receive the same I/O error.
-
----
-
-## Operation Reference
-
-All operations are methods on `OifsSession` (and `DiskManager`). The table shows the Direct implementation; Remote mode sends the corresponding `IpcRequest` and awaits `IpcResponseData`.
-
-| Operation | Direct Path (`DiskManager`) | Remote IPC Request | Key Behaviors |
-|-----------|-----------------------------|---------------------|---------------|
-| **create_file(parent, name)** | `create_entry_internal(parent, name, File)` | `CreateFile { parent_inode_id, name }` | Validates name; allocates inode + 0 blocks; inserts dir entry; updates parent mtime. |
-| **create_directory(parent, name)** | `create_entry_internal(parent, name, Directory)` | `CreateDirectory { parent_inode_id, name }` | Allocates inode; initializes empty dir block; inserts dir entry. |
-| **lookup(parent, name)** | `dir_lookup` (uses `DirIndex` cache) | `Lookup { parent_inode_id, name }` | O(1) when cache `complete`; otherwise cold scan + cache promotion. |
-| **open_file(parent, name, mode)** | Dispatches to `lookup` / `create_file` / `create_or_open_file` | Same as above per mode | `OpenExisting`/`CreateNew`/`CreateOrOpen` (POSIX-like). |
-| **read_data(inode_id)** | `read_data_internal` (full decode) | `ReadData { inode_id }` | Returns decoded `Vec<u8>`; uses blob cache for transformed files. |
-| **read_at(inode_id, offset, buf)** | `read_at_prepare` + `io_engine.read` | `ReadAt { inode_id, file_offset, len }` | Coalesced extents; sparse holes zeroed; chunked for 64K seekable. |
-| **read_at_batch(requests)** | Single lock, single engine submission | N/A (batched locally on Master) | See batch flow above. |
-| **write_data(inode_id, offset, data, mode)** | `write_data_with_filters(..., FilterConfig::none())` | `WriteData { inode_id, file_offset, data, compression_mode, filter_config }` | Three-stage pipeline (inspect → CPU → commit). |
-| **write_data_with_filters(...)** | Full pipeline with custom `FilterConfig` | Same | Delta/shuffle/bitshuffle pre-filters + Zstd + XChaCha20-Poly1305. |
-| **truncate(inode_id, new_size)** | `truncate_internal` (cases: chunked, transformed, raw expand/shrink) | `Truncate { inode_id, new_size }` | Shrinks: frees blocks + zeroes slack. Expands: sparse (raw) or zero-padded (transformed). |
-| **delete_file(parent, name)** | Two-stage: read-lock resolve → write-lock commit (WAL or in-place) | `DeleteFile { parent_inode_id, name }` | Validates non-empty dir; compacts dir block; frees inode + blocks; invalidates caches. |
-| **list_dir(dir_inode_id)** | Returns `DirIndex` entries if `complete`; else scans blocks + promotes | `ListDir { dir_inode_id }` | Decrypts filenames on encrypted FS; promotes cache to `complete`. |
-| **resolve_path(path)** | Iterative `lookup` from root | `ResolvePath { path }` | Splits on `/`; validates each component. |
-| **resolve_parent(path)** | `resolve_path` on parent component | `ResolveParent { path }` | Returns `(parent_inode_id, filename)`. |
-| **flush()** | `sync_mutation_ranges` (range-based) or full `msync`; drains WAL | `Flush` | Single-flusher mutex; snapshots journal head before flush; reclaims WAL up to snapshot. |
-
----
-
-## Mermaid Sequence: `create_file` (Direct vs Remote)
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant CLI as oifs CLI
-    participant Session as OifsSession
-    participant DM as DiskManager
-    participant IPC as IpcServer
-    participant Net as Network/UDS
-
-    rect rgb(240, 248, 255)
-    note right of User: DIRECT MODE (Standalone / Master)
-    User->>CLI: oifs -i fs.img put file.txt
-    CLI->>Session: OifsSession::open(image) → Direct{dm}
-    Session->>DM: resolve_parent("file.txt") → (parent_id, "file.txt")
-    DM->>DM: lookup(parent, "file") → NotFound
-    DM->>DM: create_file(parent, "file") → inode_id
-    DM->>DM: write_data_with_filters(inode_id, 0, data, Auto, none)
-    DM-->>Session: Ok(inode_id)
-    Session-->>CLI: Ok(())
-    CLI-->>User: "Imported 'file.txt'"
-    end
-
-    rect rgb(255, 248, 240)
-    note right of User: REMOTE MODE (Client)
-    User->>CLI: oifs -i fs.img --ipc put file.txt
-    CLI->>Session: OifsSession::open(image) → Remote{client}
-    Session->>Net: connect to Master (UDS/TCP)
-    Net->>IPC: accept → spawn worker
-    Session->>Net: send(IpcRequest::ResolveParent{path})
-    Net->>IPC: recv → handle_request
-    IPC->>DM: resolve_parent("file.txt") → (parent_id, "file.txt")
-    DM-->>IPC: Ok((parent_id, name))
-    IPC->>Net: send(IpcResponse::Success(ResolveParent{...}))
-    Net->>Session: recv → Ok((parent_id, name))
-    Session->>Net: send(IpcRequest::CreateFile{parent_id, name})
-    Net->>IPC: recv → handle_request
-    IPC->>DM: create_file(parent, "file") → inode_id
-    DM-->>IPC: Ok(inode_id)
-    IPC->>Net: send(IpcResponse::Success(InodeId(inode_id)))
-    Net->>Session: recv → Ok(inode_id)
-    Session->>Net: send(IpcRequest::WriteData{inode_id, 0, data, Auto, none})
-    Net->>IPC: recv → handle_request
-    IPC->>DM: write_data_with_filters(...)
-    DM-->>IPC: Ok(())
-    IPC->>Net: send(IpcResponse::Success(Unit))
-    Net->>Session: recv → Ok(())
-    Session-->>CLI: Ok(())
-    CLI-->>User: "Imported 'file.txt'"
-    end
-```
-
----
-
-## Error Handling & Invariants
-
-| Invariant | Enforced By |
-|-----------|-------------|
-| **No partial payload on crash** | Journaled images: payload staged in free blocks → `msync` payload → commit metadata transaction → apply. Non-journaled: range-based `msync` on bitmap + inode + data blocks. |
-| **Transformed payload = whole file** | `payload_is_transformed` check in `plan_write_prepared`; any write to compressed/encrypted/filtered file takes `FullOverwrite` or `Recompress` path. |
-| **Directory index consistency** | `create_file`/`delete_file` invalidate parent cache (`may_have_holes`, `tail_offset`, remove `stored`/`plain` entry) and `dir_cache.remove(target_inode_id)`. |
-| **Encrypted FS: no plaintext injection** | `read_data_internal` / `read_at_with_inode` reject non-empty file with `!inode.encrypted` on encrypted superblock. |
-| **Inode ID bounds** | `inode_slot_range` validates `inode_id < usable_inode_count` before any slot access. |
-| **Single flusher** | `sync_mutex` ensures only one `flush()` runs `msync` at a time. |
-
----
-
-## Example Workflow (CLI)
+### `stat` — Inspect Inode Metadata
 
 ```bash
-# 1. Create encrypted image (Master starts automatically with --ipc)
-oifs -i project.img create --size 20 --encrypt --ipc
-
-# 2. In another terminal, attach as client (auto-detects Master)
-oifs -i project.img --ipc mkdir src docs
-
-# 3. Import with auto filter selection
-oifs -i project.img --ipc put --filter auto ./data.bin src/data.bin
-
-# 4. Positional read (uses read_at_batch internally for parallel cold reads)
-oifs -i project.img --ipc get src/data.bin /tmp/out.bin
-
-# 5. Append to compressed file (CompressedAppend fast path)
-oifs -i project.img --ipc append src/data.bin "extra"
-
-# 6. Defragment & verify
-oifs -i project.img --ipc defrag
-oifs -i project.img --ipc fsck
+# CLI
+oifs -i disk.img stat /file.txt
+oifs -i disk.img stat /           # root directory
+oifs -i disk.img --json stat /file.txt
+# {
+#   "ok": true,
+#   "path": "/file.txt",
+#   "inode": 123,
+#   "kind": "file",
+#   "size": 1024,
+#   "compressed_size": 512,
+#   "encrypted": false,
+#   "seekable_64k": false,
+#   "created": "2024-01-15 14:30:00",
+#   "modified": "2024-01-15 14:35:00"
+# }
 ```
+
+```rust
+let inode_id = session.resolve_path("/file.txt")?;
+let inode = session.read_inode(inode_id)?;
+println!("inode: {}, size: {}, compressed: {}, encrypted: {}",
+    inode_id, inode.size, inode.compressed_size, inode.encrypted);
+```
+
+**Details:** Reads the on-disk inode record. Shows logical size (`size`), compressed on-disk size (`compressed_size`, 0 if uncompressed), encryption flag, seekable-64K flag, timestamps.
 
 ---
 
-*This workflow covers the core responsibilities, data/control flow, and invariants for basic file/directory operations. For advanced features (filter analysis, migration, background auto-defrag), see the CLI reference and architecture pages.*
+### `rm` — Delete File or Directory
+
+```bash
+# CLI (fails on non-empty directory unless --recursive)
+oifs -i disk.img rm /file.txt
+oifs -i disk.img rm /empty_dir
+oifs -i disk.img rm /non_empty_dir --recursive
+oifs -i disk.img --json rm /file.txt
+# {"ok": true, "removed": "/file.txt", "inode": 123, "recursive": false}
+```
+
+```rust
+let (parent, name) = session.resolve_parent("/file.txt")?;
+let target = session.lookup(parent, &name)?;
+let inode = session.read_inode(target)?;
+
+if inode.mode == FileType::Directory {
+    // Check empty (or recursively delete contents)
+    let entries = session.list_dir(target)?;
+    if !entries.is_empty() {
+        // Implement recursive traversal or error
+    }
+}
+session.delete_file(parent, &name)?;
+session.flush()?;
+```
+
+**Details:** `delete_file` removes the directory entry, frees the target inode and all its data blocks, and invalidates parent & target `DirIndex` cache entries. Journaled images commit via WAL; legacy images write in-place. Root directory deletion is refused.
+
+---
+
+### `truncate` — Resize a File
+
+```bash
+# CLI (size in bytes)
+oifs -i disk.img truncate /file.txt --size 0        # empty the file
+oifs -i disk.img truncate /file.txt --size 1048576  # extend to 1 MiB (sparse for raw)
+oifs -i disk.img truncate /file.txt --size 500      # shrink
+oifs -i disk.img --json truncate /file.txt --size 0
+# {"ok": true, "path": "/file.txt", "size": 0}
+```
+
+```rust
+session.truncate_path("/file.txt", 0)?;       // by path
+session.truncate(inode_id, 1048576)?;         // by inode ID
+session.flush()?;
+```
+
+**Details:**
+
+| Case | Behavior |
+|------|----------|
+| **Shrink (raw)** | Frees whole blocks beyond new size; zeros trailing slack in last surviving block. Prunes empty indirect blocks. |
+| **Extend (raw)** | Sparse extension — new logical blocks read as zero until written. No data blocks allocated. |
+| **Compressed / Encrypted / Filtered** | Reads full decoded content, resizes in memory, re-encodes from offset 0 (whole-file rewrite). |
+| **Seekable 64K** | Special chunked path that can truncate individual chunks without full recompression. |
+
+---
+
+## JSON Output Mode (`--json`)
+
+All subcommands emit structured JSON on success or `{"ok": false, "error": "..."}` on failure. Stdout is pure JSON (no prompts, no ANSI).
+
+| Subcommand | Success Schema |
+|------------|----------------|
+| `create` | `{"ok": true, "message": "...", "journal": boolean}` |
+| `put` | `{"ok": true, "inode": <u64>, "bytes": <usize>}` |
+| `get` | `{"ok": true, "bytes": <usize>, "dest": "<path>"}` |
+| `cat` | `{"ok": true, "path": "...", "bytes": <usize>, "content": "<utf8_lossy>"}` |
+| `append` | `{"ok": true, "inode": <u64>, "total_bytes": <usize>}` |
+| `mkdir` | `{"ok": true, "inode": <u64>}` |
+| `rm` | `{"ok": true, "removed": "<path>", "inode": <u64>, "recursive": boolean}` |
+| `ls` | Array of `{"name": "...", "kind": "f\|d", "size": <u64>, "comp_size": <u64|null>, "modified": "YYYY-MM-DD HH:MM:SS"}` |
+| `stat` | `{"ok": true, "path": "...", "inode": <u64>, "kind": "file\|directory", "size": <u64>, "compressed_size": <u64>, "encrypted": <bool>, "seekable_64k": <bool>, "created": "...", "modified": "..."}` |
+| `info` | `{"ok": true, "image": "...", "block_size": <u32>, "block_count": <u64>, "total_bytes": <u64>, "inode_count": <u64>, "data_block_start": <u64>, "format_version": <u32>, "encrypted": <bool>, "journaled": <bool>, "read_only": <bool>}` |
+| `truncate` | `{"ok": true, "path": "...", "size": <u64>}` |
+
+---
+
+## Flush / Persistence
+
+```bash
+# CLI: most mutating commands auto-flush; explicit flush not exposed as subcommand
+# But you can ensure durability via:
+oifs -i disk.img --json info   # forces session flush in CLI
+```
+
+```rust
+// Session API
+session.flush()?;   // blocks until msync/WAL checkpoint completes
+```
+
+**Details:** `flush()` acquires a global `sync_mutex` to serialize flushes, snapshots the WAL head, calls `sync_journal_region` (WAL first!), then `backing.flush()`. On journaled images, it checkpoints the WAL up to the snapshot head after the data flush. In Remote mode, `IpcRequest::Flush` is forwarded to the Master.
+
+---
+
+## Directory Index Caching (`DirIndex`)
+
+OIFS maintains a sharded, thread-safe `DirIndex` cache mapping `dir_inode_id → DirIndex`. Each index stores:
+
+| Field | Purpose |
+|-------|---------|
+| `complete: bool` | `true` once all on-disk entries are in `stored` (and `plain` on encrypted FS). Hits/misses are O(1). |
+| `cold_scans: u32` | After 8 cold scans, a full directory scan promotes the index to `complete`. |
+| `stored: HashMap<String, (inode, phys_blk, hash)>` | On-disk (ciphertext on encrypted FS) name → location. |
+| `plain: HashMap<String, (inode, hash)>` | Plaintext name → location (encrypted FS only; avoids re-encryption on lookup). |
+| `tail_offset` | Cached append position for `create_file` fast path. |
+
+**Promotion:** `lookup` caches positive hits immediately. Negative lookups and `list_dir` trigger cold scans; after 8 scans the index becomes `complete`. `create_file`/`delete_file` invalidate the parent's cache (`may_have_holes`, `tail_offset`) and drop the target's index.
+
+---
+
+## Write Data Decision Tree (Advanced)
+
+`DiskManager::write_data_with_filters` selects one of four **WriteCase** variants in a lock-free Stage 1, then commits under exclusive lock in Stage 3:
+
+```text
+WriteCase::FullOverwrite      → replace entire payload from offset 0
+WriteCase::CompressedAppend   → append fresh Zstd frame to compressed stream (unencrypted, EOF, no filters)
+WriteCase::Recompress         → read-modify-rebuild: decode, splice, re-encode from 0
+WriteCase::Raw                → direct memcpy into existing/allocated blocks
+```
+
+**Stages:**
+1. **Stage 1 (shared read lock):** Inspect inode, resolve encryption/filters, decide `WriteCase`, build compressed/encrypted buffer (CPU-heavy).
+2. **Stage 2 (zero locks):** Filter → Zstd → XChaCha20-Poly1305 encryption (AAD binds to inode ID).
+3. **Stage 3 (exclusive write lock):** Allocate/free blocks, write buffer, update inode metadata, commit (WAL transaction on journaled images).
+
+Seekable 64K chunked files and encrypted partial upgrades use a separate chunked pipeline.
+
+---
+
+## Summary: CLI vs API Mapping
+
+| Operation | CLI Subcommand | Session API |
+|-----------|----------------|-------------|
+| Create image | `create` | `OifsSession::open_with_mode` / `open_journaled_with_mode` |
+| Import file | `put` | `create_file` + `write_data_with_filters` + `flush` |
+| Export file | `get` | `resolve_path` + `read_data` |
+| Print file | `cat` | `resolve_path` + `read_data` + write to stdout |
+| Append text | `append` | `lookup`/`create_file` + `read_data` + `write_data` + `flush` |
+| Create dir | `mkdir` | `resolve_parent` + `create_directory` + `flush` |
+| List dir | `ls` | `resolve_path` + `list_dir` |
+| Inspect metadata | `stat` | `resolve_path` + `read_inode` |
+| Delete | `rm` | `resolve_parent` + `lookup` + `delete_file` + `flush` |
+| Resize | `truncate` | `truncate_path` / `truncate` + `flush` |
+| Path → inode | (implicit) | `resolve_path` |
+| Path → parent+name | (implicit) | `resolve_parent` |
+
+All APIs work identically in Direct and Remote (IPC) modes.

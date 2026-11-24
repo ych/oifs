@@ -5,13 +5,13 @@ description: Pure-Rust FUSE ABI v7.28 implementation with frame parser/dispatche
 tags: [fuse, abi, kernel-protocol, mount, linux, macos, scm_rights, read-only, normalization, metadata-storm]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-22T10:29:12.696Z
+    at: 2026-11-23T20:55:55.458Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
   - id: openwiki-source-062270e1dcd4de6ec5011c98
     resource: repo://src/fuse.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-22T10:29:12.696Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
 ---
 
 # FUSE Kernel Protocol Engine
@@ -222,6 +222,62 @@ std::process::Command::new(&mount_helper)
     .spawn()
 ```
 
+## FUSE Mount Options
+
+`FuseMountOptions` configures the FUSE mount behavior:
+
+```rust
+pub struct FuseMountOptions {
+    pub read_only: bool,              // Enforce read-only (EROFS on mutations)
+    pub compression_mode: CompressionMode,
+    pub uid: u32,                     // Owner UID in FuseAttr
+    pub gid: u32,                     // Owner GID in FuseAttr
+    pub attr_ttl_secs: u64,           // attr_valid TTL
+    pub entry_ttl_secs: u64,          // entry_valid TTL
+    pub allow_other: bool,            // Pass allow_other mount option
+    pub abi_platform: FuseAbiPlatform, // Linux vs macOS wire layout
+    pub reject_macos_metadata: bool,  // Fast-reject .DS_Store, ._*, etc.
+    pub normalize_nfc: bool,          // NFD->NFC normalization
+    pub volname: Option<String>,      // macOS volume name
+    pub max_write: u32,               // Requested max_write (default 1 MiB)
+}
+```
+
+### Key Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `read_only` | `false` | Enforces `-EROFS` on all mutating ops |
+| `allow_other` | `false` | Adds `allow_other` to mount options |
+| `attr_ttl_secs` | `1` | Attribute cache TTL (`attr_valid`) |
+| `entry_ttl_secs` | `1` | Entry cache TTL (`entry_valid`) |
+| `reject_macos_metadata` | `true` | Reject Finder metadata files with `-ENOENT` |
+| `normalize_nfc` | `true` | Convert NFD filenames to NFC |
+| `max_write` | `1 MiB` | Negotiated with kernel at `FUSE_INIT` |
+
+### Attribute Caching
+
+The engine sets `attr_valid` and `entry_valid` from `FuseMountOptions`:
+
+- `attr_ttl_secs` (default 1s) → `FuseAttrOut.attr_valid` / `FuseEntryOut.attr_valid`
+- `entry_ttl_secs` (default 1s) → `FuseEntryOut.entry_valid`
+
+Cache invalidation is implicit: the kernel re-issues `GETATTR`/`LOOKUP` when TTL expires. No explicit invalidation API is implemented; the short TTL (1s default) ensures reasonable coherence.
+
+### Linux Mount Options (filtered)
+
+```text
+fsname=oifs,default_permissions,subtype=oifs[,ro][,allow_other]
+```
+
+Strips macOS-only options: `noappledouble`, `noapplexattr`, `volname`, `local`, `iosize`.
+
+### macOS Mount Options
+
+```text
+fsname=oifs,default_permissions,noappledouble,noapplexattr,local,iosize=<max_write>[,ro][,allow_other][,volname=<name>]
+```
+
 ## Dynamic `max_write` Negotiation
 
 The engine negotiates `max_write` during `FUSE_INIT` based on kernel capabilities and sysfs configuration.
@@ -383,6 +439,24 @@ pub fn removexattr(&self, dm: &DiskManager, nodeid: u64, _name: &str) -> Result<
 }
 ```
 
+## Inode-to-FUSE NodeID Mapping
+
+OIFS inode IDs are 0-based (root = 0), while FUSE node IDs are 1-based (root = `FUSE_ROOT_ID = 1`). The engine provides bijective mapping:
+
+```rust
+/// Maps an OIFS inode ID (0 = root) to a FUSE node ID (1 = FUSE_ROOT_ID).
+pub const fn inode_to_nodeid(inode_id: u64) -> Option<u64> {
+    inode_id.checked_add(1)
+}
+
+/// Maps a FUSE node ID (1 = FUSE_ROOT_ID) back to an OIFS inode ID (0 = root).
+pub const fn nodeid_to_inode(nodeid: u64) -> Option<u64> {
+    if nodeid == 0 { None } else { Some(nodeid - 1) }
+}
+```
+
+**Generation numbers** are always set to 0 in `FuseEntryOut` since OIFS doesn't use generation-based invalidation.
+
 ## UTF-8 NFD → NFC Normalization
 
 macOS APFS and Finder store filenames in **NFD** (decomposed) form, while Linux and OIFS directory indices expect **NFC** (composed). The engine normalizes on ingress when `FuseMountOptions::normalize_nfc = true` (default):
@@ -485,103 +559,91 @@ pub fn removexattr(...) -> Result<(), i32> { Err(-libc::ENOTSUP) }
 
 **Why `-ENOTSUP`?** macOS Finder treats `-ENOSYS` (not implemented) and `-EINVAL` (invalid argument) as "try harder" signals and retries with different parameters. `-ENOTSUP` (operation not supported on this filesystem) cleanly terminates the storm.
 
-## Mount Option Generation
+## FUSE Request Flow Diagram
 
-`FuseMountOptions::build_mount_options_for_os` produces OS-filtered `-o` strings:
+```mermaid
+flowchart TD
+    subgraph Kernel["Kernel FUSE Module"]
+        K1["FUSE Request\n(lookup, getattr, read, write, ...)"]
+        K2["FUSE Reply"]
+    end
 
-### Linux Options
-```text
-fsname=oifs,default_permissions,subtype=oifs[,ro][,allow_other]
+    subgraph OIFS["OIFS FUSE Engine"]
+        D1["dispatch_frame_for_platform\n(buf: &[u8])"]
+        D2["FuseInHeader::parse\nValidate len, opcode, payload"]
+        D3["Match FuseOpcode"]
+        
+        H1["Lookup\n→ dm.lookup()\n→ build_entry_out"]
+        H2["Getattr\n→ dm.read_inode()\n→ build_attr_out"]
+        H3["Open/Create\n→ handle insert\n→ FuseOpenOut"]
+        H4["Read\n→ dm.read_at()\n→ return data"]
+        H5["Write\n→ dm.write_data()\n→ return written"]
+        H6["Readdir\n→ dm.list_dir()\n→ encode dirents"]
+        H7["Setattr\n→ dm.truncate()\n→ build_attr_out"]
+        H8["Mkdir/Unlink/Rmdir/Rename\n→ dm mutations\n→ EROFS if read-only"]
+        H9["Fsync/Flush\n→ dm.flush()/flush_async()"]
+        H10["Statfs\n→ dm.superblock() +\n  analyze_fragmentation()"]
+        H11["Access\n→ check read-only + W_OK"]
+        H12["Setxattr/Getxattr/Listxattr/Removexattr\n→ ENOTSUP / EROFS"]
+        H13["Init\n→ negotiate_max_write()\n→ FuseInitOut"]
+        H14["Destroy\n→ handle_table.clear()\n→ dm.flush()"]
+        H15["Forget/BatchForget\n→ no reply (empty Vec)"]
+    end
+
+    K1 -->|raw frame| D1
+    D1 --> D2
+    D2 --> D3
+    D3 --> H1
+    D3 --> H2
+    D3 --> H3
+    D3 --> H4
+    D3 --> H5
+    D3 --> H6
+    D3 --> H7
+    D3 --> H8
+    D3 --> H9
+    D3 --> H10
+    D3 --> H11
+    D3 --> H12
+    D3 --> H13
+    D3 --> H14
+    D3 --> H15
+    
+    H1 -->|FuseEntryOut| K2
+    H2 -->|FuseAttrOut| K2
+    H3 -->|FuseOpenOut| K2
+    H4 -->|data bytes| K2
+    H5 -->|FuseWriteOut| K2
+    H6 -->|dirent stream| K2
+    H7 -->|FuseAttrOut| K2
+    H8 -->|OK / errno| K2
+    H9 -->|OK / errno| K2
+    H10 -->|FuseKStatfs| K2
+    H11 -->|OK / errno| K2
+    H12 -->|ENOTSUP / EROFS| K2
+    H13 -->|FuseInitOut| K2
+    H14 -->|OK| K2
+    H15 -.->|no reply| K2
 ```
-- Strips macOS-only options (`noappledouble`, `noapplexattr`, `volname`, `local`, `iosize`)
 
-### macOS Options
-```text
-fsname=oifs,default_permissions,noappledouble,noapplexattr,local,iosize=<max_write>[,ro][,allow_other][,volname=<name>]
-```
-- `noappledouble` / `noapplexattr`: disable AppleDouble/EA handling in macFUSE
-- `local`: marks as local filesystem (disables network filesystem heuristics)
-- `iosize`: sets I/O chunk size to negotiated `max_write`
-- `volname`: sets volume display name in Finder sidebar
+## macOS vs Linux Differences Summary
 
-## VFS Facade: High-Level API
+| Aspect | Linux | macOS |
+|--------|-------|-------|
+| **Device** | `/dev/fuse` | `/dev/macfuseN` or `/dev/osxfuseN` |
+| **Mount helper** | `fusermount3` / `fusermount` | `mount_macfuse` / `mount_osxfuse` |
+| **ABI layout** | `FuseAbiPlatform::Linux` | `FuseAbiPlatform::MacOs` |
+| **FuseAttr size** | 88 bytes | 104 bytes (+crtime, flags) |
+| **xattr header** | 8 bytes | 16 bytes (+position) |
+| **Mount options** | `subtype=oifs` | `noappledouble,noapplexattr,local,iosize,volname` |
+| **Max write** | Negotiated via `max_pages_limit` | `BIG_WRITES` flag, `iosize=` option |
+| **Unmount** | `fusermount3 -u`, `umount` | `umount`, `diskutil unmount` |
+| **Metadata storm** | Filtered by `reject_macos_metadata` | Same + `-ENOTSUP` for xattr |
 
-`OifsFuseFs` wraps `OifsFuseState + Arc<DiskManager>` and exposes typed methods matching FUSE ops:
-
-```rust
-pub struct OifsFuseFs {
-    dm: Arc<DiskManager>,
-    state: OifsFuseState,
-}
-
-impl OifsFuseFs {
-    // Binary frame dispatcher (used by serve_fuse_fd, serve_stream, tests)
-    pub fn dispatch_frame(&self, request: &[u8]) -> Vec<u8>;
-    pub fn dispatch_frame_for_platform(&self, request: &[u8], platform: FuseAbiPlatform) -> Vec<u8>;
-
-    // High-level VFS API (used by FFI, tests, IPC)
-    pub fn lookup(&self, parent: u64, name: &str) -> Result<FuseEntryOut, i32>;
-    pub fn getattr(&self, nodeid: u64) -> Result<FuseAttrOut, i32>;
-    pub fn mkdir(&self, parent: u64, name: &str, mode: u32) -> Result<FuseEntryOut, i32>;
-    pub fn create(&self, parent: u64, name: &str, flags: u32, mode: u32) -> Result<(FuseEntryOut, FuseOpenOut), i32>;
-    pub fn read(&self, nodeid: u64, fh: u64, offset: u64, size: u32) -> Result<Vec<u8>, i32>;
-    pub fn write(&self, nodeid: u64, fh: u64, offset: u64, data: &[u8], flags: u32) -> Result<u32, i32>;
-    // ... unlink, rmdir, rename, open, opendir, readdir, statfs, access, xattr, etc.
-}
-```
-
-## Formal Verification (Kani)
+## Kani Formal Verification
 
 The engine includes Kani proofs for critical invariants:
 
-```rust
-#[cfg(kani)]
-mod kani_proofs {
-    /// Bijection: inode_id <-> nodeid (root 0 <-> 1, 0 invalid)
-    #[kani::proof]
-    fn proof_fuse_nodeid_inode_bijection_and_root_mapping() { ... }
-
-    /// fuse_dirent_align: 8-byte alignment, no overflow for name_len <= 255
-    #[kani::proof]
-    fn proof_fuse_dirent_align_and_record_bounds() { ... }
-
-    /// FuseInHeader::parse: never panics, rejects len < 40, rejects mismatched len
-    #[kani::proof]
-    fn proof_fuse_frame_header_parse_no_panic_and_bounds() { ... }
-}
-```
-
-## Integration Points
-
-| Component | Role |
-|-----------|------|
-| `DiskManager` | Single source of truth for on-disk state; all FUSE ops delegate to it |
-| `FuseMountOptions` | Configures ABI platform, read-only, normalization, metadata filtering, `max_write` |
-| `OifsFuseState` | Protocol state (handles, parent map, init/destroy flags) — reusable by FFI |
-| `OifsFuseFs` | High-level wrapper owning `Arc<DiskManager>`; used by CLI mount, IPC, FFI |
-| `src/bin/oifs.rs` | CLI `mount` subcommand — opens image, builds options, calls `mount()` |
-| `include/oifs.h` / `src/ffi.rs` | C FFI exposes `OIFSHandle`, `oifs_is_read_only`; FUSE not directly exposed |
-
-## Failure Modes & Invariants
-
-| Scenario | Behavior |
-|----------|----------|
-| Truncated frame (`len < 40`) | `-EINVAL` response |
-| Declared `len` ≠ `buf.len()` | `-EINVAL` response |
-| Unsupported opcode | `-ENOSYS` response |
-| Read-only mount + mutating op | `-EROFS` response, **zero disk writes** |
-| `ENODEV` / EOF on `/dev/fuse` | Clean `Ok(())` exit from `serve_fuse_fd` |
-| `FUSE_DESTROY` received | `handles.clear()`, `dm.flush()` if not read-only, exit loop |
-| macOS FUSE backend missing | Clear error: install macFUSE or use `serve_fuse_fd` / `dispatch_frame` |
-| `normalize_nfc` + invalid UTF-8 | `-EINVAL` at parse_fuse_name (NUL-terminated) |
-
-## Extension Points
-
-1. **Custom `FuseAbiPlatform`**: Embedders can call `dispatch_frame_for_platform` with `Linux` or `MacOs` for cross-platform testing.
-2. **`FuseMountOptions` tuning**: `max_write`, `attr_ttl_secs`, `entry_ttl_secs`, `reject_macos_metadata`, `normalize_nfc`, `volname`.
-3. **Alternative transports**: `serve_fuse_fd` (packet device), `serve_stream` (Unix stream), `dispatch_frame` (in-process).
-4. **FFI reuse**: `OifsFuseState` can be embedded in C-compatible handles that already own a `DiskManager`.
-
----
-
-*This page documents the FUSE kernel protocol engine as implemented in `src/fuse.rs` (4332 lines), with mount runners in `src/bin/oifs.rs` and read-only semantics rooted in `src/disk.rs::DiskManager::is_read_only()`.*
+- **NodeID bijection**: `inode_to_nodeid` / `nodeid_to_inode` form a strict bijection; root (0) maps to `FUSE_ROOT_ID (1)`; invalid FUSE nodeid 0 is rejected.
+- **Dirent alignment**: `fuse_dirent_align(24 + name_len)` always produces a multiple of 8, ≥ unaligned size, < unaligned + 8.
+- **Frame header parsing**: `FuseInHeader::parse` never panics; rejects buffers < 40 bytes; rejects length mismatches.

@@ -2884,6 +2884,7 @@ impl OifsFuseState {
         dm.delete_file(parent_inode, name.as_ref())
             .map_err(|e| disk_error_to_errno(&e))?;
         self.handles.invalidate_inode(target_inode_id);
+        self.forget_parent(target_inode_id);
         Ok(())
     }
 
@@ -3123,7 +3124,10 @@ impl OifsFuseState {
 
     pub fn flush(&self, dm: &DiskManager, nodeid: u64, fh: u64) -> Result<(), i32> {
         if fh != 0 {
-            let _ = self.handles.get(fh).ok_or(-libc::EBADF)?;
+            let handle = self.handles.get(fh).ok_or(-libc::EBADF)?;
+            if (handle.flags as libc::c_int & libc::O_ACCMODE) == libc::O_RDONLY {
+                return Ok(());
+            }
         } else {
             let _ = self.resolve_file_inode(dm, nodeid)?;
         }
@@ -3204,51 +3208,67 @@ impl OifsFuseState {
         let mut dir_entries = dm.list_dir(inode_id).map_err(|e| disk_error_to_errno(&e))?;
         dir_entries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.inode.cmp(&b.inode)));
 
-        let mut all = Vec::with_capacity(dir_entries.len() + 2);
-        all.push(FuseDirEntry {
-            ino: dir_nodeid,
-            off: 1,
-            file_type: FUSE_DT_DIR,
-            name: ".".to_string(),
-        });
-        all.push(FuseDirEntry {
-            ino: parent_nodeid,
-            off: 2,
-            file_type: FUSE_DT_DIR,
-            name: "..".to_string(),
-        });
-        for (idx, entry) in dir_entries.into_iter().enumerate() {
-            let child_nodeid = inode_to_nodeid(entry.inode).ok_or(-libc::EOVERFLOW)?;
-            let file_type = match dm.read_inode(entry.inode) {
-                Ok(child_inode) if child_inode.mode == FileType::Directory => {
-                    self.record_parent(entry.inode, inode_id);
-                    FUSE_DT_DIR
-                }
-                _ => FUSE_DT_REG,
-            };
-            all.push(FuseDirEntry {
-                ino: child_nodeid,
-                off: (idx as u64) + 3,
-                file_type,
-                name: entry.name,
-            });
-        }
-
         let start = usize::try_from(offset).unwrap_or(usize::MAX);
-        if start >= all.len() || max_bytes == 0 {
+        let total_entries = dir_entries.len().saturating_add(2);
+        if max_bytes == 0 || start >= total_entries {
             return Ok(Vec::new());
         }
 
         let budget = max_bytes as usize;
         let mut used = 0usize;
         let mut page = Vec::new();
-        for entry in all.into_iter().skip(start) {
-            let rec_len = entry.wire_len();
+
+        if start == 0 {
+            let dot = FuseDirEntry {
+                ino: dir_nodeid,
+                off: 1,
+                file_type: FUSE_DT_DIR,
+                name: ".".to_string(),
+            };
+            let rec_len = dot.wire_len();
+            if used.saturating_add(rec_len) > budget {
+                return Ok(page);
+            }
+            used += rec_len;
+            page.push(dot);
+        }
+        if start <= 1 {
+            let dotdot = FuseDirEntry {
+                ino: parent_nodeid,
+                off: 2,
+                file_type: FUSE_DT_DIR,
+                name: "..".to_string(),
+            };
+            let rec_len = dotdot.wire_len();
+            if used.saturating_add(rec_len) > budget {
+                return Ok(page);
+            }
+            used += rec_len;
+            page.push(dotdot);
+        }
+
+        let child_start = start.saturating_sub(2);
+        let sess = dm.begin_read();
+        for (idx, entry) in dir_entries.into_iter().enumerate().skip(child_start) {
+            let rec_len = fuse_dirent_align(FUSE_DIRENT_HEADER_SIZE + entry.name.len());
             if used.saturating_add(rec_len) > budget {
                 break;
             }
+            let child_nodeid = inode_to_nodeid(entry.inode).ok_or(-libc::EOVERFLOW)?;
+            let file_type = match sess.read_inode(entry.inode) {
+                Ok(child_inode) if child_inode.mode == FileType::Directory => {
+                    self.record_parent(entry.inode, inode_id);
+                    FUSE_DT_DIR
+                }
+                _ => FUSE_DT_REG,
+            };
             used += rec_len;
-            page.push(entry);
+            page.push(FuseDirEntry {
+                ino: child_nodeid,
+                off: (idx as u64) + 3,
+                file_type,
+                name: entry.name,
+            });
         }
         Ok(page)
     }

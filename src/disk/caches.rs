@@ -51,6 +51,26 @@ impl ChunkReadCache {
         Some(available)
     }
 
+    #[inline]
+    pub(crate) fn copy_slice_to_vec_if_hit(
+        &self,
+        inode_id: u64,
+        chunk_idx: usize,
+        raw_entry: u64,
+        valid_len: usize,
+        in_chunk_offset: usize,
+        max_len: usize,
+    ) -> Option<Vec<u8>> {
+        let key = (inode_id, chunk_idx, raw_entry, valid_len);
+        let data = self
+            .entries
+            .iter()
+            .rev()
+            .find_map(|(k, v)| if *k == key { Some(v) } else { None })?;
+        let available = data.len().saturating_sub(in_chunk_offset).min(max_len);
+        Some(data[in_chunk_offset..in_chunk_offset + available].to_vec())
+    }
+
     pub(crate) fn insert(
         &mut self,
         inode_id: u64,

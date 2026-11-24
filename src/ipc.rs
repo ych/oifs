@@ -1460,13 +1460,8 @@ impl IpcServer {
 
 impl Drop for IpcServer {
     fn drop(&mut self) {
-        let start = std::time::Instant::now();
-        while self.active_peers.load(Ordering::SeqCst) > 0
-            && start.elapsed() < Duration::from_millis(1500)
-        {
-            thread::sleep(Duration::from_millis(10));
-        }
-
+        // Signal worker and accept threads to shut down immediately so idle peer
+        // poll loops exit within a single 50ms tick instead of stalling for 1.5s.
         self.shutdown_signal.store(true, Ordering::SeqCst);
         if let Some(thread) = self.server_thread.take() {
             let _ = thread.join();

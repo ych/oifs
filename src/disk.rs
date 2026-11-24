@@ -7593,8 +7593,11 @@ impl DiskManager {
         let src_inode = Self::read_inode_internal(guard, src_inode_id)?;
 
         // Prevent moving a directory into itself or any of its descendants.
+        // Skip BFS completely when renaming within the same parent unless moving into self.
         if src_inode.mode == crate::inode::FileType::Directory
-            && Self::is_ancestor_dir(guard, src_inode_id, new_parent_inode_id)?
+            && (src_inode_id == new_parent_inode_id
+                || (!same_parent
+                    && Self::is_ancestor_dir(guard, src_inode_id, new_parent_inode_id)?))
         {
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -7676,19 +7679,22 @@ impl DiskManager {
             crate::directory::remove_entry_in_block_bytes(blk_buf, &new_stored, new_hash);
         }
 
-        // 3. Serialize the new directory entry pointing to `src_inode_id`.
+        // 3. Serialize the new directory entry pointing to `src_inode_id` onto the stack.
+        let new_stored_for_cache = new_stored.clone();
         let new_entry = crate::directory::DirectoryEntry {
             inode: src_inode_id,
             hash: new_hash,
             name: new_stored,
         };
-        let mut entry_bytes = Vec::with_capacity(20 + new_entry.name.len());
-        {
-            let mut cursor = std::io::Cursor::new(&mut entry_bytes);
+        let mut entry_buf = [0u8; 20 + crate::directory::DirectoryEntry::MAX_FILENAME_LEN];
+        let entry_len = {
+            let mut cursor = std::io::Cursor::new(&mut entry_buf[..]);
             new_entry
                 .serialize_into(&mut cursor)
                 .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
-        }
+            cursor.position() as usize
+        };
+        let entry_bytes = &entry_buf[..entry_len];
         let needed_space = 20 + new_entry.name.len();
 
         // 4. Find a free slot in `new_parent`'s existing blocks (accounting for staged removals).
@@ -7721,39 +7727,43 @@ impl DiskManager {
             found
         };
 
-        if let Some((phys_blk, insert_offset)) = target_slot {
-            let blk_buf = load_block_mut(&guard.backing, &mut modified_blocks, phys_blk)?;
-            blk_buf[insert_offset..insert_offset + entry_bytes.len()].copy_from_slice(&entry_bytes);
-            // Zero-terminate trailing header bytes if room remains so scans stop cleanly.
-            let end = insert_offset + entry_bytes.len();
-            if end + 18 <= BLOCK_SIZE {
-                blk_buf[end..end + 18].fill(0);
-            }
-        } else {
-            // Grow `new_parent` by one directory block.
-            let np_mut = new_parent_opt.as_mut().unwrap_or(&mut old_parent);
-            let new_blk_idx = Self::dir_num_blocks(np_mut);
-            let new_phys_blk = if journaled {
-                let sim = sim_opt.insert(crate::journal::AllocSim::new_data_only(
-                    guard,
-                    guard.free_inode_hint,
-                    guard.free_block_hint,
-                )?);
-                crate::journal::sim_get_or_alloc_block(
-                    &guard.backing,
-                    np_mut,
-                    new_blk_idx,
-                    sim,
-                    &mut journal_ops,
-                )?
+        let (inserted_phys_blk, allocated_new_block) =
+            if let Some((phys_blk, insert_offset)) = target_slot {
+                let blk_buf = load_block_mut(&guard.backing, &mut modified_blocks, phys_blk)?;
+                blk_buf[insert_offset..insert_offset + entry_bytes.len()]
+                    .copy_from_slice(entry_bytes);
+                // Zero-terminate trailing header bytes if room remains so scans stop cleanly.
+                let end = insert_offset + entry_bytes.len();
+                if end + 18 <= BLOCK_SIZE {
+                    blk_buf[end..end + 18].fill(0);
+                }
+                (phys_blk, false)
             } else {
-                Self::get_or_alloc_block(guard, np_mut, new_blk_idx, true)?
+                // Grow `new_parent` by one directory block.
+                let np_mut = new_parent_opt.as_mut().unwrap_or(&mut old_parent);
+                let new_blk_idx = Self::dir_num_blocks(np_mut);
+                let new_phys_blk = if journaled {
+                    let sim = sim_opt.insert(crate::journal::AllocSim::new_data_only(
+                        guard,
+                        guard.free_inode_hint,
+                        guard.free_block_hint,
+                    )?);
+                    crate::journal::sim_get_or_alloc_block(
+                        &guard.backing,
+                        np_mut,
+                        new_blk_idx,
+                        sim,
+                        &mut journal_ops,
+                    )?
+                } else {
+                    Self::get_or_alloc_block(guard, np_mut, new_blk_idx, true)?
+                };
+                let mut block_image = vec![0u8; BLOCK_SIZE];
+                block_image[..entry_bytes.len()].copy_from_slice(entry_bytes);
+                modified_blocks.insert(new_phys_blk, block_image);
+                np_mut.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
+                (new_phys_blk, true)
             };
-            let mut block_image = vec![0u8; BLOCK_SIZE];
-            block_image[..entry_bytes.len()].copy_from_slice(&entry_bytes);
-            modified_blocks.insert(new_phys_blk, block_image);
-            np_mut.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
-        }
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7865,17 +7875,84 @@ impl DiskManager {
             }
         }
 
-        // Refresh in-memory caches for parents and any overwritten destination.
+        // Refresh in-memory caches for parents and any overwritten destination in place.
+        let encrypted = guard.superblock.encrypted;
+        let dst_phys_blk_opt = dst_info.as_ref().map(|&(_, b, _)| b);
         guard.inode_cache.insert(old_parent_inode_id, old_parent);
-        guard.dir_cache.remove(old_parent_inode_id);
-        if let Some(np) = new_parent_opt {
-            guard.inode_cache.insert(new_parent_inode_id, np);
-            guard.dir_cache.remove(new_parent_inode_id);
+        if same_parent {
+            let mut cache = guard.dir_cache.write_shard(old_parent_inode_id);
+            if let Some(ix) = cache.get_mut(&old_parent_inode_id) {
+                if encrypted {
+                    ix.plain.remove(old_name);
+                    ix.plain.insert(
+                        new_name.to_string(),
+                        (src_inode_id, crate::directory::hash_filename(new_name)),
+                    );
+                }
+                ix.stored.remove(&old_stored);
+                ix.stored.insert(
+                    new_stored_for_cache,
+                    (src_inode_id, inserted_phys_blk, new_hash),
+                );
+                ix.may_have_holes = true;
+                if allocated_new_block
+                    || ix.tail_offset.is_some_and(|(tb, _)| {
+                        tb == src_phys_blk
+                            || tb == inserted_phys_blk
+                            || dst_phys_blk_opt == Some(tb)
+                    })
+                {
+                    ix.tail_offset = None;
+                }
+            }
+        } else {
+            {
+                let mut cache = guard.dir_cache.write_shard(old_parent_inode_id);
+                if let Some(ix) = cache.get_mut(&old_parent_inode_id) {
+                    if encrypted {
+                        ix.plain.remove(old_name);
+                    }
+                    ix.stored.remove(&old_stored);
+                    ix.may_have_holes = true;
+                    if ix.tail_offset.is_some_and(|(tb, _)| tb == src_phys_blk) {
+                        ix.tail_offset = None;
+                    }
+                }
+            }
+            if let Some(np) = new_parent_opt {
+                guard.inode_cache.insert(new_parent_inode_id, np);
+            }
+            {
+                let mut cache = guard.dir_cache.write_shard(new_parent_inode_id);
+                if let Some(ix) = cache.get_mut(&new_parent_inode_id) {
+                    if encrypted {
+                        ix.plain.insert(
+                            new_name.to_string(),
+                            (src_inode_id, crate::directory::hash_filename(new_name)),
+                        );
+                    }
+                    ix.stored.insert(
+                        new_stored_for_cache,
+                        (src_inode_id, inserted_phys_blk, new_hash),
+                    );
+                    if dst_phys_blk_opt.is_some() {
+                        ix.may_have_holes = true;
+                    }
+                    if allocated_new_block
+                        || ix.tail_offset.is_some_and(|(tb, _)| {
+                            tb == inserted_phys_blk || dst_phys_blk_opt == Some(tb)
+                        })
+                    {
+                        ix.tail_offset = None;
+                    }
+                }
+            }
         }
         if let Some((dst_inode_id, _, _)) = dst_info {
             guard.inode_cache.remove(dst_inode_id);
             guard.dir_cache.remove(dst_inode_id);
             guard.invalidate_payload_caches(dst_inode_id);
+            guard.bump_inode_gen(dst_inode_id);
         }
 
         if guard.durability_mode().is_range_based() {
@@ -9445,6 +9522,126 @@ impl DiskManager {
         Some(Ok(to_read))
     }
 
+    /// Probes in-memory caches (and `Mmap` direct ranges) under an already-held
+    /// shared guard BEFORE allocating any temporary output buffer, avoiding large
+    /// multi-megabyte `try_alloc_zeroed_vec` allocations on cold cache misses.
+    fn try_read_at_inline_vec(
+        guard: &DiskManagerInner,
+        inode_id: u64,
+        inode: &Inode,
+        file_offset: u64,
+        to_read: usize,
+    ) -> Option<Result<Vec<u8>, DiskManagerError>> {
+        if to_read == 0 {
+            return Some(Ok(Vec::new()));
+        }
+
+        // 1. Seekable 64K cache-hit probe (single chunk).
+        if inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0 {
+            let chunk_size = crate::inode::CHUNK_SIZE_64K;
+            let start_chunk = (file_offset as usize) / chunk_size;
+            let end_chunk = ((file_offset as usize) + to_read - 1) / chunk_size;
+            if start_chunk == end_chunk {
+                let in_chunk = (file_offset as usize) % chunk_size;
+                let chunk_start = (start_chunk * chunk_size) as u64;
+                let chunk_valid_len = ((inode.size - chunk_start) as usize).min(chunk_size);
+                if in_chunk >= chunk_valid_len {
+                    return Some(Ok(Vec::new()));
+                }
+                let raw_entry =
+                    Self::try_resolve_raw_block_id_cached_only(guard, inode, start_chunk)?;
+                if raw_entry == 0 {
+                    let avail = chunk_valid_len.saturating_sub(in_chunk).min(to_read);
+                    return match Self::try_alloc_zeroed_vec(avail) {
+                        Ok(buf) => Some(Ok(buf)),
+                        Err(e) => Some(Err(e)),
+                    };
+                }
+                if let Some(vec) = guard
+                    .chunk_read_cache
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .copy_slice_to_vec_if_hit(
+                        inode_id,
+                        start_chunk,
+                        raw_entry,
+                        chunk_valid_len,
+                        in_chunk,
+                        to_read,
+                    )
+                {
+                    return Some(Ok(vec));
+                }
+            }
+            return None;
+        }
+
+        // 2. DecodedBlobCache hit probe for compressed/encrypted/filtered files.
+        if inode.compressed_size > 0
+            || inode.encrypted
+            || inode.filter_delta
+            || inode.filter_shuffle
+            || inode.filter_bitshuffle
+        {
+            if let Some(blob) =
+                crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, inode)
+            {
+                let start = file_offset as usize;
+                if start >= blob.len() {
+                    return Some(Ok(Vec::new()));
+                }
+                let end = (start + to_read).min(blob.len());
+                return Some(Ok(blob[start..end].to_vec()));
+            }
+            return None;
+        }
+
+        // 3. Raw uncompressed/unencrypted file: probe first FileIo page before huge alloc.
+        if guard.backing.as_mmap_slice().is_none() && to_read > 64 * 1024 {
+            let blk_idx = (file_offset / BLOCK_SIZE as u64) as usize;
+            let in_blk = (file_offset % BLOCK_SIZE as u64) as usize;
+            let phys0 = Self::try_resolve_raw_block_id_cached_only(guard, inode, blk_idx)?;
+            if guard.is_data_block(phys0) {
+                let mut probe = [0u8; 1];
+                let disk_off = phys0 * BLOCK_SIZE as u64 + in_blk as u64;
+                if let Err(e) = guard
+                    .backing
+                    .try_read_data_cached_only(disk_off, &mut probe)?
+                {
+                    return Some(Err(DiskManagerError::Io(e)));
+                }
+            }
+        }
+
+        let mut buf = match Self::try_alloc_zeroed_vec(to_read) {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
+        let mut written = 0usize;
+        let mut cur_off = file_offset;
+        while written < to_read {
+            let blk_idx = (cur_off / BLOCK_SIZE as u64) as usize;
+            let in_blk = (cur_off % BLOCK_SIZE as u64) as usize;
+            let take = (to_read - written).min(BLOCK_SIZE - in_blk);
+            let phys_blk = Self::try_resolve_raw_block_id_cached_only(guard, inode, blk_idx)?;
+            if guard.is_data_block(phys_blk) {
+                let disk_off = phys_blk * BLOCK_SIZE as u64 + in_blk as u64;
+                match guard
+                    .backing
+                    .try_read_data_cached_only(disk_off, &mut buf[written..written + take])?
+                {
+                    Ok(()) => {}
+                    Err(e) => return Some(Err(DiskManagerError::Io(e))),
+                }
+            } else {
+                buf[written..written + take].fill(0);
+            }
+            written += take;
+            cur_off += take as u64;
+        }
+        Some(Ok(buf))
+    }
+
     /// Asynchronously reads up to `len` bytes starting at `file_offset` from `inode_id`.
     ///
     /// Completes immediately on the calling thread (`Poll::Ready`, zero thread hop) when the
@@ -9474,15 +9671,11 @@ impl DiskManager {
                     return OifsAsyncTask::ready(Ok(Vec::new()));
                 }
                 let avail = usize::try_from(inode.size - file_offset).unwrap_or(usize::MAX);
-                let alloc_len = len.min(avail);
-                drop(guard);
-                if let Ok(mut buf) = Self::try_alloc_zeroed_vec(alloc_len)
-                    && let Some(res) = self.try_read_at_inline_into(inode_id, file_offset, &mut buf)
+                let to_read = len.min(avail);
+                if let Some(res) =
+                    Self::try_read_at_inline_vec(&guard, inode_id, &inode, file_offset, to_read)
                 {
-                    return OifsAsyncTask::ready(res.map(|n| {
-                        buf.truncate(n);
-                        buf
-                    }));
+                    return OifsAsyncTask::ready(res);
                 }
             }
         }
@@ -9512,17 +9705,11 @@ impl DiskManager {
                 && inode.size <= DecodedBlobCache::MAX_ENTRY_BYTES as u64
             {
                 let sz = inode.size as usize;
-                drop(guard);
                 if sz == 0 {
                     return OifsAsyncTask::ready(Ok(Vec::new()));
                 }
-                if let Ok(mut buf) = Self::try_alloc_zeroed_vec(sz)
-                    && let Some(res) = self.try_read_at_inline_into(inode_id, 0, &mut buf)
-                {
-                    return OifsAsyncTask::ready(res.map(|n| {
-                        buf.truncate(n);
-                        buf
-                    }));
+                if let Some(res) = Self::try_read_at_inline_vec(&guard, inode_id, &inode, 0, sz) {
+                    return OifsAsyncTask::ready(res);
                 }
             }
         }

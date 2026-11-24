@@ -1685,7 +1685,7 @@ impl DiskManager {
             };
 
             // 7. Flush payload blocks before metadata commit (Ordered Mode — Strict only)
-            if guard.durability_mode() == DurabilityMode::Strict {
+            if guard.durability_mode() == DurabilityMode::Strict && !is_strict_sync_deferred() {
                 let coalesced_payload =
                     DiskManagerInner::coalesce_ranges(&payload_ranges, guard.backing.len());
                 for (off, actual) in &coalesced_payload {
@@ -1938,7 +1938,9 @@ impl DiskManager {
                                 (new_start_blk as usize).saturating_mul(BLOCK_SIZE),
                                 blocks_needed.saturating_mul(BLOCK_SIZE),
                             );
-                            if guard.durability_mode() == DurabilityMode::Strict {
+                            if guard.durability_mode() == DurabilityMode::Strict
+                                && !is_strict_sync_deferred()
+                            {
                                 let coalesced = DiskManagerInner::coalesce_ranges(
                                     &[payload_range],
                                     guard.backing.len(),
@@ -2217,7 +2219,7 @@ impl DiskManager {
             });
 
             // Ordered payload flush (Strict only)
-            if guard.durability_mode() == DurabilityMode::Strict {
+            if guard.durability_mode() == DurabilityMode::Strict && !is_strict_sync_deferred() {
                 let coalesced_payload =
                     DiskManagerInner::coalesce_ranges(&payload_ranges, guard.backing.len());
                 for (off, actual) in &coalesced_payload {

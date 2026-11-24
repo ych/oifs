@@ -745,6 +745,14 @@ impl OifsNfsFs {
         guard.insert(child, parent);
     }
 
+    fn forget_parent(&self, child: u64) {
+        if child == 0 {
+            return;
+        }
+        let mut guard = crate::write_unpoisoned(&self.parent_map);
+        guard.remove(&child);
+    }
+
     fn parent_of(&self, inode_id: u64) -> u64 {
         if inode_id == 0 {
             return 0;
@@ -1500,25 +1508,29 @@ impl OifsNfsFs {
         }
 
         let name = normalize_filename_nfc(raw_name);
-        match self.dm.lookup(dir_id, &name) {
-            Ok(child_id) => {
-                if let Ok(ino) = self.dm.read_inode(child_id)
+        let child_id = match self.dm.lookup(dir_id, &name) {
+            Ok(id) => {
+                if let Ok(ino) = self.dm.read_inode(id)
                     && ino.mode == FileType::Directory
                 {
                     w.write_u32(NFS3ERR_ISDIR);
                     self.write_wcc_data(&mut w, dir_id, pre_dir.as_ref(), pre_dir.as_ref());
                     return w.into_bytes();
                 }
+                id
             }
             Err(e) => {
                 w.write_u32(disk_error_to_nfs3(&e));
                 self.write_wcc_data(&mut w, dir_id, pre_dir.as_ref(), pre_dir.as_ref());
                 return w.into_bytes();
             }
-        }
+        };
 
         let status = match self.dm.delete_file(dir_id, &name) {
-            Ok(()) => NFS3_OK,
+            Ok(()) => {
+                self.forget_parent(child_id);
+                NFS3_OK
+            }
             Err(e) => disk_error_to_nfs3(&e),
         };
         let post_dir = self.read_inode_opt(dir_id);
@@ -1574,7 +1586,10 @@ impl OifsNfsFs {
         }
 
         let status = match self.dm.delete_file(dir_id, &name) {
-            Ok(()) => NFS3_OK,
+            Ok(()) => {
+                self.forget_parent(child_id);
+                NFS3_OK
+            }
             Err(e) => disk_error_to_nfs3(&e),
         };
         let post_dir = self.read_inode_opt(dir_id);
@@ -1623,10 +1638,19 @@ impl OifsNfsFs {
         let from_name = normalize_filename_nfc(raw_from);
         let to_name = normalize_filename_nfc(raw_to);
         let moved_id = self.dm.lookup(from_dir, &from_name).ok();
+        let overwritten_id = self.dm.lookup(to_dir, &to_name).ok();
 
         let status = match self.dm.rename(from_dir, &from_name, to_dir, &to_name) {
             Ok(()) => {
-                if let Some(id) = moved_id {
+                if let (Some(dst_id), Some(src_id)) = (overwritten_id, moved_id)
+                    && dst_id != src_id
+                {
+                    self.forget_parent(dst_id);
+                }
+                if let Some(id) = moved_id
+                    && let Ok(ino) = self.dm.read_inode(id)
+                    && ino.mode == FileType::Directory
+                {
                     self.record_parent(id, to_dir);
                 }
                 NFS3_OK
@@ -1642,22 +1666,13 @@ impl OifsNfsFs {
         w.into_bytes()
     }
 
-    fn build_ordered_dir_entries(&self, dir_id: u64) -> Result<Vec<(u64, String, u64)>, u32> {
+    fn sorted_dir_entries(&self, dir_id: u64) -> Result<Vec<crate::directory::DirectoryEntry>, u32> {
         let mut entries = self
             .dm
             .list_dir(dir_id)
             .map_err(|e| disk_error_to_nfs3(&e))?;
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-        let parent_id = self.parent_of(dir_id);
-        let mut out = Vec::with_capacity(entries.len() + 2);
-        out.push((1u64, ".".to_string(), dir_id));
-        out.push((2u64, "..".to_string(), parent_id));
-        for (idx, e) in entries.into_iter().enumerate() {
-            self.record_parent(e.inode, dir_id);
-            out.push(((idx as u64) + 3, e.name, e.inode));
-        }
-        Ok(out)
+        entries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.inode.cmp(&b.inode)));
+        Ok(entries)
     }
 
     fn nfs_readdir(&self, xid: u32, r: &mut XdrReader<'_>) -> Vec<u8> {
@@ -1681,7 +1696,7 @@ impl OifsNfsFs {
         };
 
         let dir_ino = self.read_inode_opt(dir_id);
-        let all_entries = match self.build_ordered_dir_entries(dir_id) {
+        let entries = match self.sorted_dir_entries(dir_id) {
             Ok(list) => list,
             Err(status) => {
                 w.write_u32(status);
@@ -1696,15 +1711,35 @@ impl OifsNfsFs {
         self.write_post_op_attr(&mut w, dir_id, dir_ino.as_ref());
         w.write_fixed_opaque(&self.write_verf); // cookieverf3
 
+        let parent_id = self.parent_of(dir_id);
         let mut eof = true;
         let mut emitted = 0usize;
-        for (entry_cookie, name, ino_id) in &all_entries {
-            if *entry_cookie <= cookie {
+
+        let special: [(u64, &str, u64); 2] = [(1, ".", dir_id), (2, "..", parent_id)];
+        for (entry_cookie, name, ino_id) in special {
+            if entry_cookie <= cookie {
                 continue;
             }
-            // entry3 size: value_follows(4) + fileid(8) + name_len(4) + padded_name + cookie(8)
-            // Reserve 8 trailing bytes for list terminator (4) + eof bool (4).
             let name_padded = xdr_padded_len(name.len()).unwrap_or(name.len());
+            let entry_bytes = 4 + 8 + 4 + name_padded + 8;
+            let used = w.len() - start_len;
+            if emitted > 0 && used + entry_bytes + 8 > max_bytes {
+                eof = false;
+                w.write_bool(false);
+                w.write_bool(eof);
+                return w.into_bytes();
+            }
+            w.write_bool(true);
+            w.write_u64(ino_id.saturating_add(1));
+            w.write_string(name);
+            w.write_u64(entry_cookie);
+            emitted += 1;
+        }
+
+        let start_idx = usize::try_from(cookie.saturating_sub(2)).unwrap_or(usize::MAX);
+        for (idx, entry) in entries.into_iter().enumerate().skip(start_idx) {
+            let entry_cookie = (idx as u64) + 3;
+            let name_padded = xdr_padded_len(entry.name.len()).unwrap_or(entry.name.len());
             let entry_bytes = 4 + 8 + 4 + name_padded + 8;
             let used = w.len() - start_len;
             if emitted > 0 && used + entry_bytes + 8 > max_bytes {
@@ -1712,9 +1747,9 @@ impl OifsNfsFs {
                 break;
             }
             w.write_bool(true);
-            w.write_u64(ino_id.saturating_add(1));
-            w.write_string(name);
-            w.write_u64(*entry_cookie);
+            w.write_u64(entry.inode.saturating_add(1));
+            w.write_string(&entry.name);
+            w.write_u64(entry_cookie);
             emitted += 1;
         }
 
@@ -1744,7 +1779,7 @@ impl OifsNfsFs {
         };
 
         let dir_ino = self.read_inode_opt(dir_id);
-        let all_entries = match self.build_ordered_dir_entries(dir_id) {
+        let entries = match self.sorted_dir_entries(dir_id) {
             Ok(list) => list,
             Err(status) => {
                 w.write_u32(status);
@@ -1761,19 +1796,50 @@ impl OifsNfsFs {
         self.write_post_op_attr(&mut w, dir_id, dir_ino.as_ref());
         w.write_fixed_opaque(&self.write_verf); // cookieverf3
 
+        let parent_id = self.parent_of(dir_id);
         let mut eof = true;
         let mut emitted = 0usize;
         let mut dir_bytes_used = 0usize;
 
-        for (entry_cookie, name, ino_id) in &all_entries {
-            if *entry_cookie <= cookie {
+        let special: [(u64, &str, u64); 2] = [(1, ".", dir_id), (2, "..", parent_id)];
+        for (entry_cookie, name, ino_id) in special {
+            if entry_cookie <= cookie {
                 continue;
             }
             let name_padded = xdr_padded_len(name.len()).unwrap_or(name.len());
-            // Basic dir info bytes for dircount accounting
             let base_dir_bytes = 8 + 4 + name_padded + 8;
-            // Full entryplus3: follows(4) + fileid(8) + name(4+pad) + cookie(8)
-            // + post_op_attr(4+84) + post_op_fh3(4+4+16) = 136 + name_padded
+            let full_entry_bytes = 136 + name_padded;
+            let total_used = w.len() - start_len;
+            if emitted > 0
+                && (total_used + full_entry_bytes + 8 > max_total
+                    || dir_bytes_used + base_dir_bytes > max_dir)
+            {
+                eof = false;
+                w.write_bool(false);
+                w.write_bool(eof);
+                return w.into_bytes();
+            }
+            let child_ino = if ino_id == dir_id {
+                dir_ino
+            } else {
+                self.read_inode_opt(ino_id)
+            };
+            w.write_bool(true);
+            w.write_u64(ino_id.saturating_add(1));
+            w.write_string(name);
+            w.write_u64(entry_cookie);
+            self.write_post_op_attr(&mut w, ino_id, child_ino.as_ref());
+            self.write_post_op_fh(&mut w, Some(ino_id));
+
+            emitted += 1;
+            dir_bytes_used += base_dir_bytes;
+        }
+
+        let start_idx = usize::try_from(cookie.saturating_sub(2)).unwrap_or(usize::MAX);
+        for (idx, entry) in entries.into_iter().enumerate().skip(start_idx) {
+            let entry_cookie = (idx as u64) + 3;
+            let name_padded = xdr_padded_len(entry.name.len()).unwrap_or(entry.name.len());
+            let base_dir_bytes = 8 + 4 + name_padded + 8;
             let full_entry_bytes = 136 + name_padded;
             let total_used = w.len() - start_len;
 
@@ -1785,13 +1851,18 @@ impl OifsNfsFs {
                 break;
             }
 
-            let child_ino = self.read_inode_opt(*ino_id);
+            let child_ino = self.read_inode_opt(entry.inode);
+            if let Some(ref ino) = child_ino
+                && ino.mode == FileType::Directory
+            {
+                self.record_parent(entry.inode, dir_id);
+            }
             w.write_bool(true);
-            w.write_u64(ino_id.saturating_add(1));
-            w.write_string(name);
-            w.write_u64(*entry_cookie);
-            self.write_post_op_attr(&mut w, *ino_id, child_ino.as_ref());
-            self.write_post_op_fh(&mut w, Some(*ino_id));
+            w.write_u64(entry.inode.saturating_add(1));
+            w.write_string(&entry.name);
+            w.write_u64(entry_cookie);
+            self.write_post_op_attr(&mut w, entry.inode, child_ino.as_ref());
+            self.write_post_op_fh(&mut w, Some(entry.inode));
 
             emitted += 1;
             dir_bytes_used += base_dir_bytes;

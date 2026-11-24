@@ -949,7 +949,7 @@ pub fn recommend_filters(data: &[u8]) -> FilterRecommendation {
     };
 
     let baseline_entropy = calculate_entropy(&eval_data);
-    let baseline_eval_comp = zstd::stream::encode_all(std::io::Cursor::new(&*eval_data), 0)
+    let baseline_eval_comp = crate::zstd_pool::compress_frame(&eval_data, 0)
         .map(|v| v.len())
         .unwrap_or(eval_data.len());
 
@@ -965,106 +965,120 @@ pub fn recommend_filters(data: &[u8]) -> FilterRecommendation {
         baseline_eval_comp
     };
 
-    let candidates_to_test = [
-        (FilterConfig::none(), "None (Raw Zstd)".to_string()),
-        (
-            FilterConfig::delta_only(1),
-            "Delta (typesize=1, u8)".to_string(),
-        ),
-        (
-            FilterConfig::delta_only(2),
-            "Delta (typesize=2, u16)".to_string(),
-        ),
-        (
-            FilterConfig::delta_only(4),
-            "Delta (typesize=4, u32/f32)".to_string(),
-        ),
-        (
-            FilterConfig::delta_only(8),
-            "Delta (typesize=8, u64/f64)".to_string(),
-        ),
-        (
-            FilterConfig::shuffle_only(2),
-            "Shuffle (typesize=2, u16)".to_string(),
-        ),
-        (
-            FilterConfig::shuffle_only(4),
-            "Shuffle (typesize=4, u32/f32)".to_string(),
-        ),
-        (
-            FilterConfig::shuffle_only(8),
-            "Shuffle (typesize=8, u64/f64)".to_string(),
-        ),
+    let filtered_candidates: [(FilterConfig, &str); 13] = [
+        (FilterConfig::delta_only(1), "Delta (typesize=1, u8)"),
+        (FilterConfig::delta_only(2), "Delta (typesize=2, u16)"),
+        (FilterConfig::delta_only(4), "Delta (typesize=4, u32/f32)"),
+        (FilterConfig::delta_only(8), "Delta (typesize=8, u64/f64)"),
+        (FilterConfig::shuffle_only(2), "Shuffle (typesize=2, u16)"),
+        (FilterConfig::shuffle_only(4), "Shuffle (typesize=4, u32/f32)"),
+        (FilterConfig::shuffle_only(8), "Shuffle (typesize=8, u64/f64)"),
         (
             FilterConfig::bitshuffle_only(2),
-            "BitShuffle (typesize=2, u16)".to_string(),
+            "BitShuffle (typesize=2, u16)",
         ),
         (
             FilterConfig::bitshuffle_only(4),
-            "BitShuffle (typesize=4, u32/f32)".to_string(),
+            "BitShuffle (typesize=4, u32/f32)",
         ),
         (
             FilterConfig::bitshuffle_only(8),
-            "BitShuffle (typesize=8, u64/f64)".to_string(),
+            "BitShuffle (typesize=8, u64/f64)",
         ),
-        (
-            FilterConfig::numeric(2),
-            "Delta+Shuffle (typesize=2, u16)".to_string(),
-        ),
+        (FilterConfig::numeric(2), "Delta+Shuffle (typesize=2, u16)"),
         (
             FilterConfig::numeric(4),
-            "Delta+Shuffle (typesize=4, u32/f32)".to_string(),
+            "Delta+Shuffle (typesize=4, u32/f32)",
         ),
         (
             FilterConfig::numeric(8),
-            "Delta+Shuffle (typesize=8, u64/f64)".to_string(),
+            "Delta+Shuffle (typesize=8, u64/f64)",
         ),
     ];
 
-    // Parallel evaluation across CPU cores via std::thread::scope
     let eval_slice = eval_data.as_ref();
-    let reports: Vec<FilterCandidateReport> = std::thread::scope(|s| {
-        let handles: Vec<_> = candidates_to_test
-            .iter()
-            .map(|(cfg, label)| {
-                s.spawn(move || {
-                    let filtered = apply_filters(eval_slice, cfg);
-                    let entropy = calculate_entropy(&filtered);
-                    let eval_comp_size =
-                        zstd::stream::encode_all(std::io::Cursor::new(&filtered), 0)
-                            .map(|v| v.len())
-                            .unwrap_or(filtered.len());
+    let baseline_ratio = if baseline_eval_comp > 0 {
+        eval_slice.len() as f64 / baseline_eval_comp as f64
+    } else {
+        1.0
+    };
+    let baseline_savings = if !eval_slice.is_empty() {
+        (1.0 - (baseline_eval_comp as f64 / eval_slice.len() as f64)) * 100.0
+    } else {
+        0.0
+    };
+    let baseline_report = FilterCandidateReport {
+        config: FilterConfig::none(),
+        label: "None (Raw Zstd)".to_string(),
+        entropy: baseline_entropy,
+        compressed_size: baseline_comp,
+        compression_ratio: baseline_ratio,
+        space_savings_percent: baseline_savings,
+    };
 
-                    let comp_size = if is_sampled {
-                        (eval_comp_size as f64 * scale_factor) as usize
-                    } else {
-                        eval_comp_size
-                    };
+    // Parallel evaluation on persistent zstd worker pool + recycled Zstd CCtxs.
+    struct SyncSlots<T>(Vec<std::cell::UnsafeCell<Option<T>>>);
+    // SAFETY: `par_for_index` guarantees each index `idx` runs on at most one thread.
+    unsafe impl<T: Send> Sync for SyncSlots<T> {}
+    impl<T> SyncSlots<T> {
+        #[inline]
+        unsafe fn set(&self, idx: usize, val: T) {
+            unsafe {
+                *self.0[idx].get() = Some(val);
+            }
+        }
+    }
+    let slots: SyncSlots<FilterCandidateReport> = SyncSlots(
+        (0..filtered_candidates.len())
+            .map(|_| std::cell::UnsafeCell::new(None))
+            .collect(),
+    );
+    let slots_ref = &slots;
 
-                    let ratio = if eval_comp_size > 0 {
-                        eval_slice.len() as f64 / eval_comp_size as f64
-                    } else {
-                        1.0
-                    };
-                    let savings = if !eval_slice.is_empty() {
-                        (1.0 - (eval_comp_size as f64 / eval_slice.len() as f64)) * 100.0
-                    } else {
-                        0.0
-                    };
+    crate::zstd_pool::par_for_index(filtered_candidates.len(), |idx| {
+        let (cfg, label) = &filtered_candidates[idx];
+        let filtered = apply_filters(eval_slice, cfg);
+        let entropy = calculate_entropy(&filtered);
+        let eval_comp_size = crate::zstd_pool::compress_frame(&filtered, 0)
+            .map(|v| v.len())
+            .unwrap_or(filtered.len());
 
-                    FilterCandidateReport {
-                        config: *cfg,
-                        label: label.clone(),
-                        entropy,
-                        compressed_size: comp_size,
-                        compression_ratio: ratio,
-                        space_savings_percent: savings,
-                    }
-                })
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        let comp_size = if is_sampled {
+            (eval_comp_size as f64 * scale_factor) as usize
+        } else {
+            eval_comp_size
+        };
+
+        let ratio = if eval_comp_size > 0 {
+            eval_slice.len() as f64 / eval_comp_size as f64
+        } else {
+            1.0
+        };
+        let savings = if !eval_slice.is_empty() {
+            (1.0 - (eval_comp_size as f64 / eval_slice.len() as f64)) * 100.0
+        } else {
+            0.0
+        };
+
+        let report = FilterCandidateReport {
+            config: *cfg,
+            label: (*label).to_string(),
+            entropy,
+            compressed_size: comp_size,
+            compression_ratio: ratio,
+            space_savings_percent: savings,
+        };
+        // SAFETY: `idx` is uniquely assigned to this worker.
+        unsafe {
+            slots_ref.set(idx, report);
+        }
     });
+
+    let mut reports = Vec::with_capacity(filtered_candidates.len() + 1);
+    reports.push(baseline_report);
+    for cell in slots.0 {
+        reports.push(cell.into_inner().expect("filter candidate slot populated"));
+    }
 
     let mut best_idx = 0;
     let mut min_size = baseline_comp;

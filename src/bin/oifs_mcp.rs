@@ -13,7 +13,6 @@ use rmcp::model::{ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, ServiceExt, tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex as TokioMutex;
 
 use oifs::disk::{CompressionMode, DiskManager};
 use oifs::inode::FileType;
@@ -25,7 +24,8 @@ const DEFAULT_SIZE_MB: u64 = 10;
 // ── MCP Server struct ─────────────────────────────────────────────────
 #[derive(Clone)]
 struct OifsMcpServer {
-    dm: Arc<TokioMutex<DiskManager>>,
+    dm: DiskManager,
+    append_lock: Arc<std::sync::Mutex<()>>,
     image_path: PathBuf,
     tool_router: ToolRouter<Self>,
 }
@@ -39,7 +39,8 @@ impl OifsMcpServer {
             _ => DiskManager::open_with_password(&image_path, size_bytes, password)?,
         };
         Ok(Self {
-            dm: Arc::new(TokioMutex::new(dm)),
+            dm,
+            append_lock: Arc::new(std::sync::Mutex::new(())),
             image_path,
             tool_router: Self::tool_router(),
         })
@@ -47,15 +48,16 @@ impl OifsMcpServer {
 
     /// Helper: list entries under a directory inode.
     fn list_entries_inner(dm: &DiskManager, dir_inode_id: u64) -> Result<Vec<EntryInfo>> {
-        let inode = dm.read_inode(dir_inode_id)?;
+        let sess = dm.begin_read();
+        let inode = sess.read_inode(dir_inode_id)?;
         if inode.mode != FileType::Directory {
             return Err(format!("inode {} is not a directory", dir_inode_id).into());
         }
 
-        let dir_entries = dm.list_dir(dir_inode_id)?;
+        let dir_entries = sess.list_dir(dir_inode_id)?;
         let mut entries = Vec::with_capacity(dir_entries.len());
         for entry in dir_entries {
-            let child_inode = dm.read_inode(entry.inode)?;
+            let child_inode = sess.read_inode(entry.inode)?;
             let kind = match child_inode.mode {
                 FileType::File => "file",
                 FileType::Directory => "dir",
@@ -159,8 +161,8 @@ impl OifsMcpServer {
         description = "Write (create or overwrite) a file inside the OIFS sandbox image. Parent directories must already exist."
     )]
     async fn write_file(&self, Parameters(params): Parameters<WriteFileParams>) -> String {
-        let dm = self.dm.lock().await;
-        let result = (|| -> Result<String> {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
             let (parent_id, name) = dm.resolve_parent(&params.path)?;
             let inode_id = match dm.lookup(parent_id, &name) {
                 Ok(existing_id) => existing_id,
@@ -172,9 +174,11 @@ impl OifsMcpServer {
                 ("inode", serde_json::Value::from(inode_id)),
                 ("bytes", serde_json::Value::from(params.content.len())),
             ]))
-        })();
+        })
+        .await;
         match result {
-            Ok(msg) => msg,
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
             Err(e) => json_error(&e),
         }
     }
@@ -183,14 +187,16 @@ impl OifsMcpServer {
         description = "Read the contents of a file inside the OIFS sandbox image. Returns UTF-8 text content."
     )]
     async fn read_file(&self, Parameters(params): Parameters<ReadFileParams>) -> String {
-        let dm = self.dm.lock().await;
-        let result = (|| -> Result<String> {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
             let inode_id = dm.resolve_path(&params.path)?;
             let data = dm.read_data(inode_id)?;
             String::from_utf8(data).map_err(|_| "File contains non-UTF-8 data".into())
-        })();
+        })
+        .await;
         match result {
-            Ok(content) => content,
+            Ok(Ok(content)) => content,
+            Ok(Err(e)) => json_error(&e),
             Err(e) => json_error(&e),
         }
     }
@@ -199,8 +205,8 @@ impl OifsMcpServer {
         description = "List files and directories at a given path inside the OIFS sandbox image. Returns one JSON object per line (JSONL)."
     )]
     async fn list_dir(&self, Parameters(params): Parameters<ListDirParams>) -> String {
-        let dm = self.dm.lock().await;
-        let result = (|| -> Result<String> {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
             let dir_inode_id = dm.resolve_path(&params.path)?;
             let entries = Self::list_entries_inner(&dm, dir_inode_id)?;
             if entries.is_empty() {
@@ -217,9 +223,11 @@ impl OifsMcpServer {
                 })
                 .collect();
             Ok(lines.join("\n"))
-        })();
+        })
+        .await;
         match result {
-            Ok(output) => output,
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => json_error(&e),
             Err(e) => json_error(&e),
         }
     }
@@ -228,31 +236,35 @@ impl OifsMcpServer {
         description = "Create a directory inside the OIFS sandbox image. Parent directories must exist."
     )]
     async fn mkdir(&self, Parameters(params): Parameters<MkdirParams>) -> String {
-        let dm = self.dm.lock().await;
-        let result = (|| -> Result<String> {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
             let (parent_id, name) = dm.resolve_parent(&params.path)?;
             let dir_id = dm.create_directory(parent_id, &name)?;
             Ok(json_object(vec![
                 ("ok", serde_json::Value::Bool(true)),
                 ("inode", serde_json::Value::from(dir_id)),
             ]))
-        })();
+        })
+        .await;
         match result {
-            Ok(msg) => msg,
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
             Err(e) => json_error(&e),
         }
     }
 
     #[tool(description = "Delete a file from the OIFS sandbox image.")]
     async fn delete_file(&self, Parameters(params): Parameters<DeleteFileParams>) -> String {
-        let dm = self.dm.lock().await;
-        let result = (|| -> Result<String> {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
             let (parent_id, name) = dm.resolve_parent(&params.path)?;
             dm.delete_file(parent_id, &name)?;
             Ok(json_object(vec![("ok", serde_json::Value::Bool(true))]))
-        })();
+        })
+        .await;
         match result {
-            Ok(msg) => msg,
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
             Err(e) => json_error(&e),
         }
     }
@@ -261,16 +273,18 @@ impl OifsMcpServer {
         description = "Truncate or extend a file in the OIFS sandbox image to the specified size in bytes."
     )]
     async fn truncate_file(&self, Parameters(params): Parameters<TruncateFileParams>) -> String {
-        let dm = self.dm.lock().await;
-        let result = (|| -> Result<String> {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
             dm.truncate_path(&params.path, params.size)?;
             Ok(json_object(vec![
                 ("ok", serde_json::Value::Bool(true)),
                 ("size", serde_json::Value::from(params.size)),
             ]))
-        })();
+        })
+        .await;
         match result {
-            Ok(msg) => msg,
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
             Err(e) => json_error(&e),
         }
     }
@@ -279,27 +293,39 @@ impl OifsMcpServer {
         description = "Append a line to a file inside the OIFS sandbox image. Creates the file if it does not exist. Ideal for JSONL memory logs."
     )]
     async fn append_file(&self, Parameters(params): Parameters<AppendFileParams>) -> String {
-        let dm = self.dm.lock().await;
-        let result = (|| -> Result<String> {
+        let dm = self.dm.clone();
+        let append_lock = Arc::clone(&self.append_lock);
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            let _guard = append_lock.lock().unwrap_or_else(|e| e.into_inner());
             let (parent_id, name) = dm.resolve_parent(&params.path)?;
-            let inode_id = match dm.lookup(parent_id, &name) {
-                Ok(existing_id) => existing_id,
-                Err(_) => dm.create_file(parent_id, &name)?,
+            let (inode_id, existing_size) = match dm.lookup(parent_id, &name) {
+                Ok(existing_id) => {
+                    let ino = dm.read_inode(existing_id)?;
+                    (existing_id, ino.size)
+                }
+                Err(_) => (dm.create_file(parent_id, &name)?, 0),
             };
-            let mut new_content = dm.read_data(inode_id)?;
-            new_content.extend_from_slice(params.content.as_bytes());
-            if !params.content.ends_with('\n') {
-                new_content.push(b'\n');
+            let mut payload = params.content;
+            if !payload.ends_with('\n') {
+                payload.push('\n');
             }
-            dm.write_data(inode_id, 0, &new_content, CompressionMode::Never)?;
+            dm.write_data(
+                inode_id,
+                existing_size,
+                payload.as_bytes(),
+                CompressionMode::Never,
+            )?;
+            let total_bytes = existing_size.saturating_add(payload.len() as u64);
             Ok(json_object(vec![
                 ("ok", serde_json::Value::Bool(true)),
                 ("inode", serde_json::Value::from(inode_id)),
-                ("total_bytes", serde_json::Value::from(new_content.len())),
+                ("total_bytes", serde_json::Value::from(total_bytes)),
             ]))
-        })();
+        })
+        .await;
         match result {
-            Ok(msg) => msg,
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
             Err(e) => json_error(&e),
         }
     }
@@ -308,14 +334,12 @@ impl OifsMcpServer {
         description = "Show filesystem status: image path, total/used/free blocks, and fragmentation ratio."
     )]
     async fn status(&self) -> String {
-        let dm = self.dm.lock().await;
-        let result = (|| -> Result<String> {
+        let dm = self.dm.clone();
+        let image_display = self.image_path.display().to_string();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
             let frag = dm.analyze_fragmentation()?;
             Ok(json_object(vec![
-                (
-                    "image",
-                    serde_json::Value::String(self.image_path.display().to_string()),
-                ),
+                ("image", serde_json::Value::String(image_display)),
                 ("total_blocks", serde_json::Value::from(frag.total_blocks)),
                 ("used_blocks", serde_json::Value::from(frag.used_blocks)),
                 ("free_blocks", serde_json::Value::from(frag.free_blocks)),
@@ -324,9 +348,11 @@ impl OifsMcpServer {
                     serde_json::Value::from(frag.fragmentation_ratio),
                 ),
             ]))
-        })();
+        })
+        .await;
         match result {
-            Ok(msg) => msg,
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
             Err(e) => json_error(&e),
         }
     }

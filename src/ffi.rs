@@ -7,10 +7,13 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
 
+thread_local! {
+    static FFI_LAST_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
 // Opaque handle for C
 pub struct OIFSHandle {
     pub dm: DiskManager,
-    pub last_error: std::sync::Mutex<Option<String>>,
     pub fuse_state: std::sync::OnceLock<crate::fuse::OifsFuseState>,
 }
 
@@ -18,7 +21,6 @@ impl OIFSHandle {
     pub fn new(dm: DiskManager) -> Self {
         Self {
             dm,
-            last_error: std::sync::Mutex::new(None),
             fuse_state: std::sync::OnceLock::new(),
         }
     }
@@ -34,13 +36,17 @@ impl OIFSHandle {
     }
 
     pub fn set_last_error(&self, err: Option<String>) {
-        if let Ok(mut lock) = self.last_error.lock() {
-            *lock = err;
-        }
+        FFI_LAST_ERROR.with(|cell| {
+            if let Some(msg) = err {
+                *cell.borrow_mut() = Some(msg);
+            } else if cell.borrow().is_some() {
+                *cell.borrow_mut() = None;
+            }
+        });
     }
 
     pub fn get_last_error(&self) -> Option<String> {
-        self.last_error.lock().ok().and_then(|guard| guard.clone())
+        FFI_LAST_ERROR.with(|cell| cell.borrow().clone())
     }
 }
 

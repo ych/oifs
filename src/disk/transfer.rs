@@ -258,10 +258,16 @@ pub fn can_splice_fast_path(
         }
         return None;
     }
+    let src_has_filters =
+        src_inode.filter_delta || src_inode.filter_shuffle || src_inode.filter_bitshuffle;
+    let dst_has_filters =
+        dst_inode.filter_delta || dst_inode.filter_shuffle || dst_inode.filter_bitshuffle;
     if !src_seekable
         && !dst_seekable
         && src_inode.compressed_size == 0
         && dst_inode.compressed_size == 0
+        && !src_has_filters
+        && !dst_has_filters
     {
         return Some(BLOCK_SIZE as u64);
     }
@@ -1705,18 +1711,15 @@ impl DiskManager {
                         DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
                     })?;
                     let mut allocator = SimpleBlockAllocator::new(&mut bitmap_slice, 0);
-                    let id = allocator.allocate_with_hint(Some(hint))?;
-                    if id >= usable_inodes {
-                        let _ = allocator.free(id);
-                        bitmap_slice.set_dirty_bits(0, 0);
-                        return Err(DiskManagerError::Allocator(
-                            crate::allocator::AllocatorError::NoSpace,
-                        ));
-                    }
+                    let id = allocator.allocate_bounded(Some(hint), usable_inodes)?;
                     bitmap_slice.set_dirty_bits(id as usize, 1);
                     id
                 };
-                dst_guard.free_inode_hint = dst_ino + 1;
+                dst_guard.free_inode_hint = if dst_ino + 1 >= usable_inodes {
+                    0
+                } else {
+                    dst_ino + 1
+                };
 
                 let mut touched_ranges: Vec<(usize, usize)> = Vec::new();
                 let track_ranges = dst_guard.durability_mode().is_range_based();
@@ -3834,6 +3837,8 @@ mod kani_proofs {
         dst.filter_bitshuffle = kani::any();
 
         let unit = can_splice_fast_path(&src, &dst, src_enc, dst_enc);
+        let src_has_filters = src.filter_delta || src.filter_shuffle || src.filter_bitshuffle;
+        let dst_has_filters = dst.filter_delta || dst.filter_shuffle || dst.filter_bitshuffle;
         if src_enc || dst_enc || src.encrypted || dst.encrypted {
             assert_eq!(unit, None);
         } else if src_seek && dst_seek {
@@ -3846,7 +3851,13 @@ mod kani_proofs {
             } else {
                 assert_eq!(unit, None);
             }
-        } else if !src_seek && !dst_seek && src.compressed_size == 0 && dst.compressed_size == 0 {
+        } else if !src_seek
+            && !dst_seek
+            && src.compressed_size == 0
+            && dst.compressed_size == 0
+            && !src_has_filters
+            && !dst_has_filters
+        {
             assert_eq!(unit, Some(BLOCK_SIZE as u64));
         } else {
             assert_eq!(unit, None);

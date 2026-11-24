@@ -386,15 +386,16 @@ impl DiskManager {
 
         if entry.is_raw() {
             let chunk_start = (chunk_idx * crate::inode::CHUNK_SIZE_64K) as u64;
-            let stored_plain_len = if is_encrypted {
-                (inode.size.saturating_sub(chunk_start) as usize)
-                    .min(crate::inode::CHUNK_SIZE_64K)
-                    .max(chunk_valid_len)
-            } else {
-                chunk_valid_len
-            };
             let needed_bytes = if is_encrypted {
-                stored_plain_len + 40
+                let cl = entry.compressed_len() as usize;
+                if (40..65535).contains(&cl) {
+                    cl
+                } else {
+                    let stored_plain_len = (inode.size.saturating_sub(chunk_start) as usize)
+                        .min(crate::inode::CHUNK_SIZE_64K)
+                        .max(chunk_valid_len);
+                    stored_plain_len + 40
+                }
             } else {
                 chunk_valid_len
             };
@@ -965,7 +966,42 @@ impl DiskManager {
             let old_logical_size = if was_seekable { inode.size } else { 0 };
             let new_file_size = old_logical_size.max(file_offset + data.len() as u64);
             let mut chunks: Vec<(usize, std::borrow::Cow<'a, [u8]>, usize)> =
-                Vec::with_capacity(last_chunk - first_chunk + 1);
+                Vec::with_capacity(last_chunk - first_chunk + 2);
+
+            // If extending past a partial encrypted FLAG_RAW tail chunk whose compressed_len
+            // saturated at 65535 (65495..65535 plaintext bytes), re-encrypt that tail chunk at
+            // full 64 KiB length so subsequent reads know the exact stored ciphertext length.
+            if was_seekable && inode.encrypted && inode.size > 0 {
+                let old_last_chunk = ((inode.size - 1) / crate::inode::CHUNK_SIZE_64K as u64) as usize;
+                let old_last_start = (old_last_chunk * crate::inode::CHUNK_SIZE_64K) as u64;
+                let old_last_len = (inode.size - old_last_start) as usize;
+                if old_last_len < crate::inode::CHUNK_SIZE_64K && first_chunk > old_last_chunk {
+                    let old_entry =
+                        Self::resolve_logical_chunk_entry(&guard.backing, &inode, old_last_chunk);
+                    if !old_entry.is_empty()
+                        && old_entry.is_raw()
+                        && old_entry.compressed_len() == 65535
+                    {
+                        let new_tail_len = (new_file_size - old_last_start)
+                            .min(crate::inode::CHUNK_SIZE_64K as u64)
+                            as usize;
+                        let mut buf = vec![0u8; new_tail_len];
+                        Self::read_single_chunk_into(
+                            guard,
+                            inode_id,
+                            &inode,
+                            old_last_chunk,
+                            old_last_len,
+                            &mut buf[..old_last_len],
+                        )?;
+                        chunks.push((
+                            old_last_chunk,
+                            std::borrow::Cow::Owned(buf),
+                            new_tail_len,
+                        ));
+                    }
+                }
+            }
 
             for chunk_idx in first_chunk..=last_chunk {
                 let chunk_file_start = (chunk_idx * crate::inode::CHUNK_SIZE_64K) as u64;
@@ -1275,7 +1311,54 @@ impl DiskManager {
         if was_seekable || inode.size == 0 {
             let old_logical_size = if was_seekable { inode.size } else { 0 };
             let new_file_size = old_logical_size.max(file_offset + data.len() as u64);
-            let mut prepared_chunks = Vec::with_capacity(last_chunk - first_chunk + 1);
+            let mut prepared_chunks = Vec::with_capacity(last_chunk - first_chunk + 2);
+
+            if was_seekable && inode.encrypted && inode.size > 0 {
+                let old_last_chunk =
+                    ((inode.size - 1) / crate::inode::CHUNK_SIZE_64K as u64) as usize;
+                let old_last_start = (old_last_chunk * crate::inode::CHUNK_SIZE_64K) as u64;
+                let old_last_len = (inode.size - old_last_start) as usize;
+                if old_last_len < crate::inode::CHUNK_SIZE_64K && first_chunk > old_last_chunk {
+                    let old_entry =
+                        Self::resolve_logical_chunk_entry(&guard.backing, &inode, old_last_chunk);
+                    if !old_entry.is_empty()
+                        && old_entry.is_raw()
+                        && old_entry.compressed_len() == 65535
+                    {
+                        let new_tail_len = (new_file_size - old_last_start)
+                            .min(crate::inode::CHUNK_SIZE_64K as u64)
+                            as usize;
+                        let mut buf = vec![0u8; new_tail_len];
+                        Self::read_single_chunk_into(
+                            guard,
+                            inode_id,
+                            &inode,
+                            old_last_chunk,
+                            old_last_len,
+                            &mut buf[..old_last_len],
+                        )?;
+                        let (payload, flag, comp_len, blocks_needed) = Self::prepare_chunk_payload(
+                            &buf,
+                            new_tail_len,
+                            zstd_level,
+                            compress,
+                            guard.encryption_key.as_ref(),
+                            ChunkAadContext {
+                                inode_id,
+                                chunk_idx: old_last_chunk as u64,
+                                scheme: guard.superblock.encryption_version,
+                            },
+                        )?;
+                        prepared_chunks.push(PreparedChunkPayload {
+                            chunk_idx: old_last_chunk,
+                            payload,
+                            flag,
+                            comp_len,
+                            blocks_needed,
+                        });
+                    }
+                }
+            }
 
             for chunk_idx in first_chunk..=last_chunk {
                 let chunk_file_start = (chunk_idx * crate::inode::CHUNK_SIZE_64K) as u64;
@@ -1724,6 +1807,7 @@ impl DiskManager {
                 ranges.extend(payload_ranges);
                 guard.sync_mutation_ranges(&ranges)?;
             }
+            guard.invalidate_payload_caches(inode_id);
             guard.inode_cache.insert(inode_id, inode);
             Ok(())
         }
@@ -1746,6 +1830,189 @@ impl DiskManager {
 
         // Case A: Expansion (sparse)
         if new_size > inode.size {
+            if inode.encrypted && inode.size > 0 {
+                let old_last_chunk =
+                    ((inode.size - 1) / crate::inode::CHUNK_SIZE_64K as u64) as usize;
+                let old_last_start = (old_last_chunk * crate::inode::CHUNK_SIZE_64K) as u64;
+                let old_last_len = (inode.size - old_last_start) as usize;
+                if old_last_len < crate::inode::CHUNK_SIZE_64K {
+                    let old_entry =
+                        Self::resolve_logical_chunk_entry(&guard.backing, &inode, old_last_chunk);
+                    if !old_entry.is_empty()
+                        && old_entry.is_raw()
+                        && old_entry.compressed_len() == 65535
+                    {
+                        let new_tail_len = (new_size - old_last_start)
+                            .min(crate::inode::CHUNK_SIZE_64K as u64)
+                            as usize;
+                        let mut buf = vec![0u8; new_tail_len];
+                        Self::read_single_chunk_into(
+                            guard,
+                            inode_id,
+                            &inode,
+                            old_last_chunk,
+                            old_last_len,
+                            &mut buf[..old_last_len],
+                        )?;
+                        let (payload, flag, comp_len, blocks_needed) = Self::prepare_chunk_payload(
+                            &buf,
+                            new_tail_len,
+                            1,
+                            false,
+                            guard.encryption_key.as_ref(),
+                            ChunkAadContext {
+                                inode_id,
+                                chunk_idx: old_last_chunk as u64,
+                                scheme: guard.superblock.encryption_version,
+                            },
+                        )?;
+                        let comp_delta = comp_len as i64 - old_entry.compressed_len() as i64;
+                        if guard.superblock.has_journal_layout() {
+                            let mut sim = crate::journal::AllocSim::new_data_only(
+                                guard,
+                                guard.free_inode_hint,
+                                guard.free_block_hint,
+                            )?;
+                            let mut journal_ops = Vec::new();
+                            let new_start_blk =
+                                sim.alloc_contiguous(&guard.backing, blocks_needed)?;
+                            crate::journal::push_data_bitmap_op(
+                                &mut journal_ops,
+                                new_start_blk,
+                                blocks_needed as u32,
+                                true,
+                            );
+                            Self::write_chunk_blocks(
+                                &mut guard.backing,
+                                new_start_blk,
+                                blocks_needed,
+                                &payload,
+                            )?;
+                            let new_entry = crate::inode::ChunkEntry::new(
+                                new_start_blk as u32,
+                                blocks_needed as u8,
+                                flag,
+                                comp_len,
+                            );
+                            crate::journal::sim_set_logical_chunk_entry(
+                                &guard.backing,
+                                &mut inode,
+                                old_last_chunk,
+                                new_entry,
+                                &mut sim,
+                                &mut journal_ops,
+                            )?;
+                            let old_start = old_entry.start_block() as u64;
+                            let old_cnt = old_entry.block_count() as usize;
+                            sim.free_contiguous(&guard.backing, old_start, old_cnt)?;
+                            crate::journal::push_data_bitmap_op(
+                                &mut journal_ops,
+                                old_start,
+                                old_cnt as u32,
+                                false,
+                            );
+                            inode.compressed_size =
+                                (inode.compressed_size as i64 + comp_delta).max(0) as u64;
+                            inode.size = new_size;
+                            inode.modified_at = now;
+                            let post_image =
+                                Self::build_inode_post_image(guard, inode_id, &inode)?;
+                            journal_ops.push(crate::journal::MetadataOp::WriteInode {
+                                inode_id,
+                                inode_bytes: Box::new(post_image),
+                            });
+                            let payload_range = (
+                                (new_start_blk as usize).saturating_mul(BLOCK_SIZE),
+                                blocks_needed.saturating_mul(BLOCK_SIZE),
+                            );
+                            if guard.durability_mode() == DurabilityMode::Strict {
+                                let coalesced = DiskManagerInner::coalesce_ranges(
+                                    &[payload_range],
+                                    guard.backing.len(),
+                                );
+                                for (off, actual) in &coalesced {
+                                    guard.backing.flush_range(*off, *actual)?;
+                                }
+                            }
+                            let journal_ops = if crate::journal::is_already_coalesced(&journal_ops) {
+                                journal_ops
+                            } else {
+                                crate::journal::coalesce_ops(journal_ops)
+                            };
+                            Self::commit_journal_tx(guard, &journal_ops)?;
+                            Self::apply_journal_ops(guard, &journal_ops)?;
+                            guard.free_inode_hint = sim.free_inode_hint;
+                            guard.free_block_hint = sim.free_block_hint;
+                            guard.invalidate_payload_caches(inode_id);
+                            guard.inode_cache.insert(inode_id, inode);
+                            if guard.durability_mode() == DurabilityMode::RangeAsync {
+                                let mut ranges = vec![
+                                    guard.data_bitmap_byte_range(),
+                                    guard.inode_byte_range(inode_id),
+                                    payload_range,
+                                ];
+                                for op in &journal_ops {
+                                    if let crate::journal::MetadataOp::WriteBlockSlice {
+                                        block_id,
+                                        ..
+                                    } = op
+                                    {
+                                        ranges.push(guard.block_byte_range(*block_id));
+                                    }
+                                }
+                                guard.sync_mutation_ranges(&ranges)?;
+                            }
+                            Self::maybe_checkpoint(guard)?;
+                        } else {
+                            let new_start_blk =
+                                Self::allocate_contiguous_blocks_internal(guard, blocks_needed)?;
+                            Self::write_chunk_blocks(
+                                &mut guard.backing,
+                                new_start_blk,
+                                blocks_needed,
+                                &payload,
+                            )?;
+                            let new_entry = crate::inode::ChunkEntry::new(
+                                new_start_blk as u32,
+                                blocks_needed as u8,
+                                flag,
+                                comp_len,
+                            );
+                            Self::set_logical_chunk_entry(
+                                guard,
+                                &mut inode,
+                                old_last_chunk,
+                                new_entry,
+                                None,
+                            )?;
+                            let old_start = old_entry.start_block() as u64;
+                            let old_cnt = old_entry.block_count() as usize;
+                            Self::free_contiguous_blocks_internal(guard, old_start, old_cnt)?;
+                            inode.compressed_size =
+                                (inode.compressed_size as i64 + comp_delta).max(0) as u64;
+                            inode.size = new_size;
+                            inode.modified_at = now;
+                            Self::write_inode_internal(guard, inode_id, &inode)?;
+                            if guard.durability_mode().is_range_based() {
+                                let payload_range = (
+                                    (new_start_blk as usize).saturating_mul(BLOCK_SIZE),
+                                    blocks_needed.saturating_mul(BLOCK_SIZE),
+                                );
+                                let ranges = [
+                                    guard.data_bitmap_byte_range(),
+                                    guard.inode_byte_range(inode_id),
+                                    payload_range,
+                                ];
+                                guard.sync_mutation_ranges(&ranges)?;
+                            }
+                            guard.invalidate_payload_caches(inode_id);
+                            guard.inode_cache.insert(inode_id, inode);
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+
             inode.size = new_size;
             inode.modified_at = now;
             if guard.superblock.has_journal_layout() {
@@ -1756,6 +2023,7 @@ impl DiskManager {
                 }];
                 Self::commit_journal_tx(guard, &ops)?;
                 Self::apply_journal_ops(guard, &ops)?;
+                guard.invalidate_payload_caches(inode_id);
                 guard.inode_cache.insert(inode_id, inode);
                 Self::maybe_checkpoint(guard)?;
             } else {
@@ -1764,6 +2032,7 @@ impl DiskManager {
                     let range = guard.inode_byte_range(inode_id);
                     guard.sync_mutation_ranges(&[range])?;
                 }
+                guard.invalidate_payload_caches(inode_id);
                 guard.inode_cache.insert(inode_id, inode);
             }
             return Ok(());
@@ -2084,6 +2353,7 @@ impl DiskManager {
             let range = guard.inode_byte_range(inode_id);
             guard.sync_mutation_ranges(&[range])?;
         }
+        guard.invalidate_payload_caches(inode_id);
         guard.inode_cache.insert(inode_id, inode);
         Ok(())
     }

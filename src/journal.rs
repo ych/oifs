@@ -583,46 +583,74 @@ pub fn coalesce_ops(ops: Vec<MetadataOp>) -> Vec<MetadataOp> {
         });
     }
 
-    // 2. Data bitmap ops: sort by allocated, then start_block
-    data_bitmap_ops.sort_unstable_by_key(|&(blk, _, alloc)| (alloc, blk));
-    let mut cur_range: Option<(u64, u32, bool)> = None;
+    // 2. Data bitmap ops: resolve chronological last-write-wins over intervals,
+    //    then sort by polarity & start block and merge contiguous runs.
+    let mut intervals: Vec<(u64, u64, bool)> = Vec::with_capacity(data_bitmap_ops.len());
     for (blk, count, alloc) in data_bitmap_ops {
+        if count == 0 {
+            continue;
+        }
+        let ns = blk;
+        let ne = blk.saturating_add(count as u64);
+        let mut next = Vec::with_capacity(intervals.len() + 1);
+        for (es, ee, ea) in intervals {
+            if ee <= ns || es >= ne {
+                next.push((es, ee, ea));
+            } else {
+                if es < ns {
+                    next.push((es, ns, ea));
+                }
+                if ee > ne {
+                    next.push((ne, ee, ea));
+                }
+            }
+        }
+        next.push((ns, ne, alloc));
+        intervals = next;
+    }
+
+    intervals.sort_unstable_by_key(|&(s, _, alloc)| (alloc, s));
+    let mut cur_range: Option<(u64, u64, bool)> = None;
+    for (s, e, alloc) in intervals {
         match cur_range {
-            Some((start, cur_count, cur_alloc)) => {
-                if cur_alloc == alloc && start + cur_count as u64 == blk {
-                    cur_range = Some((start, cur_count + count, cur_alloc));
+            Some((cs, ce, ca)) => {
+                let merged_len = e.saturating_sub(cs);
+                if ca == alloc && ce == s && merged_len <= u32::MAX as u64 {
+                    cur_range = Some((cs, e, ca));
                 } else {
-                    if cur_count == 1 {
+                    let count = (ce - cs) as u32;
+                    if count == 1 {
                         coalesced.push(MetadataOp::SetDataBitmap {
-                            block_id: start,
-                            allocated: cur_alloc,
+                            block_id: cs,
+                            allocated: ca,
                         });
                     } else {
                         coalesced.push(MetadataOp::SetDataBitmapRange {
-                            start_block: start,
-                            count: cur_count,
-                            allocated: cur_alloc,
+                            start_block: cs,
+                            count,
+                            allocated: ca,
                         });
                     }
-                    cur_range = Some((blk, count, alloc));
+                    cur_range = Some((s, e, alloc));
                 }
             }
             None => {
-                cur_range = Some((blk, count, alloc));
+                cur_range = Some((s, e, alloc));
             }
         }
     }
-    if let Some((start, count, alloc)) = cur_range {
+    if let Some((cs, ce, ca)) = cur_range {
+        let count = (ce - cs) as u32;
         if count == 1 {
             coalesced.push(MetadataOp::SetDataBitmap {
-                block_id: start,
-                allocated: alloc,
+                block_id: cs,
+                allocated: ca,
             });
         } else {
             coalesced.push(MetadataOp::SetDataBitmapRange {
-                start_block: start,
+                start_block: cs,
                 count,
-                allocated: alloc,
+                allocated: ca,
             });
         }
     }
@@ -3352,7 +3380,7 @@ mod log_conformance_tests {
 // ---------------------------------------------------------------------------
 
 use crate::BLOCK_SIZE;
-use crate::allocator::{BlockAllocator, SimpleBlockAllocator};
+use crate::allocator::SimpleBlockAllocator;
 #[cfg(test)]
 use crate::disk::DiskManager;
 use crate::disk::{DiskManagerError, DiskManagerInner};
@@ -3481,17 +3509,13 @@ impl AllocSim {
     pub(crate) fn alloc_inode(&mut self) -> Result<u64, DiskManagerError> {
         let mut a = SimpleBlockAllocator::new(&mut self.inode_bitmap, 0);
         let id = a
-            .allocate_with_hint(Some(self.free_inode_hint))
+            .allocate_bounded(Some(self.free_inode_hint), self.usable_inodes)
             .map_err(DiskManagerError::Allocator)?;
-        // An id beyond the inode table would be written into the data
-        // area; release it again and report "no space".
-        if id >= self.usable_inodes {
-            let _ = a.free(id);
-            return Err(DiskManagerError::Allocator(
-                crate::allocator::AllocatorError::NoSpace,
-            ));
-        }
-        self.free_inode_hint = id + 1;
+        self.free_inode_hint = if id + 1 >= self.usable_inodes {
+            0
+        } else {
+            id + 1
+        };
         Ok(id)
     }
 
@@ -3502,16 +3526,13 @@ impl AllocSim {
         let bm = self.ensure_data_bitmap(backing)?;
         let mut a = SimpleBlockAllocator::new(bm, data_start);
         let blk = a
-            .allocate_with_hint(Some(hint))
+            .allocate_bounded(Some(hint), block_count)
             .map_err(DiskManagerError::Allocator)?;
-        // Never hand out a block outside the image.
-        if blk >= block_count {
-            let _ = a.free(blk);
-            return Err(DiskManagerError::Allocator(
-                crate::allocator::AllocatorError::NoSpace,
-            ));
-        }
-        self.free_block_hint = blk + 1;
+        self.free_block_hint = if blk + 1 >= block_count {
+            data_start
+        } else {
+            blk + 1
+        };
         self.fresh_blocks.push(blk);
         self.fresh_set.insert(blk);
         self.unzeroed_fresh.insert(blk);
@@ -3532,16 +3553,13 @@ impl AllocSim {
         let bm = self.ensure_data_bitmap(backing)?;
         let mut a = SimpleBlockAllocator::new(bm, data_start);
         let blk = a
-            .allocate_contiguous(count, Some(hint))
+            .allocate_contiguous_bounded(count, Some(hint), block_count)
             .map_err(DiskManagerError::Allocator)?;
-        // The run must stay inside the image.
-        if blk.saturating_add(count as u64) > block_count {
-            let _ = a.free_contiguous(blk, count);
-            return Err(DiskManagerError::Allocator(
-                crate::allocator::AllocatorError::NoSpace,
-            ));
-        }
-        self.free_block_hint = blk + count as u64;
+        self.free_block_hint = if blk + count as u64 >= block_count {
+            data_start
+        } else {
+            blk + count as u64
+        };
         for i in 0..count {
             let b = blk + i as u64;
             self.fresh_blocks.push(b);
@@ -4403,14 +4421,33 @@ pub(crate) fn prune_stale_pointers(
                 });
             }
         }
+        inode.blocks[11] = 0;
+        inode.triple_indirect = 0;
         return Ok(());
     }
 
     if first_stale <= DOUBLE_SPAN {
+        let rel = first_stale - SINGLE_SPAN;
+        let dib_idx = rel / POINTERS_PER_BLOCK;
+        let sib_idx = rel % POINTERS_PER_BLOCK;
         let dib = inode.blocks[11];
         if dib != 0 {
-            let start = first_stale - SINGLE_SPAN;
-            for a in start..POINTERS_PER_BLOCK {
+            let first_full_a = if sib_idx > 0 {
+                let boundary_sib = backing.read_block_ptr(dib, dib_idx);
+                if boundary_sib != 0 {
+                    for idx in sib_idx..POINTERS_PER_BLOCK {
+                        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                            block_id: boundary_sib,
+                            offset: (idx * 8) as u32,
+                            data: vec![0u8; 8],
+                        });
+                    }
+                }
+                dib_idx + 1
+            } else {
+                dib_idx
+            };
+            for a in first_full_a..POINTERS_PER_BLOCK {
                 ops.push(crate::journal::MetadataOp::WriteBlockSlice {
                     block_id: dib,
                     offset: (a * 8) as u32,
@@ -4428,20 +4465,64 @@ pub(crate) fn prune_stale_pointers(
                 });
             }
         }
+        inode.triple_indirect = 0;
         return Ok(());
     }
 
-    // Triple indirect: whole third-level blocks beyond the new length.
+    // Triple indirect: partial boundary subtree plus whole third-level blocks beyond new length.
+    let per_dib = POINTERS_PER_BLOCK * POINTERS_PER_BLOCK;
+    let rel = first_stale - DOUBLE_SPAN;
+    let a0 = rel / per_dib;
+    let rem = rel % per_dib;
+    let b0 = rem / POINTERS_PER_BLOCK;
+    let c0 = rem % POINTERS_PER_BLOCK;
     let tib = inode.triple_indirect;
     if tib != 0 {
-        let start = first_stale - DOUBLE_SPAN;
-        for b in start..POINTERS_PER_BLOCK {
+        let first_full_a = if a0 < POINTERS_PER_BLOCK && (b0 > 0 || c0 > 0) {
+            let boundary_dib = backing.read_block_ptr(tib, a0);
+            if boundary_dib != 0 {
+                let first_full_b = if c0 > 0 {
+                    let boundary_sib = backing.read_block_ptr(boundary_dib, b0);
+                    if boundary_sib != 0 {
+                        for idx in c0..POINTERS_PER_BLOCK {
+                            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                                block_id: boundary_sib,
+                                offset: (idx * 8) as u32,
+                                data: vec![0u8; 8],
+                            });
+                        }
+                    }
+                    b0 + 1
+                } else {
+                    b0
+                };
+                for c in first_full_b..POINTERS_PER_BLOCK {
+                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                        block_id: boundary_dib,
+                        offset: (c * 8) as u32,
+                        data: vec![0u8; 8],
+                    });
+                    let sib3 = backing.read_block_ptr(boundary_dib, c);
+                    if sib3 != 0 {
+                        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                            block_id: sib3,
+                            offset: 0,
+                            data: vec![0u8; BLOCK_SIZE],
+                        });
+                    }
+                }
+            }
+            a0 + 1
+        } else {
+            a0
+        };
+        for a in first_full_a..POINTERS_PER_BLOCK {
             ops.push(crate::journal::MetadataOp::WriteBlockSlice {
                 block_id: tib,
-                offset: (b * 8) as u32,
+                offset: (a * 8) as u32,
                 data: vec![0u8; 8],
             });
-            let dib2 = backing.read_block_ptr(tib, b);
+            let dib2 = backing.read_block_ptr(tib, a);
             if dib2 == 0 {
                 continue;
             }
@@ -4575,12 +4656,14 @@ mod prune_pointer_tests {
         const SIB2: u64 = 22;
         let mut inode = Inode::new(crate::inode::FileType::File);
         inode.blocks[11] = DIB;
-        // Give the first stale second-level block a real target.
+        inode.triple_indirect = 99;
+        // Give the first stale second-level block a real target (DIB slot 3 => SINGLE_SPAN + 3 * P).
         plant(&mut mmap, DIB, 3, SIB2);
         let mut ops = Vec::new();
-        prune_stale_pointers(&mmap, &mut inode, SINGLE_SPAN + 3, &mut ops).expect("prune");
+        prune_stale_pointers(&mmap, &mut inode, SINGLE_SPAN + 3 * P, &mut ops).expect("prune");
 
-        // The dib entry is zeroed and the whole sib2 block is wiped.
+        // The dib entry is zeroed, the whole sib2 block is wiped, and triple root is dropped.
+        assert_eq!(inode.triple_indirect, 0);
         assert!(!ops_targeting(&ops, DIB).is_empty(), "dib entry zeroed");
         let sib2_ops = ops_targeting(&ops, SIB2);
         assert_eq!(sib2_ops.len(), 1, "whole second-level block wiped");
@@ -4594,6 +4677,51 @@ mod prune_pointer_tests {
     }
 
     #[test]
+    fn test_prune_into_double_indirect_boundary_split_preserves_surviving_prefix() {
+        let (_f, mut mmap) = scratch();
+        const DIB: u64 = 21;
+        const BOUNDARY_SIB: u64 = 22;
+        const FULL_STALE_SIB: u64 = 23;
+        let mut inode = Inode::new(crate::inode::FileType::File);
+        inode.blocks[11] = DIB;
+        inode.triple_indirect = 99;
+        plant(&mut mmap, DIB, 3, BOUNDARY_SIB);
+        plant(&mut mmap, DIB, 4, FULL_STALE_SIB);
+
+        let mut ops = Vec::new();
+        prune_stale_pointers(&mmap, &mut inode, SINGLE_SPAN + 3 * P + 7, &mut ops).expect("prune");
+
+        assert_eq!(inode.triple_indirect, 0);
+        let dib_ops = ops_targeting(&ops, DIB);
+        assert_eq!(dib_ops.len(), P - 4, "DIB[3] must survive; DIB[4..512] zeroed");
+        let boundary_ops = ops_targeting(&ops, BOUNDARY_SIB);
+        assert_eq!(
+            boundary_ops.len(),
+            P - 7,
+            "entries 7..512 of boundary SIB must be zeroed"
+        );
+        assert_eq!(
+            ops_targeting(&ops, FULL_STALE_SIB).len(),
+            1,
+            "stale DIB[4] child SIB must be wiped"
+        );
+    }
+
+    #[test]
+    fn test_prune_single_indirect_drops_double_and_triple_roots() {
+        let (_f, mmap) = scratch();
+        const SIB: u64 = 20;
+        let mut inode = Inode::new(crate::inode::FileType::File);
+        inode.blocks[10] = SIB;
+        inode.blocks[11] = 21;
+        inode.triple_indirect = 22;
+        let mut ops = Vec::new();
+        prune_stale_pointers(&mmap, &mut inode, DIRECT + 100, &mut ops).expect("prune");
+        assert_eq!(inode.blocks[11], 0);
+        assert_eq!(inode.triple_indirect, 0);
+    }
+
+    #[test]
     fn test_prune_into_triple_indirect_is_reachable_and_zeroes_third_level() {
         // The triple-indirect branch needs a file larger than ~1 GB, so it cannot be
         // reached by an integration test. Drive it directly instead.
@@ -4601,7 +4729,7 @@ mod prune_pointer_tests {
         const DIB2: u64 = 24;
         const SIB3: u64 = 25;
         let (_f, mut mmap) = scratch();
-        // Plant a third-level chain reachable from the first stale `b`.
+        // Plant a third-level chain reachable from the first stale `a = 1`.
         plant(&mut mmap, TIB, 1, DIB2);
         plant(&mut mmap, DIB2, 2, SIB3);
 
@@ -4609,9 +4737,9 @@ mod prune_pointer_tests {
         inode.triple_indirect = TIB;
 
         let mut ops = Vec::new();
-        prune_stale_pointers(&mmap, &mut inode, DOUBLE_SPAN + 1, &mut ops).expect("prune");
+        prune_stale_pointers(&mmap, &mut inode, DOUBLE_SPAN + P * P, &mut ops).expect("prune");
 
-        // TIB entries from the first stale b upward are zeroed.
+        // TIB entries from the first stale a = 1 upward are zeroed.
         let tib_ops = ops_targeting(&ops, TIB);
         assert_eq!(tib_ops.len(), P - 1, "tib entries 1..512 zeroed");
 
@@ -4622,6 +4750,30 @@ mod prune_pointer_tests {
             ops_targeting(&ops, SIB3).len() == 1,
             "leaf block must be wiped"
         );
+    }
+
+    #[test]
+    fn test_prune_into_triple_indirect_boundary_split() {
+        const TIB: u64 = 23;
+        const BOUNDARY_DIB: u64 = 24;
+        const BOUNDARY_SIB: u64 = 25;
+        const STALE_SIB: u64 = 26;
+        let (_f, mut mmap) = scratch();
+        plant(&mut mmap, TIB, 1, BOUNDARY_DIB);
+        plant(&mut mmap, BOUNDARY_DIB, 2, BOUNDARY_SIB);
+        plant(&mut mmap, BOUNDARY_DIB, 3, STALE_SIB);
+
+        let mut inode = Inode::new(crate::inode::FileType::File);
+        inode.triple_indirect = TIB;
+
+        let mut ops = Vec::new();
+        prune_stale_pointers(&mmap, &mut inode, DOUBLE_SPAN + P * P + 2 * P + 5, &mut ops)
+            .expect("prune");
+
+        assert_eq!(ops_targeting(&ops, TIB).len(), P - 2, "TIB[1] survives; TIB[2..512] zeroed");
+        assert_eq!(ops_targeting(&ops, BOUNDARY_DIB).len(), P - 3, "DIB[2] survives; DIB[3..512] zeroed");
+        assert_eq!(ops_targeting(&ops, BOUNDARY_SIB).len(), P - 5, "SIB[5..512] zeroed");
+        assert_eq!(ops_targeting(&ops, STALE_SIB).len(), 1, "stale SIB wiped");
     }
 
     #[test]
@@ -5268,5 +5420,65 @@ mod alloc_sim_and_staging_tests {
             encode_ops(&canonical_ops),
             encode_ops(&coalesce_ops(canonical_ops.clone()))
         );
+    }
+
+    #[test]
+    fn test_coalesce_ops_preserves_chronological_data_bitmap_polarity() {
+        // Alloc [10..15), then free [12..14), then re-alloc [13..14).
+        // Final state must be: [10..12)=true, [12..13)=false, [13..15)=true.
+        let ops = vec![
+            MetadataOp::SetDataBitmapRange {
+                start_block: 10,
+                count: 5,
+                allocated: true,
+            },
+            MetadataOp::SetDataBitmapRange {
+                start_block: 12,
+                count: 2,
+                allocated: false,
+            },
+            MetadataOp::SetDataBitmap {
+                block_id: 13,
+                allocated: true,
+            },
+        ];
+        let coalesced = coalesce_ops(ops);
+        let mut bitmap = [0u8; 4];
+        for op in &coalesced {
+            match op {
+                MetadataOp::SetDataBitmap {
+                    block_id,
+                    allocated,
+                } => {
+                    let b = *block_id as usize;
+                    if *allocated {
+                        bitmap[b / 8] |= 1 << (b % 8);
+                    } else {
+                        bitmap[b / 8] &= !(1 << (b % 8));
+                    }
+                }
+                MetadataOp::SetDataBitmapRange {
+                    start_block,
+                    count,
+                    allocated,
+                } => {
+                    for b in *start_block..(*start_block + *count as u64) {
+                        let idx = b as usize;
+                        if *allocated {
+                            bitmap[idx / 8] |= 1 << (idx % 8);
+                        } else {
+                            bitmap[idx / 8] &= !(1 << (idx % 8));
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        let is_set = |b: usize| (bitmap[b / 8] & (1 << (b % 8))) != 0;
+        assert!(is_set(10));
+        assert!(is_set(11));
+        assert!(!is_set(12));
+        assert!(is_set(13));
+        assert!(is_set(14));
     }
 }

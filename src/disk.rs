@@ -3163,7 +3163,7 @@ impl DiskManager {
             )));
         }
 
-        // 2. Allocate Inode with search hint
+        // 2. Allocate Inode with bounded wrapping search hint
         let hint = guard.free_inode_hint;
         let usable_inodes = guard.superblock.usable_inode_count();
         let new_inode_id = {
@@ -3171,21 +3171,15 @@ impl DiskManager {
                 DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
             })?;
             let mut allocator = SimpleBlockAllocator::new(&mut bitmap_slice, 0);
-            let id = allocator.allocate_with_hint(Some(hint))?;
-            // The bitmap can track more ids than the inode table can
-            // hold. An id beyond the table would be written into the data
-            // area, so it is released again and reported as "no space".
-            if id >= usable_inodes {
-                let _ = allocator.free(id);
-                bitmap_slice.set_dirty_bits(0, 0);
-                return Err(DiskManagerError::Allocator(
-                    crate::allocator::AllocatorError::NoSpace,
-                ));
-            }
+            let id = allocator.allocate_bounded(Some(hint), usable_inodes)?;
             bitmap_slice.set_dirty_bits(id as usize, 1);
             id
         };
-        guard.free_inode_hint = new_inode_id + 1;
+        guard.free_inode_hint = if new_inode_id + 1 >= usable_inodes {
+            0
+        } else {
+            new_inode_id + 1
+        };
 
         // 3. Init Inode with proper timestamps
         let now = std::time::SystemTime::now()
@@ -3401,18 +3395,15 @@ impl DiskManager {
                 DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
             })?;
             let mut allocator = SimpleBlockAllocator::new(&mut bitmap_slice, 0);
-            let id = allocator.allocate_with_hint(Some(hint))?;
-            if id >= usable_inodes {
-                let _ = allocator.free(id);
-                bitmap_slice.set_dirty_bits(0, 0);
-                return Err(DiskManagerError::Allocator(
-                    crate::allocator::AllocatorError::NoSpace,
-                ));
-            }
+            let id = allocator.allocate_bounded(Some(hint), usable_inodes)?;
             bitmap_slice.set_dirty_bits(id as usize, 1);
             id
         };
-        guard.free_inode_hint = new_inode_id + 1;
+        guard.free_inode_hint = if new_inode_id + 1 >= usable_inodes {
+            0
+        } else {
+            new_inode_id + 1
+        };
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -4845,9 +4836,14 @@ impl DiskManager {
             return Self::read_at_chunked_64k(guard, inode_id, inode, file_offset, buf);
         }
 
-        // Fallback for compressed or encrypted files: serve from bounded decoded-blob cache
-        // when <= 16 MiB, avoiding O(calls * file_size) full-file decompression/decryption cliffs.
-        if inode.compressed_size > 0 || inode.encrypted {
+        // Fallback for compressed, encrypted, or filtered files: serve from bounded decoded-blob cache
+        // when <= 16 MiB, avoiding O(calls * file_size) full-file decompression/decryption/unfilter cliffs.
+        if inode.compressed_size > 0
+            || inode.encrypted
+            || inode.filter_delta
+            || inode.filter_shuffle
+            || inode.filter_bitshuffle
+        {
             if (inode.size as usize) <= DecodedBlobCache::MAX_ENTRY_BYTES {
                 let cached = crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, inode);
                 let blob = match cached {
@@ -6146,22 +6142,16 @@ impl DiskManager {
             })?;
             let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
             let blk = da
-                .allocate_with_hint(Some(hint))
+                .allocate_bounded(Some(hint), block_count)
                 .map_err(DiskManagerError::Allocator)?;
-            // The data bitmap is sized in 4 KiB blocks, so it can track
-            // blocks beyond the end of the image. Such a block is released
-            // again and reported as "no space".
-            if blk >= block_count {
-                let _ = da.free(blk);
-                slice.set_dirty_bits(0, 0);
-                return Err(DiskManagerError::Allocator(
-                    crate::allocator::AllocatorError::NoSpace,
-                ));
-            }
             slice.set_dirty_bits((blk - db_start) as usize, 1);
             blk
         };
-        guard.free_block_hint = blk + 1;
+        guard.free_block_hint = if blk + 1 >= block_count {
+            db_start
+        } else {
+            blk + 1
+        };
         Ok(blk)
     }
 
@@ -6192,19 +6182,16 @@ impl DiskManager {
             })?;
             let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
             let blk = da
-                .allocate_contiguous(count, Some(hint))
+                .allocate_contiguous_bounded(count, Some(hint), block_count)
                 .map_err(DiskManagerError::Allocator)?;
-            if blk.saturating_add(count as u64) > block_count {
-                let _ = da.free_contiguous(blk, count);
-                slice.set_dirty_bits(0, 0);
-                return Err(DiskManagerError::Allocator(
-                    crate::allocator::AllocatorError::NoSpace,
-                ));
-            }
             slice.set_dirty_bits((blk - db_start) as usize, count);
             blk
         };
-        guard.free_block_hint = blk + count as u64;
+        guard.free_block_hint = if blk + count as u64 >= block_count {
+            db_start
+        } else {
+            blk + count as u64
+        };
         Ok(blk)
     }
 
@@ -7802,6 +7789,20 @@ impl DiskManager {
                 inode.encryption_nonce = nonce;
             }
             Self::write_inode_internal(guard, inode_id, &inode)?;
+            if guard.durability_mode().is_range_based() {
+                let mut ranges = vec![
+                    guard.data_bitmap_byte_range(),
+                    guard.inode_byte_range(inode_id),
+                ];
+                if let Some(tb) = touched {
+                    for blk in tb {
+                        ranges.push(guard.block_byte_range(blk));
+                    }
+                }
+                guard.sync_mutation_ranges(&ranges)?;
+            } else {
+                guard.sync_mutation_ranges(&[])?;
+            }
             return Ok(());
         }
 
@@ -7813,7 +7814,8 @@ impl DiskManager {
             // readable through the extended file.
             let old_size = inode.size;
             let mut ops = Vec::new();
-            if old_size > 0 {
+            let mut zeroed_last_blk: Option<u64> = None;
+            if old_size > 0 && !old_size.is_multiple_of(BLOCK_SIZE as u64) {
                 let last_logical_idx = ((old_size - 1) / BLOCK_SIZE as u64) as usize;
                 let last_phys_blk =
                     Self::resolve_logical_block_id(&guard.backing, &inode, last_logical_idx);
@@ -7827,10 +7829,14 @@ impl DiskManager {
                             offset: slack_start as u32,
                             data: vec![0u8; slack_len],
                         });
-                    } else {
-                        let _ = guard.backing.with_block_mut(last_phys_blk, |slice| {
+                    } else if guard
+                        .backing
+                        .with_block_mut(last_phys_blk, |slice| {
                             slice[slack_start..].fill(0);
-                        });
+                        })
+                        .is_ok()
+                    {
+                        zeroed_last_blk = Some(last_phys_blk);
                     }
                 }
             }
@@ -7851,8 +7857,13 @@ impl DiskManager {
             } else {
                 Self::write_inode_internal(guard, inode_id, &inode)?;
                 if guard.durability_mode().is_range_based() {
-                    let range = guard.inode_byte_range(inode_id);
-                    guard.sync_mutation_ranges(&[range])?;
+                    if let Some(blk) = zeroed_last_blk {
+                        let ranges = [guard.block_byte_range(blk), guard.inode_byte_range(inode_id)];
+                        guard.sync_mutation_ranges(&ranges)?;
+                    } else {
+                        let range = guard.inode_byte_range(inode_id);
+                        guard.sync_mutation_ranges(&[range])?;
+                    }
                 }
             }
             return Ok(());
@@ -9094,8 +9105,13 @@ impl DiskManager {
             return None;
         }
 
-        // 2. DecodedBlobCache hit probe for compressed/encrypted files.
-        if inode.compressed_size > 0 || inode.encrypted {
+        // 2. DecodedBlobCache hit probe for compressed/encrypted/filtered files.
+        if inode.compressed_size > 0
+            || inode.encrypted
+            || inode.filter_delta
+            || inode.filter_shuffle
+            || inode.filter_bitshuffle
+        {
             if let Some(blob) =
                 crate::lock_unpoisoned(&guard.decoded_blob_cache).get(inode_id, &inode)
             {
@@ -9227,7 +9243,11 @@ impl DiskManager {
             if data.len() <= DecodedBlobCache::MAX_ENTRY_BYTES
                 && let Ok(guard) = dm.inner.read()
                 && let Some(inode) = guard.inode_cache.get(inode_id)
-                && (inode.compressed_size > 0 || inode.encrypted)
+                && (inode.compressed_size > 0
+                    || inode.encrypted
+                    || inode.filter_delta
+                    || inode.filter_shuffle
+                    || inode.filter_bitshuffle)
                 && (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) == 0
             {
                 crate::lock_unpoisoned(&guard.decoded_blob_cache).insert(

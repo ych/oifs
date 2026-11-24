@@ -344,28 +344,27 @@ impl DataPageCache {
 
     fn set_capacity_bytes(&self, bytes: usize) {
         let new_limit = Self::blocks_per_shard_for_bytes(bytes);
-        self.max_per_shard.store(new_limit, Ordering::Relaxed);
+        self.max_per_shard.store(new_limit, Ordering::Release);
         if new_limit == 0 {
             self.clear();
             return;
         }
-        if self.count.load(Ordering::Relaxed) == 0 {
+        if self.count.load(Ordering::Acquire) == 0 {
             return;
         }
-        let mut removed = 0usize;
         for lock in &self.shards {
             let mut shard = lock.write().unwrap_or_else(|e| e.into_inner());
+            let mut shard_removed = 0usize;
             while shard.map.len() > new_limit {
-                if let Some(evicted) = Self::evict_one_locked(&mut shard) {
-                    let _ = evicted;
-                    removed += 1;
+                if Self::evict_one_locked(&mut shard).is_some() {
+                    shard_removed += 1;
                 } else {
                     break;
                 }
             }
-        }
-        if removed > 0 {
-            self.count.fetch_sub(removed, Ordering::Relaxed);
+            if shard_removed > 0 {
+                self.count.fetch_sub(shard_removed, Ordering::AcqRel);
+            }
         }
     }
 
@@ -430,13 +429,16 @@ impl DataPageCache {
     }
 
     fn insert(&self, block_id: u64, block: Box<[u8; BLOCK_SIZE]>) {
-        let limit = self.max_per_shard.load(Ordering::Relaxed);
-        if limit == 0 {
+        if self.max_per_shard.load(Ordering::Acquire) == 0 {
             return;
         }
         let mut shard = self.shards[Self::shard_idx(block_id)]
             .write()
             .unwrap_or_else(|e| e.into_inner());
+        let limit = self.max_per_shard.load(Ordering::Acquire);
+        if limit == 0 {
+            return;
+        }
         if let Some(existing) = shard.map.get_mut(&block_id) {
             existing.data = block;
             existing.referenced.store(true, Ordering::Relaxed);
@@ -459,16 +461,16 @@ impl DataPageCache {
         );
         shard.ring.push(block_id);
         if net_delta > 0 {
-            self.count.fetch_add(net_delta as usize, Ordering::Relaxed);
+            self.count.fetch_add(net_delta as usize, Ordering::AcqRel);
         } else if net_delta < 0 {
             self.count
-                .fetch_sub((-net_delta) as usize, Ordering::Relaxed);
+                .fetch_sub((-net_delta) as usize, Ordering::AcqRel);
         }
     }
 
     #[inline]
     fn update_if_present(&self, block_id: u64, offset_in_block: usize, data: &[u8]) {
-        if self.count.load(Ordering::Relaxed) == 0 {
+        if self.count.load(Ordering::Acquire) == 0 {
             return;
         }
         let mut shard = self.shards[Self::shard_idx(block_id)]
@@ -484,19 +486,19 @@ impl DataPageCache {
 
     #[inline]
     fn invalidate(&self, block_id: u64) {
-        if self.count.load(Ordering::Relaxed) == 0 {
+        if self.count.load(Ordering::Acquire) == 0 {
             return;
         }
         let mut shard = self.shards[Self::shard_idx(block_id)]
             .write()
             .unwrap_or_else(|e| e.into_inner());
         if shard.map.remove(&block_id).is_some() {
-            self.count.fetch_sub(1, Ordering::Relaxed);
+            self.count.fetch_sub(1, Ordering::AcqRel);
         }
     }
 
     fn invalidate_block_range(&self, first_blk: u64, last_blk: u64) {
-        if self.count.load(Ordering::Relaxed) == 0 {
+        if self.count.load(Ordering::Acquire) == 0 {
             return;
         }
         let span = last_blk.saturating_sub(first_blk).saturating_add(1);
@@ -506,7 +508,6 @@ impl DataPageCache {
             }
             return;
         }
-        let mut removed = 0usize;
         for lock in &self.shards {
             let mut shard = lock.write().unwrap_or_else(|e| e.into_inner());
             if shard.map.is_empty() {
@@ -514,24 +515,24 @@ impl DataPageCache {
             }
             let before = shard.map.len();
             shard.map.retain(|&k, _| k < first_blk || k > last_blk);
-            removed += before - shard.map.len();
-        }
-        if removed > 0 {
-            self.count.fetch_sub(removed, Ordering::Relaxed);
+            let shard_removed = before - shard.map.len();
+            if shard_removed > 0 {
+                self.count.fetch_sub(shard_removed, Ordering::AcqRel);
+            }
         }
     }
 
     fn clear(&self) {
-        if self.count.load(Ordering::Relaxed) == 0 {
-            return;
-        }
         for lock in &self.shards {
             let mut shard = lock.write().unwrap_or_else(|e| e.into_inner());
+            let removed = shard.map.len();
             shard.map.clear();
             shard.ring.clear();
             shard.hand = 0;
+            if removed > 0 {
+                self.count.fetch_sub(removed, Ordering::AcqRel);
+            }
         }
-        self.count.store(0, Ordering::Relaxed);
     }
 }
 

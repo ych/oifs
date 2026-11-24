@@ -103,6 +103,64 @@ impl<'a> SimpleBlockAllocator<'a> {
         }
     }
 
+    /// Allocates a free block strictly below `max_block_exclusive`, searching from
+    /// `hint_block_id` and wrapping around within `[start_block_offset, max_block_exclusive)`.
+    pub fn allocate_bounded(
+        &mut self,
+        hint_block_id: Option<u64>,
+        max_block_exclusive: u64,
+    ) -> Result<u64, AllocatorError> {
+        let limit = usize::try_from(max_block_exclusive.saturating_sub(self.start_block_offset))
+            .unwrap_or(usize::MAX);
+        if limit == 0 {
+            return Err(AllocatorError::NoSpace);
+        }
+        let hint_bit = hint_block_id
+            .and_then(|id| id.checked_sub(self.start_block_offset))
+            .and_then(|bit| usize::try_from(bit).ok())
+            .map(|bit| if bit >= limit { 0 } else { bit })
+            .unwrap_or(0);
+
+        let mut bitmap = Bitmap::new(self.bitmap_data);
+        if let Some(bit_index) = bitmap.find_next_free_bounded(hint_bit, limit) {
+            bitmap.set(bit_index);
+            Ok(self.start_block_offset + bit_index as u64)
+        } else {
+            Err(AllocatorError::NoSpace)
+        }
+    }
+
+    /// Allocates a contiguous run of `count` free blocks strictly below `max_block_exclusive`,
+    /// searching from `hint_block_id` and wrapping around inside the usable range.
+    pub fn allocate_contiguous_bounded(
+        &mut self,
+        count: usize,
+        hint_block_id: Option<u64>,
+        max_block_exclusive: u64,
+    ) -> Result<u64, AllocatorError> {
+        if count == 0 {
+            return Ok(hint_block_id.unwrap_or(self.start_block_offset));
+        }
+        let limit = usize::try_from(max_block_exclusive.saturating_sub(self.start_block_offset))
+            .unwrap_or(usize::MAX);
+        if limit == 0 || count > limit {
+            return Err(AllocatorError::NoSpace);
+        }
+        let hint_bit = hint_block_id
+            .and_then(|id| id.checked_sub(self.start_block_offset))
+            .and_then(|bit| usize::try_from(bit).ok())
+            .filter(|&bit| bit < limit)
+            .unwrap_or(0);
+
+        let mut bitmap = Bitmap::new(self.bitmap_data);
+        if let Some(bit_index) = bitmap.find_contiguous_free_bounded(hint_bit, count, limit) {
+            bitmap.set_range(bit_index, count);
+            Ok(self.start_block_offset + bit_index as u64)
+        } else {
+            Err(AllocatorError::NoSpace)
+        }
+    }
+
     /// Allocates a contiguous run of `count` free blocks starting from an optional hint block ID.
     pub fn allocate_contiguous(
         &mut self,

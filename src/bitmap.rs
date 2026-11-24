@@ -117,9 +117,14 @@ impl<'a> BitmapRef<'a> {
         }
     }
 
-    /// Find first range of `count` contiguous free bits (0s) starting from `start_bit`.
-    pub fn find_contiguous_free_from(&self, mut start_bit: usize, count: usize) -> Option<usize> {
-        let total_bits = self.data.len() * 8;
+    /// Find first range of `count` contiguous free bits (0s) starting from `start_bit` strictly below `limit`.
+    pub fn find_contiguous_free_in_range(
+        &self,
+        mut start_bit: usize,
+        count: usize,
+        limit: usize,
+    ) -> Option<usize> {
+        let total_bits = (self.data.len() * 8).min(limit);
         if count == 0 {
             return if start_bit <= total_bits {
                 Some(start_bit)
@@ -131,7 +136,7 @@ impl<'a> BitmapRef<'a> {
             return None;
         }
         if count == 1 {
-            return self.find_first_free_from(start_bit);
+            return self.find_first_free_from(start_bit).filter(|&b| b < total_bits);
         }
 
         let (chunks, remainder) = self.data.as_chunks::<8>();
@@ -178,6 +183,37 @@ impl<'a> BitmapRef<'a> {
         }
 
         None
+    }
+
+    /// Find first range of `count` contiguous free bits (0s) starting from `start_bit`.
+    pub fn find_contiguous_free_from(&self, start_bit: usize, count: usize) -> Option<usize> {
+        self.find_contiguous_free_in_range(start_bit, count, self.data.len() * 8)
+    }
+
+    /// Find `count` contiguous free bits in `[0, limit)`, searching from `start` and wrapping around.
+    pub fn find_contiguous_free_bounded(
+        &self,
+        start: usize,
+        count: usize,
+        limit: usize,
+    ) -> Option<usize> {
+        let limit = limit.min(self.data.len() * 8);
+        if count == 0 {
+            return (start <= limit).then_some(start);
+        }
+        if count > limit {
+            return None;
+        }
+        let start = start.min(limit);
+        if let Some(idx) = self.find_contiguous_free_in_range(start, count, limit) {
+            return Some(idx);
+        }
+        if start > 0 {
+            self.find_contiguous_free_in_range(0, count, limit)
+                .filter(|&idx| idx < start)
+        } else {
+            None
+        }
     }
 
     /// Find first range of `count` contiguous free bits starting from 0.
@@ -375,6 +411,12 @@ impl<'a> Bitmap<'a> {
         BitmapRef::new(self.data).find_first_free_from(start_bit)
     }
 
+    /// Finds next free bit in `[start, limit)`, wrapping around inside that range.
+    #[inline]
+    pub fn find_next_free_bounded(&self, start: usize, limit: usize) -> Option<usize> {
+        BitmapRef::new(self.data).find_next_free_bounded(start, limit)
+    }
+
     /// Finds next free bit starting from `hint`. If not found, wraps around to 0.
     #[inline]
     pub fn find_next_free_wrapped(&self, hint: usize) -> Option<usize> {
@@ -397,6 +439,17 @@ impl<'a> Bitmap<'a> {
     #[inline]
     pub fn find_contiguous_free_wrapped(&self, hint: usize, count: usize) -> Option<usize> {
         BitmapRef::new(self.data).find_contiguous_free_wrapped(hint, count)
+    }
+
+    /// Find `count` contiguous free bits in `[0, limit)`, searching from `start` and wrapping around.
+    #[inline]
+    pub fn find_contiguous_free_bounded(
+        &self,
+        start: usize,
+        count: usize,
+        limit: usize,
+    ) -> Option<usize> {
+        BitmapRef::new(self.data).find_contiguous_free_bounded(start, count, limit)
     }
 
     /// Fast 64-bit word iterator over all set bits

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-25
+
+### Added
+- **Pure-Rust Local Loopback NFSv3 Server (`src/nfs.rs`)**:
+  - Added a zero-dependency, kext-free, reboot-free local NFSv3 + MOUNT v3 server multiplexed over a single loopback TCP port (`127.0.0.1:0`) with stateless 16-byte file handles, bounded ONC RPC v2 record framing, all 18 NFS v3 procedures (including atomic `RENAME`, paginated `READDIR`/`READDIRPLUS`, UTF-8 NFD→NFC normalization, macOS Finder metadata filtering, and strict `NFS3ERR_ROFS` read-only enforcement).
+  - Wired into `oifs mount <mountpoint> [--backend auto|nfs|fuse] [--port <u16>]` (making zero-kext NFSv3 the default `--backend auto` on macOS), with `tests/nfs_test.rs`, `tests/nfs_live_mount_test.rs`, and 3 Kani formal proofs.
+- **Kani Formal Verification Suite Expanded to 113 Harnesses (+4 since v1.4.0)**:
+  - Added 3 NFSv3 proofs in `src/nfs.rs` and 1 exact-count worker wakeup liveness proof in `src/zstd_pool.rs`.
+- **Regression Test Suites**:
+  - Added `tests/signal_storm_test.rs`, `tests/data_integrity_regressions_test.rs`, `tests/security_auth_regressions_test.rs`, `tests/wal_and_concurrency_regressions_test.rs`, `tests/protocol_ffi_stability_regressions_test.rs`, and `tests/perf_regressions_test.rs`.
+
+### Security & Reliability
+- **Upgraded Zstd Stack (`zstd 0.14.5`, `zstd-safe 8.4.0`, `zstd-sys 2.2.0+zstd.1.6.0`)**:
+  - Bundled upstream C `zstd 1.6.0` hardening fixes and `zstd-safe 8.4.0` addressing `RUSTSEC-2026-0401` and `RUSTSEC-2026-0402`.
+- **Reduced Default Dependency Surface by 50% (112 → 56 crates; 65 → 49 crates `--no-default-features`)**:
+  - Moved the optional MCP stack (`rmcp`/`tokio`/`schemars`) out of default features (`--features mcp`), trimmed unused `clap` color/suggestions crates behind `cli`, replaced `zeroize_derive` proc-macro on `EncryptionKey` with explicit `Zeroize`/`Drop`/`ZeroizeOnDrop` impls, and limited `argon2`'s `password-hash` feature to dev-dependencies.
+- **Crypto, Auth, WAL & Protocol Hardening**:
+  - Authenticated `_e_` filename SIV decryption (`decrypt_filename_authenticated`), zeroized Argon2id/subkey/ChaCha20 key material, enforced cached-session password verification in `OifsSession`, removed pre-lock file truncation, and rejected stale/deleted handles in FUSE (`-ESTALE`) and NFS (`NFS3ERR_STALE`).
+  - Hardened `write_data_journaled` with Copy-On-Write before WAL commit, pre-checkpointed `Strict` WAL ring wraps instead of dropping frames, persisted ordered `migration_cursor` progress, added `inode_write_gen` Stage-3 staleness detection, fixed `OifsAsyncTask` worker-panic wakeup, and hardened syscalls against `EINTR` signal storms and race-free IPC shutdown.
+  - Enforced pre-auth 4 KiB IPC frame limits, handshake timeouts, atomic `0o600` `.master` files, NFS fragment/connection/socket bounds, FUSE `SCM_RIGHTS` alignment/truncation checks, C++20 `Awaiter` lifetime safety, and FFI batch buffer overlap/`isize::MAX` guards.
+
+### Performance
+- **Lock Contention & Hot Read Paths**:
+  - Cache-line padded (`128 B`) `DiskManagerInner` behind `InnerLock` to eliminate false sharing with `RwLock` reader-count atomics, sharded `ChunkReadCache` and `DecodedBlobCache` 16 ways with lock-free empty bypasses, decoded v2 `Mmap` inodes directly from the mapping, and added an atomic fast path for FFI `last_error` (`1.6x–2.4x` faster 8-thread reads).
+  - Added lock-free monotonic SeqLock fast slots in `FuseHandleTable`, wait-free `AtomicU64` parent lookup tables in FUSE/NFS, and generation-keyed sorted directory snapshot caching for multi-page FUSE/NFS `readdir`/`readdirplus` (`~26x–40x` faster multi-page listings).
+  - Added exact-count worker wakeups in `zstd_pool::par_for_index`, in-place `dir_cache` updates on `rename`, `O_RDONLY` FUSE flush bypass, zero-alloc cold probes in `read_at_async`/`read_data_async`, non-blocking MCP tool execution with `O(1)` EOF append, and instant `IpcServer::drop` wakeup.
+
+### Documentation
+- Added crawlable GitHub Pages landing page (`docs/index.html`), `sitemap.xml`, `robots.txt`, and JSON-LD metadata.
+- Cleaned up resolved items and completed roadmap entries in `docs/similar_projects_comparison.md`.
+
 ## [1.4.0] - 2026-11-22
 
 ### Added

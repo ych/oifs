@@ -1,7 +1,7 @@
 # OIFS (O's Inode File System)
 
 [![CI](https://github.com/ych/oifs/actions/workflows/rust.yml/badge.svg)](https://github.com/ych/oifs/actions/workflows/rust.yml)
-[![Release](https://img.shields.io/badge/release-v1.4.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.4.0)
+[![Release](https://img.shields.io/badge/release-v1.5.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.5.0)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
 [![Kani Verified](https://img.shields.io/badge/Kani%20Verified-109%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
@@ -76,7 +76,7 @@ flowchart TB
 
 ```bash
 # Option 1: One-line install directly from GitHub Release tag (no git clone needed)
-cargo install --git https://github.com/ych/oifs --tag 1.4.0
+cargo install --git https://github.com/ych/oifs --tag 1.5.0
 
 # Option 2: Download prebuilt binaries (Linux x86_64/arm64 & macOS Intel/Apple Silicon)
 #   https://github.com/ych/oifs/releases

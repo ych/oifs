@@ -5,11 +5,13 @@ description: Describes the transactional metadata write-ahead log (WAL) that ens
 tags: ["journal", "WAL", "write-ahead logging", "transaction", "recovery", "durability", "CRC32C", "checkpoint"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
+  - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
+    resource: repo://src/disk.rs
   - id: openwiki-source-813113339610c0170804687f
     resource: repo://src/journal.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
 
 # Metadata WAL / Journaling
@@ -98,207 +100,132 @@ A mutable view over the journal region of a memory-mapped image. Provides the ma
 * `create` – format a fresh empty journal
 * `append` – encode and write a transaction, advancing `head` and handling wrap-around and overwrite-oldest semantics
 * `persist` – flush the header block to stable storage (caller must `msync` the header plus the last written frame range)
-* `recover` – replay every valid transaction between `tail` and `head`, then reset the ring
-* `checkpoint` / `checkpoint_to` – advance `tail` past transactions that have been applied in place
-* `pending_transactions` – count of transactions that would be replayed
-* `used` – bytes currently occupied by un-checkpointed transactions
-
-## CRC32C Implementation and Hardware Acceleration
-
-CRC32C (Castagnoli polynomial `0x82F6_3B78`) is computed over `tx_seq || payload_len || payload`. The implementation:
-
-1. **Compile-time table generation** – A 256-entry lookup table is built by a `const fn`, keeping the crate dependency-free and Kani-verifiable.
-2. **Software fallback** – Byte-by-byte table-driven update used when no hardware support is detected or under Kani.
-3. **AArch64 `crc` extension** – On ARMv8 with the CRC extension, uses `__crc32cb` (byte) and `__crc32cd` (64-bit) intrinsics.
-4. **x86-64 SSE4.2** – Uses `_mm_crc32_u8` and `_mm_crc32_u64` intrinsics when available.
-5. **Runtime feature detection** – `std::arch::is_aarch64_feature_detected!("crc")` and `is_x86_feature_detected!("sse4.2")` select the optimal path at first call.
-
-```rust
-// Usage
-let crc = crate::journal::crc32c(data);
-let crc = crate::journal::crc_frame_checksum(tx_seq, payload_len, payload);
-```
-
-The Kani proof `proof_crc32c_detects_single_bit_flip` guarantees that any single-bit corruption (the minimal torn-write case) changes the checksum, so `decode_frame` can never accept a torn frame.
+* `recover` – replay all valid transactions between `tail` and `head` in order, stopping at the first torn or corrupt frame
+* `checkpoint` / `checkpoint_to` – advance `tail` to discard transactions whose in-place effects are already durable
 
 ## Write-Ahead Logging Protocol
 
-The WAL-before-metadata ordering is enforced by `DiskManager::commit_journal_tx`:
+The journaling protocol follows a strict sequence for every metadata mutation:
 
-1. **Stage metadata ops** – Build a `Vec<MetadataOp>` (inode bitmap, data bitmap, inode post-images, directory slice writes).
-2. **Encode a transaction frame** – `encode_frame` coalesces adjacent ops (`coalesce_ops` merges `SetDataBitmap` into `SetDataBitmapRange`, merges contiguous `WriteBlockSlice` on the same block, deduplicates `WriteInode` for the same inode), computes CRC32C, appends commit marker.
-3. **Append to ring and persist header+frame** – `JournalRing::append` writes the frame contiguously (wrapping to 0 if it would split), updates `head`, `tx_seq`, and `cleanly_unmounted=false`, then persists the header.
-4. **Durability-mode gated msync** – If `DurabilityMode::Strict`, the caller flushes the header block and the frame range with `msync(MS_SYNC)`. For `Lazy`, `RangeAsync`, and `LegacyWholeMmapAsync`, the WAL remains in the page cache; a later `flush()`, `flush_async()`, or `Drop` writes it back. This ensures **WAL reaches stable storage before the metadata it describes**.
-5. **Apply the ops in place** – `apply_journal_ops` invokes `apply_op_in_place` for each op. Because every op is an absolute post-image assignment, this step is idempotent and safe to redo.
-6. **Checkpoint to advance the tail** – After in-place writes are durable, `JournalRing::checkpoint` (or `checkpoint_to` with a snapshot of `head` taken before the flush) advances `tail := head`, discarding the replayed transactions.
+1. **Stage operations** – The mutation's metadata effects are encoded as a `Vec<MetadataOp>` using `AllocSim` to predict allocator behavior without touching on-disk bitmaps. For data writes, small payloads (≤ 8 KiB) may be inlined as `WriteBlockSlice` ops directly in the frame under `DurabilityMode::Strict`.
+2. **Encode transaction frame** – `encode_frame` coalesces adjacent operations (e.g., contiguous `SetDataBitmap` → `SetDataBitmapRange`, contiguous `WriteBlockSlice` → single slice) and builds a CRC32C-protected frame with sequence number, payload length, payload, and commit marker.
+3. **Append to ring and persist** – `JournalRing::append` writes the frame contiguously (wrapping to offset 0 if needed), updates `head`, increments `tx_seq`, clears `cleanly_unmounted`, and persists the header. The caller receives the byte range written (`last_write`) and any wrap-zeroed tail range (`last_wrap_pad`).
+4. **Apply in place** – The same `MetadataOp` list is applied to the live image via `apply_op_in_place`, which performs absolute post-image writes to bitmaps, inode table, and data blocks. Because every op is an absolute assignment, re-applying a committed transaction is idempotent.
+5. **Checkpoint (deferred)** – Once the in-place writes are known durable, the journal ring is advanced via `checkpoint_to` (using a `head` snapshot taken before the flush) or `checkpoint` (tail := head). This discards the WAL record and frees ring space. Under `DurabilityMode::Strict`, checkpointing occurs automatically when the ring reaches 50% capacity; under `Lazy`, `RangeAsync`, and `LegacyWholeMmapAsync`, the ring is kept and mount-time recovery replays it.
 
-<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Parse error on line 12: ...ed; header persisted alt DurabilityM Expecting '()', 'SOLID_OPEN_ARROW', 'DOTTED_OPEN_ARROW', 'SOLID_ARROW', 'SOLID_ARROW_TOP', 'SOLID_ARROW_BOTTOM', 'STICK_ARROW_TOP', 'STICK_ARROW_BOTTOM', 'SOLID_ARROW_TOP_DOTTED', 'SOLID_ARROW_BOTTOM_DOTTED', 'STICK_ARROW_TOP_DOTTED', 'STICK_ARROW_BOTTOM_DOTTED', 'SOLID_ARROW_TOP_REVERSE', 'SOLID_ARROW_BOTTOM_REVERSE', 'STICK_ARROW_TO -->
-```text
-sequenceDiagram
-    autonumber
-    participant Op as Operation (create_file)
-    participant Sim as AllocSim (staged ops)
-    participant Ring as JournalRing (WAL ring buffer)
-    participant Mmap as Disk Image (in-place)
-    participant Sync as msync / sync_mutex
-
-    Op->>Sim: Simulate allocations (inode, data blocks, dir entry)
-    Sim-->>Op: MetadataOp list
-    Op->>Ring: Append transaction frame (encode_frame)
-    Note over Ring: head, tx_seq updated; header persisted
-    alt DurabilityMode::Strict
-        Op->>Sync: msync(MS_SYNC) header + frame range
-        Note over Sync: WAL durable before metadata
-    else Lazy / RangeAsync / Legacy
-        Op-->>Op: Return (WAL stays in page cache)
-    end
-    Op->>Mmap: apply_op_in_place (inode bitmap, data bitmap, inode, dir slice)
-    Note over Mmap: Idempotent redo applied
-    Op->>Ring: checkpoint() or checkpoint_to(pre-flush head)
-    Note over Ring: tail advanced; ring space reclaimed
-    Op-->>Op: Success
+```mermaid
+flowchart TD
+    A[Metadata Mutation] --> B[Stage MetadataOps via AllocSim]
+    B --> C[Encode Frame with CRC32C]
+    C --> D[Append to Ring Buffer]
+    D --> E[Persist Header + Frame to Storage]
+    E --> F[Apply Ops In-Place]
+    F --> G{DurabilityMode?}
+    G -->|Strict| H[Flush In-Place Ranges]
+    G -->|RangeAsync| I[Accumulate Dirty Ranges]
+    G -->|Lazy| J[No Immediate Flush]
+    H --> K[Checkpoint When Ring ≥ 50%]
+    I --> L[Batch msync on Threshold]
+    J --> M[Mount-Time Recovery Replays]
+    K --> N[Ring Space Freed]
+    L --> M
+    M --> N
 ```
 
-### Coalescing (`coalesce_ops`)
+## CRC32C Verification
 
-Before encoding, `JournalRing::append` calls `is_already_coalesced` and, if needed, `coalesce_ops` to shrink the payload:
+* **Algorithm** – Castagnoli polynomial (`0x82F6_3B78`) with standard reflected representation, pre- and post-inversion (`!crc32c_update(0xFFFF_FFFF, data)`).
+* **Hardware acceleration** – Uses ARMv8 CRC extension (`__crc32cb`/`__crc32cd`) or x86 SSE4.2 (`_mm_crc32_u64`/`_mm_crc32_u8`) when available; falls back to a `const fn` software table (256-entry) generated at compile time. The same function is used on all paths, making results deterministic for Kani/CBMC proofs.
+* **Coverage** – The checksum is computed over `tx_seq || payload_len || payload`. The leading magic (`TX_MAGIC`) and trailing commit marker (`TX_COMMIT_MARKER`) are excluded so the checksum field itself can be stored inline.
+* **Validation** – `decode_frame` verifies magic, payload length bounds, CRC32C match, and commit marker presence. A frame that fails any check is treated as torn; recovery stops at the first invalid frame and replays everything before it.
 
-* **Data bitmap** – Adjacent `SetDataBitmap` (or single-block `SetDataBitmapRange`) of the same polarity are merged into one `SetDataBitmapRange`. The sort key is `(allocated, start_block)`.
-* **Block slice** – Overlapping or contiguous `WriteBlockSlice` on the same `block_id` are merged into larger intervals (latest write wins on overlap).
-* **Inode post-images** – Multiple `WriteInode` for the same `inode_id` keep only the last.
-* **Ordering** – Phases: 1) inode bitmap, 2) data bitmap, 3) block slice, 4) inode post-images.
+## Redo Recovery
 
-The fast-path check `is_already_coalesced` avoids allocations when the op list is already canonical (O(N) scan, no `BTreeMap`).
+On mount, `DiskManager::recover_journal` performs three phases:
 
-## Crash Recovery
+1. **Snapshot & decode** – The journal region is copied to a local buffer. `JournalRing::recover` walks from `tail` to `head`, validating each frame with `decode_frame`. Valid frames are collected; the first invalid frame stops the scan.
+2. **Redo apply** – Collected `MetadataOp`s are applied in order to the live image via `apply_op_in_place`. Idempotence guarantees that replaying a partially applied transaction is safe.
+3. **Ring reset** – The header is rewritten with `head = 0`, `tail = 0`, `cleanly_unmounted = true`, and the header block is flushed. Subsequent mounts see a clean journal.
 
-On mount (`DiskManager::open` → `init_or_open`), if the image has a journal layout and is not cleanly unmounted:
+Recovery is automatic and requires no user intervention. The `cleanly_unmounted` flag in the header also allows a fast path: if the flag is set and the ring is empty, mount skips the scan entirely.
 
-1. `JournalRing::open` validates the header.
-2. `JournalRing::recover` walks from `tail` to `head`, decoding and validating each frame (magic, length, CRC32C, commit marker). The first frame that fails validation stops replay—everything before it is durable.
-3. For each valid frame, `apply_op_in_place` is called for every op in order.
-4. After replay, the ring is reset (`head = tail = 0`, `cleanly_unmounted = true`) and the header is persisted.
+## Checkpointing
 
-This **Redo-only** recovery restores consistency in milliseconds without a full-image scan.
+Checkpointing discards WAL entries whose in-place effects are already durable, freeing ring capacity.
 
-### Idempotent In-Place Application (`apply_op_in_place`)
+* **`JournalRing::checkpoint`** – Sets `tail := head`. After this, `used() == 0` and a subsequent `recover()` replays nothing.
+* **`JournalRing::checkpoint_to(cursor)`** – Advances `tail` to `cursor` (a previous `head` snapshot), provided `cursor` lies between the old `tail` and `head` in ring order. The tail only moves forward and never passes `head`.
+* **JBD2-style deferred checkpointing** – Under `DurabilityMode::Strict`, `DiskManager::maybe_checkpoint` is called after each mutation. It opens the journal region, checks if `ring.used() >= ring.ring_bytes() / 2`, and if so, flushes the entire image (`backing.flush()`) then calls `checkpoint_journal` (which calls `ring.checkpoint()` and flushes the header). This batches multiple transactions into a single `msync(MS_SYNC)` for the in-place metadata.
+* **Other durability modes** – `Lazy`, `RangeAsync`, and `LegacyWholeMmapAsync` do **not** checkpoint on mutation. The ring accumulates until it wraps (overwrite-oldest semantics). Mount-time recovery will replay any un-checkpointed transactions. This is safe because the ring overwrites oldest-first, bounding journal size.
 
-Each `MetadataOp` variant performs bounds checking and returns `JournalError::BlockOutOfRange` for invalid block/inode IDs:
+## Interaction with `DurabilityMode`
 
-* `SetInodeBitmap` / `SetDataBitmap` – Flips a single bit in the contiguous bitmap span.
-* `SetDataBitmapRange` – Uses `Bitmap::set_range` / `clear_range` on the contiguous data bitmap slice.
-* `WriteInode` – Copies the 256-byte post-image into the inode table slot.
-* `WriteBlockSlice` – Copies `data` into `block_id` at `offset`, bounds-checked to the block size.
+| Mode | WAL Frame Flush | In-Place Flush | Checkpointing |
+|------|----------------|----------------|---------------|
+| **Strict** | Synchronous `msync(MS_SYNC)` of frame + header on every `commit_journal_tx` (or batched via group-commit drainer) | Synchronous `msync(MS_SYNC)` of all mutated ranges on every mutation | Automatic at 50% ring watermark; also on explicit `flush()`/`Drop` |
+| **RangeAsync** | Asynchronous `msync(MS_ASYNC)` of frame + header | Accumulated in `pending_async_ranges`, drained in coalesced batches (gap-bridged to 1 MiB) at threshold | **Never** on mutation; ring kept for recovery |
+| **Lazy** | No per-mutation flush (relies on OS page cache) | No per-mutation flush | **Never** on mutation; ring kept for recovery |
+| **LegacyWholeMmapAsync** | Asynchronous `msync(MS_ASYNC)` of entire mapping | Same as `RangeAsync` but whole mapping | **Never** on mutation; ring kept for recovery |
 
-Kani proofs (`proof_apply_op_*_idempotent`) verify that re-applying any op leaves the image identical.
+### Strict Mode Detail
 
-## JBD2-Style Deferred Checkpointing under `DurabilityMode::Strict`
+In `Strict` mode, `commit_journal_tx` uses `JournalRing::try_append_without_overwrite`. If the ring lacks space for the new frame without overwriting un-checkpointed entries, it:
+1. Flushes all pending in-place metadata (`guard.backing.flush()`)
+2. Checkpoints the journal (`checkpoint_journal`)
+3. Retries the append (now guaranteed to succeed on the empty ring)
 
-`DurabilityMode` (in `src/disk.rs`) controls when `msync` is called:
+This ensures the WAL never overwrites a transaction whose in-place effects are not yet durable.
 
-| Mode | Behavior |
-|------|----------|
-| `Lazy` (default) | No per-mutation `msync`. Page cache survives process crash; power-loss safety via explicit `flush()`, `Drop`, or kernel writeback. |
-| `RangeAsync` | Batches dirty ranges in `pending_async_ranges`, drains coalesced spans (journal first, then image) outside the write lock. `msync(MS_ASYNC)` per batch. |
-| `Strict` | **Synchronous `msync(MS_SYNC)` on every transaction** for the WAL header+frame. In-place metadata (bitmaps, inode table, directory blocks) stays in page cache and is **deferred** until the WAL ring reaches its **50% watermark** (`ring.used() >= ring.ring_bytes() / 2`), or on `flush()`/`Drop`. |
-| `LegacyWholeMmapAsync` | Async flush of entire mmap after every mutation. |
+The `is_strict_sync_deferred()` flag (controlled by a global group-commit batching state) modifies this: when `true`, the per-mutation synchronous flush is skipped and a background drainer issues a single `flush()` for the whole batch before completing any future. In that case, small payloads (≤ 8 KiB) are written directly to the data area instead of being inlined into the WAL frame, reducing ring pressure.
 
-### Checkpoint Watermark (50% Ring Used)
+## AllocSim: Allocation Simulation
 
-In `DiskManager::maybe_checkpoint` (called after each journaled mutation under `Strict`):
+`AllocSim` predicts the on-disk allocator's behavior during transaction staging without modifying the live bitmaps:
 
-```rust
-let needs_ckpt = {
-    let ring = JournalRing::open(region, bs)?;
-    ring.used() >= ring.ring_bytes() / 2   // 50% watermark
-};
-if needs_ckpt {
-    guard.mmap.flush()?;   // flush all in-place metadata
-    Self::checkpoint_journal(&mut guard.mmap, &sb)?; // advance tail
-}
-```
+* **`new_data_only`** – Used by `write_data`, `create_entry_journaled`, and other data-only mutations. It copies only the data bitmap (lazily, on first allocation/free) and tracks fresh block allocations, frees, and pointer updates in memory.
+* **`new` (test-only)** – Copies both inode and data bitmaps for full mutation simulation.
+* **Fresh block tracking** – Every allocated block is recorded in `fresh_blocks` and `unzeroed_fresh`. The transaction builder emits `WriteBlockSlice` ops to zero the block if it contains stale data.
+* **Pointer simulation** – Indirect block pointer modifications are recorded in a `FxHashMap<(parent_block, slot), child_block>` so the transaction can encode the correct post-image pointer values.
 
-This mirrors JBD2: the WAL is the commit log (always `MS_SYNC` per transaction); the metadata blocks are data that can be batched. The 50% threshold ensures the ring never fills completely between checkpoints, avoiding the "overwrite oldest" fallback.
+When the transaction commits, the `MetadataOp` list contains `SetDataBitmap`/`SetDataBitmapRange` for the bitmap changes and `WriteBlockSlice` for zeroing/initializing fresh blocks, plus `WriteInode` for the updated inode.
 
-### Manual Checkpoint: `checkpoint_journal_now()`
+## Journal Region Geometry
 
-`DiskManager::checkpoint_journal_now()` forces an immediate checkpoint:
+The `SuperBlock` method `has_journal_layout()` detects a journaled image:
 
-1. Opens the journal ring.
-2. Counts `pending_transactions()`.
-3. Calls `ring.checkpoint()` (sets `tail = head`).
-4. Flushes the journal header block.
-5. Returns the number of discarded transactions.
+* **Legacy layouts (v1/v2)** – Fixed geometry: `inode_table_block == 36` (`JOURNAL_INODE_TABLE_BLOCK`), meaning the journal header is at block 3 and the ring occupies blocks 4–35.
+* **v3 layout** – Multi-block bitmaps; the journal region sits between the data bitmap and the inode table. `journal_header_block()` returns `data_bitmap_block + data_bitmap_blocks()`, and the ring follows. `has_journal_layout()` checks `inode_table_block == 1 + inode_bitmap_blocks + data_bitmap_blocks + JOURNAL_RESERVED_BLOCKS`.
 
-Use this after an explicit `DiskManager::flush()` or when the application needs to bound recovery time.
+This design keeps the `SuperBlock` binary layout identical for journaled and non-journaled images; the journal region is purely a geometry shift.
 
-## DurabilityMode and WAL Ordering
+## Recovery Guarantees
 
-The WAL-before-metadata ordering is **always** maintained; `DurabilityMode` only governs *when* the WAL reaches physical storage:
+* **No full `fsck` required** – Mount-time recovery replays only the durable tail of the WAL. A clean unmount (`mark_clean_shutdown` or `checkpoint`) leaves `cleanly_unmounted = true` and an empty ring, allowing a fast mount.
+* **Torn frame isolation** – A power loss during frame write leaves a partial frame without a valid CRC or commit marker. Recovery stops at that frame; all earlier transactions are complete and are replayed. The partial frame is silently dropped.
+* **Idempotent redo** – Because every `MetadataOp` is an absolute post-image assignment, applying a transaction twice has the same effect as applying it once. This makes the "WAL first, then in-place" protocol safe even if the crash occurs mid-way through the in-place phase.
+* **Stale transaction prevention** – The requirement that **every** metadata mutation go through the journal prevents stale WAL entries from rolling back newer changes. If a mutation bypasses the journal while a stale transaction remains in the ring, recovery would replay the stale post-image over the newer on-disk state, causing silent data loss.
 
-* **Strict** – WAL `msync(MS_SYNC)` before the mutation returns. In-place metadata deferred to 50% watermark.
-* **RangeAsync** – WAL stays in page cache; drained in batches (journal first, then coalesced image spans) under `sync_mutex` + read lock.
-* **Lazy / LegacyWholeMmapAsync** – WAL written back with the rest of the mapping by `flush()`/`Drop`.
+## Testing and Verification
 
-Because the WAL is *always* written before the in-place metadata in program order, a power loss after step 3 but before step 5 leaves the WAL intact; recovery replays it and re-applies the metadata.
-
-## Journal Region Helpers
-
-* `journal_region_start(sb)` – Absolute block offset of the journal header (block 3).
-* `journal_region_len(block_size)` – `(1 + JOURNAL_RING_BLOCKS) * block_size`.
-* `journal_ring_bytes(block_size)` – `JOURNAL_RING_BLOCKS * block_size` (128 KiB for 4 KiB blocks).
-* `is_journaled_layout(sb)` – `sb.inode_table_block >= JOURNAL_INODE_TABLE_BLOCK`.
-* `DiskManager::journal_region(mmap, sb)` – Returns a mutable slice of the journal region for `JournalRing::open/create`.
-
-## Formal Verification (Kani/CBMC)
-
-The journal subsystem ships with Kani proofs covering:
-
-* **Ring arithmetic** – `proof_ring_cursor_advance_stays_in_ring`, `proof_ring_used_invariants`, `proof_ring_append_bounds_guarantee`.
-* **Checkpoint monotonicity** – `proof_checkpoint_empties_ring`, `proof_ring_checkpoint_to_monotonicity`.
-* **CRC32C integrity** – `proof_crc32c_detects_single_bit_flip`, `proof_crc_input_is_deterministic`.
-* **Frame decoding safety** – `proof_frame_length_overflow_rejected`.
-* **Op bounds** – `proof_block_slice_offset_checked`.
-* **Idempotent redo** – `proof_apply_op_set_inode_bitmap_idempotent`, `proof_apply_op_set_data_bitmap_idempotent`, `proof_apply_op_write_block_slice_idempotent`, `proof_apply_op_write_inode_idempotent`, `proof_apply_op_set_data_bitmap_range_idempotent`.
-* **Coalescing equivalence** – `proof_apply_op_set_data_bitmap_range_equiv_single_ops`.
-* **Encode/decode round-trips** – `proof_journal_state_encode_decode_roundtrip`, `proof_metadata_op_encode_decode_roundtrip`.
-* **Push helpers** – `proof_push_data_bitmap_op_polarity_never_merges`, `proof_push_data_bitmap_op_coalesces_adjacent_same_polarity`.
-
-These proofs guarantee absence of arithmetic overflow, out-of-bounds access, and logical errors in the recovery path.
-
-## Integration Points
-
-* **`DiskManager::create_entry_journaled`** – Builds ops for inode allocation, optional directory data block, directory entry insertion, and inode post-images; calls `commit_journal_tx` → `apply_journal_ops` → `maybe_checkpoint`.
-* **`DiskManager::delete_file` / `write_data_with_filters`** – Stage through `AllocSim`, commit a transaction, apply, checkpoint.
-* **`defragment_inplace_journaled_cow`** – Records every block move as a WAL transaction; checkpoints after each round (or at 50% watermark under `Strict`).
-* **`PendingAsyncRanges`** – Accumulates dirty spans for `RangeAsync`; drained by `maybe_drain_async_ranges` (journal first, then coalesced spans with 1 MiB gap bridging).
-* **`sync_mutation_ranges`** – Central `msync` dispatcher; under `Strict` coalesces with 256 KiB gap bridging to merge bitmap and inode-table flushes across the journal region.
-
-## Error Variants (`JournalError`)
-
-* `BadMagic` – Header magic mismatch (not a journaled image).
-* `RegionTooSmall` – Journal region insufficient for the layout.
-* `TransactionTooLarge` – Single transaction exceeds ring capacity.
-* `CorruptFrame` – CRC/validation failure at a specific ring offset.
-* `BlockOutOfRange` – Metadata op targets an out-of-range block or inode.
-
-## Configuration Constants
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `JOURNAL_RING_BLOCKS` | 32 | Ring buffer blocks (128 KiB at 4 KiB block size) |
-| `JOURNAL_HEADER_LEN` | 40 | Persistent header size in bytes |
-| `TX_HEADER_LEN` | 20 | Transaction frame header size |
-| `INODE_BYTES` | 256 | Inode record size |
-| `RANGE_ASYNC_BATCH_OPS` | 64 | Mutations before `RangeAsync` batch drain |
-| `RANGE_ASYNC_BATCH_BYTES` | 4 MiB | Dirty bytes before `RangeAsync` batch drain |
-| `RANGE_ASYNC_GAP_BRIDGE_BYTES` | 1 MiB | Max clean-page gap bridged during `RangeAsync` coalescing |
-| `STRICT_GAP_BRIDGE_BYTES` | 256 KiB | Max clean-page gap bridged during `Strict` metadata coalescing |
-| Checkpoint watermark | 50% | `ring.used() >= ring.ring_bytes() / 2` triggers deferred checkpoint |
+* **Kani proofs** – `journal.rs` contains `#[kani::proof]` modules verifying:
+  * Ring cursor arithmetic never leaves the ring
+  * `checkpoint` empties the ring (`used() == 0`)
+  * `checkpoint_to` monotonicity (tail never moves backward, never passes head)
+  * `push_data_bitmap_op` never merges opposite-polarity spans
+  * State-transition invariants of `append` (wrap handling, tail advancement)
+* **Unit tests** – `checkpoint_tests` and integration tests cover:
+  * Checkpoint advances tail to snapshot, leaves later transactions pending
+  * Checkpoint never moves tail backwards
+  * Checkpoint refuses cursors past head
+  * Checkpointed transactions are not replayed on reopen
+  * Ring wrap after checkpoint replays post-wrap frames
+  * Ring wrap preserves pre-wrap un-checkpointed frames
+  * Recovery stops at torn frame
+  * `apply_op_in_place` is idempotent
+* **Crash simulation** – `tests/crash_safety.rs` uses a fault-injecting backend to verify that after simulated power loss at any point, mount recovery produces a consistent filesystem.
 
 ## Related Pages
 
-* [Block Allocation](../architecture/block_allocation.md) – Bitmap operations recorded in the journal
-* [Disk Manager and Persistence](../architecture/disk_manager_and_persistence.md) – DurabilityMode, msync, and the write pipeline
-* [Testing and Verification](../operations/testing_and_verification.md) – Kani proofs and fault-injection tests
-* [FSCK Workflow](../workflows/fsck_workflow.md) – Recovery vs. full fsck
+* [Disk Manager and Persistence](../architecture/disk_manager_and_persistence.md) – Durability modes, flush semantics, and journal interaction
+* [Superblock and Layout](../architecture/superblock_and_layout.md) – Journal region geometry and `has_journal_layout()`
+* [Crash Safety Testing](../testing/crash_safety_testing.md) – Fault injection and recovery verification

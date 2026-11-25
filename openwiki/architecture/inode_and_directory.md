@@ -5,7 +5,7 @@ description: Detailed specification of OIFS's 256-byte inode structure (format v
 tags: [inode, directory, directory-entry, block-pointers, filetype, kani-verified, chunked-compression, encryption]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-577ab4c8720ea065ae15ce27
     resource: repo://src/directory.rs
@@ -19,41 +19,41 @@ sources:
     resource: repo://src/fuse.rs
   - id: openwiki-source-bc305a37042018e1ebd6d860
     resource: repo://src/inode.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
 
 ## Responsibility and ownership
 
 The inode and directory subsystem defines the structural foundation of the OIFS filesystem across these modules:
 
-<!-- openwiki: broken internal link [/src/inode.rs] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [/src/inode.rs#L33-L69] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [/src/inode.rs#L10-L15] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-- [`src/inode.rs`](/src/inode.rs): Defines the 256-byte fixed-size [`Inode`](/src/inode.rs#L33-L69) struct, the [`FileType`](/src/inode.rs#L10-L15) discrimination model, block pointer tiers, encryption nonces, filter flags, chunked compression support, and `ChunkEntry` bit layout.
-<!-- openwiki: broken internal link [/src/inode_format.rs] link "/src/inode_format.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-- [`src/inode_format.rs`](/src/inode_format.rs): Implements deterministic on-disk encoding/decoding for the **format v2** 256-byte inode record (`INODE_SLOT_SIZE = 256`), including the frozen field layout `[0..166)`, `record_version` at offset 166, `flags` (u32) at offset 167, and zero-filled padding to byte 256. Legacy v1 (`bincode`) decoding is retained for backward compatibility.
-<!-- openwiki: broken internal link [/src/directory.rs] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [/src/directory.rs#L5-L10] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [/src/directory.rs#L84-L93] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [/src/directory.rs#L211-L232] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [/src/directory.rs#L170-L208] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [/src/directory.rs#L234-L250] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-- [`src/directory.rs`](/src/directory.rs): Defines the on-disk variable-length [`DirectoryEntry`](/src/directory.rs#L5-L10) record format, streaming [`DirectoryIterator`](/src/directory.rs#L84-L93), and zero-allocation lookup algorithms ([`find_entry_in_block`](/src/directory.rs#L211-L232), [`find_entry_in_block_with_hash`](/src/directory.rs#L170-L208), [`find_insert_offset_in_block`](/src/directory.rs#L234-L250)). Also provides SipHash-2-4 filename hashing for fast filtering.
-<!-- openwiki: broken internal link [/src/disk/caches.rs] link "/src/disk/caches.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [/src/disk/caches.rs#L175-L195] link "/src/disk/caches.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-<!-- openwiki: broken internal link [/src/disk/caches.rs#L202-L254] link "/src/disk/caches.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-- [`src/disk/caches.rs`](/src/disk/caches.rs): Defines [`DirIndex`](/src/disk/caches.rs#L175-L195) with `stored` (on-disk ciphertext) and `plain` (plaintext) maps, cold-scan promotion threshold (`DIR_INDEX_BUILD_AFTER_SCANS = 8`), `may_have_holes` and `tail_offset` for O(1) inserts, and the 32-shard [`ShardedDirCache`](/src/disk/caches.rs#L202-L254) using Fibonacci hashing.
-<!-- openwiki: broken internal link [/src/encryption.rs] link "/src/encryption.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-- [`src/encryption.rs`](/src/encryption.rs): Implements deterministic filename encryption via 192-bit SIV nonce (`derive_filename_siv_nonce`), XChaCha20-Poly1305 AEAD with `parent_inode` bound in AAD (`filename_aad_stack`), and Base64URL `_e_` prefix encoding. Legacy v1 (12-byte nonce) fallback is supported.
-<!-- openwiki: broken internal link [/src/fuse.rs] link "/src/fuse.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-- [`src/fuse.rs`](/src/fuse.rs): Implements UTF-8 NFD→NFC filename normalization for macOS FUSE compatibility, filtering macOS metadata filenames (`._*`, `.DS_Store`, etc.), and providing the FUSE VFS layer backed by `DiskManager`.
-<!-- openwiki: broken internal link [/src/superblock.rs] link "/src/superblock.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-- [`src/superblock.rs`](/src/superblock.rs): Manages filesystem layout, format versioning (`format_version`), and inode table placement. Controls whether inodes use legacy v1 or fixed v2 format via `inode_record_version_for()`.
+<!-- openwiki: broken internal link [../src/inode.rs] file "../src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [../src/inode.rs#L33-L69] file "../src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [../src/inode.rs#L10-L15] file "../src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [`src/inode.rs`](../src/inode.rs): Defines the 256-byte fixed-size [`Inode`](../src/inode.rs#L33-L69) struct, the [`FileType`](../src/inode.rs#L10-L15) discrimination model, block pointer tiers, encryption nonces, filter flags, chunked compression support, and `ChunkEntry` bit layout.
+<!-- openwiki: broken internal link [../src/inode_format.rs] file "../src/inode_format.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [`src/inode_format.rs`](../src/inode_format.rs): Implements deterministic on-disk encoding/decoding for the **format v2** 256-byte inode record (`INODE_SLOT_SIZE = 256`), including the frozen field layout `[0..166)`, `record_version` at offset 166, `flags` (u32) at offset 167, and zero-filled padding to byte 256. Legacy v1 (`bincode`) decoding is retained for backward compatibility.
+<!-- openwiki: broken internal link [../src/directory.rs] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [../src/directory.rs#L5-L10] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [../src/directory.rs#L84-L93] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [../src/directory.rs#L211-L232] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [../src/directory.rs#L170-L208] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [../src/directory.rs#L234-L250] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [`src/directory.rs`](../src/directory.rs): Defines the on-disk variable-length [`DirectoryEntry`](../src/directory.rs#L5-L10) record format, streaming [`DirectoryIterator`](../src/directory.rs#L84-L93), and zero-allocation lookup algorithms ([`find_entry_in_block`](../src/directory.rs#L211-L232), [`find_entry_in_block_with_hash`](../src/directory.rs#L170-L208), [`find_insert_offset_in_block`](../src/directory.rs#L234-L250)). Also provides SipHash-2-4 filename hashing for fast filtering.
+<!-- openwiki: broken internal link [../src/disk/caches.rs] file "../src/disk/caches.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [../src/disk/caches.rs#L175-L195] file "../src/disk/caches.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+<!-- openwiki: broken internal link [../src/disk/caches.rs#L202-L254] file "../src/disk/caches.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [`src/disk/caches.rs`](../src/disk/caches.rs): Defines [`DirIndex`](../src/disk/caches.rs#L175-L195) with `stored` (on-disk ciphertext) and `plain` (plaintext) maps, cold-scan promotion threshold (`DIR_INDEX_BUILD_AFTER_SCANS = 8`), `may_have_holes` and `tail_offset` for O(1) inserts, and the 32-shard [`ShardedDirCache`](../src/disk/caches.rs#L202-L254) using Fibonacci hashing.
+<!-- openwiki: broken internal link [../src/encryption.rs] file "../src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [`src/encryption.rs`](../src/encryption.rs): Implements deterministic filename encryption via 192-bit SIV nonce (`derive_filename_siv_nonce`), XChaCha20-Poly1305 AEAD with `parent_inode` bound in AAD (`filename_aad_stack`), and Base64URL `_e_` prefix encoding. Legacy v1 (12-byte nonce) fallback is supported.
+<!-- openwiki: broken internal link [../src/fuse.rs] file "../src/fuse.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [`src/fuse.rs`](../src/fuse.rs): Implements UTF-8 NFD→NFC filename normalization for macOS FUSE compatibility, filtering macOS metadata filenames (`._*`, `.DS_Store`, etc.), and providing the FUSE VFS layer backed by `DiskManager`.
+<!-- openwiki: broken internal link [../src/superblock.rs] file "../src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [`src/superblock.rs`](../src/superblock.rs): Manages filesystem layout, format versioning (`format_version`), and inode table placement. Controls whether inodes use legacy v1 or fixed v2 format via `inode_record_version_for()`.
 
 ## The 256-byte Inode structure (format v2)
 
-<!-- openwiki: broken internal link [/src/inode.rs#L33-L69] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-Every file and directory in OIFS is represented by an [`Inode`](/src/inode.rs#L33-L69) stored within the contiguous Inode Table starting at `superblock.inode_table_block`. The on-disk format is **format v2**: a deterministic 256-byte record (`INODE_SLOT_SIZE = 256`) with frozen field offsets `[0..166)`, a `record_version` byte at offset 166, `flags` (u32) at offset 167, and zero padding to byte 256. The in-memory `#[repr(C)]` struct mirrors this layout.
+<!-- openwiki: broken internal link [../src/inode.rs#L33-L69] file "../src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+Every file and directory in OIFS is represented by an [`Inode`](../src/inode.rs#L33-L69) stored within the contiguous Inode Table starting at `superblock.inode_table_block`. The on-disk format is **format v2**: a deterministic 256-byte record (`INODE_SLOT_SIZE = 256`) with frozen field offsets `[0..166)`, a `record_version` byte at offset 166, `flags` (u32) at offset 167, and zero padding to byte 256. The in-memory `#[repr(C)]` struct mirrors this layout.
 
 ```rust
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
@@ -101,536 +101,221 @@ pub struct Inode {
 
 | Offset | Size | Field | Notes |
 |--------|------|-------|-------|
-| 0 | 1 | `mode` | 0 = File, 1 = Directory |
-| 1..9 | 8 | `size` (u64 LE) | Logical/uncompressed size |
-| 9..17 | 8 | `compressed_size` (u64 LE) | Physical size; 0 = uncompressed |
-| 17..25 | 8 | `created_at` (u64 LE) | Unix epoch seconds |
-| 25..33 | 8 | `modified_at` (u64 LE) | Unix epoch seconds |
-| 33..129 | 96 | `blocks[12]` (12×u64 LE) | Direct/indirect block pointers |
-| 129 | 1 | `encrypted` (u8) | 0/1 boolean |
-| 130..154 | 24 | `encryption_nonce` | XChaCha20-Poly1305 nonce |
-| 154 | 1 | `filter_typesize` | 0/1/2/4/8 |
-| 155 | 1 | `filter_delta` | 0/1 boolean |
-| 156 | 1 | `filter_shuffle` | 0/1 boolean |
-| 157 | 1 | `filter_bitshuffle` | 0/1 boolean |
-| 158..166 | 8 | `triple_indirect` (u64 LE) | Triple indirect block pointer |
-| 166 | 1 | `record_version` | Current = 2 (`INODE_V2_RECORD_VERSION`) |
-| 167..171 | 4 | `flags` (u32 LE) | Extended flags (seekable 64K, etc.) |
-| 171..256 | 85 | **zero padding** | Reserved for future fields |
+| 0      | 1    | `mode` | `FileType` discriminant (0 = File, 1 = Directory) |
+| 1      | 8    | `size` | LE u64 |
+| 9      | 8    | `compressed_size` | LE u64 |
+| 17     | 8    | `created_at` | LE u64 |
+| 25     | 8    | `modified_at` | LE u64 |
+| 33     | 96   | `blocks` | 12 × LE u64 |
+| 129    | 1    | `encrypted` | bool (0/1) |
+| 130    | 24   | `encryption_nonce` | 24-byte XChaCha20-Poly1305 nonce |
+| 154    | 1    | `filter_typesize` | u8 (0, 1, 2, 4, 8) |
+| 155    | 1    | `filter_delta` | bool |
+| 156    | 1    | `filter_shuffle` | bool |
+| 157    | 1    | `filter_bitshuffle` | bool |
+| 158    | 8    | `triple_indirect` | LE u64 |
+| 166    | 1    | `record_version` | Fixed to `2` (format v2) |
+| 167    | 4    | `flags` | LE u32 (e.g., `INODE_FLAG_SEEKABLE_64K = 0x01`) |
+| 171    | 85   | `padding` | Zero-filled to 256 bytes |
 
-### Metadata and sizing semantics
+The frozen region `[0..166)` is cryptographically bound: any change to those 166 bytes alters the inode's on-disk representation and must be accompanied by a new `record_version` if the layout ever changes. Format v1 (`bincode`-serialized, variable-length) is still decodable via `Inode::decode_v1` but is no longer written.
 
-- `mode`: Indicates whether the inode is a regular file or directory container.
-- `size`: Logical, uncompressed payload size in bytes. This represents the true file size exposed to users and applications.
-- `compressed_size`: Physical disk space occupied by the compressed payload. A value of `0` denotes that the file is stored uncompressed (raw).
-- `created_at` and `modified_at`: 64-bit Unix epoch timestamps in seconds.
-
-### Multi-tier block pointer scheme (~513 GB capacity)
-
-The 4KB block pointer architecture supports files ranging from small configurations to massive 513 GB scientific datasets:
-
-```mermaid
-flowchart TD
-    subgraph Inode["Inode (256 bytes)"]
-        Direct["blocks[0..9]\n10 direct pointers"]
-        Single["blocks[10]\nsingle indirect block"]
-        Double["blocks[11]\ndouble indirect block"]
-        Triple["triple_indirect\ntriple indirect block"]
-    end
-
-    subgraph L1["Single Indirect Block (4 KB)"]
-        S1[slot 0] --> Data1["Data Block"]
-        S511[slot 511] --> Data512["Data Block"]
-    end
-
-    subgraph L2["Double Indirect Block (4 KB)"]
-        D1[slot 0] --> L1A["Single Indirect Block"]
-        D511[slot 511] --> L1B["Single Indirect Block"]
-    end
-
-    subgraph L3["Triple Indirect Block (4 KB)"]
-        T1[slot 0] --> L2A["Double Indirect Block"]
-        T511[slot 511] --> L2B["Double Indirect Block"]
-    end
-
-    Direct --> Data0["Data Block 0"]
-    Direct --> Data9["Data Block 9"]
-    Single --> L1
-    Double --> L2
-    Triple --> L3
-
-    style Inode fill:#e1f5fe
-    style L1 fill:#fff3e0
-    style L2 fill:#fff3e0
-    style L3 fill:#fff3e0
-```
-
-| Pointer Field | Slot Index | Block Capacity | Max Cumulative Address Space |
-| :--- | :--- | :--- | :--- |
-| Direct Blocks | `blocks[0..9]` | 10 blocks | 40 KB |
-| Single Indirect | `blocks[10]` | 512 blocks | ≈ 2.04 MB |
-| Double Indirect | `blocks[11]` | 512² = 262,144 blocks | ≈ 1.002 GB |
-| Triple Indirect | `triple_indirect` | 512³ = 134,217,728 blocks | ≈ 513.002 GB |
-
-<!-- openwiki: broken internal link [/src/inode.rs#L193-L199] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-**Constants** (from [`src/inode.rs`](/src/inode.rs#L193-L199)):
-- `DIRECT_BLOCKS = 10`
-- `PTRS_PER_BLOCK = 512` (4096 / 8)
-- `SINGLE_END = DIRECT_BLOCKS + PTRS_PER_BLOCK = 522`
-- `DOUBLE_END = SINGLE_END + PTRS_PER_BLOCK² = 262,666`
-- `MAX_LOGICAL_BLOCKS = DOUBLE_END + PTRS_PER_BLOCK³ = 134,480,394` (~513 GB at 4 KB blocks)
-
-**Note**: Block ID `0` indicates an unallocated sparse hole or unassigned pointer.
-
-<!-- openwiki: broken internal link [/src/inode.rs#L161-L190] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-The logical-to-pointer-tree decomposition is performed by [`BlockPath::from_logical`](/src/inode.rs#L161-L190):
+### FileType discrimination
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockPath {
-    /// `inode.blocks[i]`
-    Direct(usize),
-    /// `inode.blocks[10]` -> slot `i`
-    Single(usize),
-    /// `inode.blocks[11]` -> slot `a` -> slot `b`
-    Double(usize, usize),
-    /// `inode.triple_indirect` -> slot `a` -> slot `b` -> slot `c`
-    Triple(usize, usize, usize),
-}
-```
-
-And is formally verified in Kani proofs to be bijective and bounds-safe for all indices `< MAX_LOGICAL_BLOCKS`.
-
-### Chunked compression support (seekable 64K)
-
-Files with the `INODE_FLAG_SEEKABLE_64K` flag set (`flags & 0x0001 != 0`) use a different interpretation of the block pointer fields. Each 64-bit slot in `blocks[0..12]` (and indirect blocks) represents a **64 KB logical chunk** rather than a single 4 KB block.
-
-**Chunk layout (64-bit `ChunkEntry`):**
-- `bits [0..32]`:   `start_block: u32` — physical start block on disk
-- `bits [32..40]`:  `block_count: u8` — number of contiguous 4 KB blocks allocated (1..16, since 16 × 4 KB = 64 KB)
-- `bits [40..48]`:  `flags: u8` — chunk state: `FLAG_EMPTY (0)`, `FLAG_COMPRESSED (1)`, `FLAG_RAW (2)`
-- `bits [48..64]`:  `compressed_len: u16` — exact compressed byte length (≤ 65535)
-
-```mermaid
-flowchart LR
-    subgraph ChunkEntry["ChunkEntry (64 bits)"]
-        SB["start_block: u32\nbits 0-31"]
-        BC["block_count: u8\nbits 32-39"]
-        FL["flags: u8\nbits 40-47"]
-        CL["compressed_len: u16\nbits 48-63"]
-    end
-```
-
-<!-- openwiki: broken internal link [/src/inode.rs#L88-L153] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-This is implemented via the [`ChunkEntry`](/src/inode.rs#L88-L153) wrapper type with accessor methods (`start_block()`, `block_count()`, `flags()`, `compressed_len()`, `is_empty()`, `is_compressed()`, `is_raw()`) and a `new()` constructor. The flag is defined as:
-```rust
-pub const INODE_FLAG_SEEKABLE_64K: u32 = 0x0001;
-pub const CHUNK_SIZE_64K: usize = 64 * 1024;
-```
-
-### Cryptographic and filter flags
-
-- `encrypted`: Boolean flag signaling that the payload is encrypted with XChaCha20-Poly1305.
-- `encryption_nonce`: 192-bit (24-byte) unique cryptographic nonce generated per-file via `OsRng`.
-- `filter_typesize`: Pre-compression data element width (1, 2, 4, 8 bytes; 0 = disabled).
-- `filter_delta`, `filter_shuffle`, `filter_bitshuffle`: Blosc2-style pre-compression filter pipeline indicators required to reverse transformations on read.
-
-### Inode record versioning and format migration
-
-The filesystem supports two independent version axes:
-
-1. **SuperBlock `format_version`** — selects the *decoder family*:
-   - `1` = legacy `bincode` layout (v1)
-   - `>= 2` = fixed 256-byte record (v2)
-
-2. **`record_version`** (byte at offset 166) — selects the record revision *within* the fixed family:
-   - Current = `2` (`INODE_V2_RECORD_VERSION`)
-   - Future revisions may append fields at offsets `>= 167` without moving existing fields
-
-This split exists because v1 (`bincode`) and v2 records are not reliably distinguishable by inspection; the superblock must declare which decoder to use. Once inside the fixed family, `record_version` enables additive, lazy migration (v3 could append fields at offset 171+ while v2 readers ignore them).
-
-The `migration_cursor` in `SuperBlock` tracks in-place migration progress: inodes with `id < migration_cursor` are already rewritten in v2 format; others remain in v1. This makes migration resumable and idempotent after a crash.
-
-### Formal verification with Kani
-
-<!-- openwiki: broken internal link [/src/inode.rs#L321-L453] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[`src/inode.rs`](/src/inode.rs#L321-L453) includes automated formal proofs in the `kani_proofs` module:
-
-- `proof_inode_new_file` / `proof_inode_new_directory`: Verify that `Inode::new` creates zero-initialized sizes, disabled filters, unencrypted state, zero block pointers, and valid modes.
-- `proof_inode_no_dangling_blocks`: Proves that all 12 direct/indirect block pointers and the triple-indirect pointer are strictly `0` upon initialization.
-- `proof_block_path_roundtrip_all_indices`: Proves the pointer-tree decomposition is bijective and in-bounds for every possible logical index.
-- `proof_block_path_tier_boundaries` / `proof_block_path_tier_boundaries_symbolic`: Verify exact tier boundaries (direct/single/double/triple).
-- `proof_chunk_entry_roundtrip_all` / `proof_chunk_entry_field_isolation` / `proof_chunk_entry_state_predicates`: Exhaustively verify `ChunkEntry` bit packing, field isolation, and state predicates.
-
-## FileType discrimination
-
-<!-- openwiki: broken internal link [/src/inode.rs#L10-L15] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[`FileType`](/src/inode.rs#L10-L15) classifies storage entities:
-
-```rust
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum FileType {
-    /// Regular file
-    File,
-    /// Directory (container for other files/directories)
-    Directory,
+    File = 0,
+    Directory = 1,
 }
 ```
 
-<!-- openwiki: broken internal link [/src/disk.rs] link "/src/disk.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-In [`DiskManager`](/src/disk.rs), `inode.mode` gates operations:
-- Writing payload data via `write_data_with_filters` to an inode with `mode == FileType::Directory` returns `DiskManagerError::Io("Cannot write data to non-file inode")`.
-- Directory operations (`lookup`, `list_dir`, `delete_file`) on an inode with `mode == FileType::File` return `DiskManagerError::Io("Not a directory")`.
+Only `File` and `Directory` exist. There are no symlinks, device nodes, or other special types in OIFS. The `mode` field is a single byte (offset 0) in the on-disk record.
 
-## Directory entry format and wire layout
+### Block pointer hierarchy
 
-<!-- openwiki: broken internal link [/src/directory.rs#L5-L10] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-Directories in OIFS are stored within ordinary 4 KB data blocks pointed to by `inode.blocks[0]` (and subsequent blocks via the pointer tree for multi-block directories). A directory block contains packed, variable-length [`DirectoryEntry`](/src/directory.rs#L5-L10) records:
+OIFS uses a three-tier block pointer scheme to support files from a few bytes up to 513 GB:
 
-```rust
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DirectoryEntry {
-    pub inode: u64,
-    pub hash: u64,
-    pub name: String,
-}
-```
+- **Direct (12)**: `blocks[0..12]` → 12 × 4 KiB = 48 KiB
+- **Double indirect**: `triple_indirect` points to a block containing 1024 block IDs (each 8 bytes), each of which points to a data block → 1024 × 1024 × 4 KiB = 4 GiB per double-indirect level
+- **Triple indirect**: The `triple_indirect` field points to a level-3 index block. A level-3 block points to 1024 level-2 blocks, each pointing to 1024 data blocks → 1024³ × 4 KiB = 4 TiB theoretical, capped by `u64` logical size and practical limits to ~513 GB.
 
-### On-disk wire layout
+Block ID `0` always means unallocated/empty. All block IDs are LE u64 on disk.
 
-<!-- openwiki: broken internal link [/src/directory.rs#L25-L43] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-Each entry is serialized sequentially ([`serialize_into`](/src/directory.rs#L25-L43)):
+### Inode encoding/decoding (format v2)
 
-```
-┌──────────────────┬──────────────────┬─────────────────┬────────────────────────────┐
-│  inode (8B LE)   │   hash (8B LE)   │ name_len (2B LE)│    name (name_len bytes)   │
-└──────────────────┴──────────────────┴─────────────────┴────────────────────────────┘
-0                  8                  16                18               18 + name_len
-```
+<!-- openwiki: broken internal link [../src/inode_format.rs] file "../src/inode_format.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+[`src/inode_format.rs`](../src/inode_format.rs) provides:
 
-1. **Fixed Header (18 bytes)**:
-   - `inode` (8 bytes, little-endian): Target inode number.
-   - `hash` (8 bytes, little-endian): Optional fast-lookup hash (SipHash-2-4 of filename; `hash_filename` / `hash_filename_bytes`).
-   - `name_len` (2 bytes, little-endian): Length of the UTF-8 filename in bytes.
-2. **Variable Filename (`name`)**:
-   - Up to 255 bytes (`MAX_FILENAME_LEN = 255`). Filenames exceeding 255 bytes return `DirectoryError::EntryTooLarge`.
-   - Filenames containing path separators `/` or `\`, null bytes, empty strings, or `.` / `..` are rejected by `validate_filename` with `DirectoryError::InvalidFilename`.
-3. **End-of-Block Sentinel**:
-<!-- openwiki: broken internal link [/src/directory.rs#L64-L66] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-   - When scanning or deserializing, `name_len == 0` serves as a sentinel indicating the termination of active entries in the block ([`src/directory.rs`](/src/directory.rs#L64-L66)).
+- `encode_v2(inode: &Inode) -> [u8; 256]` — deterministic LE encoding matching the table above.
+- `decode_v2(bytes: &[u8; 256]) -> Result<Inode, InodeFormatError>` — strict decoding; validates `record_version == 2`, `mode` is valid, and padding bytes 171–255 are zero.
+- `decode_v1(bytes: &[u8]) -> Result<Inode, InodeFormatError>` — legacy `bincode` deserialization for backward compatibility.
+- `encode_v1` is not exposed; v1 is read-only.
 
-### Multi-block directory structure
+## Directory entry format and encoding
 
-<!-- openwiki: broken internal link [/src/directory.rs#L320-L334] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-Large directories span multiple 4 KB blocks. The directory inode's `size` field tracks the total logical size of the directory data across all blocks. The helper function [`dir_block_count`](/src/directory.rs#L320-L334) computes the number of blocks:
+<!-- openwiki: broken internal link [../src/directory.rs#L5-L10] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+A directory is a sequence of variable-length [`DirectoryEntry`](../src/directory.rs#L5-L10) records packed contiguously within one or more 4 KiB blocks. There is no on-disk B-tree, hash table, or separate index; lookup is linear scan with SipHash-2-4 filtering.
 
-```rust
-pub fn dir_block_count(size: u64, first_block: u64, block_size: u64) -> usize {
-    if block_size == 0 { return 0; }
-    if size == 0 {
-        usize::from(first_block != 0)  // legacy: single block if first_block != 0
-    } else {
-        (size.div_ceil(block_size) as usize).min(MAX_DIR_BLOCKS)
-    }
-}
-```
+### On-disk record layout
 
-Where `MAX_DIR_BLOCKS = 65536` (256 MB directory table, supporting millions of files). The blocks are traversed using the standard block pointer hierarchy (direct → single → double → triple indirect), same as file data blocks.
+| Offset | Size | Field | Notes |
+|--------|------|-------|-------|
+| 0      | 8    | `inode` | LE u64, target inode ID |
+| 8      | 8    | `hash` | LE u64, SipHash-2-4 of plaintext filename (or 0 if unhashed) |
+| 16     | 2    | `name_len` | LE u16, length of UTF-8 name in bytes (1–255) |
+| 18     | `name_len` | `name` | Variable-length UTF-8 filename (no NUL terminator) |
 
-### Filename encryption (SIV + XChaCha20-Poly1305)
+Total per entry = 18 + `name_len` bytes. Max filename length is 255 bytes (`DirectoryEntry::MAX_FILENAME_LEN`). A `name_len` of 0 signals end of entries in the block (remaining bytes are zero-padded).
 
-On encrypted filesystems, directory entries store the **ciphertext filename** (not plaintext). The encryption uses deterministic SIV construction:
+### Filename encryption in directory entries
 
-<!-- openwiki: broken internal link [/src/encryption.rs#L629-L642] link "/src/encryption.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-1. **SIV nonce derivation** ([`derive_filename_siv_nonce`](/src/encryption.rs#L629-L642)):
-   ```
-   BLAKE2b-512(
-     "OIFS_SIV_FILENAME_V2_XCHACHA20" ||  // domain separation
-     filename_siv_key ||                   // 32-byte subkey from HKDF
-     parent_inode (8B LE) ||               // binds name to parent directory
-     plaintext_name_bytes
-   ) → first 24 bytes = 192-bit XNonce
-   ```
+When the filesystem is encrypted (`DiskManager::encryption_key` is `Some`), directory entry `name` fields store **ciphertext**, not plaintext. The encryption scheme:
 
-2. **AEAD encryption** (`encrypt_filename`):
-   - Algorithm: XChaCha20-Poly1305 (RFC 8439)
-   - Key: `filename_cipher_key` (32-byte subkey from HKDF, domain-separated from SIV key)
-   - AAD: `filename_aad_stack(parent_inode)` = `[0x01, "OIFS_AAD_v1______", parent_inode (8B LE)]` (20 bytes)
-   - Payload: plaintext filename bytes
-   - Output: `nonce (24B) || ciphertext || tag (16B)` → Base64URL unpadded → prefixed with `"_e_"`
+<!-- openwiki: broken internal link [../src/encryption.rs#L629-L672] file "../src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+1. **Deterministic SIV nonce derivation** (`derive_filename_siv_nonce` in [`src/encryption.rs`](../src/encryption.rs#L629-L672)):
+   - Uses BLAKE2b-512 with domain separator `OIFS_SIV_FILENAME_V2_XCHACHA20`
+   - Inputs: domain-separated `filename_siv_key` (256-bit), `parent_inode` (u64 LE), plaintext filename bytes
+   - Output: 192-bit (24-byte) synthetic IV (`XNonce`)
 
-3. **On-disk storage**: The `DirectoryEntry.name` field holds the `_e_...` string. The `hash` field is computed over the **plaintext** name for fast positive lookups; it is not encrypted.
+<!-- openwiki: broken internal link [../src/encryption.rs#L647-L720] file "../src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+2. **AEAD encryption** (`encrypt_filename` in [`src/encryption.rs`](../src/encryption.rs#L647-L720)):
+   - Cipher: XChaCha20-Poly1305 with domain-separated `filename_cipher_key` (256-bit)
+   - AAD: `filename_aad_stack(parent_inode)` — 20-byte stack-allocated buffer binding ciphertext to parent directory inode (kind = `AAD_KIND_FILENAME = 0x03`, domain = `OIFS-AAD-v1`, 8-byte parent inode LE)
+   - Plaintext: raw UTF-8 filename bytes
+   - Output format: `[24-byte XNonce || ciphertext || 16-byte Poly1305 tag]`, then unpadded Base64URL-encoded, prefixed with `_e_`
 
-4. **Decryption** (`decrypt_filename`):
+<!-- openwiki: broken internal link [../src/encryption.rs#L752-L855] file "../src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+3. **Decryption & verification** (`decrypt_filename_authenticated` in [`src/encryption.rs`](../src/encryption.rs#L752-L855)):
    - Strips `_e_` prefix, Base64URL-decodes
-   - Verifies nonce matches SIV derivation (constant-time) to prevent forgery
-   - Falls back to legacy v1 format (12-byte ChaCha20Poly1305 nonce) if needed
-   - Returns plaintext on success; returns original string on auth failure (opaque to caller)
+   - Splits payload into 24-byte nonce, ciphertext, 16-byte tag
+   - Verifies Poly1305 tag with AAD = `filename_aad_stack(parent_inode)`
+   - Decrypts plaintext
+   - **Constant-time SIV nonce verification**: recomputes expected nonce via `derive_filename_siv_nonce` and compares with `ct_eq_slice` — prevents nonce-reuse/malleability attacks
+   - On failure, falls back to **legacy v1 format** (12-byte `ChaCha20Poly1305` nonce, domain `OIFS_SIV_FILENAME_V1`, no AAD) if `encryption_version < ENCRYPTION_SCHEME_CONTEXT_BOUND` (anti-downgrade)
 
-**Plaintext map in `DirIndex`**: On encrypted filesystems, `DirIndex.plain: FxHashMap<String, (u64, u64)>` maps plaintext name → `(inode_id, plain_hash)` to avoid re-encrypting on repeated lookups. `plain_complete` is set when `plain.len() == stored.len()`.
+4. **Plaintext passthrough**: Names not starting with `_e_` pass through `decrypt_filename` unchanged (used for unencrypted filesystems and special entries `.`, `..`).
 
-### Zero-allocation lookup and fast insertion
+The `_e_` prefix is a constant (`FILENAME_ENC_PREFIX = "_e_"`) and is itself encrypted if a filename literally begins with `_e_` (deterministic encryption means the same plaintext always produces the same ciphertext).
 
-Traditional directory lookups allocate intermediate strings and vectors for every scanned record. OIFS provides zero-allocation primitives for maximum throughput:
+### SipHash-2-4 directory indexing
 
-#### Zero-allocation lookup (`find_entry_in_block`)
+<!-- openwiki: broken internal link [../src/directory.rs] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+[`src/directory.rs`](../src/directory.rs) provides `hash_filename` / `hash_filename_bytes` using SipHash-2-4 with fixed keys (`k0 = 0x0706050403020100`, `k1 = 0x0f0e0d0c0b0a0908`). This 64-bit hash is stored in each `DirectoryEntry.hash` field and used for fast filtering during linear scan (`find_entry_in_block_with_hash`): entries with mismatching hash are skipped without string comparison. Hash value `0` is treated as "no hash" and forces string comparison (backward compatibility).
 
-<!-- openwiki: broken internal link [/src/directory.rs#L211-L232] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[`find_entry_in_block`](/src/directory.rs#L211-L232) searches a raw directory memory slice without a single heap allocation:
+### Zero-allocation directory operations
 
-```rust
-#[inline]
-pub fn find_entry_in_block(slice: &[u8], target_name: &str) -> Option<u64> {
-    let target_bytes = target_name.as_bytes();
-    let mut offset = 0;
-    while offset + 18 <= slice.len() {
-        let len = u16::from_le_bytes([slice[offset + 16], slice[offset + 17]]) as usize;
-        if len == 0 { break; }
-        let name_start = offset + 18;
-        let name_end = name_start + len;
-        if name_end > slice.len() { break; }
-        if len == target_bytes.len() && &slice[name_start..name_end] == target_bytes {
-            let inode = u64::from_le_bytes(slice[offset..offset + 8].try_into().unwrap());
-            return Some(inode);
-        }
-        offset = name_end;
-    }
-    None
-}
-```
+All directory block operations work directly on `&[u8]` / `&mut [u8]` slices with no heap allocations:
 
-- Bypasses UTF-8 validation and `String` allocation by directly comparing byte slices.
-- Decodes integers in place with `u16::from_le_bytes` and `u64::from_le_bytes`.
-- Operates at L1 CPU cache bandwidth.
+- `find_entry_in_block(slice, name) -> Option<u64>` — linear scan, string compare
+- `find_entry_in_block_with_hash(slice, name, hash) -> Option<u64>` — hash filter then string compare
+- `find_insert_offset_in_block(slice) -> usize` — finds first zero `name_len` (append position)
+- `remove_entry_in_block_bytes(slice, name, hash) -> Option<u64>` — in-place compaction, zeros tail
+- `has_valid_entry_in_block(slice) -> bool` — `fsck` helper
+- `for_each_valid_inode_in_block(slice, f)` — `fsck` visitor over valid inode IDs
+- `DirectoryIterator<'a>` — streaming deserializer over `&[u8]`
 
-#### Hash-filtered lookup (`find_entry_in_block_with_hash`)
+<!-- openwiki: broken internal link [../src/disk.rs] file "../src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+These are used by [`DiskManager::build_dir_index`](../src/disk.rs) and the directory cache to avoid per-entry allocations during cold scans.
 
-<!-- openwiki: broken internal link [/src/directory.rs#L170-L208] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[`find_entry_in_block_with_hash`](/src/directory.rs#L170-L208) adds a 64-bit SipHash-2-4 pre-filter to skip string comparison for mismatched entries when the stored hash ≠ target hash:
+## Directory cache and lookup flow
 
-```rust
-#[inline]
-pub fn find_entry_in_block_with_hash(
-    slice: &[u8],
-    target_name: &str,
-    target_hash: u64,
-) -> Option<u64> {
-    // ... reads entry_hash at offset+8 .. offset+16 ...
-    if (entry_hash == 0 || target_hash == 0 || entry_hash == target_hash)
-       && len == target_bytes.len()
-       && &slice[name_start..name_end] == target_bytes { ... }
-}
-```
-- `hash == 0` means "hash not computed/stored"; treated as match (no filter).
-- Used by `locate_entry_in_dir` during on-disk scans.
+<!-- openwiki: broken internal link [../src/disk/caches.rs] file "../src/disk/caches.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+[`src/disk/caches.rs`](../src/disk/caches.rs) defines:
 
-#### SipHash-2-4 implementation
+- **`DirIndex`**: Two `BTreeMap<String, ...>` maps:
+  - `stored`: on-disk ciphertext name (with `_e_` prefix) → `(inode_id, block_id, stored_hash)`
+  - `plain`: plaintext name → `(inode_id, plain_hash)` (only populated on encrypted filesystems)
+  - `complete`: boolean, true when index represents the full directory (all blocks scanned)
+  - `plain_complete`: boolean, true when `plain` map has all entries matching `stored`
+  - `cold_scans`: counter of full-directory scans since last promotion
+  - `may_have_holes`: true if removals created gaps usable for O(1) insert
+  - `tail_offset`: `Option<(block_id, used_bytes)>` for fast appends when no holes
 
-<!-- openwiki: broken internal link [/src/directory.rs#L110-L155] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-The hash function is a deterministic 64-bit SipHash-2-4 ([`hash_filename_bytes`](/src/directory.rs#L110-L155)) with fixed keys:
+- **`ShardedDirCache`**: 32 shards (`ShardedDirCache::SHARDS = 32`), Fibonacci hash `inode_id.wrapping_mul(0x9e3779b97f4a7c15) >> 27` to select shard. Each shard guarded by `RwLock<BTreeMap<u64, DirIndex>>`.
 
-```rust
-const K0: u64 = 0x0706050403020100;
-const K1: u64 = 0x0f0e0d0c0b0a0908;
-```
+<!-- openwiki: broken internal link [../src/disk.rs] file "../src/disk.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+### Lookup algorithm (`DiskManager::dir_lookup` in [`src/disk.rs`](../src/disk.rs))
 
-Round function (2 rounds per message chunk, 2 rounds after last chunk, 4 finalization rounds):
-```rust
-fn sip_round(v0, v1, v2, v3) {
-    v0 = v0.wrapping_add(v1); v1 = v1.rotate_left(13) ^ v0; v0 = v0.rotate_left(32);
-    v2 = v2.wrapping_add(v3); v3 = v3.rotate_left(16) ^ v2;
-    v0 = v0.wrapping_add(v3); v3 = v3.rotate_left(21) ^ v0;
-    v2 = v2.wrapping_add(v1); v1 = v1.rotate_left(17) ^ v2; v2 = v2.rotate_left(32);
-}
-```
+1. **Cache hit**: Check shard for `parent_id`. If `encrypted`, probe `plain` map with plaintext name; else probe `stored` map. If `complete` (and `plain_complete` if encrypted), negative result is authoritative → return `None` immediately.
+2. **Complete index miss**: If index exists and is `complete` but `plain_complete` is false (encrypted FS, first lookup after index built), scan on-disk blocks once to populate `plain` map.
+3. **Cold scan → index build**: On first miss with no index, `build_dir_index` reads all directory blocks, decrypts filenames (if encrypted), builds complete `stored` and `plain` maps, promotes to `complete = true`, caches `tail_offset` for O(1) append.
+4. **Targeted scan**: If index exists but not complete, scans only the block where the entry might reside (based on `tail_offset` or hole list).
 
-#### Fast append offset (`find_insert_offset_in_block`)
+After a successful lookup or insert, `plain` map is updated and `plain_complete` is set when `plain.len() == stored.len()`.
 
-<!-- openwiki: broken internal link [/src/directory.rs#L234-L250] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[`find_insert_offset_in_block`](/src/directory.rs#L234-L250) steps through existing entries using the 18-byte header and length field until encountering `len == 0`. It returns the exact byte offset where the new record should be written, eliminating full block rewrites.
+## Multi-block directory structure
 
-#### In-place removal (`remove_entry_in_block_bytes`)
+Directories can span multiple 4 KiB blocks linked via the inode's `blocks[0..12]` (direct) and `triple_indirect` pointers. There is no separate directory block bitmap; the inode's block array is the authoritative list. `DiskManager::build_dir_index` iterates all block IDs in the inode (via `resolve_logical_block_id` for indirect blocks), reads each block, and parses entries until `name_len == 0` or block end.
 
-<!-- openwiki: broken internal link [/src/directory.rs#L252-L290] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[`remove_entry_in_block_bytes`](/src/directory.rs#L252-L290) compacts remaining entries forward and zeros the trailing tail identically to a full block rewrite, all with **zero heap allocations**.
+## Key invariants and failure modes
 
-## DirIndex and ShardedDirCache
+| Invariant | Enforcement |
+|-----------|-------------|
+| Inode record is exactly 256 bytes, `record_version == 2` | `encode_v2` / `decode_v2`; padding bytes 171–255 must be zero |
+| `mode` is only `File` (0) or `Directory` (1) | `decode_v2` validates discriminant |
+| `blocks[0] == 0` for empty files/dirs | Caller convention; `allocate_block` never returns 0 |
+| `encryption_nonce` is unique per file | `generate_nonce()` uses `OsRng` (24 bytes = 192 bits) |
+| Directory entry `name_len ≤ 255` | `validate_filename` rejects longer names; `serialize_into` enforces |
+| No path separators (`/`, `\`) or NUL in filenames | `validate_filename` |
+| `.` and `..` never stored as directory entries | `validate_filename` rejects them; VFS synthesizes them |
+| On encrypted FS, directory entries always store `_e_` ciphertext | `stored_filename` encrypts before write; `decrypt_filename_authenticated` rejects non-prefixed entries during scan |
+| SIV nonce verification is constant-time | `ct_eq_slice` in `decrypt_filename_authenticated` |
+| Legacy v1 filenames rejected on v2+ images (anti-downgrade) | `decrypt_filename_authenticated` checks `encryption_version >= ENCRYPTION_SCHEME_CONTEXT_BOUND` |
+| DirIndex `complete` ⇔ all blocks scanned | `build_dir_index` sets `complete = true` after full scan |
+| `plain_complete` ⇔ `plain.len() == stored.len()` | Updated after every lookup/insert on encrypted FS |
 
-### DirIndex structure
+### Failure semantics
 
-<!-- openwiki: broken internal link [/src/disk/caches.rs#L175-L195] link "/src/disk/caches.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[`DirIndex`](/src/disk/caches.rs#L175-L195) is the in-memory index for a single directory:
+- `InodeFormatError::InvalidRecordVersion` → on-disk corruption or version mismatch
+- `InodeFormatError::InvalidFileType` → `mode` not 0 or 1
+- `InodeFormatError::NonZeroPadding` → bytes 171–255 not zero (tampering or v1 residue)
+- `DirectoryError::EntryTooLarge` → `name_len > 255` on read or write
+- `DirectoryError::InvalidFilename` → empty, `.`, `..`, contains `/`, `\`, or NUL
+- `EncryptionError::DecryptionFailed` → Poly1305 tag mismatch, SIV nonce mismatch, Base64 decode error, or UTF-8 decode error
+- `DiskManagerError::Io` → underlying block device error
 
-```rust
-pub(crate) struct DirIndex {
-    pub(crate) complete: bool,              // entire directory indexed
-    pub(crate) plain_complete: bool,        // plain map has all stored entries (encrypted FS)
-    pub(crate) cold_scans: u32,             // number of targeted scans since last index build
-    pub(crate) may_have_holes: bool,        // earlier blocks may have free space from deletions
-    pub(crate) tail_offset: Option<(u64, u16)>, // (phys_block_id, next_insert_offset) for last block
-    pub(crate) stored: FxHashMap<String, (u64, u64, u64)>, // ciphertext name → (inode, phys_block, stored_hash)
-    pub(crate) plain: FxHashMap<String, (u64, u64)>,       // plaintext name → (inode, plain_hash) [encrypted FS only]
-}
-```
+## Extension points and configuration
 
-- `stored` always holds the on-disk names (ciphertext on encrypted FS, plaintext otherwise).
-- `plain` is only used on encrypted filesystems to cache plaintext→inode mappings and avoid re-encryption.
-- `cold_scans` increments on each targeted scan (miss or hit that requires scanning). When it reaches `DIR_INDEX_BUILD_AFTER_SCANS = 8`, the next miss/hit triggers a full index build.
-- `may_have_holes` and `tail_offset` enable O(1) insertion: if the tail block has space, no scan is needed; if earlier blocks might have holes (from deletions), they are scanned only when the tail is full.
+| Feature | Configuration | Source |
+|---------|---------------|--------|
+<!-- openwiki: broken internal link [../src/encryption.rs] file "../src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Argon2id KDF parameters | `ARGON2_M_COST_KIB`, `ARGON2_T_COST`, `ARGON2_P_COST` constants in [`src/encryption.rs`](../src/encryption.rs) | OWASP / RFC 9106 defaults (64 MiB, 3, 4) |
+<!-- openwiki: broken internal link [../src/superblock.rs] file "../src/superblock.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Encryption scheme version | `superblock.encryption_version` (1 = legacy, 2 = context-bound) | [`src/superblock.rs`](../src/superblock.rs) |
+<!-- openwiki: broken internal link [../src/inode.rs] file "../src/inode.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Seekable 64 KiB chunk compression | `INODE_FLAG_SEEKABLE_64K = 0x01` in `Inode.flags` | [`src/inode.rs`](../src/inode.rs) |
+<!-- openwiki: broken internal link [../src/disk/caches.rs#L175] file "../src/disk/caches.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Directory cache promotion threshold | `DIR_INDEX_BUILD_AFTER_SCANS = 8` | [`src/disk/caches.rs`](../src/disk/caches.rs#L175) |
+<!-- openwiki: broken internal link [../src/disk/caches.rs#L202] file "../src/disk/caches.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Shard count | `ShardedDirCache::SHARDS = 32` (compile-time) | [`src/disk/caches.rs`](../src/disk/caches.rs#L202) |
+<!-- openwiki: broken internal link [../src/directory.rs#L5] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Max filename length | `DirectoryEntry::MAX_FILENAME_LEN = 255` | [`src/directory.rs`](../src/directory.rs#L5) |
 
-### DirIndex promotion logic
+## Focused tests and verification
 
-The promotion from targeted scans to complete index occurs in `dir_lookup` and `append_dir_entry_to_dir`:
-
-1. **First access** (no `DirIndex` exists): Build complete index in a single pass (`build_dir_index`), populate `stored`, `may_have_holes`, `tail_offset`, set `complete = true`.
-2. **Subsequent lookups**: 
-   - If `complete` (and `plain_complete` on encrypted FS): O(1) map lookup, no disk access.
-   - If not complete: targeted on-disk scan (`locate_entry_in_dir`).
-3. **Promotion trigger**: On a **negative lookup** (not found) OR when `cold_scans + 1 >= 8`, the next operation builds the full index outside the shard write lock, then installs it atomically.
-
-This design ensures:
-- First lookup (even negative) pays full scan once and never again.
-- Hot directories become fully indexed automatically.
-- Lock contention is minimized: index build happens outside the shard write lock.
-
-### ShardedDirCache (32 shards)
-
-<!-- openwiki: broken internal link [/src/disk/caches.rs#L202-L254] link "/src/disk/caches.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[`ShardedDirCache`](/src/disk/caches.rs#L202-L254) divides `dir_inode_id → DirIndex` across 32 independent `RwLock<FxHashMap<u64, DirIndex>>` shards:
-
-```rust
-const NUM_DIR_CACHE_SHARDS: usize = 32;
-const SHARD_MASK: usize = NUM_DIR_CACHE_SHARDS - 1; // 31
-fn shard_index(&self, dir_inode_id: u64) -> usize {
-    (dir_inode_id.wrapping_mul(0x517cc1b727220a95) as usize) & SHARD_MASK
-}
-```
-
-- Uses 64-bit Fibonacci hashing (multiplicative bijection) for uniform distribution.
-- `read_shard` / `write_shard` return poison-resistant `RwLock` guards (`read_unpoisoned` / `write_unpoisoned`).
-- Operations on one directory never stall concurrent operations on directories in other shards.
-
-## Streaming directory iteration
-
-<!-- openwiki: broken internal link [/src/directory.rs#L84-L93] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[`DirectoryIterator<'a>`](/src/directory.rs#L84-L93) implements the standard Rust `Iterator` trait over a borrowed slice `&'a [u8]`:
-
-- Wraps `std::io::Cursor<&'a [u8]>`.
-<!-- openwiki: broken internal link [/src/directory.rs#L45-L81] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-- Successively calls [`DirectoryEntry::deserialize_from`](/src/directory.rs#L45-L81).
-- Automatically halts when reaching the end of the memory buffer or encountering a zero-length name sentinel.
-- Propagates I/O and UTF-8 errors via `Result<DirectoryEntry, DirectoryError>`.
-
-## FUSE filename normalization (NFD → NFC)
-
-When mounted via FUSE on macOS, filenames arrive from the kernel in **NFD (decomposed) form** (e.g., `e` + `´` as separate code points). Linux and the OIFS directory index expect **NFC (composed) form**. The FUSE layer performs pure-Rust NFD→NFC normalization without external dependencies:
-
-<!-- openwiki: broken internal link [/src/fuse.rs#L684-L707] link "/src/fuse.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-### Normalization algorithm ([`normalize_filename_nfc`](/src/fuse.rs#L684-L707))
-
-```rust
-pub fn normalize_filename_nfc(name: &str) -> Cow<'_, str> {
-    if name.is_ascii() { return Cow::Borrowed(name); }
-    // Quick scan: if no composable pair exists, return borrowed
-    // Otherwise, compose in a single pass using compose_pair()
-}
-```
-
-- **Zero-allocation fast path**: ASCII strings and already-composed UTF-8 return `Cow::Borrowed` immediately.
-<!-- openwiki: broken internal link [/src/fuse.rs#L410-L573] link "/src/fuse.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-- **Canonical composition** ([`compose_pair`](/src/fuse.rs#L410-L573)) covers:
-  - Korean Hangul Jamo: `L + V → LV`, `LV + T → LVT` (Unicode §3.12)
-  - Japanese Hiragana/Katakana: dakuten (U+3099) and handakuten (U+309A)
-  - Latin, European, Cyrillic combining diacritics: grave (U+0300), acute (U+0301), circumflex (U+0302), tilde (U+0303), macron (U+0304), breve (U+0306), dot above (U+0307), diaeresis (U+0308), ring above (U+030A), double acute (U+030B), caron (U+030C), cedilla (U+0327), ogonek (U+0328)
-- **Single-pass composition**: Iterates characters, composes adjacent pairs in place, builds output string only when needed.
-
-<!-- openwiki: broken internal link [/src/fuse.rs#L399-L407] link "/src/fuse.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-### macOS metadata filename filtering ([`is_macos_metadata_filename`](/src/fuse.rs#L399-L407))
-
-Prevents Finder/Spotlight/AppleDouble metadata files from entering the OIFS directory index:
-
-```rust
-pub fn is_macos_metadata_filename(name: &str) -> bool {
-    name.starts_with("._")  // AppleDouble resource forks
-        || matches!(name, ".DS_Store" | ".Spotlight-V100" | ".Trashes" | ".fseventsd" | ".TemporaryItems")
-}
-```
-
-These names are silently ignored by the VFS layer (`readdir`, `lookup`, `create`, `mkdir`, `unlink`), eliminating metadata storms and clutter.
-
-## Filename validation
-
-<!-- openwiki: broken internal link [/src/directory.rs#L52-L82] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[`validate_filename`](/src/directory.rs#L52-L82) enforces security rules before any directory entry is created:
-
-```rust
-pub fn validate_filename(name: &str) -> Result<(), DirectoryError> {
-    if name.is_empty() { return Err(...); }
-    if name == "." || name == ".." { return Err(...); }
-    if name.contains('/') || name.contains('\\') { return Err(...); }
-    if name.contains('\0') { return Err(...); }
-    if name.len() > MAX_FILENAME_LEN { return Err(DirectoryError::EntryTooLarge); }
-    Ok(())
-}
-```
-
-Rejects:
-- Empty filenames
-- Path traversal components (`.` and `..`)
-- Path separators (`/` and `\`)
-- Null bytes (`\0`)
-- Filenames exceeding 255 bytes (`MAX_FILENAME_LEN`)
-
-Note: `.hidden` and `..extra` are **allowed** (only exact `.` and `..` are rejected).
-
-## Inode table layout
-
-Inodes are stored in a contiguous table starting at `superblock.inode_table_block`. Each inode occupies exactly 256 bytes (`INODE_SLOT_SIZE`). With 4 KB blocks, each block holds 16 inodes (`INODE_SLOTS_PER_BLOCK = 16`).
-
-The v3 layout (multi-block bitmaps) sizes the inode table at up to 1024 blocks (16,384 inodes), while the legacy layout capped at 32,768 inodes with 128-byte bincode records. The usable inode count is bounded by the minimum of:
-- `inode_count` (claimed capacity)
-- `inode_table_capacity()` (actual slots between `inode_table_block` and `data_block_start`)
-- `MAX_TRACKED_INODES = 32,768` (bitmap capacity)
-
-## Constants summary
-
-| Constant | Value | Location |
-|----------|-------|----------|
-<!-- openwiki: broken internal link [/src/lib.rs#L27] link "/src/lib.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `BLOCK_SIZE` | 4096 | [`src/lib.rs`](/src/lib.rs#L27) |
-<!-- openwiki: broken internal link [/src/inode_format.rs#L71] link "/src/inode_format.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `INODE_SLOT_SIZE` | 256 | [`src/inode_format.rs`](/src/inode_format.rs#L71) |
-<!-- openwiki: broken internal link [/src/inode_format.rs#L76] link "/src/inode_format.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `INODE_V2_PAYLOAD_LEN` | 166 | [`src/inode_format.rs`](/src/inode_format.rs#L76) |
-<!-- openwiki: broken internal link [/src/inode_format.rs#L82] link "/src/inode_format.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `INODE_V2_RECORD_VERSION` | 2 | [`src/inode_format.rs`](/src/inode_format.rs#L82) |
-<!-- openwiki: broken internal link [/src/inode_format.rs#L95] link "/src/inode_format.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `INODE_FORMAT_V2` | 2 | [`src/inode_format.rs`](/src/inode_format.rs#L95) |
-<!-- openwiki: broken internal link [/src/inode.rs#L193] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `DIRECT_BLOCKS` | 10 | [`src/inode.rs`](/src/inode.rs#L193) |
-<!-- openwiki: broken internal link [/src/inode.rs#L195] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `PTRS_PER_BLOCK` | 512 | [`src/inode.rs`](/src/inode.rs#L195) |
-<!-- openwiki: broken internal link [/src/inode.rs#L199] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `MAX_LOGICAL_BLOCKS` | 134,480,394 | [`src/inode.rs`](/src/inode.rs#L199) |
-<!-- openwiki: broken internal link [/src/inode.rs#L72] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `CHUNK_SIZE_64K` | 65536 | [`src/inode.rs`](/src/inode.rs#L72) |
-<!-- openwiki: broken internal link [/src/inode.rs#L75] link "/src/inode.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `INODE_FLAG_SEEKABLE_64K` | 0x0001 | [`src/inode.rs`](/src/inode.rs#L75) |
-<!-- openwiki: broken internal link [/src/directory.rs#L81] link "/src/directory.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `MAX_FILENAME_LEN` | 255 | [`src/directory.rs`](/src/directory.rs#L81) |
-<!-- openwiki: broken internal link [/src/disk/caches.rs#L191] link "/src/disk/caches.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `DIR_INDEX_BUILD_AFTER_SCANS` | 8 | [`src/disk/caches.rs`](/src/disk/caches.rs#L191) |
-<!-- openwiki: broken internal link [/src/disk/caches.rs#L188] link "/src/disk/caches.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `NUM_DIR_CACHE_SHARDS` | 32 | [`src/disk/caches.rs`](/src/disk/caches.rs#L188) |
-<!-- openwiki: broken internal link [/src/encryption.rs#L332] link "/src/encryption.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `FILENAME_ENC_PREFIX` | `"_e_"` | [`src/encryption.rs`](/src/encryption.rs#L332) |
-<!-- openwiki: broken internal link [/src/encryption.rs#L409] link "/src/encryption.rs" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-| `SHORT_XCHACHA_THRESHOLD` | 192 | [`src/encryption.rs`](/src/encryption.rs#L409) |
-
-## Related pages
-
-- [Block Allocation](./block_allocation.md) — How blocks are allocated, freed, and tracked
-- [Compression and Filters](./compression_and_filters.md) — Zstd compression pipeline and blosc2-style filters
-- [Encryption](./encryption.md) — File payload encryption, chunk encryption, and key derivation
-- [Basic Operations](../workflows/basic_operations.md) — File create, read, write, delete workflows
-- [Encrypted Workflows](../workflows/encrypted_workflows.md) — Encrypted filesystem initialization and operations
+| Test | Location | Coverage |
+|------|----------|----------|
+<!-- openwiki: broken internal link [../src/inode_format.rs] file "../src/inode_format.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Inode v2 roundtrip encode/decode | [`src/inode_format.rs`](../src/inode_format.rs) tests | Frozen layout, version, padding |
+<!-- openwiki: broken internal link [../src/inode_format.rs] file "../src/inode_format.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Inode v1 legacy decode | [`src/inode_format.rs`](../src/inode_format.rs) tests | Backward compatibility |
+<!-- openwiki: broken internal link [../src/directory.rs] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| `DirectoryEntry` serialize/deserialize | [`src/directory.rs`](../src/directory.rs) tests | Variable-length encoding, validation |
+<!-- openwiki: broken internal link [../src/directory.rs] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| `hash_filename` determinism & SipHash-2-4 reference | [`src/directory.rs`](../src/directory.rs) tests | Hash stability, filtering |
+<!-- openwiki: broken internal link [../src/directory.rs] file "../src/directory.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| `find_entry_in_block*` zero-allocation correctness | [`src/directory.rs`](../src/directory.rs) tests | Lookup, insert offset, removal compaction |
+<!-- openwiki: broken internal link [../src/disk/caches.rs] file "../src/disk/caches.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| `DirIndex` cold-scan promotion | [`src/disk/caches.rs`](../src/disk/caches.rs) tests | Sharding, `complete`, `plain_complete`, `tail_offset` |
+<!-- openwiki: broken internal link [../src/encryption.rs#L971-L1012] file "../src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| `encrypt_filename` / `decrypt_filename` roundtrip | [`src/encryption.rs`](../src/encryption.rs#L971-L1012) | Determinism, parent_inode binding, `_e_` prefix handling |
+<!-- openwiki: broken internal link [../src/encryption.rs#L1064-L1092] file "../src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| SIV nonce constant-time verification | [`src/encryption.rs`](../src/encryption.rs#L1064-L1092) | Tampering detection on nonce/ciphertext/tag |
+<!-- openwiki: broken internal link [../src/encryption.rs#L1092-L1102] file "../src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Legacy v1 fallback & anti-downgrade | [`src/encryption.rs`](../src/encryption.rs#L1092-L1102) | v1 readable on v1, rejected on v2+ |
+<!-- openwiki: broken internal link [../src/encryption.rs#L1102+] file "../src/encryption.rs" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Short-message scalar XChaCha20 path | [`src/encryption.rs`](../src/encryption.rs#L1102+) | Byte-for-byte match with `XChaCha20Poly1305` reference |
+<!-- openwiki: broken internal link [../src/kani] file "../src/kani" does not exist. Fix the href or restore the target, then delete this comment. -->
+| Kani proof harnesses | [`src/kani`](../src/kani) | Memory safety for directory block ops, inode encoding, encryption primitives |

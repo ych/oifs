@@ -5,13 +5,13 @@ description: How the oifs_mcp binary exposes the OIFS storage engine as Model Co
 tags: [mcp, rmcp, ai-agents, cursor, claude-desktop, sandbox, stdio, json-schema]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-1d8ff572dc201d9ae2619645
     resource: repo://src/bin/oifs_mcp.rs
   - id: openwiki-source-c1e8d5f8bb6497980a6b4166
     resource: repo://src/session.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
 
 ## Responsibility and ownership
@@ -29,31 +29,32 @@ Rather than giving AI agents unrestricted access to the host operating system fi
 flowchart TD
     A[AI Agent Host (Cursor / Claude Desktop)] -->|JSON-RPC (stdio transport)| B[rmcp Service Handler (ServerHandler)]
     B -->|ToolRouter dispatch & JsonSchema validation| C[OifsMcpServer]
-    C -->|async mutex lock| D[TokioMutex<DiskManager>]
+    C -->|spawn_blocking| D[DiskManager (sync mmap I/O)]
     D -->|mmap & storage calls| E[OIFS Engine (DiskManager / Inode / Bitmap)]
 ```
 
 ### The OifsMcpServer structure
 
-Server state is encapsulated by [`OifsMcpServer`](repo://src/bin/oifs_mcp.rs#L27-L32):
+Server state is encapsulated by [`OifsMcpServer`](repo://src/bin/oifs_mcp.rs#L36-L43):
 
 ```rust
 #[derive(Clone)]
 struct OifsMcpServer {
-    dm: Arc<TokioMutex<DiskManager>>,
+    dm: DiskManager,
+    append_lock: Arc<std::sync::Mutex<()>>,
     image_path: PathBuf,
     tool_router: ToolRouter<Self>,
 }
 ```
 
-- **Thread and Async Safety**: Because `rmcp` operates in an asynchronous Tokio runtime while `DiskManager` performs synchronous mmap I/O, `DiskManager` is wrapped in `Arc<TokioMutex<DiskManager>>`. Each incoming MCP tool invocation acquires this mutex to ensure sequential transaction isolation.
-  - **Why TokioMutex is acceptable for agent workloads**: AI agent interactions are inherently sequential from the perspective of a single conversation — an LLM emits one tool call, waits for the result, then emits the next. The mutex serializes these naturally sequential requests. There is no high-concurrency fan-out from a single agent; concurrent access would only occur if multiple agent hosts connected to the same server process, which the stdio transport prevents by design (one stdin/stdout pair per process). For workloads requiring parallelism, the IPC/daemon path ([`src/ipc.rs`](repo://src/ipc.rs)) provides a multi-threaded alternative.
-- **Bootstrapping**: Constructed via [`OifsMcpServer::new`](repo://src/bin/oifs_mcp.rs#L33-L47). If the target image file does not yet exist and an `OIFS_PASSWORD` environment variable is detected, it automatically initializes an encrypted image via `DiskManager::create_encrypted`; otherwise, it calls `DiskManager::open_with_password`.
+- **Async–sync bridge**: Because `rmcp` operates in an asynchronous Tokio runtime while `DiskManager` performs synchronous mmap I/O, each tool handler offloads the synchronous `DiskManager` work to a blocking task via `tokio::task::spawn_blocking`. The `DiskManager` itself is stored directly (not wrapped in a mutex) because each blocking task gets its own clone of the struct, and `DiskManager` uses internal `RwLock`/`Mutex` for its own synchronization.
+- **Append serialization**: An additional `append_lock: Arc<std::sync::Mutex<()>>` serializes concurrent `append_file` calls so that multiple agents appending to the same log file interleave cleanly line-by-line.
+- **Bootstrapping**: Constructed via [`OifsMcpServer::new`](repo://src/bin/oifs_mcp.rs#L45-L61). If the target image file does not yet exist and an `OIFS_PASSWORD` environment variable is detected, it automatically initializes an encrypted image via `DiskManager::create_encrypted`; otherwise, it calls `DiskManager::open_with_password`.
 - **Defaults**: Defaults to `agent_memory.img` with a default size of 10 MB ([`DEFAULT_IMAGE`](repo://src/bin/oifs_mcp.rs#L23), [`DEFAULT_SIZE_MB`](repo://src/bin/oifs_mcp.rs#L24)), configurable via `--size <MB>` and positional CLI arguments.
 
 ## Server capabilities and initialization
 
-The server implements [`ServerHandler`](repo://src/bin/oifs_mcp.rs#L338-L354) to announce capabilities during the MCP handshake:
+The server implements [`ServerHandler`](repo://src/bin/oifs_mcp.rs#L370-L386) to announce capabilities during the MCP handshake:
 
 ```rust
 #[rmcp::tool_handler]
@@ -79,281 +80,190 @@ By enabling `.enable_tools()`, the server advertises its available tool registry
 The sandbox model is deliberately simple:
 
 1. **One image per server process**: The CLI accepts a single image path (default: `agent_memory.img`). All tools operate exclusively within this image.
-2. **Path resolution is always relative to the image root**: Paths like `"notes/todo.txt"` or `"."` are resolved by `DiskManager::resolve_path` ([`disk.rs`](repo://src/disk.rs#L6478)) starting from the root inode (inode 1). There is no concept of "current working directory" — every path is absolute within the sandbox.
-3. **Parent directories must exist**: `write_file`, `mkdir`, and `append_file` use `resolve_parent` to locate the parent directory inode, then create the child. They do **not** auto-create intermediate directories (no `mkdir -p` semantics). The agent must create the directory hierarchy first with `mkdir` calls.
+2. **Path resolution is always relative to the image root**: Paths like `"notes/todo.txt"` or `"."` are resolved by `DiskManager::resolve_path` ([`disk.rs#L6704`](repo://src/disk.rs#L6704)) starting from the root inode (inode 1). There is no concept of "current working directory" — every path is absolute within the sandbox.
+3. **Parent directories must exist**: `write_file`, `mkdir`, and `append_file` use `resolve_parent` ([`disk.rs#L6840`](repo://src/disk.rs#L6840)) to locate the parent directory inode, then create the child. They do **not** auto-create intermediate directories (no `mkdir -p` semantics). The agent must create the directory hierarchy first with `mkdir` calls.
 4. **Encryption is image-scoped**: If `OIFS_PASSWORD` is set at startup, the entire image is encrypted with AES-256-XTS. The same password must be supplied on every subsequent launch to open the image. The MCP server itself has no key-management logic — it simply forwards the environment variable to `DiskManager`.
 
 ## Session management and DiskManager integration
 
-The MCP server uses `OifsSession` internally for DiskManager lifecycle management, though currently it operates exclusively in **Standalone mode** (direct `mmap` access, zero IPC overhead). The session abstraction is defined in [`session.rs`](repo://src/session.rs):
+The MCP server does **not** use `OifsSession` from [`session.rs`](repo://src/session.rs). Instead, it constructs `DiskManager` directly via `DiskManager::open_with_password` or `DiskManager::create_encrypted`, which operates in **Standalone mode** (direct `mmap` access, zero IPC overhead).
 
-- **SessionMode**: The `OifsSession` enum supports three modes: `Standalone` (direct access), `Local` (Unix Domain Socket IPC), and `Network` (TCP with rendezvous file). The MCP server uses `Standalone` mode implicitly via `DiskManager::open_with_password` / `DiskManager::create_encrypted`.
-- **Process-wide registry**: `OifsSession` maintains a process-wide registry (keyed by canonicalized image path) so multiple handles to the same image share a single `DiskManager` instance. The MCP server currently creates one session per process.
-- **DiskManager access**: The `OifsMcpServer` wraps `DiskManager` in `Arc<TokioMutex<DiskManager>>` rather than using the session's direct `Arc<DiskManager>` because the server runs in an async Tokio context while `DiskManager` is synchronous. The mutex bridges this boundary.
+- The `OifsSession` abstraction in `session.rs` provides a process-wide registry and supports three modes (`Standalone`, `Local` UDS IPC, `Network` TCP). The MCP server bypasses this entirely and holds a `DiskManager` directly.
+- This means there is **no cross-process session sharing** for the MCP server — each `oifs_mcp` process has its own independent `DiskManager` handle to the image file. If multiple agent hosts need shared access, the IPC/daemon path ([`src/ipc.rs`](repo://src/ipc.rs)) or FUSE mount ([`src/fuse.rs`](repo://src/fuse.rs)) should be used instead.
 
 ## Available MCP tools
 
-All tools are registered via the [`tool_router`](repo://src/bin/oifs_mcp.rs#L157) macro. Each tool acquires `self.dm.lock().await`, executes the operation, and returns a JSON string built with `serde_json` (never hand-rolled `format!`) to guarantee correct escaping.
+All tools are registered via the [`tool_router`](repo://src/bin/oifs_mcp.rs#L123) macro. Each tool clones `self.dm`, executes the operation inside `tokio::task::spawn_blocking`, and returns a JSON string built with `serde_json` (never hand-rolled `format!`) to guarantee correct escaping.
 
 ### Tool response convention
 
 - **Success**: `{"ok": true, ...}` with tool-specific fields.
-- **Failure**: `{"ok": false, "error": "..."}` — a single JSON object with a human-readable error message.
+- **Error**: `{"ok": false, "error": "..."}`.
 
-### `write_file`
+### write_file
 
 ```json
 {
   "name": "write_file",
   "description": "Write (create or overwrite) a file inside the OIFS sandbox image. Parent directories must already exist.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "path": { "type": "string", "description": "Path inside the OIFS image (e.g. \"notes/todo.txt\")" },
-      "content": { "type": "string", "description": "UTF-8 content to write" }
-    },
-    "required": ["path", "content"]
-  }
+  "parameters": { "path": "string", "content": "string" }
 }
 ```
 
-**Behavior**: Resolves parent directory, creates file if missing, writes content with automatic compression (`CompressionMode::Auto`). Returns `inode` ID and `bytes` written.
+- Resolves parent directory via `resolve_parent`, creates file if missing via `create_file`, then writes content via `write_data_truncated` with `CompressionMode::Auto` ([`disk.rs#L8053`](repo://src/disk.rs#L8053)).
+- Returns `{"ok": true, "inode": <u64>, "bytes": <usize>}`.
 
-### `read_file`
+### read_file
 
 ```json
 {
   "name": "read_file",
   "description": "Read the contents of a file inside the OIFS sandbox image. Returns UTF-8 text content.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "path": { "type": "string", "description": "Path inside the OIFS image (e.g. \"notes/todo.txt\")" }
-    },
-    "required": ["path"]
-  }
+  "parameters": { "path": "string" }
 }
 ```
 
-**Behavior**: Resolves path to inode, reads data, validates UTF-8. Returns raw file content (not JSON-wrapped) on success.
+- Resolves path via `resolve_path`, reads data via `read_data` ([`disk.rs#L4741`](repo://src/disk.rs#L4741)), validates UTF-8.
+- Returns raw UTF-8 string content on success (not JSON-wrapped), or JSON error object on failure.
 
-### `list_dir`
+### list_dir
 
 ```json
 {
   "name": "list_dir",
   "description": "List files and directories at a given path inside the OIFS sandbox image. Returns one JSON object per line (JSONL).",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "path": { "type": "string", "description": "Path inside the OIFS image (e.g. \".\" for root, \"notes\" for a subdirectory)" }
-    },
-    "required": ["path"]
-  }
+  "parameters": { "path": "string" }
 }
 ```
 
-**Behavior**: Resolves path to directory inode, lists entries. Returns **JSON Lines (JSONL)** — one JSON object per line with `name`, `kind` ("file"|"dir"), and `size`. Empty directory returns `{"entries":0}`.
+- Resolves directory inode via `resolve_path`, reads entries via `list_dir` ([`disk.rs#L6721`](repo://src/disk.rs#L6721)), reads each child inode for type and size.
+- Returns **JSONL** (newline-delimited JSON objects): each line is `{"name": "...", "kind": "file|dir", "size": <u64>}`. Empty directory returns `{"entries":0}`.
 
-### `mkdir`
+### mkdir
 
 ```json
 {
   "name": "mkdir",
   "description": "Create a directory inside the OIFS sandbox image. Parent directories must exist.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "path": { "type": "string", "description": "Path of the new directory (e.g. \"notes/drafts\")" }
-    },
-    "required": ["path"]
-  }
+  "parameters": { "path": "string" }
 }
 ```
 
-**Behavior**: Resolves parent directory, creates new directory inode. Returns `inode` ID.
+- Resolves parent via `resolve_parent`, creates directory via `create_directory` ([`disk.rs#L4076`](repo://src/disk.rs#L4076)).
+- Returns `{"ok": true, "inode": <u64>}`.
 
-### `delete_file`
+### delete_file
 
 ```json
 {
   "name": "delete_file",
   "description": "Delete a file from the OIFS sandbox image.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "path": { "type": "string", "description": "Path of the file to delete (e.g. \"notes/old.txt\")" }
-    },
-    "required": ["path"]
-  }
+  "parameters": { "path": "string" }
 }
 ```
 
-**Behavior**: Resolves parent directory, removes file entry. Returns `{"ok": true}`.
+- Resolves parent via `resolve_parent`, deletes via `delete_file` ([`disk.rs#L7244`](repo://src/disk.rs#L7244)).
+- Returns `{"ok": true}`.
 
-### `truncate_file`
+### truncate_file
 
 ```json
 {
   "name": "truncate_file",
   "description": "Truncate or extend a file in the OIFS sandbox image to the specified size in bytes.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "path": { "type": "string", "description": "Path inside the OIFS image (e.g. \"notes/todo.txt\")" },
-      "size": { "type": "integer", "description": "Target file size in bytes" }
-    },
-    "required": ["path", "size"]
-  }
+  "parameters": { "path": "string", "size": "u64" }
 }
 ```
 
-**Behavior**: Resolves path, truncates/extends file to exact byte size. Returns `size`.
+- Truncates via `truncate_path` ([`disk.rs#L8044`](repo://src/disk.rs#L8044)).
+- Returns `{"ok": true, "size": <u64>}`.
 
-### `append_file`
+### append_file
 
 ```json
 {
   "name": "append_file",
   "description": "Append a line to a file inside the OIFS sandbox image. Creates the file if it does not exist. Ideal for JSONL memory logs.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "path": { "type": "string", "description": "Path inside the OIFS image (e.g. \"logs/memory.jsonl\")" },
-      "content": { "type": "string", "description": "UTF-8 content to append (a newline is auto-added if missing)" }
-    },
-    "required": ["path", "content"]
-  }
+  "parameters": { "path": "string", "content": "string" }
 }
 ```
 
-**Behavior**: Resolves parent, creates file if missing, reads existing content, appends new content + newline, writes back with `CompressionMode::Never` (critical for append-only logs). Returns `inode` and `total_bytes`.
+- Acquires `append_lock` (process-wide `std::sync::Mutex<()>`) to serialize concurrent appends.
+- Resolves parent via `resolve_parent`, creates file if missing via `create_file`, then appends via `write_data` at current file size with `CompressionMode::Never` ([`disk.rs#L5279`](repo://src/disk.rs#L5279)). Ensures trailing newline.
+- Returns `{"ok": true, "inode": <u64>, "total_bytes": <u64>}`.
 
-### `status`
+### status
 
 ```json
 {
   "name": "status",
-  "description": "Show filesystem status: image path, total/used/free blocks, and fragmentation ratio.",
-  "parameters": { "type": "object", "properties": {} }
+  "description": "Show filesystem status: image path, total/used/free blocks, and fragmentation ratio."
 }
 ```
 
-**Behavior**: Runs `DiskManager::analyze_fragmentation()`. Returns `image`, `total_blocks`, `used_blocks`, `free_blocks`, `fragmentation` ratio.
+- Calls `analyze_fragmentation` ([`disk.rs#L147`](repo://src/disk.rs#L147)).
+- Returns `{"image": "...", "total_blocks": <u64>, "used_blocks": <u64>, "free_blocks": <u64>, "fragmentation": <f64>}`.
 
 ## MCP tool invocation flow
 
 ```mermaid
 sequenceDiagram
-    participant Agent as AI Agent (Claude/Cursor)
-    participant Transport as stdio Transport
-    participant RMCP as rmcp ServerHandler
-    participant Router as ToolRouter<OifsMcpServer>
+    participant Agent as AI Agent (Cursor/Claude)
+    participant Transport as stdio (JSON-RPC)
+    participant Handler as rmcp ServerHandler
+    participant Router as ToolRouter
     participant Server as OifsMcpServer
-    participant DM as TokioMutex<DiskManager>
-    participant Engine as OIFS Engine
+    participant Blocking as tokio::spawn_blocking
+    participant DM as DiskManager
 
-    Agent->>Transport: JSON-RPC tools/call (write_file)
-    Transport->>RMCP: Parse & validate
-    RMCP->>Router: Dispatch to handler
-    Router->>Server: write_file(params)
-    Server->>DM: lock().await
-    DM-->>Server: MutexGuard<DiskManager>
-    Server->>Engine: dm.resolve_parent(path)
-    Engine-->>Server: (parent_inode, name)
-    Server->>Engine: dm.create_file / lookup
-    Engine-->>Server: inode_id
-    Server->>Engine: dm.write_data_truncated(inode, data, Auto)
-    Engine-->>Server: Ok(())
-    Server->>Router: JSON {"ok":true,"inode":42,"bytes":123}
-    Router->>RMCP: Return response
-    RMCP->>Transport: JSON-RPC response
-    Transport->>Agent: Result
+    Agent->>Transport: tools/call {name, arguments}
+    Transport->>Handler: JSON-RPC request
+    Handler->>Router: Dispatch by tool name
+    Router->>Server: Call typed handler (e.g. write_file)
+    Server->>Blocking: spawn_blocking(move || { dm.op(...) })
+    Blocking->>DM: Synchronous mmap I/O
+    DM-->>Blocking: Result
+    Blocking-->>Server: Result<String>
+    Server-->>Router: JSON response string
+    Router-->>Handler: CallResult
+    Handler-->>Transport: JSON-RPC response
+    Transport-->>Agent: Result or error
 ```
 
-## CLI interface and configuration
+## CLI startup behavior
 
-```bash
-oifs_mcp [OPTIONS] [IMAGE_PATH]
+The [`main`](repo://src/bin/oifs_mcp.rs#L388-L444) function:
 
-Options:
-  --size <MB>     Initial size when creating a new image (default: 10 MB)
-  -h, --help      Show this help
+1. Parses CLI arguments: optional `--size <MB>` (default 10), optional positional `IMAGE_PATH` (default `agent_memory.img`).
+2. Computes `size_bytes = size_mb * 1024 * 1024` with `checked_mul` to prevent overflow.
+3. Reads `OIFS_PASSWORD` from environment.
+4. Logs: `[oifs-mcp] image=<path> size=<MB> encrypted=<bool>`.
+5. Constructs `OifsMcpServer::new(image_path, size_bytes, password)`.
+6. Starts rmcp stdio service: `server.serve(rmcp::transport::stdio()).await?`.
+7. Waits for service to complete: `service.waiting().await?`.
 
-Environment:
-  OIFS_PASSWORD   If set, opens (or creates) the image as encrypted.
-                  Required to open an existing encrypted image.
+### Image creation / open logic
+
+```rust
+let dm = match (!image_path.exists(), password) {
+    (true, Some(pwd)) => DiskManager::create_encrypted(&image_path, size_bytes, pwd)?,
+    _ => DiskManager::open_with_password(&image_path, size_bytes, password)?,
+};
 ```
 
-### Startup behavior
+- **New image + password set** → `create_encrypted` (AES-256-XTS encrypted image).
+- **New image, no password** → `open_with_password` creates a plain (unencrypted) image.
+- **Existing image + password** → `open_with_password` opens encrypted image (verifies password).
+- **Existing image, no password** → `open_with_password` opens plain image.
 
-1. **Image creation**: If the image file doesn't exist and `OIFS_PASSWORD` is set, `DiskManager::create_encrypted` is called. Otherwise `DiskManager::open_with_password` auto-creates a plain image.
-2. **Size handling**: The `--size` value (megabytes) is multiplied by `1024 * 1024` with checked arithmetic to prevent silent overflow ([`main`](repo://src/bin/oifs_mcp.rs#L401-L407)).
-3. **Single image per process**: The CLI accepts exactly one positional image argument. All tools operate exclusively inside that image.
-4. **Logging**: On startup the server logs to **stderr**: `[oifs-mcp] image=agent_memory.img size=10MB encrypted=false`.
+## What the MCP server does NOT expose
 
-### Example invocations
-
-```bash
-# Defaults: agent_memory.img, 10 MB, unencrypted
-cargo run --bin oifs_mcp
-
-# Custom image and size (20 MB)
-cargo run --bin oifs_mcp -- --size 20 custom_agent.img
-
-# Encrypted image (OIFS_PASSWORD must be set)
-OIFS_PASSWORD=secret cargo run --bin oifs_mcp encrypted.img
-```
-
-## Integration with IDEs and AI agents
-
-The MCP server uses the **stdio transport** with **JSON-RPC 2.0**. Any MCP-compatible client can spawn the binary and communicate over stdin/stdout.
-
-### Claude Desktop
-
-```json
-{
-  "name": "OIFS Memory Sandbox",
-  "command": "cargo",
-  "args": ["run", "--bin", "oifs_mcp", "--", "agent_memory.img"],
-  "env": {
-    "OIFS_PASSWORD": "your-encryption-password"
-  }
-}
-```
-
-- Use the full path to `cargo` if not on PATH (e.g., `/home/user/.cargo/bin/cargo`).
-- Omit `env.OIFS_PASSWORD` if encryption is not needed.
-
-### Cursor
-
-Add to `mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "oifs-memory": {
-      "command": "cargo",
-      "args": ["run", "--bin", "oifs_mcp", "--", "agent_memory.img"],
-      "env": { "OIFS_PASSWORD": "secret" }
-    }
-  }
-}
-```
-
-### Custom agent loops
-
-Spawn the binary as a subprocess and speak JSON-RPC 2.0 over its stdin/stdout. See [`tests/mcp_server_test.rs`](repo://tests/mcp_server_test.rs#L31-L70) for a minimal working example of the initialize → tools/list → tools/call sequence.
-
-## Resource exposure
-
-The current MCP server implementation **does not expose MCP resources** (resource URIs, resource templates, or `resources/list`/`resources/read` handlers). All filesystem access is mediated exclusively through the eight tools documented above. If resource exposure is needed (e.g., for direct file content retrieval without tool calls), the `ServerHandler` implementation would need to implement `list_resources`, `read_resource`, and/or `subscribe_resource` methods, and register resource templates via the rmcp macros.
+- **No MCP resources**: The server does not implement `resources/list`, `resources/read`, or resource templates. All filesystem access is mediated exclusively through the eight registered tools.
+- **No prompts**: No prompt templates are registered.
+- **No sampling**: No `sampling/createMessage` support.
 
 ## Related pages
 
-- [MCP Integration Guide](../integrations/mcp_integration.md) — client configuration, encryption, sandbox isolation model
-- [MCP Workflow](../workflows/mcp_workflow.md) — end-to-end workflow, tool reference table, test examples
-<!-- openwiki: broken internal link [../architecture/disk_manager.md] file "../architecture/disk_manager.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [DiskManager Architecture](../architecture/disk_manager.md) — underlying storage engine, mmap I/O, encryption
-<!-- openwiki: broken internal link [../architecture/session_ipc.md] file "../architecture/session_ipc.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-- [Session and IPC](../architecture/session_ipc.md) — `OifsSession`, `SessionMode`, multi-process coordination
+- [MCP Integration](../integrations/mcp_integration.md) — configuring Cursor, Claude Desktop, and other MCP clients.
+- [CLI Reference](../operations/cli_reference.md) — full CLI options for `oifs_mcp` and other binaries.
+- [MCP Workflow](../workflows/mcp_workflow.md) — end-to-end agent memory workflows using the MCP server.

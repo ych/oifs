@@ -1,11 +1,11 @@
 ---
 type: architecture
-title: Compression Pipeline and SIMD Filters
-description: How OIFS combines zstd compression (stream append, seekable 64K chunked with COW extent swap, read-modify-recompress fallback) with Blosc2-style pre-compression SIMD filters (Delta, ByteShuffle, BitShuffle, TruncPrecision). Covers ZstdContextPool, persistent scoped worker pool, filter recommendation engine, DecodedBlobCache and ChunkReadCache.
+title: Compression & Pre-Compression Filters
+description: Seekable 64 KiB chunked compression (Zstd), SIMD pre-filters (Delta, Shuffle, BitShuffle, TruncPrecision), ZstdContextPool with persistent scoped worker pool, DecodedBlobCache and ChunkReadCache for read acceleration, and cache invalidation across write/truncate/defrag.
 tags: [compression, zstd, filters, blosc2, entropy, cow, zero-copy, seekable-64k, caching, thread-pool, simd]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
@@ -19,7 +19,7 @@ sources:
     resource: repo://src/filters.rs
   - id: openwiki-source-cf4646d1b98d2e5c392cf784
     resource: repo://src/zstd_pool.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
 
 ## Responsibility and ownership
@@ -49,7 +49,7 @@ The ordering filter→compress→encrypt is why both `inode.compressed_size` (ph
 
 ## Zero-copy filter staging
 
-`apply_filters_cow` ([`src/filters.rs#L829-L835`]) returns a `Cow<[u8]>`: `Cow::Borrowed(data)` (zero allocation) when the filter is inactive or the typesize is not one of {1, 2, 4, 8}, and `Cow::Owned` only when a pipeline actually runs. On the common unfiltered/unencrypted path this eliminates every intermediate buffer copy — reported as up to ~28,500x speedup on 1MB payloads — and lets the uncompressed bytes flow straight into the write.
+`apply_filters_cow` ([`src/filters.rs#L829-L855`]) returns a `Cow<[u8]>`: `Cow::Borrowed(data)` (zero allocation) when the filter is inactive or the typesize is not one of {1, 2, 4, 8}, and `Cow::Owned` only when a pipeline actually runs. On the common unfiltered/unencrypted path this eliminates every intermediate buffer copy — reported as up to ~28,500x speedup on 1MB payloads — and lets the uncompressed bytes flow straight into the write.
 
 ## Compression pipeline flow diagram
 
@@ -199,36 +199,36 @@ Each logical chunk index maps through the inode's pointer tree (direct → singl
 
 ### DecodedBlobCache (non-seekable files)
 
-`DecodedBlobCache` ([`src/disk/caches.rs#L92-L163`]) is a bounded LRU cache for whole-file decoded payloads of **stream-compressed or whole-file encrypted** files. It eliminates the $O(\text{calls} \times \text{file\_size})$ full-file decode cliff when callers issue sequential or random sub-file `read_at` calls on non-seekable blobs.
+`DecodedBlobCache` ([`src/disk/caches.rs#L170-L300`]) is a bounded LRU cache for whole-file decoded payloads of **stream-compressed or whole-file encrypted** files. It eliminates the $O(\text{calls} \times \text{file\_size})$ full-file decode cliff when callers issue sequential or random sub-file `read_at` calls on non-seekable blobs.
 
-- **Capacity**: 4 entries (`MAX_ENTRIES = 4`)
+- **Capacity**: 4 entries total across 16 shards (`MAX_ENTRIES_PER_SHARD = 2` per shard)
 - **Per-entry limit**: 16 MiB (`MAX_ENTRY_BYTES = 16 * 1024 * 1024`)
 - **Total cap**: 32 MiB (`MAX_TOTAL_BYTES = 32 * 1024 * 1024`)
 - **Key**: `(inode_id, size, compressed_size, first_block, nonce)` — any metadata change invalidates the entry.
-- **Lookup**: Under shared read lock in `read_at_with_inode` ([`src/disk.rs#L3765-L3785`]). If present, slices directly from the `Arc<Vec<u8>>` into the caller's buffer. If absent and file ≤ 16 MiB, decodes the full payload, inserts into cache, then slices.
-- **Eviction**: LRU by insertion order; evicts from front when either entry count or total bytes would exceed limits.
+- **Lookup**: Under shared read lock in `read_at_with_inode` ([`src/disk.rs#L4986-L5180`]). If present, slices directly from the `Arc<Vec<u8>>` into the caller's buffer. If absent and file ≤ 16 MiB, decodes the full payload, inserts into cache, then slices.
+- **Eviction**: LRU by insertion order; evicts from front when either entry count or total bytes would exceed limits. Global cap enforcement crosses shard boundaries without holding two shard locks simultaneously.
 
 ### ChunkReadCache (seekable files)
 
-`ChunkReadCache` ([`src/disk/caches.rs#L1-L75`]) is an 8-slot LRU cache for **individual 64KB chunk** decompressions of seekable chunked files.
+`ChunkReadCache` ([`src/disk/caches.rs#L1-L160`]) is a 16-shard lock-free cache for **individual 64KB chunk** decompressions of seekable chunked files.
 
-- **Capacity**: 8 entries (`CAPACITY = 8`)
+- **Capacity**: 8 entries total (`MAX_PER_SHARD = 2` per shard × 16 shards)
 - **Key**: `(inode_id, chunk_idx, raw_entry, valid_len)` — any chunk rewrite (new `raw_entry`) invalidates the cached version.
 - **Lookup**: `copy_slice_if_hit` copies the requested sub-range directly from the cached `Arc<[u8]>` into the caller's buffer under the shared read lock, avoiding `Arc` clone/drop atomic traffic on hits.
 - **Prefetch**: Sequential access detection triggers parallel prefetch of up to 4 subsequent chunks via `par_for_index`, inserting all into the cache under a single write lock.
 
 ### Cache invalidation
 
-`invalidate_payload_caches(inode_id)` ([`src/disk.rs#L644-L652`]) clears **both** caches for a given inode. It is invoked on:
+`invalidate_payload_caches(inode_id)` ([`src/disk.rs#L698-L710`]) clears **both** caches for a given inode. It is invoked on:
 
 | Operation | Location |
 |-----------|----------|
-| **Write** (any `write_data_with_filters` path, including chunked) | [`src/disk.rs#L4856`], [`src/disk/chunked.rs#L1609`], [`src/disk/chunked.rs#L1957`] |
+| **Write** (any `write_data_with_filters` path, including chunked) | [`src/disk.rs#L4856`], [`src/disk/chunked.rs#L1697`], [`src/disk/chunked.rs#L1815`], [`src/disk/chunked.rs#L1953`], [`src/disk/chunked.rs#L2015`], [`src/disk/chunked.rs#L2033`], [`src/disk/chunked.rs#L2042`], [`src/disk/chunked.rs#L2233`], [`src/disk/chunked.rs#L2363`] |
 | **Truncate** (`truncate`, `truncate_chunked_64k`) | [`src/disk.rs#L5841`], [`src/disk/chunked.rs#L1665`] |
-| **Delete** (journal replay of `SetInodeBitmap { allocated: false }`) | [`src/disk.rs#L2241`] |
-| **Migrate** (inode format v1→v2 rewrite) | [`src/disk/maintenance.rs#L119`] (`guard.clear_payload_caches()`) |
-| **Defragment** (safe mode live-reload, in-place defrag) | [`src/disk/maintenance.rs#L293`] (`guard.clear_payload_caches()`) |
-| **Reload** (after safe defrag atomic swap) | [`src/disk/maintenance.rs#L293`] (`guard.clear_payload_caches()`) |
+| **Delete** (journal replay of `SetInodeBitmap { allocated: false }`) | [`src/disk.rs#L2783`] |
+| **Migrate** (inode format v1→v2 rewrite) | [`src/disk/maintenance.rs#L113`] (`guard.clear_payload_caches()`) |
+| **Defragment** (safe mode live-reload, in-place defrag) | [`src/disk/maintenance.rs#L314`], [`src/disk/maintenance.rs#L1595`] (`guard.clear_payload_caches()`) |
+| **Reload** (after safe defrag atomic swap) | [`src/disk/maintenance.rs#L314`] (`guard.clear_payload_caches()`) |
 
 `clear_payload_caches()` wipes both caches entirely; `invalidate_inode(inode_id)` is the targeted version.
 
@@ -332,7 +332,7 @@ When the `blosc2` feature is enabled, `blosc2_compress` / `blosc2_decompress` ([
 - For inputs ≤ 256 KB: evaluates on full data.
 - For inputs > 256 KB: samples three 64 KB windows (head, middle, tail, each 8-byte aligned) and scales projected compressed sizes by `original_size / sample_size`.
 - Each candidate: applies filter → zstd level 0 → measures compressed size, entropy, ratio, space savings.
-- Evaluation runs in parallel across CPU cores via `std::thread::scope` (not Rayon) to avoid external dependency.
+- Evaluation runs in parallel across CPU cores via `std::thread::scope` (not Rayon) to avoid external dependency, using the persistent `zstd_pool::par_for_index` for warmed Zstd contexts.
 - The configuration with the smallest projected zstd size wins.
 
 ### CLI integration

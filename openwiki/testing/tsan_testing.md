@@ -5,7 +5,7 @@ description: "Document TSAN-based concurrency testing: data race detection in sh
 tags: ["testing", "concurrency", "tsan", "data-races", "ipc", "session"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-886fbb2336c3635ef8adb3c3
     resource: repo://.github/workflows/rust.yml
@@ -15,6 +15,8 @@ sources:
     resource: repo://src/auto_defrag.rs
   - id: openwiki-source-fd65460dcd62d8e13b82908b
     resource: repo://src/disk/caches.rs
+  - id: openwiki-source-115024023ade9f243c6b4ec3
+    resource: repo://src/disk/maintenance.rs
   - id: openwiki-source-ef0afc6eaf5c925c9975314d
     resource: repo://src/ipc.rs
   - id: openwiki-source-ed8bf05e307c6278442542c2

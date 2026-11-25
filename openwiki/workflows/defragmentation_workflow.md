@@ -5,7 +5,7 @@ description: Step-by-step guide to analyzing filesystem fragmentation, executing
 tags: [defragmentation, fragmentation-analysis, safe-mode, in-place-mode, atomic-rename, wal, auto-defrag, workflow]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-20T22:07:36.625Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
@@ -13,7 +13,7 @@ sources:
     resource: repo://src/disk/maintenance.rs
   - id: openwiki-source-bb40fa17bd09d24ebba1a72a
     resource: repo://tests/defrag_test.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-20T22:07:36.625Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
 
 ## Fragmentation Analysis
@@ -38,9 +38,9 @@ println!(
 
 **Command-line (via `oifs`):**
 ```bash
-oifs --image /path/to/image.img stats
+oifs --image /path/to/image.img analyze
 ```
-The `stats` subcommand outputs fragmentation metrics including the fragmentation ratio (0.0 = optimal, 1.0 = maximally fragmented).
+The `analyze` subcommand outputs fragmentation metrics including the fragmentation ratio (0.0 = optimal, 1.0 = maximally fragmented).
 
 ### Interpreting Results
 
@@ -98,18 +98,76 @@ The `defragment` method returns a `DefragStats` struct containing:
 
 **Evidence:** [`DefragStats`](repo://src/disk.rs#L157-L174) and [`defragment`](repo://src/disk/maintenance.rs#L460-L480).
 
+### Safe Defragmentation Pipeline
+
+The `defragment_safe` method executes a six-stage out-of-place rebuild:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant DM as DiskManager (original)
+    participant Temp as Temp Image
+    participant FS as Filesystem
+    User->>DM: defragment(DefragMode::Safe)
+    DM->>FS: fs::copy(source, .defrag.tmp)
+    DM->>Temp: Open with preserved encryption key
+    DM->>Temp: Scan inodes, preserve directory blocks
+    DM->>Temp: Extract file data + compression/filter config
+    DM->>Temp: Clear data bitmap (restore only dir blocks)
+    DM->>Temp: Reallocate & rewrite files contiguously
+    DM->>Temp: Flush
+    DM->>FS: rename source -> .old
+    DM->>FS: rename .defrag.tmp -> source
+    DM->>Temp: Verify (open, fsck)
+    alt Verification OK
+        DM->>FS: unlink .old
+        DM->>DM: reload_from_disk()
+    else Verification Failed
+        DM->>FS: rename .old -> source (rollback)
+    end
+```
+
+#### Stage 1: Snapshot Creation
+
+The entire active image file is copied via `std::fs::copy(source_path, &temp_path)` ([`defragment_safe`](repo://src/disk/maintenance.rs#L498)). The destination defaults to `{source_path}.defrag.tmp` when no output path is provided. This guarantees that if the defragmentation process is killed mid-stream, the original image file remains untouched and uncorrupted.
+
+#### Stage 2: Inode Scan and Metadata Preservation
+
+The temporary image is opened via `DiskManager::open_with_key_and_storage_mode(&temp_path, 0, enc_key, storage_mode)` ([`defragment_safe`](repo://src/disk/maintenance.rs#L501)), preserving the encryption key and storage mode from the original image. Using [`BitmapRef::for_each_set_bit`](repo://src/bitmap.rs#L94-L108), all allocated inode indices are collected from `inode_bitmap_block` ([`defragment_safe`](repo://src/disk/maintenance.rs#L507-L512)):
+
+- **Directories**: Directory blocks cannot simply be moved without updating parent pointer graphs, so directory block addresses are harvested via `collect_inode_block_layout` and staged in `directory_blocks` ([`defragment_safe`](repo://src/disk/maintenance.rs#L514-L517)).
+- **Regular Files**: For each file with `size > 0` or any allocated blocks, the file's exact compression status (`CompressionMode::Always`, `CompressionMode::Never`, or `CompressionMode::Seekable`) and pre-compression filter configuration ([`FilterConfig`]: `typesize`, `delta`, `shuffle`, `bitshuffle`) are recorded ([`defragment_safe`](repo://src/disk/maintenance.rs#L519-L526)). **Seekable 64K chunked files** are detected by `INODE_FLAG_SEEKABLE_64K` and their `CompressionMode::Seekable` config is preserved.
+- **Inode Reset**: The inode on disk is zeroed out (`size = 0`, `compressed_size = 0`, `blocks = [0; 12]`, `triple_indirect = 0`) via `write_inode` ([`defragment_safe`](repo://src/disk/maintenance.rs#L528-L534)), freeing the blocks for contiguous reassignment.
+
+#### Stage 3: Bitmap Reset
+
+The entire data bitmap of the temporary image is wiped using `bitmap_slice.fill(0)` ([`defragment_safe`](repo://src/disk/maintenance.rs#L537)). Then, only the preserved directory block IDs (`directory_blocks`) are re-marked as allocated ([`defragment_safe`](repo://src/disk/maintenance.rs#L539-L545)). All other data blocks become completely free and unallocated.
+
+#### Stage 4: Contiguous File Rewrite
+
+Files are streamed **one by one** from the original image into the temporary image using `read_data` and `write_data_with_filters` ([`defragment_safe`](repo://src/disk/maintenance.rs#L548-L557)). This streaming approach bounds memory usage and prevents OOM on large files. The sequential allocator (`write_data` → `allocate_contiguous_blocks`) places each file's payload blocks contiguously starting at the current `free_block_hint`.
+
+#### Stage 5: Flush and Verification
+
+The temporary image is flushed (`temp_dm.flush()`) and dropped ([`defragment_safe`](repo://src/disk/maintenance.rs#L559-L560)). The original image is renamed to `{source_path}.old`, then the temporary image is renamed to the original path ([`defragment_safe`](repo://src/disk/maintenance.rs#L563-L567)). The new image is opened and verified via `verify_integrity()` (fsck) ([`defragment_safe`](repo://src/disk/maintenance.rs#L570-L578)).
+
+#### Stage 6: Atomic Commit or Rollback
+
+On success: the `.old` backup is deleted and the active `DiskManager` handle **live-reloads** via `reload_from_disk()` ([`defragment_safe`](repo://src/disk/maintenance.rs#L580-L586)), synchronizing its in-memory state (superblock, bitmaps, caches, hints) with the new file. On any failure: the `.old` backup is renamed back to the original path, restoring the pre-defrag state ([`defragment_safe`](repo://src/disk/maintenance.rs#L588-L597)).
+
 ---
 
-## In-Place Defragmentation (WAL-Atomic, Copy-on-Write)
+## In-Place Defragmentation (WAL-Atomic)
 
-OIFS also supports in-place defragmentation via `DefragMode::InPlace`. This mode directly reorganizes physical data blocks within the existing image without allocating duplicate temporary files. It is fully WAL-atomic on journaled images: payload moves are ordered before metadata commits, and metadata updates are recorded in the WAL with batched checkpointing between rounds.
+`DefragMode::InPlace` performs direct reorganization within the existing image file without allocating a duplicate temporary file. This mode is exposed via both the CLI and the background auto-defrag coordinator.
 
 ### Command-line Execution
 
 ```bash
 oifs --image /path/to/image.img defrag --mode inplace
 ```
-The CLI prints a 3-second warning before proceeding, as in-place modification directly modifies the image file.
+
+⚠️ **WARNING**: In-place mode directly modifies the image. The CLI displays a warning and waits 3 seconds before proceeding. Data loss may occur if interrupted (power loss, kill -9, kernel panic).
 
 ### Programmatic Execution
 
@@ -118,247 +176,169 @@ use oifs::disk::{DefragMode, DiskManager};
 
 let dm = DiskManager::open("/path/to/image.img", 0)?;
 let stats = dm.defragment("/path/to/image.img", DefragMode::InPlace, None)?;
-println!(
-    "In-place defragged {} files. Bytes moved: {}. Frag: {:.2} -> {:.2}",
-    stats.files_processed, stats.bytes_moved, stats.frag_before, stats.frag_after
-);
 ```
 
-### When to Use In-Place vs Safe Mode
+### Two Implementation Paths
 
-| Aspect | Safe Mode | In-Place Mode |
-|--------|-----------|---------------|
-| **Crash safety** | Original image untouched until verification; automatic rollback on failure | WAL-atomic; mid-pass crash leaves image consistent (journal replay or no-op) |
-| **Disk space** | Requires 2x image size temporarily (original + temp copy) | No extra space needed |
-| **Performance** | Full image copy + rewrite | Round-based COW moves only fragmented blocks; generally faster on large images |
-| **Encryption** | Fully supported (key preserved) | Fully supported (uses WAL on journaled images) |
-| **Journaled images** | Uses legacy path (copy + rename) | **Default on journaled images** — leverages WAL for atomicity |
-| **Legacy (non-journaled) images** | Safe path always works | Uses legacy cycle-aware permutation (no WAL) |
+The in-place defragmentation selects its algorithm based on whether the image has a WAL journal layout:
 
-**Evidence:** [`defragment_inplace_on`](repo://src/disk/maintenance.rs#L644-L720) and [`defragment_inplace_journaled_cow`](repo://src/disk/maintenance.rs#L792-L1553).
+#### Legacy Non-Journaled Path (`defragment_inplace_legacy`)
 
----
+Used when the image has no journal. Employs a cycle-aware block permutation algorithm:
 
-## In-Place Defragmentation Internals (Journaled Images)
+1. **Collect inodes**: Scans inode bitmap, categorizes directories, regular files, and others.
+2. **Compute target layout**: Assigns contiguous target block numbers starting from `data_block_start`. Directories placed first, then file payload blocks, then indirect blocks.
+3. **Filter moves**: Builds `old_to_new` map, filters only blocks where source ≠ destination.
+4. **Cycle-aware permutation**: Uses a scratch buffer to resolve cycles in the block permutation graph, copying blocks into their target positions without overwriting unprocessed source blocks.
+5. **Update metadata**: Rewrites inode block pointers, indirect block pointers, and the data bitmap.
+6. **Flush**: Syncs according to the active durability mode.
 
-On WAL-enabled (journaled) images, in-place defragmentation uses a **round-based copy-on-write (COW) algorithm** with strict ordering guarantees:
+**Evidence:** [`defragment_inplace_legacy`](repo://src/disk/maintenance.rs#L820-L1034)
 
-### Algorithm Overview
+#### WAL-Atomic Journaled COW Path (`defragment_inplace_journaled_cow`)
 
-1. **Pre-defrag quiesce**: Drain pending async ranges, flush dirty mmap pages, checkpoint WAL to head (clean ring).
-2. **Collect inodes**: Scan inode bitmap, decode all active inodes in a single pass (no `inode_cache` thrashing). Separate directories and regular files.
-3. **Plan target locations**: Assign contiguous target block ranges starting from `data_block_start`. Directories placed first (to preserve parent pointers), then regular files.
-4. **Build relocation units**: Each unit represents a contiguous run of blocks (or a `ChunkEntry` for seekable 64K files) with its owner (inode slot, indirect block slot, etc.).
-5. **Round-based COW passes**:
-   - **Step A**: Select a batch of units whose target ranges are currently free and whose WAL transaction fits within half the journal ring.
-   - **Step B**: Copy payload blocks to free destinations; flush destination blocks **before WAL commit** in Strict durability mode.
-   - **Step C**: Stage WAL metadata ops (inode pointer updates, indirect block pointer updates, data bitmap alloc/free) without modifying live metadata.
-   - **Step D**: Commit single bounded WAL transaction.
-   - **Step E**: Apply metadata updates via `apply_journal_ops` (same path as normal writes).
-   - **Step F**: Sync metadata ranges per `DurabilityMode`, retire WAL ring (checkpoint), repeat until all units relocated.
-6. **Post-pass**: Update free block hint, remap `dir_cache` entries, clear payload caches, run `verify_integrity`.
+Used when the image has a WAL journal layout and `allow_journaled` is true (default). Performs round-based copy-on-write with journal transactions:
 
-### Crash Recovery Guarantee
+1. **Quiesce**: Drains pending async ranges, flushes dirty pages, checkpoints WAL to head.
+2. **Collect inodes**: Same as legacy path.
+3. **Round-based COW**: Each round:
+   - Copies a batch of blocks exclusively into currently free blocks
+   - Flushes destination blocks
+   - Commits a single bounded WAL transaction (metadata updates: inode pointers, indirect blocks, bitmap)
+   - Checkpoints WAL before next round reuses freed source blocks
+4. **Verify**: Runs fsck on the modified image.
 
-If the process crashes mid-round:
-- The WAL transaction is either fully committed (and applied) or not committed at all.
-- A crash **after commit but before apply** is resolved by journal replay on next mount.
-- A crash **during apply** is also resolved by journal replay.
-- **Payload moves are ordered before metadata commits**: destination blocks are flushed before the WAL transaction commits (in Strict mode) or are covered by the WAL payload (in RangeAsync mode), so a crash never leaves metadata pointing to uninitialized blocks.
-- Freed source blocks are only marked free in the WAL after the payload is safely at its new location.
+This ensures that at any point, the filesystem is either in its pre-defrag state or a fully consistent post-defrag state—the WAL provides atomicity.
 
-**Evidence:** [`defragment_inplace_journaled_cow`](repo://src/disk/maintenance.rs#L792-L1553), particularly the round loop and the `is_strict` flush before commit.
+**Evidence:** [`defragment_inplace_journaled_cow`](repo://src/disk/maintenance.rs#L1035-L1300+)
 
 ---
 
-## Safe Defragmentation Pipeline (Detailed Stages)
+## Background Auto-Defrag Coordinator
 
-The safe defragmentation process executes across six distinct stages:
+OIFS includes a background coordinator that periodically measures fragmentation and runs in-place defragmentation passes when thresholds are exceeded. The coordinator runs as a daemon thread tied to the `DiskManager` lifetime.
 
-### 1. Snapshot Creation
+### Configuration
 
-The entire active image file is copied via `std::fs::copy(source_path, &temp_path)`. The destination defaults to `{source_path}.defrag.tmp` when no output path is provided. This guarantees that if the defragmentation process is killed mid-stream, the original image file remains untouched and uncorrupted.
+The coordinator is configured via [`AutoDefragConfig`](repo://src/auto_defrag.rs#L38-L75):
 
-### 2. Inode Scan and Metadata Preservation
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Whether the background coordinator runs |
+| `fragmentation_threshold` | `f64` | `0.25` | Ratio `(free_runs - 1) / (free_blocks - 1)` above which a pass triggers. Clamped to `0.0..=1.0`. NaN falls back to default. |
+| `check_interval` | `Duration` | `300s` | How often to measure fragmentation. Minimum `10ms` to prevent hot loops. |
+| `min_free_blocks` | `u64` | `0` | Minimum free data blocks required before a pass runs. |
+| `allow_journaled` | `bool` | `true` | Whether to defrag WAL-enabled images. When false, journaled images are skipped. |
 
-The temporary image is opened preserving the encryption key from the original image. All allocated inode indices are collected from the inode bitmap:
+**Normalization:** [`AutoDefragConfig::sanitized`](repo://src/auto_defrag.rs#L83-L98) clamps the threshold to `0.0..=1.0`, replaces `NaN` with `0.25`, and raises intervals below `10ms` to `10ms`.
 
-- **Directories**: Directory block addresses are harvested via `collect_inode_blocks` and staged in `directory_blocks`. These cannot simply be moved without updating parent pointer graphs.
-- **Regular Files**: For each file with `size > 0`, the file's exact compression status (`is_compressed = inode.compressed_size > 0`) and pre-compression filter configuration (`FilterConfig`: `typesize`, `delta`, `shuffle`, `bitshuffle`) are recorded. **Seekable 64K chunked files** are detected by `INODE_FLAG_SEEKABLE_64K` and their `CompressionMode::Seekable` config is preserved.
-- **Inode Reset**: The inode on disk is zeroed out (`size = 0`, `compressed_size = 0`, `blocks = [0; 12]`, `triple_indirect = 0`) via `write_inode`, freeing the blocks for contiguous reassignment.
+### Enabling via CLI
 
-### 3. Bitmap Reset
+```bash
+# Enable with default threshold (0.25) and interval (300s)
+oifs --image /path/to/image.img --auto-defrag ls
 
-The entire data bitmap of the temporary image is wiped using `bitmap_slice.fill(0)`. Then, only the preserved directory block IDs (`directory_blocks`) are re-marked as allocated. All other data blocks become completely free and unallocated.
+# Enable with custom threshold
+oifs --image /path/to/image.img --auto-defrag 0.3 ls
 
-### 4. Contiguous File Rewrite
+# Custom interval (seconds between checks)
+oifs --image /path/to/image.img --auto-defrag --defrag-interval 60 ls
 
-For each regular file, `write_data_with_filters` is invoked:
-- Because the data bitmap was cleared and allocation starts from `data_block_start` using sequential hint-based allocation, each file receives a strictly contiguous sequence of data blocks.
-- The original compression setting (`CompressionMode::Always` if previously compressed, `CompressionMode::Seekable` for chunked files, else `CompressionMode::Never`) and filter configuration are reapplied, preserving space efficiency without altering compression/filter semantics.
-- Bytes moved and files processed counters are updated for final reporting.
+# Disable auto-defrag for a specific run
+oifs --image /path/to/image.img ls
+```
 
-### 5. Durability Flush
+### Enabling Programmatically
 
-`temp_dm.flush()` commits all dirty pages and metadata to disk, and the temporary `DiskManager` handle is explicitly dropped to release memory maps and file descriptors.
-
-### 6. Transactional 3-Step Atomic Rename
-
-1. **Rename original → backup**: `std::fs::rename(source_path, "{source_path}.old")`
-2. **Rename temp → original**: `std::fs::rename("{source_path}.defrag.tmp", source_path)`
-3. **Verify**: Open the new image with the encryption key, run `analyze_fragmentation` and `verify_integrity`.
-   - **On success**: Delete backup file, `reload_from_disk()` to synchronize the active manager handle with the new file.
-   - **On failure**: Rollback by renaming backup → original, return error.
-
-**Evidence:** [`defragment_safe`](repo://src/disk/maintenance.rs#L484-L640).
-
----
-
-## Background Auto-Defragmentation Coordinator
-
-OIFS includes a background coordinator that periodically measures fragmentation and runs in-place defragmentation passes when the configured threshold is exceeded.
-
-### Configuration (`AutoDefragConfig`)
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `enabled` | `false` | Whether the coordinator is running |
-| `fragmentation_threshold` | `0.25` | Fragmentation ratio above which a pass is triggered. Clamped to `0.0..=1.0`. `NaN` falls back to default. |
-| `check_interval` | `300s` | How often to measure fragmentation. Minimum `10ms` (prevents hot loop). |
-| `min_free_blocks` | `0` | Minimum free data blocks required before a pass is allowed (guards against compacting a nearly-full image). |
-| `allow_journaled` | `true` | Whether the coordinator may run on WAL-enabled images. In-place defrag is fully journaled and atomic. |
-
-### Enabling Auto-Defrag
-
-**Programmatic:**
 ```rust
 use oifs::auto_defrag::AutoDefragConfig;
 use std::time::Duration;
 
 let dm = DiskManager::open("/path/to/image.img", 0)?;
-let config = AutoDefragConfig::new(0.25)           // trigger at 25% fragmentation
-    .with_check_interval(Duration::from_secs(600)) // check every 10 minutes
-    .with_min_free_blocks(1000)                    // need at least 1000 free blocks
-    .with_allow_journaled(true);                   // allow on WAL-enabled images
+
+// Enable with custom config
+let config = AutoDefragConfig::new(0.3)
+    .with_check_interval(Duration::from_secs(60))
+    .with_min_free_blocks(1000)
+    .with_allow_journaled(true);
 dm.set_auto_defrag(config);
-```
 
-**Command-line (via `oifs`):**
-```bash
-# The CLI doesn't have a direct auto-defrag subcommand; configure via API or session
-```
+// Query current config
+let current = dm.auto_defrag_config();
 
-### Monitoring Auto-Defrag Stats
-
-```rust
+// Get statistics
 let stats = dm.auto_defrag_stats();
-println!(
-    "Checks: {}, Passes: {}, Skipped: {}, Errors: {}, Last ratio: {:.4}",
-    stats.checks, stats.passes, stats.skipped, stats.errors, stats.last_fragmentation_ratio
-);
-if let Some(last_pass) = stats.last_pass {
-    println!("Last pass: {} files, {} bytes moved, frag {:.2} -> {:.2}",
-        last_pass.files_processed, last_pass.bytes_moved,
-        last_pass.frag_before, last_pass.frag_after);
-}
+println!("Checks: {}, Passes: {}, Skipped: {}, Errors: {}",
+    stats.checks, stats.passes, stats.skipped, stats.errors);
+
+// Stop the coordinator
+dm.stop_auto_defrag();
 ```
 
-The coordinator runs as a daemon thread named `oifs-auto-defrag` that exits when the last `DiskManager` clone is dropped.
+### AutoDefragStats
 
-### Pass Skip Reasons
+The coordinator tracks runtime statistics via [`AutoDefragStats`](repo://src/auto_defrag.rs#L101-L114):
 
-A pass is skipped (and counted in `skipped`) when:
-- Fragmentation ratio is below `fragmentation_threshold`
-- Free blocks < `min_free_blocks`
-- Image is WAL-enabled and `allow_journaled = false`
-- Any error during measurement (counted in `errors`)
+- `checks`: Number of fragmentation measurements performed
+- `passes`: Number of defragmentation passes that ran
+- `skipped`: Passes skipped (below threshold, too full, or journaled with `allow_journaled=false`)
+- `errors`: Passes that failed
+- `last_fragmentation_ratio`: Most recent measured ratio
+- `last_pass`: `DefragStats` of most recent successful pass
+- `last_error`: Description of most recent skip or failure
 
-**Evidence:** [`AutoDefragConfig`](repo://src/auto_defrag.rs#L1-L100), [`run_worker`](repo://src/auto_defrag.rs#L296-L360), [`skip_reason`](repo://src/auto_defrag.rs#L268-L294).
+### Pass Execution Logic
 
----
+Each cycle (`run_worker` → `run_once`):
 
-## DefragStats Output Interpretation
+1. **Sleep** for `check_interval` (or until reconfigured/shutdown)
+2. **Upgrade** `Weak<InnerLock>` — exits if `DiskManager` was dropped
+3. **Measure** fragmentation via `analyze_fragmentation_on`
+4. **Skip evaluation** (`skip_reason`):
+   - Ratio below `fragmentation_threshold` → skip
+   - Free blocks below `min_free_blocks` → skip
+   - Journaled image but `allow_journaled=false` → skip
+5. **Execute** `defragment_inplace_on` (in-place WAL-atomic or legacy)
+6. **Record** stats (pass/skip/error with details)
 
-| Field | Meaning | Typical Values |
-|-------|---------|----------------|
-| `files_processed` | Number of regular files rewritten | Matches number of non-empty files |
-| `bytes_moved` | Total payload bytes copied | Sum of file sizes processed |
-| `blocks_freed` | Reduction in free runs (`frag_before.free_runs - frag_after.free_runs`) | ≥ 0; larger = more fragmentation eliminated |
-| `frag_before` | Fragmentation ratio before pass | 0.0 (optimal) → 1.0 (max fragmented) |
-| `frag_after` | Fragmentation ratio after pass | Should be ≤ `frag_before`; ideally near 0.0 |
+**Evidence:** [`run_worker`](repo://src/auto_defrag.rs#L330-L380), [`skip_reason`](repo://src/auto_defrag.rs#L307-L329)
 
-**Note:** `frag_before` and `frag_after` are the **fragmentation ratio** values, not the raw `free_runs` count. A ratio of `0.0` means all free space is in one contiguous run; `1.0` means every free block is isolated.
+### Safety Guarantees
 
----
-
-## Safe vs In-Place Mode Trade-offs
-
-| Concern | Safe Mode (`DefragMode::Safe`) | In-Place Mode (`DefragMode::InPlace`) |
-|---------|-------------------------------|--------------------------------------|
-| **Data safety** | Maximum — original image never modified until verification passes | WAL-atomic on journaled images; legacy permutation on non-journaled |
-| **Disk space** | Needs 2× image size (temporarily) | No extra space needed |
-| **Speed** | Full copy + full rewrite | Selective COW moves; faster on large, lightly fragmented images |
-| **Encryption** | Fully supported | Fully supported |
-| **Journaled images** | Uses copy + rename path | **Preferred** — leverages WAL for true atomicity |
-| **Interruption** | Clean rollback via rename | Mid-pass crash → journal replay or no-op; image stays consistent |
-| **Recommendation** | Default choice for most users; required for non-journaled images if safety is paramount | Use on large journaled images where 2× space is unavailable |
+- **No lifetime extension**: The worker holds only a `Weak<InnerLock>`. When the last `DiskManager` clone drops, the upgrade fails and the thread exits — it never keeps an image mapped indefinitely.
+- **Serialization**: Every pass takes the inner **write lock**, serializing against all metadata mutations exactly like any other writer. No two defrag passes can overlap.
+- **Journaled atomicity**: On WAL-enabled images, the in-place pass uses `defragment_inplace_journaled_cow` with round-based COW and bounded WAL transactions.
+- **Config sanitization**: Prevents `NaN` thresholds (which would defrag every tick) and zero intervals (which would hot-loop).
 
 ---
 
-## Auto-Defrag Configuration Parameters and When to Enable
+## Choosing a Mode
 
-Enable auto-defrag when:
-- The filesystem experiences heavy create/delete churn (fragmenting free space)
-- You need large contiguous free runs for the contiguous block allocator or seekable 64K chunked compressor
-- The image is on a WAL-enabled (journaled) filesystem and you set `allow_journaled = true`
-
-Tune parameters based on workload:
-- **Lower `fragmentation_threshold`** (e.g., 0.15) → more aggressive defragmentation, more I/O
-- **Higher `check_interval`** (e.g., 1 hour) → less frequent checks, less overhead
-- **`min_free_blocks`** → set to a meaningful fraction of total blocks (e.g., 5-10%) to avoid stalling on nearly-full images
-- **`allow_journaled = false`** → disable on WAL images if you prefer to run defrag manually during maintenance windows
+| Scenario | Recommended Mode |
+|----------|------------------|
+| Production data, cannot tolerate any risk | `safe` (default) |
+| Large images where copy time is prohibitive | `inplace` (with WAL) |
+| Automated background maintenance | Auto-defrag coordinator (uses `inplace`) |
+| Encrypted images | Both modes supported — `safe` preserves encryption key |
+| Network filesystems (NFS, SMB) | `safe` with `--no-mmap` or auto-defrag with `allow_journaled=true` |
 
 ---
 
-## Allow Journaled Flag and WAL-Atomic Guarantees
+## Related Commands Reference
 
-The `allow_journaled` flag in `AutoDefragConfig` (and the equivalent decision when calling `defragment` with `DefragMode::InPlace` on a journaled image) controls whether in-place defragmentation runs on WAL-enabled images.
+| Command | Description |
+|---------|-------------|
+| `oifs analyze` | Print fragmentation statistics |
+| `oifs defrag [--mode safe\|inplace]` | Run defragmentation |
+| `oifs --auto-defrag [THRESHOLD] <subcommand>` | Enable background coordinator for session |
+| `oifs --defrag-interval <SECONDS>` | Set check interval for auto-defrag |
 
-When **enabled** (default):
-- In-place defrag uses the **round-based COW algorithm** with WAL transactions
-- Each round commits a single bounded WAL transaction (never overflowing the ring)
-- Payload blocks are copied to free destinations **before** metadata commits
-- Metadata updates (inode pointers, indirect blocks, data bitmap) are staged in the WAL and applied atomically via `apply_journal_ops`
-- The WAL is checkpointed after each round, freeing ring space for the next round
-- A crash at any point leaves the image consistent: journal replay either completes the round or rolls it back
-
-When **disabled**:
-- The coordinator skips in-place passes on journaled images
-- Safe mode defragmentation still works (uses copy + rename, not WAL)
-
-**Evidence:** [`allow_journaled`](repo://src/auto_defrag.rs#L38-L40), [`defragment_inplace_journaled_cow`](repo://src/disk/maintenance.rs#L792-L1553), [`skip_reason`](repo://src/auto_defrag.rs#L283-L291).
-
----
-
-## Verification and Testing
-
-After any defragmentation pass (safe or in-place), the system runs `verify_integrity` (fsck) which checks:
-- No orphan inodes (allocated but unreferenced)
-- No leaked blocks (allocated in bitmap but not referenced by any inode)
-- No missing blocks (referenced by inode but not allocated in bitmap)
-- No cross-linked blocks (referenced by multiple inodes)
-
-If verification fails:
-- **Safe mode**: Automatic rollback via rename (backup → original)
-- **In-place mode**: Error returned; image state is whatever the WAL last committed (consistent by construction)
-
-**Evidence:** [`verify_integrity_on`](repo://src/disk/maintenance.rs#L1555-L1711), [`defragment_safe`](repo://src/disk/maintenance.rs#L600-L640), [`defragment_inplace_on`](repo://src/disk/maintenance.rs#L700-L720).
+**Evidence:** CLI definitions in [`src/bin/oifs.rs`](repo://src/bin/oifs.rs#L251-L255) and [`Commands::Analyze`/`Commands::Defrag`](repo://src/bin/oifs.rs#L1420-L1520).
 
 ---
 
 ## Related Pages
 
-- [Block Allocation Architecture](../architecture/block_allocation.md) — contiguous allocation and hint-based allocator
-- [Defragmentation Architecture](../architecture/defragmentation.md) — deeper architectural details
-- [Journal Architecture](../architecture/journal.md) — WAL design and atomicity guarantees
-- [Testing and Verification](../operations/testing_and_verification.md) — verification procedures
+- [Defragmentation Architecture](../architecture/defragmentation.md) — deep dive on algorithms and data structures
+- [CLI Reference](../operations/cli_reference.md) — complete flag and subcommand documentation
+- [FSCK Workflow](fsck_workflow.md) — integrity verification used after defragmentation

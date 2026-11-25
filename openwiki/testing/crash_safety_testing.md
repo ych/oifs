@@ -5,7 +5,7 @@ description: "Documents crash safety validation including power-loss simulation,
 tags: [crash-safety, testing, journal, wal, durability, fsck, power-loss, recovery]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
@@ -25,7 +25,7 @@ sources:
     resource: repo://tests/journal_test.rs
   - id: openwiki-source-15b95b45be81584668eab400
     resource: repo://tests/rename_test.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
 
 OIFS ensures crash safety through a combination of memory-mapped I/O, explicit flushing mechanisms, automatic flushing on object drop, journal-based write-ahead logging (WAL) for metadata, and structural consistency checking (fsck). This page documents the test scenarios and mechanisms that verify data persistence across system crashes and power loss events.
@@ -58,7 +58,7 @@ The [`DiskManager::flush`] method forces synchronization of all pending changes 
 
 ### Implicit Flush on Drop
 
-The [`DiskManagerInner::Drop`] implementation flushes the journal region first (if journaled), then calls `MmapMut::flush` on the backing storage ([repo://src/disk.rs#L677-L700](repo://src/disk.rs#L677-L700)). This ensures data persistence even without an explicit flush, and the journal region is flushed first so the log describing pending metadata does not lag behind the metadata itself. This is validated by the `test_drop_flush` test ([repo://tests/crash_safety_test.rs#L53-L85](repo://tests/crash_safety_test.rs#L53-L85)).
+The [`DiskManagerInner::Drop`] implementation flushes the journal region first (if journaled), then calls `MmapMut::flush` on the backing storage ([repo://src/disk.rs#L718-L742](repo://src/disk.rs#L718-L742)). This ensures data persistence even without an explicit flush, and the journal region is flushed first so the log describing pending metadata does not lag behind the metadata itself. This is validated by the `test_drop_flush` test ([repo://tests/crash_safety_test.rs#L53-L85](repo://tests/crash_safety_test.rs#L53-L85)).
 
 ```rust
 impl Drop for DiskManagerInner {
@@ -75,6 +75,7 @@ impl Drop for DiskManagerInner {
                 let _ = self.backing.flush_range(start, len);
             }
         }
+        // Flush any pending changes to disk when dropped
         if flush_backing {
             let _ = self.backing.flush();
         }
@@ -84,7 +85,7 @@ impl Drop for DiskManagerInner {
 
 ### Range-Based Synchronization
 
-When using `RangeAsync` or `Strict` durability modes, mutations trigger synchronization of only the specific byte ranges that were modified via `sync_mutation_ranges` ([repo://src/disk.rs#L547-L660](repo://src/disk.rs#L547-L660)), including:
+When using `RangeAsync` or `Strict` durability modes, mutations trigger synchronization of only the specific byte ranges that were modified via `sync_mutation_ranges` ([repo://src/disk.rs#L547-L690](repo://src/disk.rs#L547-L690)), including:
 - Inode bitmap updates
 - Data bitmap updates
 - Modified inode ranges
@@ -95,6 +96,9 @@ This minimizes unnecessary I/O while ensuring crash consistency.
 
 ```rust
 pub fn sync_mutation_ranges(&self, ranges: &[(usize, usize)]) -> Result<(), DiskManagerError> {
+    if self.read_only {
+        return Ok(());
+    }
     match self.durability_mode() {
         DurabilityMode::Lazy => Ok(()),
         DurabilityMode::RangeAsync => {
@@ -111,13 +115,18 @@ pub fn sync_mutation_ranges(&self, ranges: &[(usize, usize)]) -> Result<(), Disk
 }
 ```
 
+The `sync_mutation_ranges` implementation:
+- **RangeAsync**: Accumulates dirty ranges in `pending_async_ranges`, coalesces adjacent/overlapping ranges with a 4 KiB gap bridge, and drains in batches of up to 64 operations or 4 MiB. The journal region is flushed first (when journaled) before data ranges to preserve WAL-before-metadata ordering.
+- **Strict**: Synchronously `msync(MS_SYNC)` each coalesced range. Under `FileIo` storage mode, a single `sync_data()` flushes all dirty ranges at once.
+- **LegacyWholeMmapAsync**: Asynchronously flushes the entire memory map.
+
 ### Journal-Based Write-Ahead Logging (WAL)
 
 When a filesystem is created with journaling enabled, metadata mutations (`create_file`, `delete_file`, `mkdir`, `write_data`, `truncate`, defragmentation) are first recorded as checksummed transactions in a fixed-size circular ring buffer, flushed to stable storage, and only then applied in place. A crash therefore always leaves the filesystem in a recoverable state: on the next mount, durable-but-unapplied transactions are replayed (Redo) automatically without a full-image `fsck` scan ([repo://src/journal.rs#L1-L50](repo://src/journal.rs#L1-L50)).
 
 ### Journal Recovery Mechanism
 
-The `recover_journal` function is called automatically on mount ([repo://src/disk.rs#L1844-L1910](repo://src/disk.rs#L1844-L1910)). It operates in three phases:
+The `recover_journal` function is called automatically on mount ([repo://src/disk.rs#L1985-L2055](repo://src/disk.rs#L1985-L2055)). It operates in three phases:
 
 1. **Phase 1 (Validation)**: Snapshot the journal region, decode and validate all frames between `tail` and `head` using CRC32C. Collect all operations from valid frames.
 2. **Phase 2 (Redo)**: Apply each operation directly against the image backing storage. Every `MetadataOp` is an absolute post-image write, making replay idempotent.
@@ -134,16 +143,16 @@ This guarantees that a crash between WAL commit and in-place apply is recovered 
 4. Calls explicit [`flush`]
 5. Reopens the image and verifies data integrity
 
-Validates that explicit flush guarantees persistence across file closures and reopens.
+Validates that explicit flush guarantees persistence across file closures and reopens ([repo://tests/crash_safety_test.rs#L7-L50](repo://tests/crash_safety_test.rs#L7-L50)).
 
 ### Drop Flush (`test_drop_flush`)
 1. Creates a new filesystem image
 2. Opens the image and creates a file
 3. Writes test data ("Drop Data")
-3. Allows the DiskManager to drop (triggering implicit flush via Drop)
-4. Reopens the image and verifies data integrity
+4. Allows the DiskManager to drop (triggering implicit flush via Drop)
+5. Reopens the image and verifies data integrity
 
-Confirms that the Drop implementation provides sufficient crash safety without explicit flush calls.
+Confirms that the Drop implementation provides sufficient crash safety without explicit flush calls ([repo://tests/crash_safety_test.rs#L53-L85](repo://tests/crash_safety_test.rs#L53-L85)).
 
 ### Block Overflow Safety (`test_block_overflow_safety_does_not_return_superblock`)
 1. Creates a filesystem image
@@ -153,7 +162,7 @@ Confirms that the Drop implementation provides sufficient crash safety without e
    - Specifically do not return block 0 (superblock)
    - Superblock magic number remains intact
 
-Ensures boundary checks prevent metadata corruption during error conditions.
+Ensures boundary checks prevent metadata corruption during error conditions ([repo://tests/crash_safety_test.rs#L87-L114](repo://tests/crash_safety_test.rs#L87-L114)).
 
 ### Journal Recovery: Crash Between Commit and Apply (`test_crash_recovery_replays_durable_transaction`)
 Simulates a crash after the WAL transaction is durable but before the metadata ops are applied in place ([repo://tests/journal_test.rs#L153-L180](repo://tests/journal_test.rs#L153-L180)):
@@ -166,11 +175,11 @@ Simulates a crash after the WAL transaction is durable but before the metadata o
 ### Torn Transaction Discard (`test_torn_transaction_is_discarded_on_mount`)
 1. Creates a journaled image and appends a valid transaction
 2. Corrupts the transaction frame by flipping a bit in the payload
-2. Mounts the image — the torn frame fails CRC32C validation and is ignored
-3. Verifies the filesystem mounts successfully and remains usable
+3. Mounts the image — the torn frame fails CRC32C validation and is ignored
+4. Verifies the filesystem mounts successfully and remains usable ([repo://tests/journal_test.rs#L182-L210](repo://tests/journal_test.rs#L182-L210))
 
 ### Idempotent Redo (`test_apply_op_idempotent_in_place`)
-Directly asserts that applying the same `MetadataOp` twice yields identical on-disk state, proving redo is idempotent and safe to replay any number of times.
+Directly asserts that applying the same `MetadataOp` twice yields identical on-disk state, proving redo is idempotent and safe to replay any number of times ([repo://tests/journal_test.rs#L212-L225](repo://tests/journal_test.rs#L212-L225)).
 
 ### Journaled Truncate Crash Safety (`test_truncate_journaled_filesystem`)
 Verifies that truncate on a journaled filesystem stages all metadata changes (zeroing slack, clearing block pointers, freeing data bitmap bits, pruning indirect blocks, updating inode size) into a single WAL transaction before committing ([repo://tests/contiguous_and_truncate_test.rs#L167-L205](repo://tests/contiguous_and_truncate_test.rs#L167-L205)):
@@ -181,15 +190,22 @@ Verifies that truncate on a journaled filesystem stages all metadata changes (ze
 4. Verifies inode size = 4 KB, only block 0 allocated, content intact
 5. Runs `verify_integrity` — filesystem must be 100% clean
 
-### Defragmentation Crash Safety (`test_defrag_crash_safety_mid_round`)
-Simulates power loss at two precise mid-round phases ([repo://tests/journal_test.rs#L1863-L1960](repo://tests/journal_test.rs#L1863-L1960)):
-- **Pre-commit crash**: Data copied to new blocks, WAL still contains pre-defrag state — after mount, original layout must be intact
-- **Post-commit crash**: WAL committed, metadata not yet applied — after mount, redo must apply the defrag transaction
+The `truncate_internal` implementation ([repo://src/disk.rs#L8085-L8480](repo://src/disk.rs#L8085-L8480)) builds a vector of `MetadataOp` including `WriteBlockSlice` for slack zeroing, `WriteBlockSlice` for indirect block pointer clearing, `SetDataBitmap` for freeing data blocks, and `WriteInode` for the size update — all committed as one transaction.
+
+### Defragmentation Crash Safety (`test_journaled_defragment_crash_midway_with_stale_disk_metadata`)
+Simulates power loss at two precise mid-round phases ([repo://tests/journal_test.rs#L1862-L1960](repo://tests/journal_test.rs#L1862-L1960)):
+- **Pre-commit crash (Case 1)**: Data copied to new blocks, WAL still contains pre-defrag state — after mount, original layout must be intact
+- **Post-commit crash (Case 2)**: WAL committed, metadata not yet applied — after mount, redo must apply the defrag transaction
 
 Both scenarios verified with `verify_integrity` (clean) and data integrity checks.
 
-### Large Defragmentation WAL Overflow (`test_defrag_wal_overflow_coalesced`)
-Exercises defragmentation exceeding the WAL ring capacity, completing in multiple checkpointed COW rounds without WAL overflow, with fsck verification after reopen ([repo://tests/journal_test.rs#L1962-L2004](repo://tests/journal_test.rs#L1962-L2004)).
+The test constructs crash images by:
+1. Running defragmentation and capturing pre-defrag and post-defrag image bytes
+2. **Case 1**: Combining pre-defrag metadata + WAL with post-defrag data area (simulates crash during payload copy, before journal sync)
+3. **Case 2**: Same combined image but with post-defrag WAL header (`tail=0`, `cleanly_unmounted=false`) to force recovery replay
+
+### Large Defragmentation WAL Overflow (`test_journaled_defragment_large_exceeding_wal_ring`)
+Exercises defragmentation exceeding the WAL ring capacity, completing in multiple checkpointed COW rounds without WAL overflow, with fsck verification after reopen ([repo://tests/journal_test.rs#L1961-L2004](repo://tests/journal_test.rs#L1961-L2004)).
 
 ### FSCK Validation After Simulated Crashes
 Structural consistency checking validates crash recovery by injecting direct on-disk corruption and verifying detection:
@@ -198,11 +214,11 @@ Structural consistency checking validates crash recovery by injecting direct on-
 - **Missing blocks**: Inode references block, bitmap says free ([repo://tests/fsck_extended_test.rs#L117-L155](repo://tests/fsck_extended_test.rs#L117-L155))
 - **Cross-linked blocks**: Multiple inodes reference same block ([repo://tests/fsck_extended_test.rs#L157-L177](repo://tests/fsck_extended_test.rs#L157-L177))
 
-Also validated after defragmentation crash simulations ([repo://tests/journal_test.rs#L1863-L1960](repo://tests/journal_test.rs#L1863-L1960)).
+Also validated after defragmentation crash simulations ([repo://tests/journal_test.rs#L1862-L1960](repo://tests/journal_test.rs#L1862-L1960)).
 
-### Power-Loss Simulation Methodology
+## Power-Loss Simulation Methodology
 
-Crash injection uses deterministic on-disk image byte manipulation between well-defined phases rather than fork/kill harnesses ([repo://tests/journal_test.rs#L153-L180](repo://tests/journal_test.rs#L153-L180), [repo://tests/journal_test.rs#L1863-L1960](repo://tests/journal_test.rs#L1863-L1960)):
+Crash injection uses deterministic on-disk image byte manipulation between well-defined phases rather than fork/kill harnesses ([repo://tests/journal_test.rs#L153-L180](repo://tests/journal_test.rs#L153-L180), [repo://tests/journal_test.rs#L1862-L1960](repo://tests/journal_test.rs#L1862-L1960)):
 
 1. **Pre-commit**: Write image state before WAL commit (simulates crash during data copy, before journal sync)
 2. **Post-commit**: Write image state after WAL commit but before in-place apply (simulates crash after `msync` of journal, before metadata update)
@@ -210,13 +226,13 @@ Crash injection uses deterministic on-disk image byte manipulation between well-
 
 This enables precise control of crash points at syscall/phase boundaries without non-deterministic process termination.
 
-### Concurrent Operations + Crash Scenarios
+## Concurrent Operations + Crash Scenarios
 
 | Scenario | Test | Crash Point | Verification |
 |----------|------|-------------|--------------|
 | **Concurrent write + crash** | Implicit via multi-threaded tests | Between `msync` of data and inode update | Reopen, verify data integrity |
 | **Rename + crash** | `test_rename_matrix_plain_journaled_and_file_io` ([repo://tests/rename_test.rs#L1-L100](repo://tests/rename_test.rs#L1-L100)) | After directory entry moved, before source entry cleared | Mount recovery, verify single directory entry, inode preserved |
-| **Journal checkpoint + crash** | Defragmentation tests ([repo://tests/journal_test.rs#L1863-L2004](repo://tests/journal_test.rs#L1863-L2004)) | Between WAL checkpoint and ring retire | Mount recovery, verify no stale transactions |
+| **Journal checkpoint + crash** | Defragmentation tests ([repo://tests/journal_test.rs#L1862-L2004](repo://tests/journal_test.rs#L1862-L2004)) | Between WAL checkpoint and ring retire | Mount recovery, verify no stale transactions |
 
 The rename test covers four storage mode combinations (Mmap/FileIo × journaled/legacy) and validates:
 - Same-directory rename preserves inode ID and payload blocks

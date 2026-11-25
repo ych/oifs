@@ -5,7 +5,7 @@ description: AWS Kani Rust Verifier is used to mathematically prove safety and c
 tags: [formal-verification, kani, safety-properties, bijectivity, smt-solving, model-checking]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-388414179b3b4a07da1a42a4
     resource: repo://src/filters.rs

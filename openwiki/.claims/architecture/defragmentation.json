@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d0ba5ef5883c4b96ecd7cb1efe377761a7d0b19821f717473289bde7eebd3ae1",
+  "pageVersion": "sha256:c0869d4827ed65342e08aac699ed703c8b8eb52173dfc5f132e7ec198c7d4aa3",
   "claims": [
     {
       "id": "claim_b64f414a380943d6b588686bea26f24e",
       "statement": "DiskManager::analyze_fragmentation uses 64-bit word scanning on the data bitmap with u64::from_le_bytes to count contiguous free runs and compute the fragmentation ratio.",
       "evidence": [
         {
-          "resource": "repo://src/disk/maintenance.rs#L157-L262",
+          "resource": "repo://src/disk/maintenance.rs#L160-L265",
           "version": "repo-lines-v1:sha256:fb0a31141105729e2e3e793514507a01ca2987bdb204f6e1ba122176a0730a7c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZmQyNTNmZTRhMDY2ODQ1ZjFmN2RlZGEwNDY0ZGY0NDExYzk2OWMzZjg4MzExNDZhZWI0YmYyNDViYjcyNDg3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4Y2UxNDgwZmEwN2ZlMmE3NzgzN2NkNTJjYWM5MjE3NTJkNjMzZWI1NjgwMmM0YzAzZGU5YTc2N2E4YjhjMzEyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3MGM2Y2M3N2M4MDM2N2MzMzNhZjRiODMyYWI2MzZiZjZjY2IzY2E5YmI1NWY4NDY5NGIyMWM4OWI1NTU4OTM2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyMGU5MWNjMjZiODRjMGU0ZjYxMzFmYjE4OTgyNDkwZmM4MmIwNzRkNjA1OTY5ODY2YzIyNGM2OGNlN2I4YzhmIn0"
         }
       ]
@@ -17,12 +17,12 @@
       "statement": "DiskManager::defragment routes to defragment_safe (default) which performs an out-of-place rebuild: it copies the image, reads all active payloads preserving compression and filter config, resets the data bitmap while preserving directory blocks, and contiguously reallocates blocks via sequential hint allocation.",
       "evidence": [
         {
-          "resource": "repo://src/disk/maintenance.rs#L498-L518",
+          "resource": "repo://src/disk/maintenance.rs#L502-L522",
           "version": "repo-lines-v1:sha256:e48a5893d859bedb5918bc0409f13808aa680971ff1e15110db29c3330ccc40b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5MzY4NzQzNThlYjg1YzVkZTk3MmE5ODczYTUxYzRiNWMyMzU1MzdmOWZmMjVhZDIyYTVkNDkzYmMxODYyYzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlNDhmOTI4YjM0MjUyZWFhZmZhYmYzOWQ3OTJiM2QyY2ZhM2Q1ZjMzMTMyNDM5NGY5NGRlMTMzNDQ4NDZiNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmNDhhYzNiYzBiNDQzZTU3M2ExZTVjMGY3NGI0YWU4YWE3NmZlZTFhNWUxM2Q3MzIyZDI4YmU2OTU3ZmMyMmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxZjgzODE4YjRlMWNiOThjMmQzMGU4M2ZkZjI4NzkxMTkwMGNjMzhiZWZkODcwMjU5YTEzMWJkMjk1MTBjN2QifQ"
         },
         {
-          "resource": "repo://src/disk/maintenance.rs#L522-L691",
-          "version": "repo-lines-v1:sha256:266ffa5a7927867e31e35e1eb95632479996fcac21c983105a499ae90a1ce4c6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMWU0OGExMTNlMzczMDBlZTVhODgzZDljM2VmMzM0M2I3MTY5N2FhMWJlNDNlNWQ2YzM3OWM5MmEwZGMwM2I2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzMWY4MzgxOGI0ZTFjYjk4YzJkMzBlODNmZGYyODc5MTE5MDBjYzM4YmVmZDg3MDI1OWExMzFiZDI5NTEwYzdkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmMWUwNjU0NDRhYmE0YjYyZmEzY2ExYjNhMmE5MDAzNWUyMWFkZjMyODY3NGU4ZjgwZmRjNGRiY2ViYjcwMDAwIn0"
+          "resource": "repo://src/disk/maintenance.rs#L526-L700",
+          "version": "repo-lines-v1:sha256:d1f45293cf7c2de832caab50479eae24aa9e35f4af51fdd0625c06578c0969a6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTc1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMWU0OGExMTNlMzczMDBlZTVhODgzZDljM2VmMzM0M2I3MTY5N2FhMWJlNDNlNWQ2YzM3OWM5MmEwZGMwM2I2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzMWY4MzgxOGI0ZTFjYjk4YzJkMzBlODNmZGYyODc5MTE5MDBjYzM4YmVmZDg3MDI1OWExMzFiZDI5NTEwYzdkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmMWUwNjU0NDRhYmE0YjYyZmEzY2ExYjNhMmE5MDAzNWUyMWFkZjMyODY3NGU4ZjgwZmRjNGRiY2ViYjcwMDAwIn0"
         }
       ]
     },
@@ -31,7 +31,7 @@
       "statement": "Safe defragmentation uses a transactional 3-step atomic rename protocol (original -> .old, temp -> original, verification, automatic rollback on failure) for durability and zero data loss.",
       "evidence": [
         {
-          "resource": "repo://src/disk/maintenance.rs#L634-L686",
+          "resource": "repo://src/disk/maintenance.rs#L643-L695",
           "version": "repo-lines-v1:sha256:59d07303cd7a89c400626fe36794ba30d2e04f2514e2e2f6767d19759b8e0205:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MDNhYmJhYjNhYjUwNjU0ZDA0YjFiMDBhNzk5MDA0YTFkMDRkMDQ3NzgyNjk3ZWI4OWQ1Zjc2Mjg2ZjI4MDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhN2E1OThkMTc3ZWMwN2MxNjg5MmEyZGQ5ZDM3NmY1MjczNmFhZTJjOTVjNzAxMWQ1MmIwOTQwOTc2NDQzYzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVhM2E0YmNmMGY0YmUzODkwMThiMmYwNDYyOWE2YjE2MWExOGM4MTQ0ZjAyMmY4ODYzZWY2OTgxZmI2Y2U0YjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2YTA0NTA0M2JiMDczY2U2NTE3YjIzNmZjMDU3MWVkMjljZjFkNGE0M2QzOGUyM2Y4YzI4OGYyNGExNjRhYTMifQ"
         }
       ]
@@ -41,8 +41,8 @@
       "statement": "DiskManager::defragment_safe implements a 6-step safe compaction workflow: copy image to temp, collect inodes (preserving directory blocks), clear+rewrite data bitmap preserving directory blocks, sequentially reallocate file payloads contiguously, flush, then atomically replace the image via a 3-step rename with rollback from .old on any failure.",
       "evidence": [
         {
-          "resource": "repo://src/disk/maintenance.rs#L522-L691",
-          "version": "repo-lines-v1:sha256:266ffa5a7927867e31e35e1eb95632479996fcac21c983105a499ae90a1ce4c6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMWU0OGExMTNlMzczMDBlZTVhODgzZDljM2VmMzM0M2I3MTY5N2FhMWJlNDNlNWQ2YzM3OWM5MmEwZGMwM2I2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzMWY4MzgxOGI0ZTFjYjk4YzJkMzBlODNmZGYyODc5MTE5MDBjYzM4YmVmZDg3MDI1OWExMzFiZDI5NTEwYzdkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmMWUwNjU0NDRhYmE0YjYyZmEzY2ExYjNhMmE5MDAzNWUyMWFkZjMyODY3NGU4ZjgwZmRjNGRiY2ViYjcwMDAwIn0"
+          "resource": "repo://src/disk/maintenance.rs#L526-L700",
+          "version": "repo-lines-v1:sha256:d1f45293cf7c2de832caab50479eae24aa9e35f4af51fdd0625c06578c0969a6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTc1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMWU0OGExMTNlMzczMDBlZTVhODgzZDljM2VmMzM0M2I3MTY5N2FhMWJlNDNlNWQ2YzM3OWM5MmEwZGMwM2I2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzMWY4MzgxOGI0ZTFjYjk4YzJkMzBlODNmZGYyODc5MTE5MDBjYzM4YmVmZDg3MDI1OWExMzFiZDI5NTEwYzdkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmMWUwNjU0NDRhYmE0YjYyZmEzY2ExYjNhMmE5MDAzNWUyMWFkZjMyODY3NGU4ZjgwZmRjNGRiY2ViYjcwMDAwIn0"
         }
       ]
     },
@@ -51,12 +51,12 @@
       "statement": "DiskManager::defragment_inplace_on performs WAL-atomic in-place defragmentation using round-based copy-on-write: each round selects relocatable units with free targets, copies payload blocks to free space, stages metadata updates (inode pointers, bitmap alloc/free, indirect block pointers, ChunkEntry rewrites) into a single bounded WAL transaction, commits, applies via apply_journal_ops, advances an in-memory allocation bitmap mirror, syncs metadata per DurabilityMode, and checkpoints the WAL ring before the next round.",
       "evidence": [
         {
-          "resource": "repo://src/disk/maintenance.rs#L1026-L1570",
-          "version": "repo-lines-v1:sha256:522c50d1153672bcaf2d93cc733471598e29115ab5c4fd7a61df16279051180b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQ1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MDk0MGQ0OTAwYWE4MGJmODhmZDdmMTg5ODczZjY1ODNkNDM1ZWMwMDI0MDYyMzcyYWIzNTFlYWE4NTI5NTI3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4NWE2Yjk1YTY5MDNjN2MwMzZkN2VmMGE5MzllZGVlNzlkNDQ3Y2Q5YTc4Y2FjMDNlN2NlMGNjZDc0NTdkNzZlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjMGQzYjE5Y2VkNDZlMmVlMTZiOWFkYzE2MGMzNTVhNWU5MjA1NGM0YWZiNTNiMjFlNGQxYjkzMThlODJlZGU2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0Njg2OTNkNzRmMzA0ZTEwNzk3MmI1MjJhYzk4OWJhMjM2YTcxZDgzNjhjNWI0MGMzNGYxZTBjMWIzZTkyNzZhIn0"
+          "resource": "repo://src/disk/maintenance.rs#L1035-L1579",
+          "version": "repo-lines-v1:sha256:19ea190a9f8b04c31655cfd8ab23f3494ec5bc5923e75e865be79a22180fcf24:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQ1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MDk0MGQ0OTAwYWE4MGJmODhmZDdmMTg5ODczZjY1ODNkNDM1ZWMwMDI0MDYyMzcyYWIzNTFlYWE4NTI5NTI3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4NWE2Yjk1YTY5MDNjN2MwMzZkN2VmMGE5MzllZGVlNzlkNDQ3Y2Q5YTc4Y2FjMDNlN2NlMGNjZDc0NTdkNzZlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjMGQzYjE5Y2VkNDZlMmVlMTZiOWFkYzE2MGMzNTVhNWU5MjA1NGM0YWZiNTNiMjFlNGQxYjkzMThlODJlZGU2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0Njg2OTNkNzRmMzA0ZTEwNzk3MmI1MjJhYzk4OWJhMjM2YTcxZDgzNjhjNWI0MGMzNGYxZTBjMWIzZTkyNzZhIn0"
         },
         {
-          "resource": "repo://src/disk/maintenance.rs#L643-L735",
-          "version": "repo-lines-v1:sha256:8ae94e684c0c61dd5449dc1705f87f9d6b5e8fc6f7de0c10e28e7d623060cf37:eyJzZWxlY3RlZExpbmVDb3VudCI6OTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5YTg4MmEzYzk2M2E1Y2I0N2Q5ZDVhMGI1NWQ1Y2M4NzQxNmY5MzJiYjEyNDdlNmM2MDFkZjZlMmJjNTQxYWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1ZjExZWYzZTRjNWM5NWM5NmRhMWJmNDIxZWUxODkyMTc1MThlOGYwODJkY2RiYjM0NWJjNDMxNDFkM2E1NzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzZGQxYmJlYjVlNGFkZDJhMzI5MDcwNDlkY2U2MWEzMTM4MDM5MWY2NTFiMDJiMWY5ZGM3ZGIwNTVhYWU0ZDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc0ZjdhMWYyNTlkYmY4OWZlMzExMjk0YzBmMjFlM2RhNTI3MTg3OTQxYTVlZWE5NTVlMDQ4YmZmYWRiZjhlOWIifQ"
+          "resource": "repo://src/disk/maintenance.rs#L652-L744",
+          "version": "repo-lines-v1:sha256:2135b3fd12bd33517c45d56353e899059439f5db907bee402008fd2e1b3d3d1b:eyJzZWxlY3RlZExpbmVDb3VudCI6OTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5YTg4MmEzYzk2M2E1Y2I0N2Q5ZDVhMGI1NWQ1Y2M4NzQxNmY5MzJiYjEyNDdlNmM2MDFkZjZlMmJjNTQxYWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1ZjExZWYzZTRjNWM5NWM5NmRhMWJmNDIxZWUxODkyMTc1MThlOGYwODJkY2RiYjM0NWJjNDMxNDFkM2E1NzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzZGQxYmJlYjVlNGFkZDJhMzI5MDcwNDlkY2U2MWEzMTM4MDM5MWY2NTFiMDJiMWY5ZGM3ZGIwNTVhYWU0ZDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc0ZjdhMWYyNTlkYmY4OWZlMzExMjk0YzBmMjFlM2RhNTI3MTg3OTQxYTVlZWE5NTVlMDQ4YmZmYWRiZjhlOWIifQ"
         }
       ]
     },
@@ -65,15 +65,15 @@
       "statement": "Seekable 64K chunked files (INODE_FLAG_SEEKABLE_64K) store packed ChunkEntry values in pointer slots; defragmentation handles them by expanding ChunkEntry into contiguous block runs for target planning, and rewriting the packed value with a new start_block while preserving block_count, flags, and compressed_len — implemented in collect_inode_block_layout (legacy), old_entry_to_new map (legacy), and RelocUnit.chunk_entry with WAL staging (journaled).",
       "evidence": [
         {
-          "resource": "repo://src/disk/maintenance.rs#L1175-L1182",
+          "resource": "repo://src/disk/maintenance.rs#L1184-L1191",
           "version": "repo-lines-v1:sha256:8826ba22881669cfa2a819f8488c4554ea1e8068a2bb9286114532f0d0fc493a:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGE4NWY2OWE1OTU2MDEzN2MwYjcyOWEyNGJjNjA5ZjU3YjJlNjYxM2ZkOTRmM2Q4ZjU3OWY5ZDJlODgxMDkzOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTUxN2I4MGVjNzIwNGU4YzkyNzVlMWU5YzUzYjA5MTgxODAxNjY1NWEzYTFkYzFkNDJiOTA0NTIzZmQ0OWRlZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWNiMjY1Y2U3OWVlZTU2ZTE1ZTFmZGNmYmZlNTY1YWJhNDhmMDA2OTc3NTZiZjdkMDRjOWE3MTVjOGRlOTBhYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDEzMTMwYzRmNzZjYWMzODkwOWE3NDU2OGI2MjhiMjIwNWM0OGNjOTA1NzkxMGYzYzIzOWEyMzQxOWE0ODU2NiJ9"
         },
         {
-          "resource": "repo://src/disk/maintenance.rs#L317-L410",
+          "resource": "repo://src/disk/maintenance.rs#L321-L414",
           "version": "repo-lines-v1:sha256:ed0152aa16727615190d29178f26540fa6b19e9d6658ad54a6406ffb5cbc878e:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkMzlhZWExMTE3YjQ0NGY2MzI4MzA3NjAxODcyYTRhOGIyYzY3NDU2YjgzNWE1YzE5Njc2YmQ1YWY4OTUxZGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhNGNmODE2YWQ2MWRiODllYzJkNzkzNTI0MjM5MmQyMTVmNDk3MGY0MzcxZTg0ZTdiNWY0OGQwNzIxMTFjZTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiZGIwYzc3ZjVmMGYzZGU0Y2EyMmQ3N2I3YWFmMTk5ZjM3MDgzOWQxOTc1MWIzODhjM2UxZDYyNmY4NDg1ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxNDJkM2QwNzExYmJkNDM0NWNkZTY5MDYzOTA2OGVhMjE4ODZlODMzNWM1MGI3NDJiOWIyNDA0YjUyNzM0ZTcifQ"
         },
         {
-          "resource": "repo://src/disk/maintenance.rs#L826-L850",
+          "resource": "repo://src/disk/maintenance.rs#L835-L859",
           "version": "repo-lines-v1:sha256:961b717c7199a1500f6bfba90d3371aaba06c4201fd0e4523c94febd1f0ec21f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzNzlkN2FlYWJiOGM4M2ZmMzU4ODAzMTRiYWRjZWM3YjIzYzZhMmJjOWU1YzM1NTA2YzA1YTJhMDFkMWY1YzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0Y2E3N2UyZDgyNmQzNGRhZDc1OTc2ZDkzNTBiMjcwOTEyNDhkNDM4MmRmZDlhYzJjZjVmYzYzMDliNWUzNjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0YzExN2Y0MjU3YjU0NTZlODM3ZTMzYWI5ZDc5MWUzN2I5ZjM4MWRkNTEyZDY2YjNhYjE5OWNmMTE3MmQxNDAifQ"
         },
         {
@@ -88,11 +88,11 @@
       "evidence": [
         {
           "resource": "repo://src/auto_defrag.rs#L235-L320",
-          "version": "repo-lines-v1:sha256:54b1bbcd543497df1690384fc537f5e482639c1a298a2d9d8470f997120e2656:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0Y2U3MDc2ZmQzNTcwODY3M2YyMzhkZWQ1MDRiZjZkNThjNWFmMzA3NzQ5ZTlkZWIwZmU2MGFmOTA1ZWZjZGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUzZDdkN2IwZjFkZDAwOGMxMGE0OWM0ZjE1ZjNjZDM0MGY5NGFmODQ3YzFjNDhlMDQxYjQzOGRmOTkyMjVhYjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBkYmI5ZGZlOTc4YjUxODE4NzNmNzRlYWJlY2I0OWY1OTM2NWY5MTI1MTRiZTE2ZGNkYTZlNzJmNTllZTM3NjcifQ"
+          "version": "repo-lines-v1:sha256:8c35c468ae9425f7c6bba755aeb8c4656f0c48a6560f5774679b5b12eed8c8bf:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0Y2U3MDc2ZmQzNTcwODY3M2YyMzhkZWQ1MDRiZjZkNThjNWFmMzA3NzQ5ZTlkZWIwZmU2MGFmOTA1ZWZjZGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUzZDdkN2IwZjFkZDAwOGMxMGE0OWM0ZjE1ZjNjZDM0MGY5NGFmODQ3YzFjNDhlMDQxYjQzOGRmOTkyMjVhYjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBkYmI5ZGZlOTc4YjUxODE4NzNmNzRlYWJlY2I0OWY1OTM2NWY5MTI1MTRiZTE2ZGNkYTZlNzJmNTllZTM3NjcifQ"
         },
         {
           "resource": "repo://src/auto_defrag.rs#L330-L385",
-          "version": "repo-lines-v1:sha256:6f08bf77a87200b5e8ade7aba870d3260ef4e7d19fde596a2eb1c439b2bcf0e9:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlNzVjNzBkOTQ2MzYyNWUxMDc5ZmQ4ZmM4ZWU2MmFkMmU5MmM0MmJlYWFiZmQ4NWI3OGQ4ZTBhNDk3OWI5NGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczMjM5N2Q0MDY3NjI0YTQ0NjIwZmJmZTFjZjg3OGNjZWU2OTgwMzU0NzFlMmVhOGRiZDU1Yjc0OGQ4MjBiNTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZlN2VlNWFiZGYyOWU4MmQxMTZmOWM0N2ViMjgyY2FjNTVlMWI4NGYyZDY3MTBkNTE4NTdiOTY4YWY5MWJiMjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU0YjhjNmFjMTQ1ZDU4ZWEyZDdkMmQyYjQ5OTdhZTRiYTU1ZDVkMjIxODc1ZWI0NTdlYjQzZTQ1NTZkNTdiYjMifQ"
+          "version": "repo-lines-v1:sha256:8e2631a2f6ede88400cd8066dc8eaf2f9dcf1c014eb0ed8b3df01b48121fc502:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlNzVjNzBkOTQ2MzYyNWUxMDc5ZmQ4ZmM4ZWU2MmFkMmU5MmM0MmJlYWFiZmQ4NWI3OGQ4ZTBhNDk3OWI5NGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczMjM5N2Q0MDY3NjI0YTQ0NjIwZmJmZTFjZjg3OGNjZWU2OTgwMzU0NzFlMmVhOGRiZDU1Yjc0OGQ4MjBiNTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZlN2VlNWFiZGYyOWU4MmQxMTZmOWM0N2ViMjgyY2FjNTVlMWI4NGYyZDY3MTBkNTE4NTdiOTY4YWY5MWJiMjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU0YjhjNmFjMTQ1ZDU4ZWEyZDdkMmQyYjQ5OTdhZTRiYTU1ZDVkMjIxODc1ZWI0NTdlYjQzZTQ1NTZkNTdiYjMifQ"
         },
         {
           "resource": "repo://src/auto_defrag.rs#L380-L414",
@@ -109,11 +109,11 @@
           "version": "repo-lines-v1:sha256:4087fb0c1df5ba5ee4b72e5c50cc695755c4ee2cccb5180fbb66607fea8cfb19:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzNmEwMWYwZmQ1ZTZhNThmODNmYTA3NTZiMzBmYjg2MjBmM2U3MDgwZjlmMTRkYjRlYTY2MDVlMjYyYjBjMjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3NjYwNTM4MTAwOWRiN2I1NzQ5ZDljMmVlMzI3YTdmMjcyYWFiMTMxYTk1ZDhlNDBmZTUzMGNlN2NkNjM1OTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkMGRhYWI4N2IxNzE3NmVmMjFmODI4MDkyODQ0Yzg1MTFiNjk5YTA4NGIxMDJkMzM2NWE1NDMzZmFhNmE1MDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlYmI2NjBjZGQ2ZDRjZDU0YThlZDY5NzE1MmY4NGI2M2I0ZDc5MzA2NjE5ZmVkMzdkMWZiMDU3OTgwMTdhMjcifQ"
         },
         {
-          "resource": "repo://src/disk/maintenance.rs#L671-L691",
+          "resource": "repo://src/disk/maintenance.rs#L680-L700",
           "version": "repo-lines-v1:sha256:9a2d73dd49c411a87f7bda4266122ad6877073b81577a5074ccab2280b679bd4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzYjI3NDk1NGU2NWI4N2QzOWRkZDMwOWZiMzAzMzllN2NmMGFmNGQzNzdlY2U5MTZjYzIzZTY2MzFlMjY3MzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0YWRkZmZhOWE3NDBjYTI3YmUyOWEyMzMxMWZmYzAwMTU5ODY0ZTkxYWQwNTJlZGFlNDM3Njg0N2UzNjU5ZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxZTA2NTQ0NGFiYTRiNjJmYTNjYTFiM2EyYTkwMDM1ZTIxYWRmMzI4Njc0ZThmODBmZGM0ZGJjZWJiNzAwMDAifQ"
         },
         {
-          "resource": "repo://src/disk/maintenance.rs#L784-L792",
+          "resource": "repo://src/disk/maintenance.rs#L793-L801",
           "version": "repo-lines-v1:sha256:e1c79de4c02e2bd5b5e83b66b4d82dd53298e6b4fb932930c7818ebaabee64f5:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTAyMzgzZGNjYTE0ZDU5MDkyNGI0ZGNlZTVhMTdjNGM5MzRhMTA4ZWZlNTNkZjA0MDY3NmJmODQ0NzZiZDIyOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGM5ODY3ZTgzZGYzYjllZTE1ZmYxODcxNmU3NTFiMGMxMDVhMTc0NjgwMTk0MGY3ZTA4YzJmYmZjNmFiMjQ1MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzk4MTA5ODRmMGY3MjA4YmE1MWZmMGNjZWZmM2JmZTUwZDZhNWY3NjFmYmY5NGU0ZTg3ZDk1OWFmNzEyNmU2YSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTBhYzk0M2VlNjc3NjQzZTRmYzY5MGM2ZTY3ZGMzYWJiNzViMWUyMTA5MTJiOWUwYjI5NTMwMjRiZDM1YzQwMyJ9"
         }
       ]
@@ -121,6 +121,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-23T20:55:55.458Z"
+    "at": "2026-11-24T19:09:23.676Z"
   }
 }

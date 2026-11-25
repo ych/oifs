@@ -5,13 +5,13 @@ description: Guide to integrating AI agents and IDEs with OIFS via the Model Con
 tags: [mcp, integration, ai-agents, ide, filesystem]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-24T19:09:23.676Z
 sources:
   - id: openwiki-source-1d8ff572dc201d9ae2619645
     resource: repo://src/bin/oifs_mcp.rs
   - id: openwiki-source-b0f9117e3c34930435de9b17
     resource: repo://tests/mcp_server_test.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
 ---
 
 # MCP Integration Guide
@@ -59,6 +59,17 @@ The server communicates via stdio (standard input/output) and expects JSON-RPC 2
 3. **Single image per process**: The CLI accepts exactly one positional image argument. All tools operate exclusively inside that image.
 4. **Logging**: On startup the server logs to **stderr**: `[oifs-mcp] image=agent_memory.img size=10MB encrypted=false`.
 
+### MCP Protocol Handshake
+
+When an MCP client spawns the server, the following sequence occurs over stdio:
+
+1. Client sends `initialize` request with protocol version and client info
+2. Client sends `notifications/initialized` notification
+3. Client calls `tools/list` to discover available tools
+4. Subsequent `tools/call` invocations perform file operations
+
+The server implements the MCP `ServerHandler` interface and advertises tool capabilities during initialization.
+
 ## Sandbox Isolation Model
 
 Each `oifs_mcp` server instance operates on **exactly one disk image**. This creates a strong isolation boundary:
@@ -95,69 +106,49 @@ The MCP server uses the **stdio transport** with **JSON-RPC 2.0**. Any MCP-compa
 3. Click **Add New Server**.
 4. Configure:
 
-   ```json
-   {
-     "name": "OIFS Memory Sandbox",
-     "command": "cargo",
-     "args": ["run", "--bin", "oifs_mcp", "--", "agent_memory.img"],
-     "env": {
-       "OIFS_PASSWORD": "your-encryption-password"
-     }
-   }
-   ```
-
-   - Use the full path to `cargo` if it's not on the system PATH (e.g., `/home/user/.cargo/bin/cargo`).
-   - Omit `env.OIFS_PASSWORD` if you don't need encryption.
-   - Replace `agent_memory.img` with your desired image path (relative to the working directory or absolute).
-
-5. Save and restart Claude Desktop.
+```json
+{
+  "name": "OIFS Memory Sandbox",
+  "command": "cargo",
+  "args": ["run", "--bin", "oifs_mcp", "--", "--size", "20", "agent_memory.img"],
+  "env": {
+    "OIFS_PASSWORD": "your-secret-password"
+  }
+}
+```
 
 ### Cursor
 
-1. Install Cursor.
-2. Open **Settings → MCP Servers** (or `Ctrl+Shift+P` → "MCP: Open Configuration").
-3. Add a new server entry in `mcp.json`:
+1. Open Cursor Settings → MCP.
+2. Add a new server with:
 
-   ```json
-   {
-     "mcpServers": {
-       "oifs-memory": {
-         "command": "cargo",
-         "args": ["run", "--bin", "oifs_mcp", "--", "agent_memory.img"],
-         "env": {
-           "OIFS_PASSWORD": "your-encryption-password"
-         }
-       }
-     }
-   }
-   ```
-
-4. Restart Cursor or reload the MCP configuration.
-
-### Using a Pre-built Binary
-
-For production use, build the release binary and reference it directly:
-
-```bash
-cargo build --release --bin oifs_mcp
+```json
+{
+  "name": "OIFS Memory",
+  "command": "cargo",
+  "args": ["run", "--bin", "oifs_mcp", "--", "--size", "50", "cursor_agent.img"]
+}
 ```
 
-Then use the absolute path to `target/release/oifs_mcp` in the client configuration instead of `cargo run`.
+For a release binary, replace `cargo run --bin oifs_mcp` with the full path to the compiled binary (e.g., `/path/to/target/release/oifs_mcp`).
+
+### Custom Agent Loop
+
+Any program that can spawn a subprocess and speak JSON-RPC 2.0 over stdio can drive the server. See `tests/mcp_server_test.rs` for a minimal working example of the initialize → tools/list → tools/call sequence.
 
 ## Available MCP Tools
 
-The server registers eight tools via the `#[tool_router]` macro. Every tool acquires `self.dm.lock().await` (a `TokioMutex<DiskManager>`), executes the operation, and returns a **JSON string** built with `serde_json` (never hand-rolled `format!`) to guarantee correct escaping of quotes, backslashes, and control characters.
+The server registers **eight tools** via the `#[tool_router]` macro. Each tool clones the `DiskManager`, executes the operation inside `tokio::task::spawn_blocking` (to bridge async MCP runtime with synchronous mmap I/O), and returns a JSON string built with `serde_json` (never hand-rolled `format!`) to guarantee correct escaping.
 
-### Response Convention
+### Tool Response Convention
 
 - **Success**: `{"ok": true, ...}` with tool-specific fields.
-- **Failure**: `{"ok": false, "error": "..."}` — a single JSON object with a human-readable error message.
+- **Error**: `{"ok": false, "error": "..."}`.
+- **Exceptions**: `read_file` returns raw UTF-8 content on success (not JSON-wrapped). `list_dir` returns **JSONL** (newline-delimited JSON objects), one per entry.
 
-### Tool Reference
+### write_file
 
-#### `write_file`
-
-Creates or overwrites a file. Parent directories must already exist.
+Create or overwrite a file. Parent directories must already exist (no auto-mkdir).
 
 ```json
 {
@@ -174,11 +165,13 @@ Creates or overwrites a file. Parent directories must already exist.
 }
 ```
 
-**Behavior**: Resolves parent directory via `DiskManager::resolve_parent`, creates file if missing via `create_file`, writes content with `CompressionMode::Auto`. Returns `inode` ID and `bytes` written.
+**Behavior**: Resolves parent directory via `resolve_parent`, creates file if missing via `create_file`, then writes content via `write_data_truncated` with `CompressionMode::Auto`.
 
-#### `read_file`
+**Success response**: `{"ok": true, "inode": <u64>, "bytes": <usize>}`
 
-Reads a file's contents as UTF-8 text.
+### read_file
+
+Read a file's contents as UTF-8 text.
 
 ```json
 {
@@ -194,11 +187,15 @@ Reads a file's contents as UTF-8 text.
 }
 ```
 
-**Behavior**: Resolves path to inode via `DiskManager::resolve_path`, reads data, validates UTF-8. Returns raw file content (not JSON-wrapped) on success.
+**Behavior**: Resolves path via `resolve_path`, reads data via `read_data`, validates UTF-8.
 
-#### `list_dir`
+**Success response**: Raw UTF-8 string content (not JSON).
 
-Lists entries at a path. Emits **JSON Lines (JSONL)** — one JSON object per line.
+**Error response**: JSON `{"ok": false, "error": "..."}`.
+
+### list_dir
+
+List files and directories at a given path. Returns JSONL.
 
 ```json
 {
@@ -214,11 +211,15 @@ Lists entries at a path. Emits **JSON Lines (JSONL)** — one JSON object per li
 }
 ```
 
-**Behavior**: Resolves path to directory inode, lists entries. Each line: `{"name": "...", "kind": "file|dir", "size": N}`. Empty directory returns `{"entries":0}`.
+**Behavior**: Resolves directory inode via `resolve_path`, reads entries via `list_dir`, reads each child inode for type and size.
 
-#### `mkdir`
+**Success response**: JSONL lines, each `{"name": "...", "kind": "file|dir", "size": <u64>}`. Empty directory returns `{"entries":0}` (single JSON object, not JSONL).
 
-Creates a directory. Parent directories must exist (no `mkdir -p` semantics).
+**Error response**: JSON `{"ok": false, "error": "..."}`.
+
+### mkdir
+
+Create a directory. Parent directories must exist (no `mkdir -p` semantics).
 
 ```json
 {
@@ -234,11 +235,13 @@ Creates a directory. Parent directories must exist (no `mkdir -p` semantics).
 }
 ```
 
-**Behavior**: Resolves parent directory, creates new directory inode. Returns `inode` ID.
+**Behavior**: Resolves parent via `resolve_parent`, creates directory via `create_directory`.
 
-#### `delete_file`
+**Success response**: `{"ok": true, "inode": <u64>}`
 
-Deletes a file.
+### delete_file
+
+Delete a file from the sandbox image.
 
 ```json
 {
@@ -254,11 +257,13 @@ Deletes a file.
 }
 ```
 
-**Behavior**: Resolves parent directory, removes file entry. Returns `{"ok": true}`.
+**Behavior**: Resolves parent via `resolve_parent`, deletes via `delete_file`.
 
-#### `truncate_file`
+**Success response**: `{"ok": true}`
 
-Truncates or extends a file to a specific byte size.
+### truncate_file
+
+Truncate or extend a file to a specific byte size.
 
 ```json
 {
@@ -275,11 +280,13 @@ Truncates or extends a file to a specific byte size.
 }
 ```
 
-**Behavior**: Resolves path, truncates/extends file to exact byte size. Returns `size`.
+**Behavior**: Truncates via `truncate_path`.
 
-#### `append_file`
+**Success response**: `{"ok": true, "size": <u64>}`
 
-Appends a line to a file (creates file if missing). Auto-adds trailing newline. Ideal for **JSONL memory logs**.
+### append_file
+
+Append a line to a file (creates file if missing). Auto-adds trailing newline. Ideal for JSONL memory logs.
 
 ```json
 {
@@ -296,11 +303,13 @@ Appends a line to a file (creates file if missing). Auto-adds trailing newline. 
 }
 ```
 
-**Behavior**: Resolves parent, creates file if missing, reads existing content, appends new content + newline, writes back with `CompressionMode::Never` (critical for append-only logs). Returns `inode` and `total_bytes`.
+**Behavior**: Acquires process-wide `append_lock` (`Arc<Mutex<()>>`) to serialize concurrent appends. Resolves parent via `resolve_parent`, creates file if missing via `create_file`, then appends via `write_data` at current file size with `CompressionMode::Never`. Ensures trailing newline.
 
-#### `status`
+**Success response**: `{"ok": true, "inode": <u64>, "total_bytes": <u64>}`
 
-Shows filesystem statistics.
+### status
+
+Show filesystem status: image path, total/used/free blocks, and fragmentation ratio.
 
 ```json
 {
@@ -310,119 +319,60 @@ Shows filesystem statistics.
 }
 ```
 
-**Behavior**: Runs `DiskManager::analyze_fragmentation()`. Returns `image`, `total_blocks`, `used_blocks`, `free_blocks`, `fragmentation` ratio.
+**Behavior**: Calls `analyze_fragmentation`.
 
-## Tool Invocation Flow
+**Success response**: `{"image": "...", "total_blocks": <u64>, "used_blocks": <u64>, "free_blocks": <u64>, "fragmentation": <f64>}`
+
+## MCP Tool Invocation Flow
 
 ```mermaid
 sequenceDiagram
-    participant Agent as AI Agent (Claude/Cursor)
-    participant Transport as stdio Transport
-    participant RMCP as rmcp ServerHandler
-    participant Router as ToolRouter<OifsMcpServer>
+    participant Agent as AI Agent (Cursor/Claude)
+    participant Transport as stdio (JSON-RPC)
+    participant Handler as rmcp ServerHandler
+    participant Router as ToolRouter
     participant Server as OifsMcpServer
-    participant DM as TokioMutex<DiskManager>
-    participant Engine as OIFS Engine
+    participant Blocking as tokio::spawn_blocking
+    participant DM as DiskManager
 
-    Agent->>Transport: JSON-RPC tools/call (write_file)
-    Transport->>RMCP: Parse & validate
-    RMCP->>Router: Dispatch to handler
-    Router->>Server: write_file(params)
-    Server->>DM: lock().await
-    DM-->>Server: MutexGuard<DiskManager>
-    Server->>Engine: dm.resolve_parent(path)
-    Engine-->>Server: (parent_inode, name)
-    Server->>Engine: dm.create_file / lookup
-    Engine-->>Server: inode_id
-    Server->>Engine: dm.write_data_truncated(inode, data, Auto)
-    Engine-->>Server: Ok(())
-    Server->>Router: JSON {"ok":true,"inode":42,"bytes":123}
-    Router->>RMCP: Return response
-    RMCP->>Transport: JSON-RPC response
-    Transport->>Agent: Result
+    Agent->>Transport: tools/call {name, arguments}
+    Transport->>Handler: JSON-RPC request
+    Handler->>Router: Dispatch by tool name
+    Router->>Server: Call typed handler (e.g. write_file)
+    Server->>Blocking: spawn_blocking(move || { dm.op(...) })
+    Blocking->>DM: Synchronous mmap I/O
+    DM-->>Blocking: Result
+    Blocking-->>Server: Result<String>
+    Server-->>Router: JSON response string
+    Router-->>Handler: CallResult
+    Handler-->>Transport: JSON-RPC response
+    Transport-->>Agent: Result or error
 ```
 
-## Sandboxing Patterns
+## What the MCP Server Does NOT Expose
 
-### Read-Only Mounts
+- **No MCP resources**: The server does not implement `resources/list`, `resources/read`, or resource templates. All filesystem access is mediated exclusively through the eight registered tools.
+- **No prompts**: No prompt templates are registered.
+- **No sampling**: No `sampling/createMessage` support.
+- **No cross-process session sharing**: Each `oifs_mcp` process has its own independent `DiskManager` handle. For shared access across processes, use the IPC/daemon path (`src/ipc.rs`) or FUSE mount (`src/fuse.rs`) instead.
 
-While the MCP server itself does not expose a read-only mode, you can achieve read-only access by:
+## Testing and Validation
 
-1. Creating the image with the desired content using a separate process.
-2. Setting the image file permissions to read-only at the OS level (`chmod 444 agent_memory.img`).
-3. Running the MCP server without `OIFS_PASSWORD` (for plain images) or with the password (for encrypted images).
+The MCP server is validated by `tests/mcp_server_test.rs`, which exercises:
 
-The server will fail on write operations if the underlying file is not writable.
+- CLI help and argument parsing
+- JSON-RPC initialize handshake and `tools/list` discovery
+- Tool invocation with hostile file names (quotes, backslashes, control characters) to verify `serde_json` escaping
+- Response validation ensuring all tool outputs are valid JSON
 
-### Encrypted Images
-
-Encryption is the primary sandboxing mechanism for sensitive agent memory:
+Run the tests with:
 
 ```bash
-# Create new encrypted image
-OIFS_PASSWORD="strong-passphrase" cargo run --bin oifs_mcp -- secure_agent.img
-
-# Reopen existing encrypted image (same password required)
-OIFS_PASSWORD="strong-passphrase" cargo run --bin oifs_mcp -- secure_agent.img
+cargo test --features mcp mcp_server_test
 ```
 
-- **Algorithm**: AES-256-XTS with Argon2id key derivation (see `src/encryption.rs`).
-- **Scope**: Entire image is encrypted. No partial encryption.
-- **Key management**: Password is never stored; derived on each open. The `OIFS_PASSWORD` environment variable is the only input.
-- **Multi-tenant**: Each agent gets its own encrypted image with a unique password.
+## Related Pages
 
-### Process Isolation
-
-Because each `oifs_mcp` process operates on a single image file:
-
-- **No cross-contamination**: Agent A's writes cannot affect Agent B's image.
-- **Crash isolation**: A crash in one MCP server process does not affect others.
-- **Resource limits**: Apply OS-level limits (cgroups, `ulimit`) per process.
-
-## Path Resolution and Conventions
-
-- **All paths are relative to the image root**: Paths like `"notes/todo.txt"` or `"."` are resolved by `DiskManager::resolve_path` starting from the root inode (inode 1).
-- **No "current working directory"**: Every path is absolute within the sandbox.
-- **Parent directories must exist**: `write_file`, `mkdir`, and `append_file` use `resolve_parent` to locate the parent directory inode, then create the child. They do **not** auto-create intermediate directories. The agent must create the directory hierarchy first with `mkdir` calls.
-- **Case sensitivity**: Paths are case-sensitive (matches the underlying filesystem semantics).
-
-## Testing and Verification
-
-The test suite (`tests/mcp_server_test.rs`) verifies:
-
-1. **CLI argument parsing** — Help output, invalid size handling.
-2. **MCP handshake** — `initialize`, `notifications/initialized`, `tools/list` sequence.
-3. **JSON escaping** — Tool responses remain valid JSON even when file names or error messages contain quotes, backslashes, or control characters.
-4. **Tool execution** — End-to-end file operations via JSON-RPC.
-
-Run tests with:
-
-```bash
-cargo test --test mcp_server_test
-```
-
-## Troubleshooting
-
-### Server Fails to Start
-
-- **Image locked by another process**: Ensure no other `oifs_mcp` or `oifs` process is using the same image.
-- **Invalid password for encrypted image**: Verify `OIFS_PASSWORD` matches the one used at creation.
-- **Size overflow**: The `--size` value must not exceed what fits in a `u64` after multiplying by `1024*1024`.
-
-### Tools Return Errors
-
-- `"Parent directory does not exist"`: Create parent directories with `mkdir` first.
-- `"File contains non-UTF-8 data"`: `read_file` only supports UTF-8. Use the CLI for binary data.
-- `"Not a directory"`: `list_dir` requires a directory path.
-
-### Client Connection Issues
-
-- **Claude Desktop**: Check `~/Library/Logs/Claude/mcp.log` (macOS) or `%APPDATA%\Claude\logs\mcp.log` (Windows) for spawn errors.
-- **Cursor**: Open Developer Tools (View → Developer Tools) and check the console for MCP connection logs.
-- **Binary not found**: Use absolute path to `oifs_mcp` binary in configuration.
-
-## Related Documentation
-
-- [MCP Server Architecture](../architecture/mcp_server.md) — Internal architecture, tool router, DiskManager integration.
-- [Quickstart](../quickstart.md) — Build instructions, session modes, basic CLI usage.
-- [MCP Workflow](../workflows/mcp_workflow.md) — End-to-end workflow examples and tool usage patterns.
+- [MCP Server Architecture](../architecture/mcp_server.md) — Internal architecture, DiskManager integration, and tool implementation details.
+- [MCP Workflow](../workflows/mcp_workflow.md) — End-to-end agent memory workflows using the MCP server.
+- [CLI Reference](../operations/cli_reference.md) — Full CLI options for `oifs_mcp` and other binaries.

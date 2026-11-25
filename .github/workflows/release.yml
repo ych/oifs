@@ -46,9 +46,9 @@ jobs:
       - name: Build release binaries
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release --features mcp --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release --features mcp --target ${{ matrix.target }}
           fi
 
       - name: Package archive

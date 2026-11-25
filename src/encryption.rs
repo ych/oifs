@@ -46,7 +46,7 @@ pub fn derive_subkey(master_key: &[u8; 32], context: &[u8]) -> [u8; 32] {
 }
 
 /// Encryption key hierarchy with BLAKE2b domain-separated subkeys and automatic zeroization on drop.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone)]
 pub struct EncryptionKey {
     /// Master 256-bit key derived from Argon2id (or supplied directly)
     key: [u8; 32],
@@ -59,6 +59,24 @@ pub struct EncryptionKey {
     /// Domain-separated 256-bit subkey for IPC challenge-response authentication
     ipc_auth_key: [u8; 32],
 }
+
+impl Zeroize for EncryptionKey {
+    fn zeroize(&mut self) {
+        self.key.zeroize();
+        self.payload_key.zeroize();
+        self.filename_siv_key.zeroize();
+        self.filename_cipher_key.zeroize();
+        self.ipc_auth_key.zeroize();
+    }
+}
+
+impl Drop for EncryptionKey {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for EncryptionKey {}
 
 impl EncryptionKey {
     /// Create a new encryption key hierarchy from a 256-bit master key,

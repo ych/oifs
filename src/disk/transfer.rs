@@ -314,6 +314,21 @@ pub fn can_splice_fast_path(
     None
 }
 
+/// Returns `true` when raw block/chunk transfer between `src` and `dst` will produce
+/// blocks readable by `dst` under its currently registered Zstd dictionaries.
+///
+/// Whenever `src` holds a compressed payload and registers dictionaries not present
+/// (with identical content) in `dst`, raw transfer falls back to logical re-encoding so
+/// `dst` never ends up with Zstd frames referencing an unknown `dict_id`.
+#[inline]
+pub fn dicts_compatible_for_raw_copy(
+    src_is_compressed: bool,
+    src_dicts: &crate::zstd_pool::ZstdDictRegistry,
+    dst_dicts: &crate::zstd_pool::ZstdDictRegistry,
+) -> bool {
+    !src_is_compressed || !src_dicts.has_any() || src_dicts.is_subset_of(dst_dicts)
+}
+
 /// Plans a Sandwich (`Head / Body / Tail`) partition for splicing `len` bytes from
 /// `src_off` to `dst_off` at alignment granularity `unit_size`.
 ///
@@ -1363,6 +1378,7 @@ impl DiskManager {
                 src_inode,
                 src_gen,
                 src_encrypted,
+                src_dicts,
                 src_fd,
                 seekable_chunks,
                 standard_runs,
@@ -1386,6 +1402,7 @@ impl DiskManager {
                 let src_encrypted = src_guard.superblock.encrypted
                     || src_guard.encryption_key.is_some()
                     || src_inode.encrypted;
+                let src_dicts = Arc::clone(&src_guard.zstd_dicts);
                 let src_fd = src_guard.file.as_raw_fd();
                 let is_seekable = (src_inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
 
@@ -1395,6 +1412,7 @@ impl DiskManager {
                         src_inode,
                         src_gen,
                         true,
+                        src_dicts,
                         src_fd,
                         Vec::new(),
                         Vec::new(),
@@ -1425,6 +1443,7 @@ impl DiskManager {
                         src_inode,
                         src_gen,
                         false,
+                        src_dicts,
                         src_fd,
                         chunks,
                         Vec::new(),
@@ -1447,7 +1466,16 @@ impl DiskManager {
                             }
                         },
                     );
-                    (src_ino, src_inode, src_gen, false, src_fd, Vec::new(), runs)
+                    (
+                        src_ino,
+                        src_inode,
+                        src_gen,
+                        false,
+                        src_dicts,
+                        src_fd,
+                        Vec::new(),
+                        runs,
+                    )
                 }
             };
 
@@ -1456,7 +1484,13 @@ impl DiskManager {
             run_transfer_stage1_hook();
 
             let dst_encrypted = dst.is_encrypted();
-            if !should_use_raw_fast_path(src_encrypted, dst_encrypted) {
+            let src_is_compressed = src_inode.compressed_size > 0
+                || (src_inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+            let dicts_ok = {
+                let dst_guard = dst.inner.read().unwrap();
+                dicts_compatible_for_raw_copy(src_is_compressed, &src_dicts, &dst_guard.zstd_dicts)
+            };
+            if !should_use_raw_fast_path(src_encrypted, dst_encrypted) || !dicts_ok {
                 return self.transfer_logical_fallback(
                     src_parent, src_name, src_ino, &src_inode, dst, dst_parent, dst_name, options,
                 );
@@ -1488,6 +1522,10 @@ impl DiskManager {
                 if !should_use_raw_fast_path(
                     src_encrypted,
                     dst_guard.superblock.encrypted || dst_guard.encryption_key.is_some(),
+                ) || !dicts_compatible_for_raw_copy(
+                    src_is_compressed,
+                    &src_dicts,
+                    &dst_guard.zstd_dicts,
                 ) {
                     drop(dst_guard);
                     return self.transfer_logical_fallback(
@@ -2277,7 +2315,7 @@ impl DiskManager {
         }
 
         // Inspect source inode under `self.inner.read()`, then strictly drop `src_guard`.
-        let (src_inode, src_encrypted, src_fd, src_file_id) = {
+        let (src_inode, src_encrypted, src_fd, src_file_id, src_dicts) = {
             let src_guard = self.inner.read().unwrap();
             let src_inode = Self::read_inode_internal(&src_guard, src_inode_id)?;
             if src_inode.mode != crate::inode::FileType::File {
@@ -2291,11 +2329,12 @@ impl DiskManager {
                 || src_inode.encrypted;
             let src_fd = src_guard.file.as_raw_fd();
             let src_file_id = canonical_file_id(src_fd).ok();
-            (src_inode, src_encrypted, src_fd, src_file_id)
+            let src_dicts = Arc::clone(&src_guard.zstd_dicts);
+            (src_inode, src_encrypted, src_fd, src_file_id, src_dicts)
         };
 
         // Inspect destination inode under `dst.inner.read()`, then strictly drop `dst_guard`.
-        let (dst_inode, dst_encrypted, dst_file_id) = {
+        let (dst_inode, dst_encrypted, dst_file_id, dst_dicts) = {
             let dst_guard = dst.inner.read().unwrap();
             let dst_inode = Self::read_inode_internal(&dst_guard, dst_inode_id)?;
             if dst_inode.mode != crate::inode::FileType::File {
@@ -2308,7 +2347,8 @@ impl DiskManager {
                 || dst_guard.encryption_key.is_some()
                 || dst_inode.encrypted;
             let dst_file_id = canonical_file_id(dst_guard.file.as_raw_fd()).ok();
-            (dst_inode, dst_encrypted, dst_file_id)
+            let dst_dicts = Arc::clone(&dst_guard.zstd_dicts);
+            (dst_inode, dst_encrypted, dst_file_id, dst_dicts)
         };
 
         // Clamp length to available bytes in source.
@@ -2341,7 +2381,11 @@ impl DiskManager {
             || (src_file_id.is_some() && src_file_id == dst_file_id);
         let same_inode = same_backing_file && src_inode_id == dst_inode_id;
 
-        let unit_opt = if same_inode {
+        let src_is_compressed = src_inode.compressed_size > 0
+            || (src_inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+        let unit_opt = if same_inode
+            || !dicts_compatible_for_raw_copy(src_is_compressed, &src_dicts, &dst_dicts)
+        {
             None
         } else {
             can_splice_fast_path(&src_inode, &dst_inode, src_encrypted, dst_encrypted)
@@ -2567,8 +2611,15 @@ impl DiskManager {
                     let cur_dst_enc = dst_guard.superblock.encrypted
                         || dst_guard.encryption_key.is_some()
                         || cur_dst.encrypted;
+                    let cur_src_is_comp = cur_src_snap.compressed_size > 0
+                        || (cur_src_snap.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
                     if can_splice_fast_path(&cur_src_snap, &cur_dst, false, cur_dst_enc)
                         != Some(unit_size)
+                        || !dicts_compatible_for_raw_copy(
+                            cur_src_is_comp,
+                            &src_dicts,
+                            &dst_guard.zstd_dicts,
+                        )
                     {
                         SpliceBodyOutcome::FallbackLogical
                     } else {

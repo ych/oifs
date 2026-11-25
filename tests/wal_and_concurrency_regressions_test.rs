@@ -5,8 +5,8 @@ use oifs::OifsSession;
 use oifs::disk::{CompressionMode, DiskManager, DurabilityMode};
 use std::future::Future as _;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 use tempfile::tempdir;
 

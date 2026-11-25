@@ -38,7 +38,8 @@
 //! [158..166] u64    triple_indirect
 //! [166]      u8     record_version        (see below)
 //! [167..171] u32    flags                 (extended inode flags, e.g. seekable 64K)
-//! [171..256] zero padding
+//! [171..175] u32    crc32c                (CRC32C over bytes `[0..171)` when `record_version == 3`)
+//! [175..256] zero padding
 //!
 //! # Versioning
 //!
@@ -78,14 +79,20 @@ pub const INODE_V2_PAYLOAD_LEN: usize = 166;
 /// Byte offset of the record-version byte inside a format v2 inode slot.
 pub const INODE_V2_RECORD_VERSION_OFFSET: usize = 166;
 
-/// `record_version` written by this implementation.
-pub const INODE_V2_RECORD_VERSION: u8 = 2;
+/// Historical `record_version` written before in-slot CRC32C checksums.
+pub const INODE_V2_RECORD_VERSION_NO_CRC: u8 = 2;
+
+/// `record_version` written by this implementation (`3`: includes CRC32C over `[0..171)`).
+pub const INODE_V2_RECORD_VERSION: u8 = 3;
 
 /// Byte offset of the flags field inside a format v2 inode slot.
 pub const INODE_V2_FLAGS_OFFSET: usize = 167;
 
+/// Byte offset of the hardware-accelerated CRC32C checksum over `[0..171)`.
+pub const INODE_V2_CRC32C_OFFSET: usize = INODE_V2_FLAGS_OFFSET + 4;
+
 /// First byte not yet assigned by any record revision; reserved for future fields.
-pub const INODE_V2_RESERVED_START: usize = INODE_V2_FLAGS_OFFSET + 4;
+pub const INODE_V2_RESERVED_START: usize = INODE_V2_CRC32C_OFFSET + 4;
 
 /// On-disk format version that introduced the fixed 256-byte inode record.
 ///
@@ -107,6 +114,13 @@ pub enum InodeFormatError {
         /// Offending tag byte.
         tag: u8,
     },
+    /// The CRC32C checksum in bytes `[171..175)` did not match `[0..171)`.
+    ChecksumMismatch {
+        /// Stored CRC32C checksum in the inode slot.
+        expected: u32,
+        /// Recomputed CRC32C checksum over bytes `[0..171)`.
+        actual: u32,
+    },
     /// A format v1 (`bincode`) record could not be decoded.
     Legacy(String),
 }
@@ -121,6 +135,10 @@ impl std::fmt::Display for InodeFormatError {
                 )
             }
             Self::UnknownFileType { tag } => write!(f, "Unknown inode file-type tag: {tag}"),
+            Self::ChecksumMismatch { expected, actual } => write!(
+                f,
+                "Inode slot CRC32C mismatch: stored 0x{expected:08x}, computed 0x{actual:08x}"
+            ),
             Self::Legacy(msg) => write!(f, "Legacy (v1) inode record is malformed: {msg}"),
         }
     }
@@ -202,6 +220,8 @@ pub fn encode_v2(inode: &Inode) -> [u8; INODE_SLOT_SIZE] {
     put_u64(&mut buf, 158, inode.triple_indirect);
     buf[INODE_V2_RECORD_VERSION_OFFSET] = INODE_V2_RECORD_VERSION;
     put_u32(&mut buf, INODE_V2_FLAGS_OFFSET, inode.flags);
+    let crc = crate::journal::crc32c(&buf[..INODE_V2_CRC32C_OFFSET]);
+    put_u32(&mut buf, INODE_V2_CRC32C_OFFSET, crc);
     // buf[INODE_V2_RESERVED_START..256] stays zero.
 
     debug_assert_eq!(INODE_V2_PAYLOAD_LEN, 166);
@@ -219,6 +239,13 @@ pub fn decode_v2(slot: &[u8]) -> Result<Inode, InodeFormatError> {
     let s = &slot[..INODE_SLOT_SIZE];
 
     let mode = tag_to_file_type(s[0])?;
+    if s[INODE_V2_RECORD_VERSION_OFFSET] == INODE_V2_RECORD_VERSION {
+        let expected = get_u32(s, INODE_V2_CRC32C_OFFSET);
+        let actual = crate::journal::crc32c(&s[..INODE_V2_CRC32C_OFFSET]);
+        if actual != expected {
+            return Err(InodeFormatError::ChecksumMismatch { expected, actual });
+        }
+    }
     let mut blocks = [0u64; 12];
     for (i, blk) in blocks.iter_mut().enumerate() {
         *blk = get_u64(s, 33 + i * 8);
@@ -489,5 +516,37 @@ mod tests {
         let bytes = bincode::serialize(&i).expect("ser");
         v1slot[..bytes.len()].copy_from_slice(&bytes);
         assert_ne!(v2[..bytes.len()], v1slot[..bytes.len()]);
+    }
+
+    #[test]
+    fn test_v3_crc32c_detects_bitflip_and_allows_legacy_v2_record() {
+        let orig = sample();
+        let mut slot = encode_v2(&orig);
+        assert_eq!(
+            slot[INODE_V2_RECORD_VERSION_OFFSET],
+            INODE_V2_RECORD_VERSION
+        );
+        assert_eq!(decode_v2(&slot).expect("valid v3"), orig);
+
+        // Bit-flip in payload (e.g. file size) must fail with ChecksumMismatch.
+        let mut corrupted_payload = slot;
+        corrupted_payload[5] ^= 0x01;
+        assert!(matches!(
+            decode_v2(&corrupted_payload),
+            Err(InodeFormatError::ChecksumMismatch { .. })
+        ));
+
+        // Bit-flip inside the stored CRC32C word itself must also fail.
+        let mut corrupted_crc = slot;
+        corrupted_crc[INODE_V2_CRC32C_OFFSET + 1] ^= 0x80;
+        assert!(matches!(
+            decode_v2(&corrupted_crc),
+            Err(InodeFormatError::ChecksumMismatch { .. })
+        ));
+
+        // Legacy record_version == 2 with zeroed CRC slot must continue to decode cleanly.
+        slot[INODE_V2_RECORD_VERSION_OFFSET] = INODE_V2_RECORD_VERSION_NO_CRC;
+        slot[INODE_V2_CRC32C_OFFSET..INODE_V2_RESERVED_START].fill(0);
+        assert_eq!(decode_v2(&slot).expect("legacy v2 decode"), orig);
     }
 }

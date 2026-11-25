@@ -116,8 +116,7 @@ impl ChunkReadCache {
         data: Arc<[u8]>,
     ) {
         let key = (inode_id, chunk_idx, raw_entry, valid_len);
-        let mut shard =
-            crate::write_unpoisoned(&self.shards[Self::shard_idx(inode_id, chunk_idx)]);
+        let mut shard = crate::write_unpoisoned(&self.shards[Self::shard_idx(inode_id, chunk_idx)]);
         let mut delta: isize = 1;
         if let Some(pos) = shard.iter().position(|(k, _)| *k == key) {
             shard.remove(pos);

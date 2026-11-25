@@ -550,7 +550,8 @@ pub extern "C" fn oifs_read_at(
         let dm = &handle_ref.dm;
         match (|| -> Result<i64, Box<dyn std::error::Error>> {
             let inode_id = dm.resolve_path(filename_str)?;
-            let out_slice = unsafe { ffi_slice_mut(buf, buf_size) }.map_err(std::io::Error::other)?;
+            let out_slice =
+                unsafe { ffi_slice_mut(buf, buf_size) }.map_err(std::io::Error::other)?;
             let bytes_read = dm.read_at(inode_id, offset, out_slice)?;
             Ok(bytes_read as i64)
         })() {

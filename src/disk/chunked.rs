@@ -12,6 +12,7 @@ pub(super) struct ChunkedStage1<'a> {
     uncompressed_chunks: Vec<(usize, std::borrow::Cow<'a, [u8]>, usize)>,
     encryption_key: Option<crate::encryption::EncryptionKey>,
     scheme: u8,
+    cdict: Option<Arc<zstd::zstd_safe::CDict<'static>>>,
 }
 
 impl DiskManager {
@@ -42,7 +43,7 @@ impl DiskManager {
     /// zeroing any trailing slack bytes in the final block.
     ///
     /// Uses a single contiguous write on both `Mmap` and `FileIo` (avoiding per-block RMW).
-    fn write_chunk_blocks(
+    pub(super) fn write_chunk_blocks(
         backing: &mut crate::storage::ImageBacking,
         start_blk: u64,
         blocks_needed: usize,
@@ -261,14 +262,20 @@ impl DiskManager {
         chunk_valid_len: usize,
         zstd_level: i32,
         compress: bool,
+        cdict: Option<&zstd::zstd_safe::CDict<'_>>,
         encryption_key: Option<&crate::encryption::EncryptionKey>,
         aad_ctx: ChunkAadContext,
     ) -> Result<(Vec<u8>, u8, u16, usize), DiskManagerError> {
         let compressed_opt = if compress {
-            let level = if zstd_level <= 0 { 1 } else { zstd_level };
-            // The pooled compressor avoids a per-chunk `CCtx` allocation.
-            let compressed = crate::zstd_pool::compress_frame(&chunk_buf[..chunk_valid_len], level)
-                .map_err(DiskManagerError::Io)?;
+            let compressed = if let Some(cd) = cdict {
+                crate::zstd_pool::compress_frame_with_cdict(&chunk_buf[..chunk_valid_len], cd)
+                    .map_err(DiskManagerError::Io)?
+            } else {
+                let level = if zstd_level <= 0 { 1 } else { zstd_level };
+                // The pooled compressor avoids a per-chunk `CCtx` allocation.
+                crate::zstd_pool::compress_frame(&chunk_buf[..chunk_valid_len], level)
+                    .map_err(DiskManagerError::Io)?
+            };
             // Check final post-AEAD size BEFORE encrypting so incompressible
             // encrypted chunks never waste an AEAD pass + nonce generation.
             let fits = if encryption_key.is_some() {
@@ -515,11 +522,26 @@ impl DiskManager {
                 ))));
             };
 
+            let decompress_zstd = |zstd_slice: &[u8],
+                                   out_buf: &mut [u8]|
+             -> Result<usize, DiskManagerError> {
+                if let Some(dict_id) = crate::zstd_pool::frame_dict_id(zstd_slice) {
+                    let ddict = guard
+                        .zstd_dicts
+                        .get_ddict(dict_id)
+                        .ok_or(DiskManagerError::MissingDictionary { dict_id })?;
+                    crate::zstd_pool::decompress_frame_into_with_ddict(zstd_slice, out_buf, &ddict)
+                        .map_err(DiskManagerError::Io)
+                } else {
+                    crate::zstd_pool::decompress_frame_into(zstd_slice, out_buf)
+                        .map_err(DiskManagerError::Io)
+                }
+            };
+
             let decompress_into_dst =
                 |zstd_slice: &[u8], dst: &mut [u8]| -> Result<(), DiskManagerError> {
                     if dst.len() == crate::inode::CHUNK_SIZE_64K {
-                        let written = crate::zstd_pool::decompress_frame_into(zstd_slice, dst)
-                            .map_err(DiskManagerError::Io)?;
+                        let written = decompress_zstd(zstd_slice, dst)?;
                         if written < dst.len() {
                             dst[written..].fill(0);
                         }
@@ -530,11 +552,10 @@ impl DiskManager {
                             if scratch.len() < crate::inode::CHUNK_SIZE_64K {
                                 scratch.resize(crate::inode::CHUNK_SIZE_64K, 0);
                             }
-                            let written = crate::zstd_pool::decompress_frame_into(
+                            let written = decompress_zstd(
                                 zstd_slice,
                                 &mut scratch[..crate::inode::CHUNK_SIZE_64K],
-                            )
-                            .map_err(DiskManagerError::Io)?;
+                            )?;
                             let n = written.min(dst.len());
                             dst[..n].copy_from_slice(&scratch[..n]);
                             if n < dst.len() {
@@ -942,7 +963,16 @@ impl DiskManager {
                     "Cannot write chunked data to non-file inode",
                 )));
             }
-            Self::prepare_chunked_64k_stage1(&guard, inode_id, inode, file_offset, data)?
+            Self::prepare_chunked_64k_stage1(
+                &guard,
+                inode_id,
+                inode,
+                file_offset,
+                data,
+                compress
+                    .then(|| guard.zstd_dicts.default_cdict(level))
+                    .flatten(),
+            )?
         };
 
         self.finish_chunked_64k_pipeline(inode_id, file_offset, data, level, compress, stage1)
@@ -954,6 +984,7 @@ impl DiskManager {
         inode: Inode,
         file_offset: u64,
         data: &'a [u8],
+        cdict: Option<Arc<zstd::zstd_safe::CDict<'static>>>,
     ) -> Result<ChunkedStage1<'a>, DiskManagerError> {
         let was_seekable = (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
         let first_chunk = (file_offset as usize) / crate::inode::CHUNK_SIZE_64K;
@@ -1135,6 +1166,7 @@ impl DiskManager {
             uncompressed_chunks,
             encryption_key: guard.encryption_key.clone(),
             scheme: guard.superblock.encryption_version,
+            cdict,
         })
     }
 
@@ -1154,6 +1186,7 @@ impl DiskManager {
             uncompressed_chunks,
             encryption_key,
             scheme,
+            cdict,
         } = stage1;
 
         // --- STAGE 2: CPU-Bound Processing (ZERO filesystem locks held) ---
@@ -1186,6 +1219,7 @@ impl DiskManager {
                     *chunk_valid_len,
                     level,
                     compress,
+                    cdict.as_deref(),
                     enc_key_ref,
                     ChunkAadContext {
                         inode_id,
@@ -1221,6 +1255,7 @@ impl DiskManager {
                     chunk_valid_len,
                     level,
                     compress,
+                    cdict.as_deref(),
                     encryption_key.as_ref(),
                     ChunkAadContext {
                         inode_id,
@@ -1305,6 +1340,11 @@ impl DiskManager {
             return Ok(());
         }
 
+        let cdict = if compress {
+            guard.zstd_dicts.default_cdict(zstd_level)
+        } else {
+            None
+        };
         let was_seekable = (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
         let first_chunk = (file_offset as usize) / crate::inode::CHUNK_SIZE_64K;
         let last_chunk =
@@ -1344,6 +1384,7 @@ impl DiskManager {
                             new_tail_len,
                             zstd_level,
                             compress,
+                            cdict.as_deref(),
                             guard.encryption_key.as_ref(),
                             ChunkAadContext {
                                 inode_id,
@@ -1410,6 +1451,7 @@ impl DiskManager {
                     chunk_valid_len,
                     zstd_level,
                     compress,
+                    cdict.as_deref(),
                     guard.encryption_key.as_ref(),
                     ChunkAadContext {
                         inode_id,
@@ -1454,6 +1496,7 @@ impl DiskManager {
                     chunk_valid_len,
                     zstd_level,
                     compress,
+                    cdict.as_deref(),
                     guard.encryption_key.as_ref(),
                     ChunkAadContext {
                         inode_id,
@@ -1496,6 +1539,7 @@ impl DiskManager {
                     chunk_valid_len,
                     zstd_level,
                     compress,
+                    cdict.as_deref(),
                     guard.encryption_key.as_ref(),
                     ChunkAadContext {
                         inode_id,
@@ -1521,6 +1565,7 @@ impl DiskManager {
                     chunk_valid_len,
                     zstd_level,
                     compress,
+                    cdict.as_deref(),
                     guard.encryption_key.as_ref(),
                     ChunkAadContext {
                         inode_id,
@@ -2082,6 +2127,7 @@ impl DiskManager {
                             new_tail_len,
                             1,
                             false,
+                            None,
                             guard.encryption_key.as_ref(),
                             ChunkAadContext {
                                 inode_id,
@@ -2358,11 +2404,17 @@ impl DiskManager {
                             last_valid_len,
                         )?;
                         let compress = old_entry.is_compressed() || guard.encryption_key.is_none();
+                        let trunc_cdict = if compress {
+                            guard.zstd_dicts.default_cdict(1)
+                        } else {
+                            None
+                        };
                         let (payload, flag, comp_len, blocks_needed) = Self::prepare_chunk_payload(
                             &old_data,
                             last_valid_len,
                             1,
                             compress,
+                            trunc_cdict.as_deref(),
                             guard.encryption_key.as_ref(),
                             ChunkAadContext {
                                 inode_id,
@@ -2565,11 +2617,17 @@ impl DiskManager {
                         last_valid_len,
                     )?;
                     let compress = old_entry.is_compressed() || guard.encryption_key.is_none();
+                    let trunc_cdict = if compress {
+                        guard.zstd_dicts.default_cdict(1)
+                    } else {
+                        None
+                    };
                     let (payload, flag, comp_len, blocks_needed) = Self::prepare_chunk_payload(
                         &old_data,
                         last_valid_len,
                         1,
                         compress,
+                        trunc_cdict.as_deref(),
                         guard.encryption_key.as_ref(),
                         ChunkAadContext {
                             inode_id,

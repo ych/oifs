@@ -67,6 +67,13 @@ thread_local! {
     /// Pooled single-frame decompressor.
     static DECOMPRESSOR: RefCell<LocalDecompressor> =
         const { RefCell::new(LocalDecompressor(None)) };
+    /// Dedicated thread-local `CCtx` for dictionary-based compression so dictionary
+    /// state never leaks into non-dict `compress_frame` calls.
+    static DICT_COMPRESSOR: RefCell<Option<zstd::zstd_safe::CCtx<'static>>> =
+        const { RefCell::new(None) };
+    /// Dedicated thread-local `DCtx` for dictionary-based decompression.
+    static DICT_DECOMPRESSOR: RefCell<Option<zstd::zstd_safe::DCtx<'static>>> =
+        const { RefCell::new(None) };
 }
 
 fn acquire_compressor(level: i32) -> std::io::Result<zstd::bulk::Compressor<'static>> {
@@ -138,6 +145,310 @@ pub fn release_pooled_contexts() {
     DECOMPRESSOR.with(|cell| {
         cell.borrow_mut().0 = None;
     });
+    DICT_COMPRESSOR.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+    DICT_DECOMPRESSOR.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Custom Zstd Dictionary Registry & Pooled CDict/DDict Compression
+// ---------------------------------------------------------------------------
+
+/// Maximum accepted raw dictionary size (16 MiB) to prevent unbounded memory use.
+pub const MAX_ZSTD_DICT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CACHED_DICTS: usize = 64;
+const MAX_CACHED_CDICTS: usize = 256;
+
+/// Returns the non-zero Zstd `dict_id` encoded in a trained Zstd dictionary buffer.
+#[inline]
+pub fn dict_id_from_bytes(dict: &[u8]) -> Option<u32> {
+    zstd::zstd_safe::get_dict_id_from_dict(dict).map(|id| id.get())
+}
+
+/// Returns the non-zero Zstd `dict_id` required by a compressed frame header, if any.
+#[inline]
+pub fn frame_dict_id(source: &[u8]) -> Option<u32> {
+    zstd::zstd_safe::get_dict_id_from_frame(source).map(|id| id.get())
+}
+
+/// Trains a Zstd dictionary from sample byte slices (bounded by `MAX_ZSTD_DICT_BYTES`).
+pub fn train_dictionary<T: AsRef<[u8]>>(
+    samples: &[T],
+    max_dict_bytes: usize,
+) -> std::io::Result<Vec<u8>> {
+    if samples.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Cannot train a Zstd dictionary from an empty sample list",
+        ));
+    }
+    if !(256..=MAX_ZSTD_DICT_BYTES).contains(&max_dict_bytes) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Dictionary size must be between 256 and {MAX_ZSTD_DICT_BYTES} bytes"),
+        ));
+    }
+    zstd::dict::from_samples(samples, max_dict_bytes)
+}
+
+fn hash_dict_bytes(dict: &[u8]) -> [u8; 32] {
+    use blake2::{Blake2b512, Digest};
+    let digest = Blake2b512::digest(dict);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest[..32]);
+    out
+}
+
+#[derive(Default)]
+struct DictRegistryState {
+    raw: HashMap<u32, (Arc<Vec<u8>>, [u8; 32])>,
+    ddicts: HashMap<u32, Arc<zstd::zstd_safe::DDict<'static>>>,
+    cdicts: HashMap<(u32, i32), Arc<zstd::zstd_safe::CDict<'static>>>,
+    default_dict_id: Option<u32>,
+}
+
+/// Thread-safe registry of Zstd compression/decompression dictionaries (`CDict` / `DDict`).
+///
+/// Keyed by 32-bit `dict_id` (plus level for `CDict`) so multiple dictionary revisions can
+/// coexist safely for decompression while one optional active `default_dict_id` governs
+/// new writes.
+#[derive(Default)]
+pub struct ZstdDictRegistry {
+    inner: std::sync::RwLock<DictRegistryState>,
+}
+
+impl ZstdDictRegistry {
+    /// Creates an empty dictionary registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Validates and registers a trained Zstd dictionary, returning its `dict_id`.
+    pub fn register(&self, dict_bytes: &[u8]) -> std::io::Result<u32> {
+        if dict_bytes.is_empty() || dict_bytes.len() > MAX_ZSTD_DICT_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Zstd dictionary size must be 1..={MAX_ZSTD_DICT_BYTES} bytes (got {})",
+                    dict_bytes.len()
+                ),
+            ));
+        }
+        let dict_id = dict_id_from_bytes(dict_bytes).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Zstd dictionary lacks a valid non-zero dict_id header",
+            )
+        })?;
+        let hash = hash_dict_bytes(dict_bytes);
+
+        // Fast check under shared lock if this exact `(dict_id, hash)` is already loaded.
+        {
+            let state = self.inner.read().unwrap();
+            if let Some((_, existing_hash)) = state.raw.get(&dict_id)
+                && *existing_hash == hash
+            {
+                return Ok(dict_id);
+            }
+        }
+
+        let ddict = zstd::zstd_safe::DDict::try_create(dict_bytes).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Failed to construct Zstd DDict from dictionary bytes",
+            )
+        })?;
+
+        let mut state = self.inner.write().unwrap();
+        if !state.raw.contains_key(&dict_id) && state.raw.len() >= MAX_CACHED_DICTS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Dictionary registry full (max {MAX_CACHED_DICTS} dictionaries)"),
+            ));
+        }
+        state.cdicts.retain(|&(id, _), _| id != dict_id);
+        state
+            .raw
+            .insert(dict_id, (Arc::new(dict_bytes.to_vec()), hash));
+        state.ddicts.insert(dict_id, Arc::new(ddict));
+        Ok(dict_id)
+    }
+
+    /// Sets (or clears with `None`) the active default compression dictionary ID.
+    pub fn set_default(&self, dict_id: Option<u32>) -> std::io::Result<()> {
+        let mut state = self.inner.write().unwrap();
+        if let Some(id) = dict_id
+            && !state.raw.contains_key(&id)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Zstd dictionary {id} is not registered"),
+            ));
+        }
+        state.default_dict_id = dict_id;
+        Ok(())
+    }
+
+    /// Returns the currently active default compression dictionary ID, if any.
+    pub fn default_dict_id(&self) -> Option<u32> {
+        self.inner.read().unwrap().default_dict_id
+    }
+
+    /// Returns a pooled `CDict` for the active default dictionary at `level` (or `None`).
+    pub fn default_cdict(&self, level: i32) -> Option<Arc<zstd::zstd_safe::CDict<'static>>> {
+        let level = if level <= 0 { 3 } else { level };
+        let raw = {
+            let state = self.inner.read().unwrap();
+            let id = state.default_dict_id?;
+            if let Some(cached) = state.cdicts.get(&(id, level)) {
+                return Some(Arc::clone(cached));
+            }
+            Arc::clone(&state.raw.get(&id)?.0)
+        };
+
+        let dict_id = dict_id_from_bytes(&raw)?;
+        let cdict = Arc::new(zstd::zstd_safe::CDict::try_create(&raw, level)?);
+        let mut state = self.inner.write().unwrap();
+        if let Some(existing) = state.cdicts.get(&(dict_id, level)) {
+            return Some(Arc::clone(existing));
+        }
+        if state.cdicts.len() < MAX_CACHED_CDICTS {
+            state.cdicts.insert((dict_id, level), Arc::clone(&cdict));
+        }
+        Some(cdict)
+    }
+
+    /// Looks up the `DDict` for `dict_id`.
+    pub fn get_ddict(&self, dict_id: u32) -> Option<Arc<zstd::zstd_safe::DDict<'static>>> {
+        self.inner.read().unwrap().ddicts.get(&dict_id).cloned()
+    }
+
+    /// Looks up the raw dictionary bytes for `dict_id` (used for streaming decoder fallback).
+    pub fn get_raw(&self, dict_id: u32) -> Option<Arc<Vec<u8>>> {
+        self.inner
+            .read()
+            .unwrap()
+            .raw
+            .get(&dict_id)
+            .map(|(raw, _)| Arc::clone(raw))
+    }
+
+    /// Removes `dict_id` from the registry (clears `default_dict_id` if it pointed to it).
+    pub fn unregister(&self, dict_id: u32) -> bool {
+        let mut state = self.inner.write().unwrap();
+        let existed = state.raw.remove(&dict_id).is_some();
+        state.ddicts.remove(&dict_id);
+        state.cdicts.retain(|&(id, _), _| id != dict_id);
+        if state.default_dict_id == Some(dict_id) {
+            state.default_dict_id = None;
+        }
+        existed
+    }
+
+    /// Clears all registered dictionaries and cached prepared contexts.
+    pub fn clear(&self) {
+        let mut state = self.inner.write().unwrap();
+        state.raw.clear();
+        state.ddicts.clear();
+        state.cdicts.clear();
+        state.default_dict_id = None;
+    }
+
+    /// Returns `true` if at least one dictionary is registered.
+    pub fn has_any(&self) -> bool {
+        !self.inner.read().unwrap().raw.is_empty()
+    }
+
+    /// Returns a sorted list of all registered `dict_id`s.
+    pub fn registered_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self.inner.read().unwrap().raw.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Returns `true` if every `(dict_id, content_hash)` in `self` is also present in `other`.
+    ///
+    /// Snapshots `self` before locking `other` to eliminate cross-registry lock ordering hazards.
+    pub fn is_subset_of(&self, other: &ZstdDictRegistry) -> bool {
+        if std::ptr::eq(self, other) {
+            return true;
+        }
+        let snapshot: Vec<(u32, [u8; 32])> = {
+            let state = self.inner.read().unwrap();
+            if state.raw.is_empty() {
+                return true;
+            }
+            state
+                .raw
+                .iter()
+                .map(|(&id, (_, hash))| (id, *hash))
+                .collect()
+        };
+        let other_state = other.inner.read().unwrap();
+        snapshot.into_iter().all(|(id, hash)| {
+            other_state
+                .raw
+                .get(&id)
+                .is_some_and(|(_, other_hash)| *other_hash == hash)
+        })
+    }
+}
+
+/// Compresses `data` into a single Zstd frame using `cdict` and a dedicated TLS `CCtx`.
+pub fn compress_frame_with_cdict(
+    data: &[u8],
+    cdict: &zstd::zstd_safe::CDict<'_>,
+) -> std::io::Result<Vec<u8>> {
+    let bound = zstd::zstd_safe::compress_bound(data.len());
+    let mut out = vec![0u8; bound];
+    let written = DICT_COMPRESSOR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = zstd::zstd_safe::CCtx::try_create();
+        }
+        let cctx = slot
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("Failed to allocate Zstd CCtx"))?;
+        cctx.compress_using_cdict(&mut out, data, cdict)
+            .map_err(|code| {
+                std::io::Error::other(format!(
+                    "Zstd CDict compression failed: {}",
+                    zstd::zstd_safe::get_error_name(code)
+                ))
+            })
+    })?;
+    out.truncate(written);
+    Ok(out)
+}
+
+/// Decompresses a single Zstd frame using `ddict` and a dedicated TLS `DCtx`.
+pub fn decompress_frame_into_with_ddict(
+    source: &[u8],
+    destination: &mut [u8],
+    ddict: &zstd::zstd_safe::DDict<'_>,
+) -> std::io::Result<usize> {
+    DICT_DECOMPRESSOR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = zstd::zstd_safe::DCtx::try_create();
+        }
+        let dctx = slot
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("Failed to allocate Zstd DCtx"))?;
+        dctx.decompress_using_ddict(destination, source, ddict)
+            .map_err(|code| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Zstd DDict decompression failed: {}",
+                        zstd::zstd_safe::get_error_name(code)
+                    ),
+                )
+            })
+    })
 }
 
 // ---------------------------------------------------------------------------

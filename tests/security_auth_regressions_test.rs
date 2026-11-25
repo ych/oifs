@@ -276,7 +276,9 @@ fn test_fuse_open_then_unlink_rejects_stale_handle_read_and_write() {
     let dm = DiskManager::open(&img, 2 * 1024 * 1024).unwrap();
     let fuse = OifsFuseState::new(FuseMountOptions::default());
 
-    let (entry1, open1) = fuse.create(&dm, 1, "temp.txt", libc::O_RDWR as u32, 0o644).unwrap();
+    let (entry1, open1) = fuse
+        .create(&dm, 1, "temp.txt", libc::O_RDWR as u32, 0o644)
+        .unwrap();
     assert_eq!(
         fuse.write(&dm, entry1.attr.ino, open1.fh, 0, b"first_file_bytes", 0)
             .unwrap(),
@@ -287,7 +289,9 @@ fn test_fuse_open_then_unlink_rejects_stale_handle_read_and_write() {
     fuse.unlink(&dm, 1, "temp.txt").unwrap();
 
     // New file likely reuses inode 1 / freed data blocks.
-    let (entry2, open2) = fuse.create(&dm, 1, "new.txt", libc::O_RDWR as u32, 0o644).unwrap();
+    let (entry2, open2) = fuse
+        .create(&dm, 1, "new.txt", libc::O_RDWR as u32, 0o644)
+        .unwrap();
     assert_eq!(
         fuse.write(&dm, entry2.attr.ino, open2.fh, 0, b"SECOND_SECRET", 0)
             .unwrap(),
@@ -295,7 +299,10 @@ fn test_fuse_open_then_unlink_rejects_stale_handle_read_and_write() {
     );
 
     // Old handle must be rejected (-EBADF) and never read or overwrite `new.txt`!
-    assert_eq!(fuse.read(&dm, entry1.attr.ino, open1.fh, 0, 16), Err(-libc::EBADF));
+    assert_eq!(
+        fuse.read(&dm, entry1.attr.ino, open1.fh, 0, 16),
+        Err(-libc::EBADF)
+    );
     assert_eq!(
         fuse.write(&dm, entry1.attr.ino, open1.fh, 0, b"CORRUPT", 0),
         Err(-libc::EBADF)

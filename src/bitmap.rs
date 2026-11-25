@@ -136,7 +136,9 @@ impl<'a> BitmapRef<'a> {
             return None;
         }
         if count == 1 {
-            return self.find_first_free_from(start_bit).filter(|&b| b < total_bits);
+            return self
+                .find_first_free_from(start_bit)
+                .filter(|&b| b < total_bits);
         }
 
         let (chunks, remainder) = self.data.as_chunks::<8>();

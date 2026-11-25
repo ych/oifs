@@ -930,8 +930,9 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                             pid: std::process::id(),
                             auth_token: hex_encode(&auth_secret),
                         };
-                        let json = serde_json::to_string(&info)
-                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+                        let json = serde_json::to_string(&info).map_err(|e| {
+                            io::Error::new(io::ErrorKind::InvalidData, e.to_string())
+                        })?;
                         file.write_all(json.as_bytes())?;
                         file.flush()?;
                         // Ensure permissions stay `0o600` even if process umask interfered or

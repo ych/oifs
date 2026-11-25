@@ -10,7 +10,7 @@ docs/sitemap.xml
 docs/robots.txt
 docs/google*.html
 docs/.nojekyll
-docs/similar_projects_comparison.md
+plans/
 
 # Build artifacts & dependency locks
 target/

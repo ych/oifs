@@ -50,6 +50,11 @@ pub enum DiskManagerError {
     CorruptedSuperblock(&'static str),
     /// Mutation attempted on a read-only mount
     ReadOnly,
+    /// A Zstd frame requires a dictionary ID that is not registered on this mount
+    MissingDictionary {
+        /// 32-bit Zstd dictionary identifier missing from the registry
+        dict_id: u32,
+    },
 }
 
 impl std::fmt::Display for DiskManagerError {
@@ -76,6 +81,12 @@ impl std::fmt::Display for DiskManagerError {
                 write!(f, "Corrupted superblock layout or invalid bounds: {msg}")
             }
             Self::ReadOnly => write!(f, "Filesystem is mounted read-only"),
+            Self::MissingDictionary { dict_id } => {
+                write!(
+                    f,
+                    "Missing Zstd dictionary id {dict_id}; register the matching dictionary before reading"
+                )
+            }
         }
     }
 }
@@ -262,6 +273,8 @@ pub struct FsckReport {
     pub missing_blocks: Vec<u64>,
     /// List of data blocks referenced by multiple inodes
     pub cross_linked_blocks: Vec<u64>,
+    /// List of inodes that failed format decoding or CRC32C integrity verification
+    pub corrupted_inodes: Vec<u64>,
 }
 
 /// One positional read in a [`DiskManager::read_at_batch`] call.
@@ -275,9 +288,11 @@ pub struct ReadRequest<'a> {
     pub buf: &'a mut [u8],
 }
 
+mod batch;
 mod caches;
 mod chunked;
 mod maintenance;
+pub use batch::{BatchCommitResult, BatchOp, WriteBatch};
 mod transfer;
 
 pub use caches::INODE_CACHE_CAPACITY;
@@ -334,6 +349,8 @@ pub(crate) struct DiskManagerInner {
     pub(crate) inode_write_gen: Box<[u64; 4096]>,
     /// Whether this mount is strictly read-only (`F_RDLCK`, zero disk writes)
     pub(crate) read_only: bool,
+    /// Custom Zstd dictionaries registered on this mount (`CDict`/`DDict` cache)
+    pub(crate) zstd_dicts: Arc<crate::zstd_pool::ZstdDictRegistry>,
 }
 
 impl DiskManagerInner {
@@ -955,6 +972,30 @@ fn plan_write_prepared<'a>(
     existing_decompressed: Option<&[u8]>,
     encryption: EncryptionContext<'_>,
 ) -> Result<WritePlan<'a>, DiskManagerError> {
+    let effective = DiskManager::effective_filter(inode, filter_config);
+    plan_write_prepared_with_dict(
+        inode,
+        file_offset,
+        data,
+        compression_mode,
+        &effective,
+        existing_decompressed,
+        encryption,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_write_prepared_with_dict<'a>(
+    inode: &Inode,
+    file_offset: u64,
+    data: &'a [u8],
+    compression_mode: CompressionMode,
+    filter_config: &crate::filters::FilterConfig,
+    existing_decompressed: Option<&[u8]>,
+    encryption: EncryptionContext<'_>,
+    cdict: Option<&zstd::zstd_safe::CDict<'_>>,
+) -> Result<WritePlan<'a>, DiskManagerError> {
     let encryption_key = encryption.key;
     let aad = encryption.aad;
     let old_size = inode.size;
@@ -974,12 +1015,13 @@ fn plan_write_prepared<'a>(
         // caller does not request a new one; the payload and the inode metadata
         // must always agree on whether the payload is filtered.
         let effective = DiskManager::effective_filter(inode, filter_config);
-        let payload = DiskManager::build_full_overwrite_buffer_pure(
+        let payload = DiskManager::build_full_overwrite_buffer_pure_with_dict(
             data,
             compression_mode,
             &effective,
             encryption_key,
             aad,
+            cdict,
         )?;
         // A compressed payload keeps its logical length in `size`; an uncompressed
         // one never shrinks, matching the in-place path's `max` behaviour.
@@ -1019,7 +1061,12 @@ fn plan_write_prepared<'a>(
         if fast_append {
             // The pooled compressor avoids a per-frame `CCtx`
             // allocation.
-            let frame = crate::zstd_pool::compress_frame(data, 0).map_err(DiskManagerError::Io)?;
+            let frame = if let Some(cd) = cdict {
+                crate::zstd_pool::compress_frame_with_cdict(data, cd)
+                    .map_err(DiskManagerError::Io)?
+            } else {
+                crate::zstd_pool::compress_frame(data, 0).map_err(DiskManagerError::Io)?
+            };
             // The logical size grows by the *uncompressed* bytes; only the physical
             // stream grows by the frame length.
             return Ok(WritePlan {
@@ -1052,12 +1099,13 @@ fn plan_write_prepared<'a>(
         full[file_offset as usize..end].copy_from_slice(data);
 
         let effective = DiskManager::effective_filter(inode, filter_config);
-        let payload = DiskManager::build_full_overwrite_buffer_pure(
+        let payload = DiskManager::build_full_overwrite_buffer_pure_with_dict(
             &full,
             compression_mode,
             &effective,
             encryption_key,
             aad,
+            cdict,
         )?;
         let new_size = if payload.is_compressed {
             full.len() as u64
@@ -1123,7 +1171,8 @@ fn plan_write<'a>(
     // Stack-staged AAD binds the ciphertext to the file with zero allocation.
     let (aad_buf, aad_len) =
         crate::encryption::file_aad_for_scheme_stack(inode_id, guard.superblock.encryption_version);
-    plan_write_prepared(
+    let cdict = DiskManager::resolve_default_cdict(&guard.zstd_dicts, compression_mode);
+    plan_write_prepared_with_dict(
         inode,
         file_offset,
         data,
@@ -1134,6 +1183,7 @@ fn plan_write<'a>(
             key: guard.encryption_key.as_ref(),
             aad: &aad_buf[..aad_len],
         },
+        cdict.as_deref(),
     )
 }
 
@@ -1445,6 +1495,7 @@ impl DiskManager {
             io_engine: IoEngine::new(requested_io_backend),
             inode_write_gen: Box::new([0u64; 4096]),
             read_only: true,
+            zstd_dicts: Arc::new(crate::zstd_pool::ZstdDictRegistry::new()),
         };
 
         let inner = Arc::new(RwLock::new(CachePadded(inner)));
@@ -1511,6 +1562,118 @@ impl DiskManager {
     /// user-space data page cache.
     pub fn file_io_cache_used_bytes(&self) -> usize {
         self.inner.read().unwrap().backing.data_cache_used_bytes()
+    }
+
+    /// Registers a trained Zstd dictionary on this mount and returns its 32-bit `dict_id`.
+    ///
+    /// Allowed in read-only mode so dictionary-compressed files can be decoded.
+    pub fn register_zstd_dict(&self, dict_bytes: &[u8]) -> Result<u32, DiskManagerError> {
+        let dicts = Arc::clone(&self.inner.read().unwrap().zstd_dicts);
+        dicts.register(dict_bytes).map_err(DiskManagerError::Io)
+    }
+
+    /// Registers a trained Zstd dictionary and sets it as the active default compression dictionary.
+    pub fn register_and_use_zstd_dict(&self, dict_bytes: &[u8]) -> Result<u32, DiskManagerError> {
+        let dicts = Arc::clone(&self.inner.read().unwrap().zstd_dicts);
+        let dict_id = dicts.register(dict_bytes).map_err(DiskManagerError::Io)?;
+        dicts
+            .set_default(Some(dict_id))
+            .map_err(DiskManagerError::Io)?;
+        Ok(dict_id)
+    }
+
+    /// Sets or clears (`None`) the active default compression dictionary ID.
+    pub fn set_default_zstd_dict(&self, dict_id: Option<u32>) -> Result<(), DiskManagerError> {
+        let dicts = Arc::clone(&self.inner.read().unwrap().zstd_dicts);
+        dicts.set_default(dict_id).map_err(DiskManagerError::Io)
+    }
+
+    /// Returns the currently active default compression dictionary ID, if set.
+    pub fn default_zstd_dict_id(&self) -> Option<u32> {
+        self.inner.read().unwrap().zstd_dicts.default_dict_id()
+    }
+
+    /// Unregisters a previously loaded dictionary by `dict_id`.
+    pub fn unregister_zstd_dict(&self, dict_id: u32) -> bool {
+        self.inner.read().unwrap().zstd_dicts.unregister(dict_id)
+    }
+
+    /// Returns a sorted list of all currently registered dictionary IDs.
+    pub fn registered_zstd_dict_ids(&self) -> Vec<u32> {
+        self.inner.read().unwrap().zstd_dicts.registered_ids()
+    }
+
+    /// Clears all registered compression/decompression dictionaries on this mount.
+    pub fn clear_zstd_dicts(&self) {
+        self.inner.read().unwrap().zstd_dicts.clear();
+    }
+
+    /// Trains a Zstd dictionary from caller-supplied sample buffers.
+    pub fn train_zstd_dict<T: AsRef<[u8]>>(
+        samples: &[T],
+        max_dict_bytes: usize,
+    ) -> Result<Vec<u8>, DiskManagerError> {
+        crate::zstd_pool::train_dictionary(samples, max_dict_bytes).map_err(DiskManagerError::Io)
+    }
+
+    /// Trains a Zstd dictionary directly from regular files stored inside `dir_inode_id`.
+    ///
+    /// Samples up to `max_samples` regular files (skipping empty files and files larger
+    /// than 1 MiB, up to 64 MiB total training corpus).
+    pub fn train_zstd_dict_from_dir(
+        &self,
+        dir_inode_id: u64,
+        max_dict_bytes: usize,
+        max_samples: usize,
+    ) -> Result<Vec<u8>, DiskManagerError> {
+        const MAX_CORPUS_BYTES: usize = 64 * 1024 * 1024;
+        const MAX_SAMPLE_FILE_BYTES: u64 = 1024 * 1024;
+        if max_samples == 0 {
+            return Err(DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "max_samples must be at least 1",
+            )));
+        }
+        let capped_samples = max_samples.min(4096);
+        let entries = self.list_dir(dir_inode_id)?;
+        let mut samples = Vec::new();
+        let mut corpus_bytes = 0usize;
+        for entry in entries {
+            if samples.len() >= capped_samples || corpus_bytes >= MAX_CORPUS_BYTES {
+                break;
+            }
+            let Ok(inode) = self.read_inode(entry.inode) else {
+                continue;
+            };
+            if inode.mode != crate::inode::FileType::File
+                || inode.size == 0
+                || inode.size > MAX_SAMPLE_FILE_BYTES
+            {
+                continue;
+            }
+            if let Ok(data) = self.read_data(entry.inode)
+                && !data.is_empty()
+            {
+                corpus_bytes = corpus_bytes.saturating_add(data.len());
+                samples.push(data);
+            }
+        }
+        Self::train_zstd_dict(&samples, max_dict_bytes)
+    }
+
+    #[inline]
+    pub(crate) fn resolve_default_cdict(
+        dicts: &crate::zstd_pool::ZstdDictRegistry,
+        compression_mode: CompressionMode,
+    ) -> Option<Arc<zstd::zstd_safe::CDict<'static>>> {
+        if compression_mode == CompressionMode::Never {
+            return None;
+        }
+        let level = match compression_mode {
+            CompressionMode::Stream { level } | CompressionMode::Seekable { level, .. } => level,
+            _ => 3,
+        };
+        dicts.default_cdict(level)
     }
 
     #[cfg(test)]
@@ -1753,6 +1916,7 @@ impl DiskManager {
             io_engine: IoEngine::new(requested_io_backend),
             inode_write_gen: Box::new([0u64; 4096]),
             read_only: false,
+            zstd_dicts: Arc::new(crate::zstd_pool::ZstdDictRegistry::new()),
         };
 
         let inner = Arc::new(RwLock::new(CachePadded(inner)));
@@ -3522,7 +3686,7 @@ impl DiskManager {
         }
 
         // --- STAGE 1: Out-of-Lock Validation & Filename Encryption ---
-        let (stored_name, stored_hash) = {
+        let (stored_name, stored_hash, cdict) = {
             let guard = self.inner.read().unwrap();
             let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
             if parent_inode.mode != crate::inode::FileType::Directory {
@@ -3542,18 +3706,20 @@ impl DiskManager {
                 ))
             })?;
             let stored_hash = crate::directory::hash_filename(&stored_name);
-            (stored_name, stored_hash)
+            let cdict = Self::resolve_default_cdict(&guard.zstd_dicts, compression_mode);
+            (stored_name, stored_hash, cdict)
         };
 
         // --- STAGE 2: Lock-Free Pre-Compression Filtering & Compression ---
         // Encryption is finalized in Stage 3 once `new_inode_id` is allocated so the
         // AEAD associated data binds to the newly assigned inode ID.
-        let prep = Self::build_full_overwrite_buffer_pure(
+        let prep = Self::build_full_overwrite_buffer_pure_with_dict(
             data,
             compression_mode,
             &filter_config,
             None,
             &[],
+            cdict.as_deref(),
         )?;
 
         // --- STAGE 3: Exclusive Lock Allocation & Single-Commit Persistence ---
@@ -4478,28 +4644,38 @@ impl DiskManager {
     fn decompress_stream_payload(
         zstd_src: &[u8],
         expected_size: u64,
+        dict_registry: &crate::zstd_pool::ZstdDictRegistry,
     ) -> Result<Vec<u8>, DiskManagerError> {
         let expected_len =
             Self::checked_read_alloc_len(expected_size, Self::MAX_DECOMPRESSED_STREAM_BYTES)?;
 
-        // Single-pass pooled `DCtx` fast path (handles both single-frame and
-        // concatenated multi-frame Zstd streams in one C call with zero `DCtx` allocs).
-        if expected_len <= 64 * 1024 * 1024 {
+        // Single-pass pooled `DCtx` fast path when the payload is a single Zstd frame
+        // within the 64 MiB fast-path budget.
+        let single_frame = zstd::zstd_safe::find_frame_compressed_size(zstd_src)
+            .is_ok_and(|frame_len| frame_len == zstd_src.len());
+        if single_frame && expected_len <= 64 * 1024 * 1024 {
             let mut decoded = Self::try_alloc_zeroed_vec(expected_len)?;
-            if let Ok(written) = crate::zstd_pool::decompress_frame_into(zstd_src, &mut decoded)
+            let fast_res = if let Some(dict_id) = crate::zstd_pool::frame_dict_id(zstd_src) {
+                let ddict = dict_registry
+                    .get_ddict(dict_id)
+                    .ok_or(DiskManagerError::MissingDictionary { dict_id })?;
+                crate::zstd_pool::decompress_frame_into_with_ddict(zstd_src, &mut decoded, &ddict)
+            } else {
+                crate::zstd_pool::decompress_frame_into(zstd_src, &mut decoded)
+            };
+            if let Ok(written) = fast_res
                 && written == expected_len
             {
                 return Ok(decoded);
             }
         }
 
-        // Fallback to bounded streaming decoder (large files > 64 MiB or forged/corrupted sizes).
+        // Bounded per-frame streaming fallback (handles multi-frame concatenated streams,
+        // mixed dict/non-dict appended frames, large > 64 MiB files, and corrupt sizes).
         use std::io::Read;
         let max_decompressed_bytes = expected_size
             .saturating_add(65536)
             .min(Self::MAX_DECOMPRESSED_STREAM_BYTES as u64);
-        let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(zstd_src))
-            .map_err(DiskManagerError::Io)?;
         let init_cap = expected_len.min(16 * 1024 * 1024);
         let mut decoded = Vec::new();
         decoded.try_reserve(init_cap).map_err(|_| {
@@ -4508,18 +4684,51 @@ impl DiskManager {
                 format!("Failed to allocate {init_cap} bytes for decompression"),
             ))
         })?;
-        decoder
-            .by_ref()
-            .take(max_decompressed_bytes.saturating_add(1))
-            .read_to_end(&mut decoded)
-            .map_err(DiskManagerError::Io)?;
-        if decoded.len() as u64 > max_decompressed_bytes {
-            return Err(DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "Decompressed payload exceeds maximum allowed size ({max_decompressed_bytes} bytes)"
-                ),
-            )));
+
+        let mut remaining = zstd_src;
+        while !remaining.is_empty() {
+            let frame_len =
+                zstd::zstd_safe::find_frame_compressed_size(remaining).map_err(|code| {
+                    DiskManagerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "Corrupted Zstd frame header: {}",
+                            zstd::zstd_safe::get_error_name(code)
+                        ),
+                    ))
+                })?;
+            let (frame, rest) = remaining.split_at(frame_len);
+            remaining = rest;
+
+            let budget_left = max_decompressed_bytes.saturating_sub(decoded.len() as u64);
+            let limit = budget_left.saturating_add(1);
+            if let Some(dict_id) = crate::zstd_pool::frame_dict_id(frame) {
+                let raw_dict = dict_registry
+                    .get_raw(dict_id)
+                    .ok_or(DiskManagerError::MissingDictionary { dict_id })?;
+                let decoder =
+                    zstd::stream::Decoder::with_dictionary(std::io::Cursor::new(frame), &raw_dict)
+                        .map_err(DiskManagerError::Io)?;
+                decoder
+                    .take(limit)
+                    .read_to_end(&mut decoded)
+                    .map_err(DiskManagerError::Io)?;
+            } else {
+                let decoder = zstd::stream::Decoder::new(std::io::Cursor::new(frame))
+                    .map_err(DiskManagerError::Io)?;
+                decoder
+                    .take(limit)
+                    .read_to_end(&mut decoded)
+                    .map_err(DiskManagerError::Io)?;
+            }
+            if decoded.len() as u64 > max_decompressed_bytes {
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Decompressed payload exceeds maximum allowed size ({max_decompressed_bytes} bytes)"
+                    ),
+                )));
+            }
         }
         Ok(decoded)
     }
@@ -4631,8 +4840,11 @@ impl DiskManager {
                 && let Some(byte_end) = byte_start.checked_add(phys_len)
                 && byte_end <= mmap.len()
             {
-                let mut decoded =
-                    Self::decompress_stream_payload(&mmap[byte_start..byte_end], inode.size)?;
+                let mut decoded = Self::decompress_stream_payload(
+                    &mmap[byte_start..byte_end],
+                    inode.size,
+                    &guard.zstd_dicts,
+                )?;
                 if filter_config.is_active() {
                     crate::filters::unapply_filters_in_place(&mut decoded, &filter_config);
                 }
@@ -4739,7 +4951,8 @@ impl DiskManager {
 
         // Decompress if this is a compressed file (natively decompresses concatenated multi-frame Zstd streams)
         if inode.mode == crate::inode::FileType::File && inode.compressed_size > 0 {
-            decrypted_data = Self::decompress_stream_payload(&decrypted_data, inode.size)?;
+            decrypted_data =
+                Self::decompress_stream_payload(&decrypted_data, inode.size, &guard.zstd_dicts)?;
         }
 
         // === POST-DECOMPRESSION FILTER STEP ===
@@ -5771,6 +5984,24 @@ impl DiskManager {
         encryption_key: Option<&crate::encryption::EncryptionKey>,
         aad: &[u8],
     ) -> Result<FullOverwritePayload<'a>, DiskManagerError> {
+        Self::build_full_overwrite_buffer_pure_with_dict(
+            data,
+            compression_mode,
+            filter_config,
+            encryption_key,
+            aad,
+            None,
+        )
+    }
+
+    pub(crate) fn build_full_overwrite_buffer_pure_with_dict<'a>(
+        data: &'a [u8],
+        compression_mode: CompressionMode,
+        filter_config: &crate::filters::FilterConfig,
+        encryption_key: Option<&crate::encryption::EncryptionKey>,
+        aad: &[u8],
+        cdict: Option<&zstd::zstd_safe::CDict<'_>>,
+    ) -> Result<FullOverwritePayload<'a>, DiskManagerError> {
         let filtered = crate::filters::apply_filters_cow(data, filter_config);
         let working: &[u8] = &filtered;
 
@@ -5779,7 +6010,9 @@ impl DiskManager {
             | CompressionMode::Stream { .. }
             | CompressionMode::Seekable { .. } => true,
             CompressionMode::Never => false,
-            CompressionMode::Auto => working.len() >= 8192,
+            CompressionMode::Auto => {
+                (cdict.is_some() && !working.is_empty()) || working.len() >= 8192
+            }
         };
 
         let level = match compression_mode {
@@ -5791,8 +6024,12 @@ impl DiskManager {
 
         let (final_data, is_compressed): (std::borrow::Cow<'a, [u8]>, bool) = if should_compress {
             // The pooled compressor avoids a per-call `CCtx` allocation.
-            let compressed =
-                crate::zstd_pool::compress_frame(working, level).map_err(DiskManagerError::Io)?;
+            let compressed = if let Some(cd) = cdict {
+                crate::zstd_pool::compress_frame_with_cdict(working, cd)
+                    .map_err(DiskManagerError::Io)?
+            } else {
+                crate::zstd_pool::compress_frame(working, level).map_err(DiskManagerError::Io)?
+            };
             match compression_mode {
                 CompressionMode::Always
                 | CompressionMode::Stream { .. }
@@ -5913,6 +6150,7 @@ impl DiskManager {
                 existing_decompressed: Option<Vec<u8>>,
                 encryption_key: Option<crate::encryption::EncryptionKey>,
                 encryption_scheme: u8,
+                cdict: Option<Arc<zstd::zstd_safe::CDict<'static>>>,
             },
         }
 
@@ -5950,8 +6188,17 @@ impl DiskManager {
                     CompressionMode::Stream { level } => level,
                     _ => 1,
                 };
-                let prep =
-                    Self::prepare_chunked_64k_stage1(&guard, inode_id, inode, file_offset, data)?;
+                let cdict = compress
+                    .then(|| guard.zstd_dicts.default_cdict(level))
+                    .flatten();
+                let prep = Self::prepare_chunked_64k_stage1(
+                    &guard,
+                    inode_id,
+                    inode,
+                    file_offset,
+                    data,
+                    cdict,
+                )?;
                 Stage1Prep::Seekable {
                     level,
                     compress,
@@ -5982,46 +6229,56 @@ impl DiskManager {
                 let key = guard.encryption_key.clone();
                 let scheme = guard.superblock.encryption_version;
                 let initial_gen = guard.inode_gen(inode_id);
+                let cdict = Self::resolve_default_cdict(&guard.zstd_dicts, compression_mode);
                 Stage1Prep::Standard {
                     initial_inode: inode,
                     initial_gen,
                     existing_decompressed: existing,
                     encryption_key: key,
                     encryption_scheme: scheme,
+                    cdict,
                 }
             }
         }; // Shared read-guard is dropped immediately here!
 
-        let (initial_inode, initial_gen, existing_decompressed, encryption_key, encryption_scheme) =
-            match stage1 {
-                Stage1Prep::Seekable {
+        let (
+            initial_inode,
+            initial_gen,
+            existing_decompressed,
+            encryption_key,
+            encryption_scheme,
+            cdict,
+        ) = match stage1 {
+            Stage1Prep::Seekable {
+                level,
+                compress,
+                stage1,
+            } => {
+                return self.finish_chunked_64k_pipeline(
+                    inode_id,
+                    file_offset,
+                    data,
                     level,
                     compress,
                     stage1,
-                } => {
-                    return self.finish_chunked_64k_pipeline(
-                        inode_id,
-                        file_offset,
-                        data,
-                        level,
-                        compress,
-                        stage1,
-                    );
-                }
-                Stage1Prep::Standard {
-                    initial_inode,
-                    initial_gen,
-                    existing_decompressed,
-                    encryption_key,
-                    encryption_scheme,
-                } => (
-                    initial_inode,
-                    initial_gen,
-                    existing_decompressed,
-                    encryption_key,
-                    encryption_scheme,
-                ),
-            };
+                );
+            }
+            Stage1Prep::Standard {
+                initial_inode,
+                initial_gen,
+                existing_decompressed,
+                encryption_key,
+                encryption_scheme,
+                cdict,
+            } => (
+                initial_inode,
+                initial_gen,
+                existing_decompressed,
+                encryption_key,
+                encryption_scheme,
+                cdict,
+            ),
+        };
 
         // --- STAGE 2: CPU-Bound Processing (ZERO filesystem locks held) ---
         // Perform CPU-heavy filtering, Zstd compression, and XChaCha20 encryption
@@ -6029,7 +6286,7 @@ impl DiskManager {
         // Stack-staged AAD binds the ciphertext to the file with zero allocs.
         let (aad_buf, aad_len) =
             crate::encryption::file_aad_for_scheme_stack(inode_id, encryption_scheme);
-        let prepared_plan = plan_write_prepared(
+        let prepared_plan = plan_write_prepared_with_dict(
             &initial_inode,
             file_offset,
             data,
@@ -6040,6 +6297,7 @@ impl DiskManager {
                 key: encryption_key.as_ref(),
                 aad: &aad_buf[..aad_len],
             },
+            cdict.as_deref(),
         )?;
 
         // --- STAGE 3: Exclusive Lock Acquisition & Commit ---

@@ -20,10 +20,10 @@ pub mod zstd_pool;
 
 pub use auto_defrag::{AutoDefragConfig, AutoDefragStats};
 pub use disk::{
-    CloneMethod, DiskManager, DiskManagerError, DurabilityMode, FileReadHandle, LogicalRun,
-    OifsAsyncTask, ReadRequest, ReadSession, ReflinkFallback, SpliceOptions, SplicePartition,
-    SpliceStats, SpliceTrimMode, TransferMethod, TransferOptions, TransferStats,
-    can_splice_fast_path, canonical_file_id, classify_reflink_errno,
+    BatchCommitResult, BatchOp, CloneMethod, DiskManager, DiskManagerError, DurabilityMode,
+    FileReadHandle, LogicalRun, OifsAsyncTask, ReadRequest, ReadSession, ReflinkFallback,
+    SpliceOptions, SplicePartition, SpliceStats, SpliceTrimMode, TransferMethod, TransferOptions,
+    TransferStats, WriteBatch, can_splice_fast_path, canonical_file_id, classify_reflink_errno,
     clear_unsupported_reflink_cache, coalesce_logical_runs, combine_transfer_tier,
     is_reflink_device_pair_unsupported, mark_reflink_device_pair_unsupported,
     plan_splice_partition, punch_host_file_blocks, punch_table_slot, push_logical_block_run,
@@ -39,6 +39,7 @@ pub use journal::{JournalState, MetadataOp, Transaction};
 pub use nfs::{NfsFileHandle, NfsMountOptions, OifsNfsFs, OifsNfsServer};
 pub use session::{OifsSession, SessionError};
 pub use storage::StorageMode;
+pub use zstd_pool::{MAX_ZSTD_DICT_BYTES, ZstdDictRegistry};
 
 pub const BLOCK_SIZE: usize = 4096;
 

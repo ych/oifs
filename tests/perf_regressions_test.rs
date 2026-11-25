@@ -2,9 +2,7 @@
 
 use oifs::OifsSession;
 use oifs::disk::{CompressionMode, DiskManager};
-use oifs::ffi::{
-    oifs_close, oifs_create_file_with_data, oifs_last_error, oifs_open, oifs_read_at,
-};
+use oifs::ffi::{oifs_close, oifs_create_file_with_data, oifs_last_error, oifs_open, oifs_read_at};
 use oifs::filters::{FilterConfig, recommend_filters};
 use oifs::fuse::{FuseFileHandle, FuseHandleTable, FuseMountOptions, OifsFuseState};
 use oifs::nfs::{
@@ -27,8 +25,13 @@ fn test_fuse_readdir_pagination_and_rdonly_flush_skip() {
         dm.create_file(root, &name).unwrap();
     }
     let rd_file = dm.create_file(root, "rd.txt").unwrap();
-    dm.write_data(rd_file, 0, b"readonly handle payload", CompressionMode::Never)
-        .unwrap();
+    dm.write_data(
+        rd_file,
+        0,
+        b"readonly handle payload",
+        CompressionMode::Never,
+    )
+    .unwrap();
 
     let state = OifsFuseState::new(FuseMountOptions::default());
 
@@ -158,7 +161,10 @@ fn test_recommend_filters_preserves_order_and_baseline() {
     assert_eq!(rec.candidates.len(), 14);
     assert_eq!(rec.candidates[0].label, "None (Raw Zstd)");
     assert_eq!(rec.candidates[0].config, FilterConfig::none());
-    assert_eq!(rec.candidates[0].compressed_size, rec.baseline_compressed_size);
+    assert_eq!(
+        rec.candidates[0].compressed_size,
+        rec.baseline_compressed_size
+    );
     assert!(rec.best_report.compressed_size <= rec.baseline_compressed_size);
 }
 
@@ -199,7 +205,10 @@ fn test_ffi_last_error_is_thread_local_across_threads() {
         let mut err_buf = [0i8; 256];
         assert_eq!(oifs_last_error(h, err_buf.as_mut_ptr(), 256), 0);
         let msg = unsafe { CStr::from_ptr(err_buf.as_ptr()) }.to_string_lossy();
-        assert_ne!(msg, "No error", "thread-local error should not be clobbered");
+        assert_ne!(
+            msg, "No error",
+            "thread-local error should not be clobbered"
+        );
     });
 
     let b2 = Arc::clone(&barrier);

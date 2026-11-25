@@ -1,9 +1,7 @@
 //! End-to-end regression tests for core data integrity, cache coherency,
 //! WAL pointer pruning, filtered reads, and bounded allocator wraparound.
 
-use oifs::disk::{
-    CompressionMode, DiskManager, DurabilityMode, SpliceOptions, SpliceTrimMode,
-};
+use oifs::disk::{CompressionMode, DiskManager, DurabilityMode, SpliceOptions, SpliceTrimMode};
 use oifs::filters::FilterConfig;
 use oifs::storage::StorageMode;
 use std::sync::Arc;
@@ -36,15 +34,16 @@ fn test_truncate_expand_block_aligned_preserves_last_block() {
         let img = dir
             .path()
             .join(format!("trunc_aligned_{}_{:?}.img", journaled, mode));
-        let dm = DiskManager::open_with_options(&img, 8 * 1024 * 1024, None, journaled, mode)
-            .unwrap();
+        let dm =
+            DiskManager::open_with_options(&img, 8 * 1024 * 1024, None, journaled, mode).unwrap();
         dm.set_durability_mode(DurabilityMode::Strict);
         let root = dm.superblock().root_inode;
 
         // 1 block exact (4096 bytes)
         let f1 = dm.create_file(root, "one_block.bin").unwrap();
         let data1: Vec<u8> = (0..4096).map(|i| ((i * 17 + 5) & 0xFF) as u8).collect();
-        dm.write_data(f1, 0, &data1, CompressionMode::Never).unwrap();
+        dm.write_data(f1, 0, &data1, CompressionMode::Never)
+            .unwrap();
         dm.truncate(f1, 8192).unwrap();
 
         let got1 = dm.read_data(f1).unwrap();
@@ -59,7 +58,8 @@ fn test_truncate_expand_block_aligned_preserves_last_block() {
         // 2 blocks exact (8192 bytes)
         let f2 = dm.create_file(root, "two_blocks.bin").unwrap();
         let data2: Vec<u8> = (0..8192).map(|i| ((i * 29 + 11) & 0xFF) as u8).collect();
-        dm.write_data(f2, 0, &data2, CompressionMode::Never).unwrap();
+        dm.write_data(f2, 0, &data2, CompressionMode::Never)
+            .unwrap();
         dm.truncate(f2, 12288).unwrap();
 
         let got2 = dm.read_data(f2).unwrap();
@@ -84,13 +84,15 @@ fn test_journaled_double_indirect_shrink_preserves_data_and_fsck() {
     // Incompressible > 522 blocks written with CompressionMode::Always enters Double Indirect
     // (530 blocks = 2,170,880 bytes) and triggers FullOverwrite shrinking on subsequent overwrites.
     let big = pseudo_random_bytes(530 * 4096, 0x1010);
-    dm.write_data(fid, 0, &big, CompressionMode::Always).unwrap();
+    dm.write_data(fid, 0, &big, CompressionMode::Always)
+        .unwrap();
     assert_eq!(dm.read_data(fid).unwrap(), big);
     assert!(dm.verify_integrity().unwrap().is_clean);
 
     // Shrink slightly within double-indirect (525 blocks -> boundary SIB inside DIB[0])
     let mid = pseudo_random_bytes(525 * 4096, 0x2020);
-    dm.write_data(fid, 0, &mid, CompressionMode::Always).unwrap();
+    dm.write_data(fid, 0, &mid, CompressionMode::Always)
+        .unwrap();
     assert_eq!(dm.read_data(fid).unwrap(), mid);
     assert!(dm.verify_integrity().unwrap().is_clean);
 
@@ -419,7 +421,12 @@ fn test_allocator_hint_wraparound_no_false_nospace() {
 
         // Allocating both a single block file AND a 2-block contiguous seekable chunk must wrap around and succeed!
         let f_single = dm
-            .create_file_with_data(root, "wrapped_single.bin", &one_block, CompressionMode::Never)
+            .create_file_with_data(
+                root,
+                "wrapped_single.bin",
+                &one_block,
+                CompressionMode::Never,
+            )
             .expect("single block allocation must wrap around instead of returning NoSpace");
         assert_eq!(dm.read_data(f_single).unwrap(), one_block);
 

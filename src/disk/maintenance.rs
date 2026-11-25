@@ -1658,11 +1658,18 @@ impl DiskManager {
 
         // Single-pass reachable tree walk starting from root_inode
         let mut dir_queue: Vec<Inode> = Vec::new();
+        let mut corrupted_inodes: Vec<u64> = Vec::new();
         mark_inode_referenced(sb.root_inode);
-        let root_inode = Self::read_inode_uncached(&guard, sb.root_inode)?;
-        record_inode_blocks(&root_inode);
-        if root_inode.mode == crate::inode::FileType::Directory {
-            dir_queue.push(root_inode);
+        match Self::read_inode_uncached(&guard, sb.root_inode) {
+            Ok(root_inode) => {
+                record_inode_blocks(&root_inode);
+                if root_inode.mode == crate::inode::FileType::Directory {
+                    dir_queue.push(root_inode);
+                }
+            }
+            Err(_) => {
+                corrupted_inodes.push(sb.root_inode);
+            }
         }
 
         while let Some(dir_inode) = dir_queue.pop() {
@@ -1674,12 +1681,17 @@ impl DiskManager {
                 }
                 let _ = guard.backing.with_block(phys_blk, |block_data| {
                     crate::directory::for_each_valid_inode_in_block(block_data, |child_id| {
-                        if mark_inode_referenced(child_id)
-                            && let Ok(child_inode) = Self::read_inode_uncached(&guard, child_id)
-                        {
-                            record_inode_blocks(&child_inode);
-                            if child_inode.mode == crate::inode::FileType::Directory {
-                                dir_queue.push(child_inode);
+                        if mark_inode_referenced(child_id) {
+                            match Self::read_inode_uncached(&guard, child_id) {
+                                Ok(child_inode) => {
+                                    record_inode_blocks(&child_inode);
+                                    if child_inode.mode == crate::inode::FileType::Directory {
+                                        dir_queue.push(child_inode);
+                                    }
+                                }
+                                Err(_) => {
+                                    corrupted_inodes.push(child_id);
+                                }
                             }
                         }
                     });
@@ -1760,10 +1772,20 @@ impl DiskManager {
             cross_linked_blocks.sort_unstable();
         }
 
+        // Also verify integrity of allocated orphan inodes so silent corruption is surfaced.
+        for &oid in &orphan_inodes {
+            if Self::read_inode_uncached(&guard, oid).is_err() {
+                corrupted_inodes.push(oid);
+            }
+        }
+        corrupted_inodes.sort_unstable();
+        corrupted_inodes.dedup();
+
         let is_clean = orphan_inodes.is_empty()
             && leaked_blocks.is_empty()
             && missing_blocks.is_empty()
-            && cross_linked_blocks.is_empty();
+            && cross_linked_blocks.is_empty()
+            && corrupted_inodes.is_empty();
 
         Ok(FsckReport {
             is_clean,
@@ -1771,6 +1793,7 @@ impl DiskManager {
             leaked_blocks,
             missing_blocks,
             cross_linked_blocks,
+            corrupted_inodes,
         })
     }
 }

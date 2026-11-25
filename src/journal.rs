@@ -3430,7 +3430,6 @@ use crate::storage::ImageBacking;
 /// (same hint handling, same "first free bit at or after hint" rule), so the ids it
 /// predicts are the ids the real allocator would hand out.
 pub(crate) struct AllocSim {
-    #[cfg(test)]
     inode_bitmap: Vec<u8>,
     /// Lazily materialized data-bitmap copy: stays `None` on pure in-place
     /// overwrites so `write_data_journaled` pays zero heap allocations or 4-64 KB
@@ -3445,7 +3444,6 @@ pub(crate) struct AllocSim {
     /// hand those out.
     block_count: u64,
     /// Number of inode ids that may be used (bounded by the inode table).
-    #[cfg(test)]
     usable_inodes: u64,
     pub(crate) free_inode_hint: u64,
     pub(crate) free_block_hint: u64,
@@ -3459,7 +3457,6 @@ pub(crate) struct AllocSim {
 }
 
 impl AllocSim {
-    #[cfg(test)]
     pub(crate) fn new(
         guard: &DiskManagerInner,
         free_inode_hint: u64,
@@ -3479,7 +3476,6 @@ impl AllocSim {
             sb: Some(sb),
             data_start: sb.data_block_start,
             block_count: sb.block_count,
-            #[cfg(test)]
             usable_inodes: sb.usable_inode_count(),
             free_inode_hint,
             free_block_hint,
@@ -3506,13 +3502,11 @@ impl AllocSim {
             .data_bitmap_slice()
             .ok_or_else(|| DiskManagerError::Io(std::io::Error::other("data bitmap not found")))?;
         Ok(Self {
-            #[cfg(test)]
             inode_bitmap: Vec::new(),
             data_bitmap: None,
             sb: Some(sb),
             data_start: sb.data_block_start,
             block_count: sb.block_count,
-            #[cfg(test)]
             usable_inodes: sb.usable_inode_count(),
             free_inode_hint,
             free_block_hint,
@@ -3540,7 +3534,6 @@ impl AllocSim {
         Ok(self.data_bitmap.as_mut().unwrap())
     }
 
-    #[cfg(test)]
     pub(crate) fn alloc_inode(&mut self) -> Result<u64, DiskManagerError> {
         let mut a = SimpleBlockAllocator::new(&mut self.inode_bitmap, 0);
         let id = a
@@ -3552,6 +3545,16 @@ impl AllocSim {
             id + 1
         };
         Ok(id)
+    }
+
+    pub(crate) fn free_inode(&mut self, inode_id: u64) -> Result<(), DiskManagerError> {
+        use crate::allocator::BlockAllocator;
+        let mut a = SimpleBlockAllocator::new(&mut self.inode_bitmap, 0);
+        a.free(inode_id).map_err(DiskManagerError::Allocator)?;
+        if inode_id < self.free_inode_hint {
+            self.free_inode_hint = inode_id;
+        }
+        Ok(())
     }
 
     pub(crate) fn alloc_block(&mut self, backing: &ImageBacking) -> Result<u64, DiskManagerError> {
@@ -4728,7 +4731,11 @@ mod prune_pointer_tests {
 
         assert_eq!(inode.triple_indirect, 0);
         let dib_ops = ops_targeting(&ops, DIB);
-        assert_eq!(dib_ops.len(), P - 4, "DIB[3] must survive; DIB[4..512] zeroed");
+        assert_eq!(
+            dib_ops.len(),
+            P - 4,
+            "DIB[3] must survive; DIB[4..512] zeroed"
+        );
         let boundary_ops = ops_targeting(&ops, BOUNDARY_SIB);
         assert_eq!(
             boundary_ops.len(),
@@ -4805,9 +4812,21 @@ mod prune_pointer_tests {
         prune_stale_pointers(&mmap, &mut inode, DOUBLE_SPAN + P * P + 2 * P + 5, &mut ops)
             .expect("prune");
 
-        assert_eq!(ops_targeting(&ops, TIB).len(), P - 2, "TIB[1] survives; TIB[2..512] zeroed");
-        assert_eq!(ops_targeting(&ops, BOUNDARY_DIB).len(), P - 3, "DIB[2] survives; DIB[3..512] zeroed");
-        assert_eq!(ops_targeting(&ops, BOUNDARY_SIB).len(), P - 5, "SIB[5..512] zeroed");
+        assert_eq!(
+            ops_targeting(&ops, TIB).len(),
+            P - 2,
+            "TIB[1] survives; TIB[2..512] zeroed"
+        );
+        assert_eq!(
+            ops_targeting(&ops, BOUNDARY_DIB).len(),
+            P - 3,
+            "DIB[2] survives; DIB[3..512] zeroed"
+        );
+        assert_eq!(
+            ops_targeting(&ops, BOUNDARY_SIB).len(),
+            P - 5,
+            "SIB[5..512] zeroed"
+        );
         assert_eq!(ops_targeting(&ops, STALE_SIB).len(), 1, "stale SIB wiped");
     }
 

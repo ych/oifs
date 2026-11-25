@@ -194,6 +194,10 @@ struct Cli {
     #[arg(long = "read-only", global = true)]
     read_only: bool,
 
+    /// Custom Zstd dictionary file(s) to register (first is also set as default compressor)
+    #[arg(long = "dict", global = true, value_name = "PATH")]
+    dict: Vec<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -369,6 +373,30 @@ enum Commands {
         #[arg(long = "trim-mode", default_value = "keep")]
         trim_mode: String,
     },
+    /// Zstd dictionary utilities
+    Dict {
+        #[command(subcommand)]
+        action: DictCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum DictCommands {
+    /// Train a Zstd dictionary from sample files stored inside an OIFS directory
+    Train {
+        /// Directory path inside the image (e.g. "/" or "/logs")
+        #[arg(long, default_value = "/")]
+        dir: String,
+        /// Host output path for the trained Zstd dictionary
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Target dictionary size in bytes (256..=16777216)
+        #[arg(long, default_value_t = 112_640)]
+        max_size: usize,
+        /// Maximum number of regular files sampled from --dir
+        #[arg(long, default_value_t = 256)]
+        max_samples: usize,
+    },
 }
 
 /// Helper function to read password securely from stdin (with terminal echo masked).
@@ -409,6 +437,21 @@ fn read_password(prompt: &str) -> Result<Zeroizing<String>, Box<dyn std::error::
     let trimmed = password.trim().to_string();
     password.zeroize();
     Ok(Zeroizing::new(trimmed))
+}
+
+fn apply_cli_dicts(
+    session: &OifsSession,
+    dicts: &[PathBuf],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (idx, dict_path) in dicts.iter().enumerate() {
+        let bytes = std::fs::read(dict_path)?;
+        if idx == 0 {
+            session.register_and_use_zstd_dict(&bytes)?;
+        } else {
+            session.register_zstd_dict(&bytes)?;
+        }
+    }
+    Ok(())
 }
 
 /// Helper function to open OifsSession with auto-detection of encrypted filesystems and SessionMode.
@@ -845,6 +888,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
 
             let dm_clone = dm.clone();
             let _interrupt_guard = set_interrupt_handler(move || {
@@ -910,6 +954,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
 
             let dm_clone = dm.clone();
             let _interrupt_guard = set_interrupt_handler(move || {
@@ -962,6 +1007,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
             let inode_id = dm.resolve_path(remote_name)?;
             let data = dm.read_data(inode_id)?;
             let remote_file_name = Path::new(remote_name)
@@ -1021,6 +1067,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
             let inode_id = dm.resolve_path(remote_name)?;
             let data = dm.read_data(inode_id)?;
             if cli.json {
@@ -1049,6 +1096,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
             let sb = dm.superblock()?;
             let total_bytes = sb.block_count.saturating_mul(sb.block_size as u64);
             let journaled = sb.has_journal_layout();
@@ -1094,6 +1142,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
             let inode_id = if path == "/" || path.is_empty() {
                 dm.superblock()?.root_inode
             } else {
@@ -1152,6 +1201,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
             let (parent_id, filename) = dm.resolve_parent(dir_name)?;
 
             if dm.lookup(parent_id, &filename).is_ok() {
@@ -1182,6 +1232,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
             let (parent_id, filename) = dm.resolve_parent(path)?;
 
             let target = match dm.lookup(parent_id, &filename) {
@@ -1277,6 +1328,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
 
             let target_inode_id = if let Some(p) = path.as_ref() {
                 dm.resolve_path(p)?
@@ -1417,6 +1469,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
             let stats = dm.analyze_fragmentation()?;
 
             if cli.json {
@@ -1501,6 +1554,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
             match dm.defragment(image_path, defrag_mode, None) {
                 Ok(stats) => {
                     if cli.json {
@@ -1552,6 +1606,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
 
             if dm.migration_in_progress()? {
                 let msg = "A previous migration was interrupted; resuming it.";
@@ -1599,6 +1654,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
             match dm.verify_integrity() {
                 Ok(report) => {
                     if cli.json {
@@ -1656,6 +1712,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&dm, &cli.dict)?;
             dm.truncate_path(path, *size)?;
             dm.flush()?;
             if cli.json {
@@ -1705,6 +1762,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 auto_defrag.as_ref(),
                 cli.read_only,
             )?;
+            apply_cli_dicts(&session, &cli.dict)?;
             let dm = match session {
                 OifsSession::Direct { dm, .. } => dm,
                 OifsSession::Remote { .. } => {
@@ -1858,7 +1916,9 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 None,
                 cli.read_only,
             )?;
+            apply_cli_dicts(&src_session, &cli.dict)?;
             let dst_session = open_session(to, to_password, &session_mode, cli.json, None, false)?;
+            apply_cli_dicts(&dst_session, &cli.dict)?;
 
             let split_parent_name =
                 |session: &OifsSession,
@@ -2163,5 +2223,59 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(())
         }
+        Commands::Dict { action } => match action {
+            DictCommands::Train {
+                dir,
+                output,
+                max_size,
+                max_samples,
+            } => {
+                if !image.exists() {
+                    return Err(format!("Image {:?} does not exist.", image).into());
+                }
+                let session = open_session(
+                    image,
+                    &cli.password,
+                    &session_mode,
+                    cli.json,
+                    auto_defrag.as_ref(),
+                    cli.read_only,
+                )?;
+                apply_cli_dicts(&session, &cli.dict)?;
+                let dir_id = if dir == "/" || dir.is_empty() {
+                    0
+                } else {
+                    session.resolve_path(dir)?
+                };
+                let dict_bytes =
+                    session.train_zstd_dict_from_dir(dir_id, *max_size, *max_samples)?;
+                if let Some(parent) = output.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(output, &dict_bytes)?;
+                let dict_id = oifs::zstd_pool::dict_id_from_bytes(&dict_bytes).unwrap_or(0);
+                if cli.json {
+                    println!(
+                        "{}",
+                        json!({
+                            "ok": true,
+                            "dict_id": dict_id,
+                            "bytes": dict_bytes.len(),
+                            "output": output.to_string_lossy(),
+                        })
+                    );
+                } else {
+                    println!(
+                        "Trained Zstd dictionary id={} ({} bytes) -> {:?}",
+                        dict_id,
+                        dict_bytes.len(),
+                        output
+                    );
+                }
+                Ok(())
+            }
+        },
     }
 }

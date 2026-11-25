@@ -6,7 +6,7 @@ use oifs::ffi::{
     oifs_read_at_batch, oifs_read_at_inode,
 };
 use oifs::fuse::{
-    FUSE_RENAME2, FUSE_RENAME_NOREPLACE, FuseAbiPlatform, FuseMountOptions, MACOS_RENAME_EXCL,
+    FUSE_RENAME_NOREPLACE, FUSE_RENAME2, FuseAbiPlatform, FuseMountOptions, MACOS_RENAME_EXCL,
     OifsFuseState, disk_error_to_errno,
 };
 use oifs::ipc::{PRE_AUTH_MAX_FRAME_BYTES, read_framed_with_limit};

@@ -971,8 +971,14 @@ pub fn recommend_filters(data: &[u8]) -> FilterRecommendation {
         (FilterConfig::delta_only(4), "Delta (typesize=4, u32/f32)"),
         (FilterConfig::delta_only(8), "Delta (typesize=8, u64/f64)"),
         (FilterConfig::shuffle_only(2), "Shuffle (typesize=2, u16)"),
-        (FilterConfig::shuffle_only(4), "Shuffle (typesize=4, u32/f32)"),
-        (FilterConfig::shuffle_only(8), "Shuffle (typesize=8, u64/f64)"),
+        (
+            FilterConfig::shuffle_only(4),
+            "Shuffle (typesize=4, u32/f32)",
+        ),
+        (
+            FilterConfig::shuffle_only(8),
+            "Shuffle (typesize=8, u64/f64)",
+        ),
         (
             FilterConfig::bitshuffle_only(2),
             "BitShuffle (typesize=2, u16)",

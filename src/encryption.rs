@@ -836,7 +836,8 @@ pub fn decrypt_filename_authenticated(
         return Err(EncryptionError::DecryptionFailed);
     }
 
-    let payload = Base64UrlUnpadded::decode_vec(b64).map_err(|_| EncryptionError::DecryptionFailed)?;
+    let payload =
+        Base64UrlUnpadded::decode_vec(b64).map_err(|_| EncryptionError::DecryptionFailed)?;
 
     if payload.len() >= 40 {
         let nonce = &payload[..24];

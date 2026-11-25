@@ -117,7 +117,10 @@ fn normalize_lexical(path: &Path) -> PathBuf {
             std::path::Component::RootDir => out.push(std::path::Component::RootDir.as_os_str()),
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                if matches!(out.components().next_back(), Some(std::path::Component::Normal(_))) {
+                if matches!(
+                    out.components().next_back(),
+                    Some(std::path::Component::Normal(_))
+                ) {
                     out.pop();
                 } else if !out.has_root() {
                     out.push(std::path::Component::ParentDir.as_os_str());
@@ -353,8 +356,9 @@ impl OifsSession {
                         }
                         if is_encrypted {
                             let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
-                            let expected =
-                                cached_pwd.as_ref().ok_or(DiskManagerError::PasswordRequired)?;
+                            let expected = cached_pwd
+                                .as_ref()
+                                .ok_or(DiskManagerError::PasswordRequired)?;
                             if !crate::encryption::ct_eq_slice(pwd.as_bytes(), expected.as_bytes())
                             {
                                 return Err(DiskManagerError::DecryptionFailed.into());
@@ -1335,6 +1339,56 @@ impl OifsSession {
                     _ => Err(SessionError::UnexpectedResponse),
                 }
             }
+        }
+    }
+
+    /// Registers a trained Zstd dictionary on this mount and returns its `dict_id` (`Direct` mode).
+    pub fn register_zstd_dict(&self, dict_bytes: &[u8]) -> Result<u32, SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.register_zstd_dict(dict_bytes)?),
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "Zstd dictionary registration is only supported in Direct/Standalone sessions"
+                    .into(),
+            )),
+        }
+    }
+
+    /// Registers a trained Zstd dictionary and sets it as the default compression dictionary.
+    pub fn register_and_use_zstd_dict(&self, dict_bytes: &[u8]) -> Result<u32, SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.register_and_use_zstd_dict(dict_bytes)?),
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "Zstd dictionary registration is only supported in Direct/Standalone sessions"
+                    .into(),
+            )),
+        }
+    }
+
+    /// Sets or clears (`None`) the active default compression dictionary ID (`Direct` mode).
+    pub fn set_default_zstd_dict(&self, dict_id: Option<u32>) -> Result<(), SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.set_default_zstd_dict(dict_id)?),
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "Zstd dictionary configuration is only supported in Direct/Standalone sessions"
+                    .into(),
+            )),
+        }
+    }
+
+    /// Trains a Zstd dictionary from regular files inside `dir_inode_id` (`Direct` mode).
+    pub fn train_zstd_dict_from_dir(
+        &self,
+        dir_inode_id: u64,
+        max_dict_bytes: usize,
+        max_samples: usize,
+    ) -> Result<Vec<u8>, SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => {
+                Ok(dm.train_zstd_dict_from_dir(dir_inode_id, max_dict_bytes, max_samples)?)
+            }
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "Zstd dictionary training is only supported in Direct/Standalone sessions".into(),
+            )),
         }
     }
 

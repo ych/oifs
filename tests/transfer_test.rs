@@ -1705,3 +1705,67 @@ fn bench_cross_image_transfer_performance() {
         );
     }
 }
+
+#[test]
+fn repro_bug5_transfer_overwrite_nospace_preserves_existing_dst() {
+    use rand::RngCore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut big_data = vec![0u8; 768 * 1024];
+    rand::thread_rng().fill_bytes(&mut big_data);
+    let orig_target = vec![0x5Au8; 32 * 1024];
+
+    for (label, journaled, encrypted) in [
+        ("journaled_plain", true, false),
+        ("non_journaled_plain", false, false),
+        ("journaled_encrypted", true, true),
+    ] {
+        let src_path = dir.path().join(format!("{label}_src.img"));
+        let dst_path = dir.path().join(format!("{label}_dst.img"));
+        let pw = if encrypted { Some("secretpw123") } else { None };
+        let storage = StorageMode::Mmap;
+
+        let src =
+            DiskManager::open_with_options(&src_path, 4 * 1024 * 1024, pw, journaled, storage)
+                .unwrap();
+        let dst =
+            DiskManager::open_with_options(&dst_path, 512 * 1024, pw, journaled, storage).unwrap();
+
+        src.create_file_with_data(0, "big.bin", &big_data, CompressionMode::Never)
+            .unwrap();
+        dst.create_file_with_data(0, "target.bin", &orig_target, CompressionMode::Never)
+            .unwrap();
+
+        let err = src
+            .transfer_file_to(
+                0,
+                "big.bin",
+                &dst,
+                0,
+                "target.bin",
+                TransferOptions {
+                    overwrite: true,
+                    move_file: false,
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, oifs::disk::DiskManagerError::Allocator(_)),
+            "[{label}] expected NoSpace error, got: {err:?}"
+        );
+
+        let target_ino = dst.lookup(0, "target.bin").unwrap_or_else(|e| {
+            panic!("[{label}] target.bin was deleted before transfer failed: {e:?}")
+        });
+        assert_eq!(
+            dst.read_data(target_ino).unwrap(),
+            orig_target,
+            "[{label}] existing destination file content must remain intact on failed overwrite"
+        );
+        let report = dst.verify_integrity().unwrap();
+        assert!(
+            report.is_clean,
+            "[{label}] dst verify_integrity failed after NoSpace: {report:?}"
+        );
+    }
+}

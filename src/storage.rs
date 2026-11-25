@@ -37,6 +37,55 @@ pub const MAX_FILE_IO_CACHE_BYTES: usize = 4 * 1024 * 1024 * 1024;
 /// reads bypass the cache to preserve sequential throughput and prevent scan pollution.
 pub(crate) const MAX_CACHED_EXTENT: usize = 64 * 1024;
 
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StorageTraceEvent {
+    Flush,
+    FlushRange { offset: usize, len: usize },
+    JournalHeaderReset,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static STORAGE_TRACE: std::cell::RefCell<Option<Vec<StorageTraceEvent>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct StorageTraceGuard;
+
+#[cfg(test)]
+impl Drop for StorageTraceGuard {
+    fn drop(&mut self) {
+        STORAGE_TRACE.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn start_storage_trace() -> StorageTraceGuard {
+    STORAGE_TRACE.with(|cell| {
+        *cell.borrow_mut() = Some(Vec::new());
+    });
+    StorageTraceGuard
+}
+
+#[cfg(test)]
+pub(crate) fn take_storage_trace() -> Vec<StorageTraceEvent> {
+    STORAGE_TRACE.with(|cell| cell.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+#[inline]
+fn record_storage_trace(ev: StorageTraceEvent) {
+    STORAGE_TRACE.with(|cell| {
+        if let Some(ref mut log) = *cell.borrow_mut() {
+            log.push(ev);
+        }
+    });
+}
+
 /// Process-wide override for the default storage mode (0 = unset, 1 = Mmap, 2 = FileIo).
 static DEFAULT_STORAGE_MODE_OVERRIDE: std::sync::atomic::AtomicU8 =
     std::sync::atomic::AtomicU8::new(0);
@@ -861,6 +910,10 @@ impl JournalRegionMut<'_> {
     /// and marks the guard clean so `Drop` is a no-op.
     pub(crate) fn flush_writeback(&mut self) -> io::Result<()> {
         let wb = std::mem::replace(&mut self.writeback, JournalWriteback::None);
+        #[cfg(test)]
+        if matches!(wb, JournalWriteback::HeaderOnly) {
+            record_storage_trace(StorageTraceEvent::JournalHeaderReset);
+        }
         let Some((file, offset)) = self.file_writeback else {
             return Ok(());
         };
@@ -2048,6 +2101,8 @@ impl ImageBacking {
         if !storage_op_permitted(self.is_read_only(), StorageOpKind::Flush) {
             return Ok(());
         }
+        #[cfg(test)]
+        record_storage_trace(StorageTraceEvent::Flush);
         match self {
             Self::Mmap(m) => crate::retry_eintr(|| m.flush()),
             Self::MmapReadOnly(_) => Ok(()),
@@ -2073,6 +2128,8 @@ impl ImageBacking {
         if !storage_op_permitted(self.is_read_only(), StorageOpKind::Flush) {
             return Ok(());
         }
+        #[cfg(test)]
+        record_storage_trace(StorageTraceEvent::FlushRange { offset, len });
         match self {
             Self::Mmap(m) => crate::retry_eintr(|| m.flush_range(offset, len)),
             Self::MmapReadOnly(_) => Ok(()),

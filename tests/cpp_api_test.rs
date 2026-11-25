@@ -2927,6 +2927,91 @@ static SyncCoroTask run_cpp20_coro_workflow(
     OIFS_CHECK(caught_coro_err);
 }
 
+struct CancelableCoro {
+    struct promise_type {
+        std::atomic<bool> resumed_after_cancel{false};
+        CancelableCoro get_return_object() noexcept {
+            return CancelableCoro{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        std::suspend_never initial_suspend() noexcept { return {}; }
+        std::suspend_always final_suspend() noexcept { return {}; }
+        void return_void() noexcept {}
+        void unhandled_exception() noexcept {}
+    };
+
+    std::coroutine_handle<promise_type> handle{};
+
+    explicit CancelableCoro(std::coroutine_handle<promise_type> h) noexcept : handle(h) {}
+    CancelableCoro(const CancelableCoro&) = delete;
+    CancelableCoro& operator=(const CancelableCoro&) = delete;
+    ~CancelableCoro() {
+        if (handle) {
+            handle.destroy();
+        }
+    }
+    void destroy_early() {
+        if (handle) {
+            handle.destroy();
+            handle = nullptr;
+        }
+    }
+};
+
+static CancelableCoro read_in_coro_for_cancel(
+    oifs::FileSystem& fs,
+    uint64_t ino,
+    uint8_t* dst,
+    size_t len,
+    std::atomic<bool>& completed_flag
+) {
+    oifs::MutableByteSpan span(dst, len);
+    (void)co_await fs.read_at_async(ino, 0, span);
+    completed_flag.store(true, std::memory_order_release);
+}
+
+static void test_cpp20_coro_early_cancel_no_buffer_uaf(oifs::FileSystem& fs) {
+    // 5 MiB compressible file compressed at Zstd Stream level 9 so cold decode runs
+    // asynchronously on the background pool (never triggers DecodedBlobCache 4 MiB cap
+    // or inline fast-path).
+    const size_t kFileSize = 5ULL * 1024 * 1024;
+    std::vector<uint8_t> payload(kFileSize);
+    for (size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<uint8_t>((i * 131 + (i >> 8)) & 0xFF);
+    }
+
+    for (int iter = 0; iter < 5; ++iter) {
+        std::string name = "coro_cancel_" + std::to_string(iter) + ".zst";
+        uint64_t ino = fs.create_file_with_data(
+            name, oifs::ByteView(payload), oifs::WritePolicy::Stream, 9);
+
+        std::vector<uint8_t> arena(kFileSize, 0xCC);
+        std::atomic<bool> completed_after_cancel{false};
+        CancelableCoro coro = read_in_coro_for_cancel(
+            fs, ino, arena.data(), arena.size(), completed_after_cancel);
+        coro.destroy_early();
+
+        // Poison caller buffer immediately after coroutine destruction.
+        // If background read wasn't quiesced by ~Awaiter(), the worker will overwrite
+        // `arena` with decompressed bytes (UAF).
+        std::fill(arena.begin(), arena.end(), 0xDD);
+        (void)fs.flush_async().wait();
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+
+        OIFS_CHECK(!completed_after_cancel.load(std::memory_order_acquire));
+        for (size_t i = 0; i < arena.size(); ++i) {
+            if (arena[i] != 0xDD) {
+                std::fprintf(
+                    stderr,
+                    "repro_bug3 UAF: cancelled co_await mutated caller buffer at byte %zu (got 0x%02x) on iter %d!\n",
+                    i,
+                    arena[i],
+                    iter);
+                std::abort();
+            }
+        }
+    }
+}
+
 static void test_cpp20_coroutine_co_await(const std::string& coro_img) {
     oifs::FileSystem fs = oifs::FileSystem::open_with_options(
         coro_img, 16ULL * 1024 * 1024, "", oifs::StorageMode::Mmap, true);
@@ -2945,6 +3030,7 @@ static void test_cpp20_coroutine_co_await(const std::string& coro_img) {
 
     SyncCoroTask task = run_cpp20_coro_workflow(fs, raw_ino, raw_data, comp_ino, comp_data);
     task.wait();
+    test_cpp20_coro_early_cancel_no_buffer_uaf(fs);
 }
 #else
 #if __cplusplus >= 202002L && defined(__cpp_impl_coroutine) && __has_include(<coroutine>)

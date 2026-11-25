@@ -881,9 +881,10 @@ public:
      *
      * - Inline Fast-Path hits (`await_ready() == true`) resume immediately with zero
      *   suspension or thread hop.
-     * - Pending futures suspend and await `oifs_async_wait` on a background thread holding
-     *   a `shared_ptr` to synchronized completion state and the underlying future,
-     *   preventing Use-After-Free if the coroutine frame or `AsyncFuture` is destroyed early.
+     * - Pending futures suspend and await `oifs_async_wait` on an owned waiter `std::thread`.
+     *   If the coroutine is cancelled/destroyed early from outside the waiter thread, `~Awaiter()`
+     *   marks `cancelled = true` and synchronously joins `worker`, holding the drop barrier
+     *   until the underlying Rust task stops touching any caller buffer (preventing UAF).
      */
     class Awaiter {
     public:
@@ -893,9 +894,27 @@ public:
         }
 
         ~Awaiter() {
-            if (state_) {
+            if (!state_ || !suspended_) {
+                return;
+            }
+            std::thread to_join;
+            {
                 std::lock_guard<std::mutex> lock(state_->mtx);
+                if (!state_->worker.joinable()) {
+                    state_->cancelled = true;
+                    return;
+                }
+                // If `~Awaiter()` is running from inside `h.resume()` on the waiter thread,
+                // self-joining would deadlock; detach the finishing thread instead.
+                if (state_->resuming && state_->worker_tid == std::this_thread::get_id()) {
+                    state_->worker.detach();
+                    return;
+                }
                 state_->cancelled = true;
+                to_join = std::move(state_->worker);
+            }
+            if (to_join.joinable()) {
+                to_join.join();
             }
         }
 
@@ -907,37 +926,49 @@ public:
         void await_suspend(std::coroutine_handle<> h) {
             suspended_ = true;
             auto st = state_;
-            std::thread([st, h]() mutable {
+            std::lock_guard<std::mutex> lock(st->mtx);
+            st->worker = std::thread([st, h]() mutable {
                 int64_t res = (st->fut != nullptr) ? oifs_async_wait(st->fut.get()) : -1;
                 bool should_resume = false;
                 {
-                    std::lock_guard<std::mutex> lock(st->mtx);
+                    std::lock_guard<std::mutex> lk(st->mtx);
+                    st->fut.reset();
                     if (!st->cancelled) {
                         st->result = res;
+                        st->resuming = true;
+                        st->worker_tid = std::this_thread::get_id();
                         should_resume = true;
                     }
                 }
                 if (should_resume) {
                     h.resume();
                 }
-            }).detach();
+            });
         }
 
         int64_t await_resume() {
             if (!suspended_) {
                 return fut_.wait();
             }
-            if (state_->result < 0) {
+            int64_t res = 0;
+            {
+                std::lock_guard<std::mutex> lock(state_->mtx);
+                res = state_->result;
+            }
+            if (res < 0) {
                 throw Error(fut_.last_error());
             }
-            return state_->result;
+            return res;
         }
 
     private:
         struct SharedState {
             std::mutex mtx{};
             bool cancelled = false;
+            bool resuming = false;
             int64_t result = 0;
+            std::thread::id worker_tid{};
+            std::thread worker{};
             std::shared_ptr<OIFSAsyncFuture> fut{};
         };
 

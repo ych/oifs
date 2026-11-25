@@ -970,7 +970,8 @@ impl DiskManager {
             // saturated at 65535 (65495..65535 plaintext bytes), re-encrypt that tail chunk at
             // full 64 KiB length so subsequent reads know the exact stored ciphertext length.
             if was_seekable && inode.encrypted && inode.size > 0 {
-                let old_last_chunk = ((inode.size - 1) / crate::inode::CHUNK_SIZE_64K as u64) as usize;
+                let old_last_chunk =
+                    ((inode.size - 1) / crate::inode::CHUNK_SIZE_64K as u64) as usize;
                 let old_last_start = (old_last_chunk * crate::inode::CHUNK_SIZE_64K) as u64;
                 let old_last_len = (inode.size - old_last_start) as usize;
                 if old_last_len < crate::inode::CHUNK_SIZE_64K && first_chunk > old_last_chunk {
@@ -992,11 +993,7 @@ impl DiskManager {
                             old_last_len,
                             &mut buf[..old_last_len],
                         )?;
-                        chunks.push((
-                            old_last_chunk,
-                            std::borrow::Cow::Owned(buf),
-                            new_tail_len,
-                        ));
+                        chunks.push((old_last_chunk, std::borrow::Cow::Owned(buf), new_tail_len));
                     }
                 }
             }
@@ -1713,103 +1710,324 @@ impl DiskManager {
             Self::maybe_checkpoint(guard)?;
             Ok(())
         } else {
-            // Legacy in-place path (non-journaled)
+            // Legacy in-place path (non-journaled):
+            // Phase 1: Pre-allocate ALL new chunk runs and ALL missing indirect pointer blocks
+            // before mutating any pointer, inode, or old block so mid-write ENOSPC rolls back
+            // with zero dangling pointers or leaked blocks.
             let mut compressed_size_delta: i64 = 0;
             let track_ranges = guard.durability_mode().is_range_based();
             let mut payload_ranges: Vec<(usize, usize)> = Vec::new();
-            for prepared in prepared_chunks {
-                // 1. Inspect existing chunk entry first: on non-journaled images, if the
-                //    replacement fits inside the existing contiguous run (`blocks_needed <= old_cnt`),
-                //    reuse `old_start` in-place to avoid bitmap search, allocation, and fragmentation.
-                let old_entry =
-                    Self::resolve_logical_chunk_entry(&guard.backing, &inode, prepared.chunk_idx);
-                let (old_bytes, old_start, old_cnt) = if !old_entry.is_empty() {
-                    (
-                        old_entry.compressed_len() as i64,
-                        old_entry.start_block() as u64,
-                        old_entry.block_count() as usize,
-                    )
-                } else {
-                    (0, 0, 0)
-                };
-                compressed_size_delta += prepared.comp_len as i64 - old_bytes;
 
-                let reuse_in_place = old_cnt > 0
-                    && prepared.blocks_needed <= old_cnt
-                    && guard.is_data_block(old_start);
+            struct StagedChunkWrite {
+                chunk_idx: usize,
+                flag: u8,
+                comp_len: u16,
+                blocks_needed: usize,
+                payload: Vec<u8>,
+                old_entry: crate::inode::ChunkEntry,
+                old_start: u64,
+                old_cnt: usize,
+                reuse_in_place: bool,
+                new_start_blk: u64,
+                new_entry: crate::inode::ChunkEntry,
+            }
 
-                let new_start_blk = if reuse_in_place {
-                    old_start
-                } else {
-                    Self::allocate_contiguous_blocks_internal(guard, prepared.blocks_needed)?
-                };
+            let mut staged_writes: Vec<StagedChunkWrite> =
+                Vec::with_capacity(prepared_chunks.len());
+            let mut newly_alloc_spans: Vec<(u64, usize)> = Vec::new();
+            let mut missing_sib_root = false;
+            let mut missing_dib_root = false;
+            let mut missing_tib_root = false;
+            let mut missing_double_sibs = std::collections::BTreeSet::new();
+            let mut missing_triple_dibs = std::collections::BTreeSet::new();
+            let mut missing_triple_sibs = std::collections::BTreeSet::new();
 
-                // 2. Write payload into target blocks
-                if track_ranges && prepared.blocks_needed > 0 {
+            let phase1_res: Result<Vec<u64>, DiskManagerError> = (|| {
+                use crate::inode::BlockPath;
+                for prepared in prepared_chunks {
+                    let old_entry = Self::resolve_logical_chunk_entry(
+                        &guard.backing,
+                        &inode,
+                        prepared.chunk_idx,
+                    );
+                    let (old_bytes, old_start, old_cnt) = if !old_entry.is_empty() {
+                        (
+                            old_entry.compressed_len() as i64,
+                            old_entry.start_block() as u64,
+                            old_entry.block_count() as usize,
+                        )
+                    } else {
+                        (0, 0, 0)
+                    };
+                    compressed_size_delta += prepared.comp_len as i64 - old_bytes;
+
+                    let reuse_in_place = old_cnt > 0
+                        && prepared.blocks_needed <= old_cnt
+                        && guard.is_data_block(old_start);
+
+                    let new_start_blk = if reuse_in_place {
+                        old_start
+                    } else {
+                        let start = Self::allocate_contiguous_blocks_internal(
+                            guard,
+                            prepared.blocks_needed,
+                        )?;
+                        newly_alloc_spans.push((start, prepared.blocks_needed));
+                        start
+                    };
+                    let start_u32 = u32::try_from(new_start_blk).map_err(|_| {
+                        DiskManagerError::Io(std::io::Error::other(
+                            "Chunk block ID exceeds 32-bit ChunkEntry range",
+                        ))
+                    })?;
+                    let count_u8 = u8::try_from(prepared.blocks_needed).map_err(|_| {
+                        DiskManagerError::Io(std::io::Error::other(
+                            "Chunk block count exceeds u8 ChunkEntry range",
+                        ))
+                    })?;
+                    let new_entry = crate::inode::ChunkEntry::new(
+                        start_u32,
+                        count_u8,
+                        prepared.flag,
+                        prepared.comp_len,
+                    );
+
+                    if new_entry != old_entry && !new_entry.is_empty() {
+                        match BlockPath::from_logical(prepared.chunk_idx) {
+                            Some(BlockPath::Direct(_)) => {}
+                            Some(BlockPath::Single(_)) => {
+                                if inode.blocks[10] == 0 {
+                                    missing_sib_root = true;
+                                } else if !guard.is_data_block(inode.blocks[10]) {
+                                    return Err(DiskManagerError::Io(std::io::Error::other(
+                                        "Indirect root outside data area",
+                                    )));
+                                }
+                            }
+                            Some(BlockPath::Double(a, _)) => {
+                                let dib = inode.blocks[11];
+                                if dib == 0 {
+                                    missing_dib_root = true;
+                                    missing_double_sibs.insert(a);
+                                } else if !guard.is_data_block(dib) {
+                                    return Err(DiskManagerError::Io(std::io::Error::other(
+                                        "Indirect root outside data area",
+                                    )));
+                                } else {
+                                    let sib = guard.backing.read_block_ptr(dib, a);
+                                    if sib == 0 {
+                                        missing_double_sibs.insert(a);
+                                    } else if !guard.is_data_block(sib) {
+                                        return Err(DiskManagerError::Io(std::io::Error::other(
+                                            "Indirect child outside data area",
+                                        )));
+                                    }
+                                }
+                            }
+                            Some(BlockPath::Triple(a, b, _)) => {
+                                let tib = inode.triple_indirect;
+                                if tib == 0 {
+                                    missing_tib_root = true;
+                                    missing_triple_dibs.insert(a);
+                                    missing_triple_sibs.insert((a, b));
+                                } else if !guard.is_data_block(tib) {
+                                    return Err(DiskManagerError::Io(std::io::Error::other(
+                                        "Indirect root outside data area",
+                                    )));
+                                } else {
+                                    let dib = guard.backing.read_block_ptr(tib, a);
+                                    if dib == 0 {
+                                        missing_triple_dibs.insert(a);
+                                        missing_triple_sibs.insert((a, b));
+                                    } else if !guard.is_data_block(dib) {
+                                        return Err(DiskManagerError::Io(std::io::Error::other(
+                                            "Indirect child outside data area",
+                                        )));
+                                    } else {
+                                        let sib = guard.backing.read_block_ptr(dib, b);
+                                        if sib == 0 {
+                                            missing_triple_sibs.insert((a, b));
+                                        } else if !guard.is_data_block(sib) {
+                                            return Err(DiskManagerError::Io(
+                                                std::io::Error::other(
+                                                    "Indirect grandchild outside data area",
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            None => {
+                                return Err(DiskManagerError::Io(std::io::Error::new(
+                                    std::io::ErrorKind::FileTooLarge,
+                                    "Chunk index exceeds maximum addressable size",
+                                )));
+                            }
+                        }
+                    }
+
+                    staged_writes.push(StagedChunkWrite {
+                        chunk_idx: prepared.chunk_idx,
+                        flag: prepared.flag,
+                        comp_len: prepared.comp_len,
+                        blocks_needed: prepared.blocks_needed,
+                        payload: prepared.payload,
+                        old_entry,
+                        old_start,
+                        old_cnt,
+                        reuse_in_place,
+                        new_start_blk,
+                        new_entry,
+                    });
+                }
+
+                let needed_indirects = usize::from(missing_sib_root)
+                    + usize::from(missing_dib_root)
+                    + usize::from(missing_tib_root)
+                    + missing_double_sibs.len()
+                    + missing_triple_dibs.len()
+                    + missing_triple_sibs.len();
+                let mut prealloc_indirects = Vec::with_capacity(needed_indirects);
+                for _ in 0..needed_indirects {
+                    match Self::alloc_and_zero_block(guard) {
+                        Ok(blk) => prealloc_indirects.push(blk),
+                        Err(e) => {
+                            for blk in prealloc_indirects {
+                                let _ = Self::free_contiguous_blocks_internal(guard, blk, 1);
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                Ok(prealloc_indirects)
+            })();
+
+            let mut prealloc_indirects = match phase1_res {
+                Ok(ind) => ind,
+                Err(e) => {
+                    for (start, cnt) in newly_alloc_spans {
+                        let _ = Self::free_contiguous_blocks_internal(guard, start, cnt);
+                    }
+                    return Err(e);
+                }
+            };
+
+            // Phase 2: All allocations succeeded; write payloads, update chunk pointers using
+            // preallocated indirects, write inode, and ONLY THEN free replaced old blocks.
+            for st in &staged_writes {
+                let _ = (st.flag, st.comp_len);
+                if track_ranges && st.blocks_needed > 0 {
                     payload_ranges.push((
-                        (new_start_blk as usize).saturating_mul(BLOCK_SIZE),
-                        prepared.blocks_needed.saturating_mul(BLOCK_SIZE),
+                        (st.new_start_blk as usize).saturating_mul(BLOCK_SIZE),
+                        st.blocks_needed.saturating_mul(BLOCK_SIZE),
                     ));
                 }
                 Self::write_chunk_blocks(
                     &mut guard.backing,
-                    new_start_blk,
-                    prepared.blocks_needed,
-                    &prepared.payload,
+                    st.new_start_blk,
+                    st.blocks_needed,
+                    &st.payload,
                 )?;
+            }
 
-                // 3. Form new chunk entry and update pointer if changed
-                let new_entry = crate::inode::ChunkEntry::new(
-                    new_start_blk as u32,
-                    prepared.blocks_needed as u8,
-                    prepared.flag,
-                    prepared.comp_len,
-                );
-                if new_entry != old_entry {
-                    Self::set_logical_chunk_entry(
-                        guard,
-                        &mut inode,
-                        prepared.chunk_idx,
-                        new_entry,
-                        None,
-                    )?;
-                }
-
-                // 4. Free any unused old blocks
-                if reuse_in_place {
-                    if prepared.blocks_needed < old_cnt {
-                        let excess_start = old_start + prepared.blocks_needed as u64;
-                        let excess_cnt = old_cnt - prepared.blocks_needed;
-                        Self::free_contiguous_blocks_internal(guard, excess_start, excess_cnt)?;
+            let mut touched_indirect_blocks = std::collections::BTreeSet::new();
+            let mut next_indirect_idx = 0usize;
+            for st in &staged_writes {
+                if st.new_entry != st.old_entry {
+                    use crate::inode::BlockPath;
+                    match BlockPath::from_logical(st.chunk_idx).unwrap() {
+                        BlockPath::Direct(i) => {
+                            inode.blocks[i] = st.new_entry.0;
+                        }
+                        BlockPath::Single(i) => {
+                            if inode.blocks[10] == 0 {
+                                inode.blocks[10] = prealloc_indirects[next_indirect_idx];
+                                next_indirect_idx += 1;
+                            }
+                            let sib = inode.blocks[10];
+                            guard.backing.write_block_ptr(sib, i, st.new_entry.0);
+                            touched_indirect_blocks.insert(sib);
+                        }
+                        BlockPath::Double(a, b) => {
+                            if inode.blocks[11] == 0 {
+                                inode.blocks[11] = prealloc_indirects[next_indirect_idx];
+                                next_indirect_idx += 1;
+                            }
+                            let dib = inode.blocks[11];
+                            let mut sib = guard.backing.read_block_ptr(dib, a);
+                            if sib == 0 {
+                                sib = prealloc_indirects[next_indirect_idx];
+                                next_indirect_idx += 1;
+                                guard.backing.write_block_ptr(dib, a, sib);
+                                touched_indirect_blocks.insert(dib);
+                            }
+                            guard.backing.write_block_ptr(sib, b, st.new_entry.0);
+                            touched_indirect_blocks.insert(sib);
+                        }
+                        BlockPath::Triple(a, b, c) => {
+                            if inode.triple_indirect == 0 {
+                                inode.triple_indirect = prealloc_indirects[next_indirect_idx];
+                                next_indirect_idx += 1;
+                            }
+                            let tib = inode.triple_indirect;
+                            let mut dib = guard.backing.read_block_ptr(tib, a);
+                            if dib == 0 {
+                                dib = prealloc_indirects[next_indirect_idx];
+                                next_indirect_idx += 1;
+                                guard.backing.write_block_ptr(tib, a, dib);
+                                touched_indirect_blocks.insert(tib);
+                            }
+                            let mut sib = guard.backing.read_block_ptr(dib, b);
+                            if sib == 0 {
+                                sib = prealloc_indirects[next_indirect_idx];
+                                next_indirect_idx += 1;
+                                guard.backing.write_block_ptr(dib, b, sib);
+                                touched_indirect_blocks.insert(dib);
+                            }
+                            guard.backing.write_block_ptr(sib, c, st.new_entry.0);
+                            touched_indirect_blocks.insert(sib);
+                        }
                     }
-                } else if old_cnt > 0 {
-                    Self::free_contiguous_blocks_internal(guard, old_start, old_cnt)?;
                 }
             }
-
-            // Reclaim legacy non-seekable blocks when upgrading a non-empty file to chunked format.
-            for blk in old_non_seekable_blocks {
-                Self::free_contiguous_blocks_internal(guard, blk, 1)?;
+            for unused_blk in prealloc_indirects.drain(next_indirect_idx..) {
+                let _ = Self::free_contiguous_blocks_internal(guard, unused_blk, 1);
             }
 
-            // 6. Recalculate inode compressed size & metadata
             let total_physical_bytes =
                 (inode.compressed_size as i64 + compressed_size_delta).max(0) as u64;
-
             inode.size = new_file_size;
             inode.compressed_size = total_physical_bytes;
             inode.modified_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-
             Self::write_inode_internal(guard, inode_id, &inode)?;
+
+            for st in &staged_writes {
+                if st.reuse_in_place {
+                    if st.blocks_needed < st.old_cnt {
+                        let excess_start = st.old_start + st.blocks_needed as u64;
+                        let excess_cnt = st.old_cnt - st.blocks_needed;
+                        Self::free_contiguous_blocks_internal(guard, excess_start, excess_cnt)?;
+                    }
+                } else if st.old_cnt > 0 {
+                    Self::free_contiguous_blocks_internal(guard, st.old_start, st.old_cnt)?;
+                }
+            }
+            for blk in old_non_seekable_blocks {
+                Self::free_contiguous_blocks_internal(guard, blk, 1)?;
+            }
+
             if guard.durability_mode().is_range_based() {
                 let mut ranges = vec![
                     guard.data_bitmap_byte_range(),
                     guard.inode_byte_range(inode_id),
                 ];
                 ranges.extend(payload_ranges);
+                for ind_blk in touched_indirect_blocks {
+                    ranges.push(guard.block_byte_range(ind_blk));
+                }
                 guard.sync_mutation_ranges(&ranges)?;
             }
             guard.invalidate_payload_caches(inode_id);
@@ -1920,8 +2138,7 @@ impl DiskManager {
                                 (inode.compressed_size as i64 + comp_delta).max(0) as u64;
                             inode.size = new_size;
                             inode.modified_at = now;
-                            let post_image =
-                                Self::build_inode_post_image(guard, inode_id, &inode)?;
+                            let post_image = Self::build_inode_post_image(guard, inode_id, &inode)?;
                             journal_ops.push(crate::journal::MetadataOp::WriteInode {
                                 inode_id,
                                 inode_bytes: Box::new(post_image),
@@ -1941,7 +2158,8 @@ impl DiskManager {
                                     guard.backing.flush_range(*off, *actual)?;
                                 }
                             }
-                            let journal_ops = if crate::journal::is_already_coalesced(&journal_ops) {
+                            let journal_ops = if crate::journal::is_already_coalesced(&journal_ops)
+                            {
                                 journal_ops
                             } else {
                                 crate::journal::coalesce_ops(journal_ops)
@@ -2005,11 +2223,17 @@ impl DiskManager {
                                     (new_start_blk as usize).saturating_mul(BLOCK_SIZE),
                                     blocks_needed.saturating_mul(BLOCK_SIZE),
                                 );
-                                let ranges = [
+                                let mut ranges = vec![
                                     guard.data_bitmap_byte_range(),
                                     guard.inode_byte_range(inode_id),
                                     payload_range,
                                 ];
+                                Self::push_chunk_indirect_ranges(
+                                    guard,
+                                    &inode,
+                                    old_last_chunk,
+                                    &mut ranges,
+                                );
                                 guard.sync_mutation_ranges(&ranges)?;
                             }
                             guard.invalidate_payload_caches(inode_id);
@@ -2251,6 +2475,15 @@ impl DiskManager {
         }
 
         // Legacy non-journaled path
+        let track_ranges = guard.durability_mode().is_range_based();
+        let mut mutated_ranges: Vec<(usize, usize)> = if track_ranges {
+            vec![
+                guard.data_bitmap_byte_range(),
+                guard.inode_byte_range(inode_id),
+            ]
+        } else {
+            Vec::new()
+        };
         let mut compressed_size_delta: i64 = 0;
         // 1. Free all chunks beyond new_chunks
         for c_idx in new_chunks..old_chunks {
@@ -2260,6 +2493,9 @@ impl DiskManager {
                 let start = entry.start_block() as u64;
                 let count = entry.block_count() as usize;
                 Self::free_contiguous_blocks_internal(guard, start, count)?;
+                if track_ranges {
+                    Self::push_chunk_indirect_ranges(guard, &inode, c_idx, &mut mutated_ranges);
+                }
                 Self::set_logical_chunk_entry(
                     guard,
                     &mut inode,
@@ -2271,6 +2507,24 @@ impl DiskManager {
         }
 
         // 1b. Prune and free any indirect pointer blocks beyond new_chunks
+        if track_ranges {
+            if new_chunks > 10 && guard.is_data_block(inode.blocks[10]) {
+                mutated_ranges.push(guard.block_byte_range(inode.blocks[10]));
+            }
+            if new_chunks > 522 && guard.is_data_block(inode.blocks[11]) {
+                mutated_ranges.push(guard.block_byte_range(inode.blocks[11]));
+            }
+            let max_double = 10 + 512 + 512 * 512;
+            if new_chunks > max_double && guard.is_data_block(inode.triple_indirect) {
+                let tib = inode.triple_indirect;
+                mutated_ranges.push(guard.block_byte_range(tib));
+                let t_idx = (new_chunks - max_double - 1) / (512 * 512);
+                let boundary_dib = guard.backing.read_block_ptr(tib, t_idx);
+                if guard.is_data_block(boundary_dib) {
+                    mutated_ranges.push(guard.block_byte_range(boundary_dib));
+                }
+            }
+        }
         let mut freed_indirect_blocks = Vec::new();
         {
             let mut ops_opt = None;
@@ -2333,6 +2587,12 @@ impl DiskManager {
                         blocks_needed,
                         &payload,
                     )?;
+                    if track_ranges && blocks_needed > 0 {
+                        mutated_ranges.push((
+                            (new_start_blk as usize).saturating_mul(BLOCK_SIZE),
+                            blocks_needed.saturating_mul(BLOCK_SIZE),
+                        ));
+                    }
 
                     let new_entry = crate::inode::ChunkEntry::new(
                         new_start_blk as u32,
@@ -2341,6 +2601,14 @@ impl DiskManager {
                         comp_len,
                     );
                     Self::set_logical_chunk_entry(guard, &mut inode, last_c_idx, new_entry, None)?;
+                    if track_ranges {
+                        Self::push_chunk_indirect_ranges(
+                            guard,
+                            &inode,
+                            last_c_idx,
+                            &mut mutated_ranges,
+                        );
+                    }
 
                     let old_start = old_entry.start_block() as u64;
                     let old_cnt = old_entry.block_count() as usize;
@@ -2356,12 +2624,152 @@ impl DiskManager {
         }
 
         Self::write_inode_internal(guard, inode_id, &inode)?;
-        if guard.durability_mode().is_range_based() {
-            let range = guard.inode_byte_range(inode_id);
-            guard.sync_mutation_ranges(&[range])?;
+        if track_ranges {
+            guard.sync_mutation_ranges(&mutated_ranges)?;
         }
         guard.invalidate_payload_caches(inode_id);
         guard.cache_inode(inode_id, inode);
         Ok(())
+    }
+
+    fn push_chunk_indirect_ranges(
+        guard: &DiskManagerInner,
+        inode: &Inode,
+        chunk_idx: usize,
+        ranges: &mut Vec<(usize, usize)>,
+    ) {
+        use crate::inode::BlockPath;
+        match BlockPath::from_logical(chunk_idx) {
+            Some(BlockPath::Direct(_)) | None => {}
+            Some(BlockPath::Single(_)) => {
+                if guard.is_data_block(inode.blocks[10]) {
+                    ranges.push(guard.block_byte_range(inode.blocks[10]));
+                }
+            }
+            Some(BlockPath::Double(a, _)) => {
+                let dib = inode.blocks[11];
+                if guard.is_data_block(dib) {
+                    ranges.push(guard.block_byte_range(dib));
+                    let sib = guard.backing.read_block_ptr(dib, a);
+                    if guard.is_data_block(sib) {
+                        ranges.push(guard.block_byte_range(sib));
+                    }
+                }
+            }
+            Some(BlockPath::Triple(a, b, _)) => {
+                let tib = inode.triple_indirect;
+                if guard.is_data_block(tib) {
+                    ranges.push(guard.block_byte_range(tib));
+                    let dib = guard.backing.read_block_ptr(tib, a);
+                    if guard.is_data_block(dib) {
+                        ranges.push(guard.block_byte_range(dib));
+                        let sib = guard.backing.read_block_ptr(dib, b);
+                        if guard.is_data_block(sib) {
+                            ranges.push(guard.block_byte_range(sib));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod bugfix_repro_tests {
+    use super::*;
+
+    fn range_covered(events: &[crate::storage::StorageTraceEvent], target: (usize, usize)) -> bool {
+        let (t_start, t_len) = target;
+        if t_len == 0 {
+            return true;
+        }
+        let t_end = t_start + t_len;
+        events.iter().any(|ev| match *ev {
+            crate::storage::StorageTraceEvent::Flush => true,
+            crate::storage::StorageTraceEvent::FlushRange { offset, len } => {
+                offset <= t_start && offset.saturating_add(len) >= t_end
+            }
+            crate::storage::StorageTraceEvent::JournalHeaderReset => false,
+        })
+    }
+
+    #[test]
+    fn repro_bug8_non_journaled_truncate_chunked_syncs_all_ranges() {
+        let path = std::env::temp_dir().join(format!(
+            "oifs_repro_bug8_trunc_sync_{}.img",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let dm =
+            DiskManager::open_with_options(&path, 4 * 1024 * 1024, None, false, StorageMode::Mmap)
+                .unwrap();
+        dm.set_durability_mode(DurabilityMode::Strict);
+
+        let mut payload = vec![b'K'; 12 * crate::inode::CHUNK_SIZE_64K];
+        for (i, b) in payload.iter_mut().enumerate() {
+            if i % 64 == 0 {
+                *b = (i / 64) as u8;
+            }
+        }
+        let ino = dm
+            .create_file_with_data(
+                0,
+                "seek12.bin",
+                &payload,
+                CompressionMode::Seekable {
+                    chunk_size: crate::inode::CHUNK_SIZE_64K as u32,
+                    level: 1,
+                },
+            )
+            .unwrap();
+        dm.flush().unwrap();
+
+        let _trace_guard = crate::storage::start_storage_trace();
+        dm.truncate(ino, 10 * crate::inode::CHUNK_SIZE_64K as u64 + 4096)
+            .unwrap();
+        let events = crate::storage::take_storage_trace();
+
+        let (inode_rng, bitmap_rng, sib_rng, tail_rng) = {
+            let guard = dm.inner.read().unwrap();
+            let inode = DiskManager::read_inode_internal(&guard, ino).unwrap();
+            let sib = inode.blocks[10];
+            assert!(
+                guard.is_data_block(sib),
+                "Expected single indirect block to remain allocated for 11 chunks"
+            );
+            let tail_entry = DiskManager::resolve_logical_chunk_entry(&guard.backing, &inode, 10);
+            assert!(!tail_entry.is_empty());
+            let tail_rng = (
+                (tail_entry.start_block() as usize) * BLOCK_SIZE,
+                (tail_entry.block_count() as usize) * BLOCK_SIZE,
+            );
+            (
+                guard.inode_byte_range(ino),
+                guard.data_bitmap_byte_range(),
+                guard.block_byte_range(sib),
+                tail_rng,
+            )
+        };
+
+        drop(dm);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            range_covered(&events, inode_rng),
+            "inode byte range {inode_rng:?} missing from Strict flush events: {events:?}"
+        );
+        assert!(
+            range_covered(&events, bitmap_rng),
+            "data_bitmap byte range {bitmap_rng:?} missing from Strict flush events: {events:?}"
+        );
+        assert!(
+            range_covered(&events, sib_rng),
+            "single-indirect block range {sib_rng:?} missing from Strict flush events: {events:?}"
+        );
+        assert!(
+            range_covered(&events, tail_rng),
+            "re-encoded tail chunk range {tail_rng:?} missing from Strict flush events: {events:?}"
+        );
     }
 }

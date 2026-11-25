@@ -22,6 +22,46 @@ use super::*;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::OnceLock;
 
+#[cfg(test)]
+std::thread_local! {
+    static TRANSFER_STAGE1_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static SPLICE_BEFORE_DST_COMMIT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static COLLAPSE_BEFORE_WRITE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+#[inline]
+fn run_transfer_stage1_hook() {
+    TRANSFER_STAGE1_HOOK.with(|cell| {
+        if let Some(cb) = cell.borrow_mut().take() {
+            cb();
+        }
+    });
+}
+
+#[cfg(test)]
+#[inline]
+fn run_splice_before_dst_commit_hook() {
+    SPLICE_BEFORE_DST_COMMIT_HOOK.with(|cell| {
+        if let Some(cb) = cell.borrow_mut().take() {
+            cb();
+        }
+    });
+}
+
+#[cfg(test)]
+#[inline]
+fn run_collapse_before_write_hook() {
+    COLLAPSE_BEFORE_WRITE_HOOK.with(|cell| {
+        if let Some(cb) = cell.borrow_mut().take() {
+            cb();
+        }
+    });
+}
+
 /// Method used by [`DiskManager::clone_image`] to fork a whole `.img` file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloneMethod {
@@ -1308,262 +1348,279 @@ impl DiskManager {
             }
         }
 
-        // Flush source image before FD-level transfer so all dirty `MAP_SHARED` pages
-        // are committed to the underlying host file.
-        if !self.is_read_only() {
-            self.flush()?;
-        }
-
-        // Stage 1: Inspect source inode and collect physical extents under `self.inner.read()`,
-        // then strictly drop `src_guard` BEFORE touching `dst`.
-        let (src_ino, src_inode, src_encrypted, src_fd, seekable_chunks, standard_runs) = {
-            let src_guard = self.inner.read().unwrap();
-            let src_ino = Self::dir_lookup(&src_guard, src_parent, src_name)?.ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "File not found",
-                ))
-            })?;
-            let src_inode = Self::read_inode_internal(&src_guard, src_ino)?;
-            if src_inode.mode != crate::inode::FileType::File {
-                return Err(DiskManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "transfer_file_to only supports regular files",
-                )));
+        let mut attempt = 0usize;
+        let (src_ino, src_inode, dst_ino, physical_bytes, extents_transferred, method) = loop {
+            // Flush source image before FD-level transfer so all dirty `MAP_SHARED` pages
+            // are committed to the underlying host file.
+            if !self.is_read_only() {
+                self.flush()?;
             }
-            let src_encrypted = src_guard.superblock.encrypted
-                || src_guard.encryption_key.is_some()
-                || src_inode.encrypted;
-            let src_fd = src_guard.file.as_raw_fd();
-            let is_seekable = (src_inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
 
-            if src_encrypted {
-                (src_ino, src_inode, true, src_fd, Vec::new(), Vec::new())
-            } else if is_seekable {
-                let num_chunks =
-                    src_inode.size.div_ceil(crate::inode::CHUNK_SIZE_64K as u64) as usize;
-                let mut chunks = Vec::new();
-                Self::for_each_logical_leaf(
-                    &src_guard,
-                    &src_inode,
-                    num_chunks,
-                    |chunk_idx, val| {
-                        let entry = crate::inode::ChunkEntry(val);
-                        let start = entry.start_block() as u64;
-                        let cnt = entry.block_count() as u64;
-                        if !entry.is_empty()
-                            && cnt > 0
-                            && src_guard.is_data_block(start)
-                            && src_guard.is_data_block(start.saturating_add(cnt - 1))
-                        {
-                            chunks.push(ChunkExtent { chunk_idx, entry });
-                        }
-                    },
-                );
-                (src_ino, src_inode, false, src_fd, chunks, Vec::new())
-            } else {
-                let stored_bytes = if src_inode.compressed_size > 0 {
-                    src_inode.compressed_size
-                } else {
-                    src_inode.size
-                };
-                let num_blocks = stored_bytes.div_ceil(BLOCK_SIZE as u64) as usize;
-                let mut runs: Vec<LogicalRun> = Vec::new();
-                Self::for_each_logical_leaf(
-                    &src_guard,
-                    &src_inode,
-                    num_blocks,
-                    |logical_idx, phys_blk| {
-                        if src_guard.is_data_block(phys_blk) {
-                            push_logical_block_run(&mut runs, logical_idx, phys_blk);
-                        }
-                    },
-                );
-                (src_ino, src_inode, false, src_fd, Vec::new(), runs)
-            }
-        };
-
-        // Encryption gate: ONLY when both images are unencrypted may we enter Tier 1..3.
-        let dst_encrypted = dst.is_encrypted();
-        if !should_use_raw_fast_path(src_encrypted, dst_encrypted) {
-            return self.transfer_logical_fallback(
-                src_parent, src_name, src_ino, &src_inode, dst, dst_parent, dst_name, options,
-            );
-        }
-
-        // Flush destination before FD-level writes so no dirty `MAP_SHARED` pages race with
-        // kernel `FICLONERANGE`/`copy_file_range`/`pwrite`.
-        dst.flush()?;
-
-        // Handle overwrite on destination before staging the new file.
-        if let Ok(existing_ino) = dst.lookup(dst_parent, dst_name) {
-            if !options.overwrite {
-                return Err(DiskManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!("Destination '{dst_name}' already exists"),
-                )));
-            }
-            let existing = dst.read_inode(existing_ino)?;
-            if existing.mode == crate::inode::FileType::Directory {
-                return Err(DiskManagerError::Io(std::io::Error::other(
-                    "Is a directory",
-                )));
-            }
-            dst.delete_file(dst_parent, dst_name)?;
-        }
-
-        let dev_pair = match (src_file_id, dst_file_id) {
-            (Some((sd, _)), Some((dd, _))) => Some((sd, dd)),
-            _ => None,
-        };
-        let is_seekable = (src_inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
-
-        // Stage 2: Allocate destination extents, execute 3-tier transfer, and commit metadata.
-        // Zero Rust references into `dst_guard.backing` are held during FD-level transfers.
-        let (dst_ino, physical_bytes, extents_transferred, method) = {
-            let mut dst_guard = dst.inner.write().unwrap();
-            if dst_guard.read_only {
-                return Err(DiskManagerError::ReadOnly);
-            }
-            if !should_use_raw_fast_path(
+            // Stage 1: Inspect source inode and collect physical extents under `self.inner.read()`,
+            // then strictly drop `src_guard` BEFORE touching `dst`.
+            let (
+                src_ino,
+                src_inode,
+                src_gen,
                 src_encrypted,
-                dst_guard.superblock.encrypted || dst_guard.encryption_key.is_some(),
-            ) {
-                drop(dst_guard);
+                src_fd,
+                seekable_chunks,
+                standard_runs,
+            ) = {
+                let src_guard = self.inner.read().unwrap();
+                let src_ino =
+                    Self::dir_lookup(&src_guard, src_parent, src_name)?.ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "File not found",
+                        ))
+                    })?;
+                let src_inode = Self::read_inode_internal(&src_guard, src_ino)?;
+                if src_inode.mode != crate::inode::FileType::File {
+                    return Err(DiskManagerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "transfer_file_to only supports regular files",
+                    )));
+                }
+                let src_gen = src_guard.inode_gen(src_ino);
+                let src_encrypted = src_guard.superblock.encrypted
+                    || src_guard.encryption_key.is_some()
+                    || src_inode.encrypted;
+                let src_fd = src_guard.file.as_raw_fd();
+                let is_seekable = (src_inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+
+                if src_encrypted {
+                    (
+                        src_ino,
+                        src_inode,
+                        src_gen,
+                        true,
+                        src_fd,
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                } else if is_seekable {
+                    let num_chunks =
+                        src_inode.size.div_ceil(crate::inode::CHUNK_SIZE_64K as u64) as usize;
+                    let mut chunks = Vec::new();
+                    Self::for_each_logical_leaf(
+                        &src_guard,
+                        &src_inode,
+                        num_chunks,
+                        |chunk_idx, val| {
+                            let entry = crate::inode::ChunkEntry(val);
+                            let start = entry.start_block() as u64;
+                            let cnt = entry.block_count() as u64;
+                            if !entry.is_empty()
+                                && cnt > 0
+                                && src_guard.is_data_block(start)
+                                && src_guard.is_data_block(start.saturating_add(cnt - 1))
+                            {
+                                chunks.push(ChunkExtent { chunk_idx, entry });
+                            }
+                        },
+                    );
+                    (
+                        src_ino,
+                        src_inode,
+                        src_gen,
+                        false,
+                        src_fd,
+                        chunks,
+                        Vec::new(),
+                    )
+                } else {
+                    let stored_bytes = if src_inode.compressed_size > 0 {
+                        src_inode.compressed_size
+                    } else {
+                        src_inode.size
+                    };
+                    let num_blocks = stored_bytes.div_ceil(BLOCK_SIZE as u64) as usize;
+                    let mut runs: Vec<LogicalRun> = Vec::new();
+                    Self::for_each_logical_leaf(
+                        &src_guard,
+                        &src_inode,
+                        num_blocks,
+                        |logical_idx, phys_blk| {
+                            if src_guard.is_data_block(phys_blk) {
+                                push_logical_block_run(&mut runs, logical_idx, phys_blk);
+                            }
+                        },
+                    );
+                    (src_ino, src_inode, src_gen, false, src_fd, Vec::new(), runs)
+                }
+            };
+
+            // Encryption gate: ONLY when both images are unencrypted may we enter Tier 1..3.
+            #[cfg(test)]
+            run_transfer_stage1_hook();
+
+            let dst_encrypted = dst.is_encrypted();
+            if !should_use_raw_fast_path(src_encrypted, dst_encrypted) {
                 return self.transfer_logical_fallback(
                     src_parent, src_name, src_ino, &src_inode, dst, dst_parent, dst_name, options,
                 );
             }
 
-            let dst_fd = dst_guard.file.as_raw_fd();
-            let mut dst_parent_inode = Self::read_inode_internal(&dst_guard, dst_parent)?;
-            if dst_parent_inode.mode != crate::inode::FileType::Directory {
-                return Err(DiskManagerError::Io(std::io::Error::other(
-                    "Not a directory",
-                )));
+            // Flush destination before FD-level writes so no dirty `MAP_SHARED` pages race with
+            // kernel `FICLONERANGE`/`copy_file_range`/`pwrite`.
+            dst.flush()?;
+
+            let dev_pair = match (src_file_id, dst_file_id) {
+                (Some((sd, _)), Some((dd, _))) => Some((sd, dd)),
+                _ => None,
+            };
+            let is_seekable = (src_inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+
+            // Stage 2: Allocate destination extents, execute 3-tier transfer, revalidate source
+            // generation/link BEFORE committing, and atomically replace any existing target.
+            // Zero Rust references into `dst_guard.backing` are held during FD-level transfers.
+            enum Stage2Outcome {
+                RetrySourceChanged,
+                Committed(u64, u64, usize, TransferMethod),
             }
-            if Self::dir_lookup(&dst_guard, dst_parent, dst_name)?.is_some() {
-                return Err(DiskManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!("Destination '{dst_name}' already exists"),
-                )));
-            }
 
-            let stored_name = Self::stored_filename(&dst_guard, dst_parent, dst_name)?.into_owned();
-            let stored_hash = crate::directory::hash_filename(&stored_name);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+            let stage2_res = {
+                let mut dst_guard = dst.inner.write().unwrap();
+                if dst_guard.read_only {
+                    return Err(DiskManagerError::ReadOnly);
+                }
+                if !should_use_raw_fast_path(
+                    src_encrypted,
+                    dst_guard.superblock.encrypted || dst_guard.encryption_key.is_some(),
+                ) {
+                    drop(dst_guard);
+                    return self.transfer_logical_fallback(
+                        src_parent, src_name, src_ino, &src_inode, dst, dst_parent, dst_name,
+                        options,
+                    );
+                }
 
-            let mut new_inode = Inode::new(crate::inode::FileType::File);
-            new_inode.size = src_inode.size;
-            new_inode.compressed_size = src_inode.compressed_size;
-            new_inode.flags = src_inode.flags;
-            new_inode.filter_typesize = src_inode.filter_typesize;
-            new_inode.filter_delta = src_inode.filter_delta;
-            new_inode.filter_shuffle = src_inode.filter_shuffle;
-            new_inode.filter_bitshuffle = src_inode.filter_bitshuffle;
-            new_inode.encrypted = false;
-            new_inode.created_at = now;
-            new_inode.modified_at = now;
+                let dst_fd = dst_guard.file.as_raw_fd();
+                let mut dst_parent_inode = Self::read_inode_internal(&dst_guard, dst_parent)?;
+                if dst_parent_inode.mode != crate::inode::FileType::Directory {
+                    return Err(DiskManagerError::Io(std::io::Error::other(
+                        "Not a directory",
+                    )));
+                }
 
-            let journaled = dst_guard.superblock.has_journal_layout();
-            let mut tracker = TierTracker::default();
-            let mut physical_bytes = 0u64;
-            let mut extents_transferred = 0usize;
+                let stored_name =
+                    Self::stored_filename(&dst_guard, dst_parent, dst_name)?.into_owned();
+                let stored_hash = crate::directory::hash_filename(&stored_name);
 
-            if journaled {
-                let ib_slice = dst_guard.inode_bitmap_slice().ok_or_else(|| {
-                    DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
-                })?;
-                let dst_ino = crate::bitmap::BitmapRef::new(ib_slice)
-                    .find_next_free_bounded(
-                        dst_guard.free_inode_hint as usize,
-                        dst_guard.superblock.usable_inode_count() as usize,
-                    )
-                    .ok_or(DiskManagerError::Allocator(
-                        crate::allocator::AllocatorError::NoSpace,
-                    ))? as u64;
-                let next_free_inode_hint = dst_ino + 1;
-
-                let mut sim = crate::journal::AllocSim::new_data_only(
-                    &dst_guard,
-                    next_free_inode_hint,
-                    dst_guard.free_block_hint,
-                )?;
-                let mut ops = Vec::new();
-                ops.push(crate::journal::MetadataOp::SetInodeBitmap {
-                    inode_id: dst_ino,
-                    allocated: true,
-                });
-                let mut payload_ranges: Vec<(usize, usize)> = Vec::new();
-                let track_ranges = dst_guard.durability_mode() == DurabilityMode::RangeAsync;
-
-                // Allocate destination extents & transfer payload bytes before WAL commit
-                // (ordered-mode crash safety: unreferenced blocks are populated first).
-                if is_seekable {
-                    for ce in &seekable_chunks {
-                        let count = ce.entry.block_count() as usize;
-                        let dst_start = sim.alloc_contiguous(&dst_guard.backing, count)?;
-                        let dst_start_u32 = u32::try_from(dst_start).map_err(|_| {
-                            DiskManagerError::Io(std::io::Error::other(
-                                "Destination block exceeds 32-bit ChunkEntry range",
-                            ))
-                        })?;
-                        let count_u32 = u32::try_from(count).map_err(|_| {
-                            DiskManagerError::Io(std::io::Error::other("Extent count overflow"))
-                        })?;
-                        crate::journal::push_data_bitmap_op(&mut ops, dst_start, count_u32, true);
-
-                        let byte_len = count as u64 * BLOCK_SIZE as u64;
-                        let m = transfer_byte_range_with_devs(
-                            src_fd,
-                            ce.entry.start_block() as u64 * BLOCK_SIZE as u64,
-                            dst_fd,
-                            dst_start * BLOCK_SIZE as u64,
-                            byte_len,
-                            dev_pair,
-                        )?;
-                        dst_guard
-                            .backing
-                            .invalidate_block_range_caches(dst_start, count as u64);
-                        if track_ranges {
-                            payload_ranges
-                                .push(((dst_start as usize) * BLOCK_SIZE, byte_len as usize));
-                        }
-                        tracker.record(m);
-                        physical_bytes += byte_len;
-                        extents_transferred += 1;
-
-                        let new_entry = rebase_chunk_entry(ce.entry, dst_start_u32);
-                        crate::journal::sim_set_logical_chunk_entry(
-                            &dst_guard.backing,
-                            &mut new_inode,
-                            ce.chunk_idx,
-                            new_entry,
-                            &mut sim,
-                            &mut ops,
-                        )?;
+                // Inspect existing target without deleting it yet so ENOSPC or I/O failures
+                // leave the original destination file intact.
+                let replace_info = if let Some((old_ino, old_dir_blk)) = Self::locate_entry_in_dir(
+                    &dst_guard.backing,
+                    &dst_parent_inode,
+                    &stored_name,
+                    stored_hash,
+                ) {
+                    if !options.overwrite {
+                        return Err(DiskManagerError::Io(std::io::Error::new(
+                            std::io::ErrorKind::AlreadyExists,
+                            format!("Destination '{dst_name}' already exists"),
+                        )));
                     }
+                    let old_inode = Self::read_inode_internal(&dst_guard, old_ino)?;
+                    if old_inode.mode == crate::inode::FileType::Directory {
+                        return Err(DiskManagerError::Io(std::io::Error::other(
+                            "Is a directory",
+                        )));
+                    }
+                    let old_blocks = Self::collect_inode_blocks(&dst_guard.backing, &old_inode);
+                    Some((old_ino, old_dir_blk, old_blocks))
                 } else {
-                    for run in &standard_runs {
-                        let mut rem = run.count as usize;
-                        let mut src_blk = run.phys_start;
-                        let mut log_idx = run.logical_start;
-                        while rem > 0 {
-                            let (dst_start, alloc_len) =
-                                Self::sim_alloc_run_greedy(&dst_guard.backing, &mut sim, rem)?;
-                            let alloc_u32 = u32::try_from(alloc_len).map_err(|_| {
+                    None
+                };
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+
+                let mut new_inode = Inode::new(crate::inode::FileType::File);
+                new_inode.size = src_inode.size;
+                new_inode.compressed_size = src_inode.compressed_size;
+                new_inode.flags = src_inode.flags;
+                new_inode.filter_typesize = src_inode.filter_typesize;
+                new_inode.filter_delta = src_inode.filter_delta;
+                new_inode.filter_shuffle = src_inode.filter_shuffle;
+                new_inode.filter_bitshuffle = src_inode.filter_bitshuffle;
+                new_inode.encrypted = false;
+                new_inode.created_at = now;
+                new_inode.modified_at = now;
+
+                let journaled = dst_guard.superblock.has_journal_layout();
+                let mut tracker = TierTracker::default();
+                let mut physical_bytes = 0u64;
+                let mut extents_transferred = 0usize;
+
+                let source_still_valid = |dg: &DiskManagerInner| -> bool {
+                    if Arc::ptr_eq(&self.inner, &dst.inner) {
+                        dg.is_inode_allocated(src_ino)
+                            && dg.inode_gen(src_ino) == src_gen
+                            && Self::dir_lookup(dg, src_parent, src_name).ok().flatten()
+                                == Some(src_ino)
+                    } else if let Ok(sg) = self.inner.try_read() {
+                        sg.is_inode_allocated(src_ino)
+                            && sg.inode_gen(src_ino) == src_gen
+                            && Self::dir_lookup(&sg, src_parent, src_name).ok().flatten()
+                                == Some(src_ino)
+                    } else {
+                        false
+                    }
+                };
+
+                if journaled {
+                    let ib_slice = dst_guard.inode_bitmap_slice().ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
+                    })?;
+                    let dst_ino = crate::bitmap::BitmapRef::new(ib_slice)
+                        .find_next_free_bounded(
+                            dst_guard.free_inode_hint as usize,
+                            dst_guard.superblock.usable_inode_count() as usize,
+                        )
+                        .ok_or(DiskManagerError::Allocator(
+                            crate::allocator::AllocatorError::NoSpace,
+                        ))? as u64;
+                    let next_free_inode_hint = dst_ino + 1;
+
+                    let mut sim = crate::journal::AllocSim::new_data_only(
+                        &dst_guard,
+                        next_free_inode_hint,
+                        dst_guard.free_block_hint,
+                    )?;
+                    let mut ops = Vec::new();
+                    ops.push(crate::journal::MetadataOp::SetInodeBitmap {
+                        inode_id: dst_ino,
+                        allocated: true,
+                    });
+                    let mut payload_ranges: Vec<(usize, usize)> = Vec::new();
+                    let track_ranges = dst_guard.durability_mode() == DurabilityMode::RangeAsync;
+
+                    // Allocate destination extents & transfer payload bytes before WAL commit
+                    // (ordered-mode crash safety: unreferenced blocks are populated first).
+                    if is_seekable {
+                        for ce in &seekable_chunks {
+                            let count = ce.entry.block_count() as usize;
+                            let dst_start = sim.alloc_contiguous(&dst_guard.backing, count)?;
+                            let dst_start_u32 = u32::try_from(dst_start).map_err(|_| {
+                                DiskManagerError::Io(std::io::Error::other(
+                                    "Destination block exceeds 32-bit ChunkEntry range",
+                                ))
+                            })?;
+                            let count_u32 = u32::try_from(count).map_err(|_| {
                                 DiskManagerError::Io(std::io::Error::other("Extent count overflow"))
                             })?;
                             crate::journal::push_data_bitmap_op(
-                                &mut ops, dst_start, alloc_u32, true,
+                                &mut ops, dst_start, count_u32, true,
                             );
-                            let byte_len = alloc_len as u64 * BLOCK_SIZE as u64;
+
+                            let byte_len = count as u64 * BLOCK_SIZE as u64;
                             let m = transfer_byte_range_with_devs(
                                 src_fd,
-                                src_blk * BLOCK_SIZE as u64,
+                                ce.entry.start_block() as u64 * BLOCK_SIZE as u64,
                                 dst_fd,
                                 dst_start * BLOCK_SIZE as u64,
                                 byte_len,
@@ -1571,7 +1628,7 @@ impl DiskManager {
                             )?;
                             dst_guard
                                 .backing
-                                .invalidate_block_range_caches(dst_start, alloc_len as u64);
+                                .invalidate_block_range_caches(dst_start, count as u64);
                             if track_ranges {
                                 payload_ranges
                                     .push(((dst_start as usize) * BLOCK_SIZE, byte_len as usize));
@@ -1580,214 +1637,15 @@ impl DiskManager {
                             physical_bytes += byte_len;
                             extents_transferred += 1;
 
-                            for k in 0..alloc_len {
-                                crate::journal::sim_set_logical_block_ptr(
-                                    &dst_guard.backing,
-                                    &mut new_inode,
-                                    log_idx + k,
-                                    dst_start + k as u64,
-                                    &mut sim,
-                                    &mut ops,
-                                )?;
-                            }
-                            src_blk += alloc_len as u64;
-                            log_idx += alloc_len;
-                            rem -= alloc_len;
-                        }
-                    }
-                }
-
-                // Ordered-mode crash consistency: persist host FS extent-tree changes
-                // (`FICLONERANGE` / `copy_file_range`) and strict-mode payloads via
-                // `fdatasync` BEFORE committing the OIFS WAL transaction.
-                if tracker.used_kernel_extent_op
-                    || (physical_bytes > 0 && dst_guard.durability_mode() == DurabilityMode::Strict)
-                {
-                    crate::retry_eintr(|| dst_guard.file.sync_data())?;
-                }
-
-                // Append directory entry to `dst_parent_inode`.
-                let entry = crate::directory::DirectoryEntry {
-                    inode: dst_ino,
-                    hash: stored_hash,
-                    name: stored_name.clone(),
-                };
-                let mut entry_bytes = Vec::with_capacity(20 + entry.name.len());
-                {
-                    let mut cursor = std::io::Cursor::new(&mut entry_bytes);
-                    entry
-                        .serialize_into(&mut cursor)
-                        .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
-                }
-                let needed_space = 20 + entry.name.len();
-                let (slot, _) = Self::find_dir_insert_slot(
-                    &dst_guard,
-                    dst_parent,
-                    &dst_parent_inode,
-                    needed_space,
-                );
-                if let Some((phys_blk, insert_offset, _)) = slot {
-                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                        block_id: phys_blk,
-                        offset: insert_offset as u32,
-                        data: entry_bytes,
-                    });
-                } else {
-                    let new_blk_idx = Self::dir_num_blocks(&dst_parent_inode);
-                    let phys_blk = crate::journal::sim_get_or_alloc_block(
-                        &dst_guard.backing,
-                        &mut dst_parent_inode,
-                        new_blk_idx,
-                        &mut sim,
-                        &mut ops,
-                    )?;
-                    let mut block_image = vec![0u8; BLOCK_SIZE];
-                    block_image[..entry_bytes.len()].copy_from_slice(&entry_bytes);
-                    ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                        block_id: phys_blk,
-                        offset: 0,
-                        data: block_image,
-                    });
-                    dst_parent_inode.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
-                }
-
-                dst_parent_inode.modified_at = now;
-                let new_inode_img = Self::build_inode_post_image(&dst_guard, dst_ino, &new_inode)?;
-                let parent_img =
-                    Self::build_inode_post_image(&dst_guard, dst_parent, &dst_parent_inode)?;
-                ops.push(crate::journal::MetadataOp::WriteInode {
-                    inode_id: dst_ino,
-                    inode_bytes: Box::new(new_inode_img),
-                });
-                ops.push(crate::journal::MetadataOp::WriteInode {
-                    inode_id: dst_parent,
-                    inode_bytes: Box::new(parent_img),
-                });
-
-                let ops = if crate::journal::is_already_coalesced(&ops) {
-                    ops
-                } else {
-                    crate::journal::coalesce_ops(ops)
-                };
-                Self::commit_journal_tx(&mut dst_guard, &ops)?;
-                Self::apply_journal_ops(&mut dst_guard, &ops)?;
-                dst_guard.free_inode_hint = sim.free_inode_hint;
-                dst_guard.free_block_hint = sim.free_block_hint;
-                dst_guard.cache_inode(dst_ino, new_inode);
-                dst_guard.cache_inode(dst_parent, dst_parent_inode);
-                dst_guard.dir_cache.remove(dst_parent);
-
-                if dst_guard.durability_mode() == DurabilityMode::RangeAsync {
-                    let mut ranges = vec![
-                        dst_guard.inode_bitmap_byte_range(),
-                        dst_guard.data_bitmap_byte_range(),
-                        dst_guard.inode_byte_range(dst_ino),
-                        dst_guard.inode_byte_range(dst_parent),
-                    ];
-                    ranges.extend(payload_ranges);
-                    for op in &ops {
-                        if let crate::journal::MetadataOp::WriteBlockSlice { block_id, .. } = op {
-                            ranges.push(dst_guard.block_byte_range(*block_id));
-                        }
-                    }
-                    dst_guard.sync_mutation_ranges(&ranges)?;
-                } else if dst_guard.durability_mode() == DurabilityMode::LegacyWholeMmapAsync {
-                    dst_guard.sync_mutation_ranges(&[])?;
-                }
-                Self::maybe_checkpoint(&mut dst_guard)?;
-
-                (
-                    dst_ino,
-                    physical_bytes,
-                    extents_transferred,
-                    tracker.finish(),
-                )
-            } else {
-                // Non-journaled destination path.
-                let hint = dst_guard.free_inode_hint;
-                let usable_inodes = dst_guard.superblock.usable_inode_count();
-                let dst_ino = {
-                    let mut bitmap_slice = dst_guard.inode_bitmap_slice_mut().ok_or_else(|| {
-                        DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
-                    })?;
-                    let mut allocator = SimpleBlockAllocator::new(&mut bitmap_slice, 0);
-                    let id = allocator.allocate_bounded(Some(hint), usable_inodes)?;
-                    bitmap_slice.set_dirty_bits(id as usize, 1);
-                    id
-                };
-                dst_guard.free_inode_hint = if dst_ino + 1 >= usable_inodes {
-                    0
-                } else {
-                    dst_ino + 1
-                };
-
-                let mut touched_ranges: Vec<(usize, usize)> = Vec::new();
-                let track_ranges = dst_guard.durability_mode().is_range_based();
-
-                let transfer_res: Result<(), DiskManagerError> = (|| {
-                    if is_seekable {
-                        for ce in &seekable_chunks {
-                            let count = ce.entry.block_count() as usize;
-                            let dst_start =
-                                Self::allocate_contiguous_blocks_internal(&mut dst_guard, count)?;
-                            let dst_start_u32 = match u32::try_from(dst_start) {
-                                Ok(v) => v,
-                                Err(_) => {
-                                    let _ = Self::free_contiguous_blocks_internal(
-                                        &mut dst_guard,
-                                        dst_start,
-                                        count,
-                                    );
-                                    return Err(DiskManagerError::Io(std::io::Error::other(
-                                        "Destination block exceeds 32-bit ChunkEntry range",
-                                    )));
-                                }
-                            };
-                            let byte_len = count as u64 * BLOCK_SIZE as u64;
-                            let m = match transfer_byte_range_with_devs(
-                                src_fd,
-                                ce.entry.start_block() as u64 * BLOCK_SIZE as u64,
-                                dst_fd,
-                                dst_start * BLOCK_SIZE as u64,
-                                byte_len,
-                                dev_pair,
-                            ) {
-                                Ok(m) => m,
-                                Err(e) => {
-                                    let _ = Self::free_contiguous_blocks_internal(
-                                        &mut dst_guard,
-                                        dst_start,
-                                        count,
-                                    );
-                                    return Err(e.into());
-                                }
-                            };
-                            dst_guard
-                                .backing
-                                .invalidate_block_range_caches(dst_start, count as u64);
-                            if track_ranges {
-                                touched_ranges
-                                    .push(((dst_start as usize) * BLOCK_SIZE, byte_len as usize));
-                            }
-                            tracker.record(m);
-                            physical_bytes += byte_len;
-                            extents_transferred += 1;
-
                             let new_entry = rebase_chunk_entry(ce.entry, dst_start_u32);
-                            if let Err(e) = Self::set_logical_chunk_entry(
-                                &mut dst_guard,
+                            crate::journal::sim_set_logical_chunk_entry(
+                                &dst_guard.backing,
                                 &mut new_inode,
                                 ce.chunk_idx,
                                 new_entry,
-                                None,
-                            ) {
-                                let _ = Self::free_contiguous_blocks_internal(
-                                    &mut dst_guard,
-                                    dst_start,
-                                    count,
-                                );
-                                return Err(e);
-                            }
+                                &mut sim,
+                                &mut ops,
+                            )?;
                         }
                     } else {
                         for run in &standard_runs {
@@ -1796,11 +1654,291 @@ impl DiskManager {
                             let mut log_idx = run.logical_start;
                             while rem > 0 {
                                 let (dst_start, alloc_len) =
-                                    Self::alloc_run_greedy(&mut dst_guard, rem)?;
+                                    Self::sim_alloc_run_greedy(&dst_guard.backing, &mut sim, rem)?;
+                                let alloc_u32 = u32::try_from(alloc_len).map_err(|_| {
+                                    DiskManagerError::Io(std::io::Error::other(
+                                        "Extent count overflow",
+                                    ))
+                                })?;
+                                crate::journal::push_data_bitmap_op(
+                                    &mut ops, dst_start, alloc_u32, true,
+                                );
                                 let byte_len = alloc_len as u64 * BLOCK_SIZE as u64;
-                                let m = match transfer_byte_range_with_devs(
+                                let m = transfer_byte_range_with_devs(
                                     src_fd,
                                     src_blk * BLOCK_SIZE as u64,
+                                    dst_fd,
+                                    dst_start * BLOCK_SIZE as u64,
+                                    byte_len,
+                                    dev_pair,
+                                )?;
+                                dst_guard
+                                    .backing
+                                    .invalidate_block_range_caches(dst_start, alloc_len as u64);
+                                if track_ranges {
+                                    payload_ranges.push((
+                                        (dst_start as usize) * BLOCK_SIZE,
+                                        byte_len as usize,
+                                    ));
+                                }
+                                tracker.record(m);
+                                physical_bytes += byte_len;
+                                extents_transferred += 1;
+
+                                for k in 0..alloc_len {
+                                    crate::journal::sim_set_logical_block_ptr(
+                                        &dst_guard.backing,
+                                        &mut new_inode,
+                                        log_idx + k,
+                                        dst_start + k as u64,
+                                        &mut sim,
+                                        &mut ops,
+                                    )?;
+                                }
+                                src_blk += alloc_len as u64;
+                                log_idx += alloc_len;
+                                rem -= alloc_len;
+                            }
+                        }
+                    }
+
+                    // Revalidate that `src_ino` was not concurrently deleted, overwritten,
+                    // truncated, or defragmented between Stage 1 and completion of Stage 2 reads.
+                    if !source_still_valid(&dst_guard) {
+                        Stage2Outcome::RetrySourceChanged
+                    } else {
+                        // Ordered-mode crash consistency: persist host FS extent-tree changes
+                        // (`FICLONERANGE` / `copy_file_range`) and strict-mode payloads via
+                        // `fdatasync` BEFORE committing the OIFS WAL transaction.
+                        if tracker.used_kernel_extent_op
+                            || (physical_bytes > 0
+                                && dst_guard.durability_mode() == DurabilityMode::Strict)
+                        {
+                            crate::retry_eintr(|| dst_guard.file.sync_data())?;
+                        }
+
+                        // Atomically link `dst_ino` (replacing any existing entry in `old_dir_blk`
+                        // inside this same WAL transaction so overwrite failure never loses data).
+                        let entry = crate::directory::DirectoryEntry {
+                            inode: dst_ino,
+                            hash: stored_hash,
+                            name: stored_name.clone(),
+                        };
+                        let mut entry_bytes = Vec::with_capacity(20 + entry.name.len());
+                        {
+                            let mut cursor = std::io::Cursor::new(&mut entry_bytes);
+                            entry.serialize_into(&mut cursor).map_err(|e| {
+                                DiskManagerError::Io(std::io::Error::other(e.to_string()))
+                            })?;
+                        }
+
+                        if let Some((old_ino, old_dir_blk, ref old_blocks)) = replace_info {
+                            let mut blk_buf = dst_guard
+                                .backing
+                                .with_block(old_dir_blk, |s| s.to_vec())
+                                .map_err(|_| {
+                                    DiskManagerError::Io(std::io::Error::other(
+                                        "Directory block not found",
+                                    ))
+                                })?;
+                            crate::directory::remove_entry_in_block_bytes(
+                                &mut blk_buf,
+                                &stored_name,
+                                stored_hash,
+                            );
+                            let ins = crate::directory::find_insert_offset_in_block(&blk_buf);
+                            if ins + entry_bytes.len() > BLOCK_SIZE {
+                                return Err(DiskManagerError::Io(std::io::Error::other(
+                                    "Directory block overflow during atomic overwrite",
+                                )));
+                            }
+                            blk_buf[ins..ins + entry_bytes.len()].copy_from_slice(&entry_bytes);
+                            let tail = ins + entry_bytes.len();
+                            if tail + 18 <= BLOCK_SIZE {
+                                blk_buf[tail..tail + 18].fill(0);
+                            }
+                            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                                block_id: old_dir_blk,
+                                offset: 0,
+                                data: blk_buf,
+                            });
+
+                            ops.push(crate::journal::MetadataOp::SetInodeBitmap {
+                                inode_id: old_ino,
+                                allocated: false,
+                            });
+                            let mut old_spans: Vec<(u64, u64)> =
+                                old_blocks.iter().map(|&b| (b, 1)).collect();
+                            coalesce_block_spans(&mut old_spans);
+                            for &(os, oc) in &old_spans {
+                                sim.free_contiguous(&dst_guard.backing, os, oc as usize)?;
+                                let oc_u32 = u32::try_from(oc).map_err(|_| {
+                                    DiskManagerError::Io(std::io::Error::other(
+                                        "Freed extent overflow",
+                                    ))
+                                })?;
+                                crate::journal::push_data_bitmap_op(&mut ops, os, oc_u32, false);
+                            }
+                        } else {
+                            let needed_space = 20 + entry.name.len();
+                            let (slot, _) = Self::find_dir_insert_slot(
+                                &dst_guard,
+                                dst_parent,
+                                &dst_parent_inode,
+                                needed_space,
+                            );
+                            if let Some((phys_blk, insert_offset, _)) = slot {
+                                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                                    block_id: phys_blk,
+                                    offset: insert_offset as u32,
+                                    data: entry_bytes,
+                                });
+                            } else {
+                                let new_blk_idx = Self::dir_num_blocks(&dst_parent_inode);
+                                let phys_blk = crate::journal::sim_get_or_alloc_block(
+                                    &dst_guard.backing,
+                                    &mut dst_parent_inode,
+                                    new_blk_idx,
+                                    &mut sim,
+                                    &mut ops,
+                                )?;
+                                let mut block_image = vec![0u8; BLOCK_SIZE];
+                                block_image[..entry_bytes.len()].copy_from_slice(&entry_bytes);
+                                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                                    block_id: phys_blk,
+                                    offset: 0,
+                                    data: block_image,
+                                });
+                                dst_parent_inode.size =
+                                    (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
+                            }
+                        }
+
+                        dst_parent_inode.modified_at = now;
+                        let new_inode_img =
+                            Self::build_inode_post_image(&dst_guard, dst_ino, &new_inode)?;
+                        let parent_img = Self::build_inode_post_image(
+                            &dst_guard,
+                            dst_parent,
+                            &dst_parent_inode,
+                        )?;
+                        ops.push(crate::journal::MetadataOp::WriteInode {
+                            inode_id: dst_ino,
+                            inode_bytes: Box::new(new_inode_img),
+                        });
+                        ops.push(crate::journal::MetadataOp::WriteInode {
+                            inode_id: dst_parent,
+                            inode_bytes: Box::new(parent_img),
+                        });
+
+                        let ops = if crate::journal::is_already_coalesced(&ops) {
+                            ops
+                        } else {
+                            crate::journal::coalesce_ops(ops)
+                        };
+                        Self::commit_journal_tx(&mut dst_guard, &ops)?;
+                        Self::apply_journal_ops(&mut dst_guard, &ops)?;
+                        dst_guard.free_inode_hint = sim.free_inode_hint;
+                        dst_guard.free_block_hint = sim.free_block_hint;
+                        if let Some((old_ino, _, ref old_blocks)) = replace_info {
+                            if let Some(min_b) = old_blocks.iter().copied().min()
+                                && min_b < dst_guard.free_block_hint
+                            {
+                                dst_guard.free_block_hint = min_b;
+                            }
+                            if old_ino < dst_guard.free_inode_hint {
+                                dst_guard.free_inode_hint = old_ino;
+                            }
+                            dst_guard.inode_cache.remove(old_ino);
+                            dst_guard.invalidate_payload_caches(old_ino);
+                        }
+                        dst_guard.cache_inode(dst_ino, new_inode);
+                        dst_guard.cache_inode(dst_parent, dst_parent_inode);
+                        dst_guard.dir_cache.remove(dst_parent);
+
+                        if dst_guard.durability_mode() == DurabilityMode::RangeAsync {
+                            let mut ranges = vec![
+                                dst_guard.inode_bitmap_byte_range(),
+                                dst_guard.data_bitmap_byte_range(),
+                                dst_guard.inode_byte_range(dst_ino),
+                                dst_guard.inode_byte_range(dst_parent),
+                            ];
+                            ranges.extend(payload_ranges);
+                            for op in &ops {
+                                if let crate::journal::MetadataOp::WriteBlockSlice {
+                                    block_id,
+                                    ..
+                                } = op
+                                {
+                                    ranges.push(dst_guard.block_byte_range(*block_id));
+                                }
+                            }
+                            dst_guard.sync_mutation_ranges(&ranges)?;
+                        } else if dst_guard.durability_mode()
+                            == DurabilityMode::LegacyWholeMmapAsync
+                        {
+                            dst_guard.sync_mutation_ranges(&[])?;
+                        }
+                        Self::maybe_checkpoint(&mut dst_guard)?;
+
+                        Stage2Outcome::Committed(
+                            dst_ino,
+                            physical_bytes,
+                            extents_transferred,
+                            tracker.finish(),
+                        )
+                    }
+                } else {
+                    // Non-journaled destination path.
+                    let hint = dst_guard.free_inode_hint;
+                    let usable_inodes = dst_guard.superblock.usable_inode_count();
+                    let dst_ino = {
+                        let mut bitmap_slice =
+                            dst_guard.inode_bitmap_slice_mut().ok_or_else(|| {
+                                DiskManagerError::Io(std::io::Error::other(
+                                    "inode bitmap not found",
+                                ))
+                            })?;
+                        let mut allocator = SimpleBlockAllocator::new(&mut bitmap_slice, 0);
+                        let id = allocator.allocate_bounded(Some(hint), usable_inodes)?;
+                        bitmap_slice.set_dirty_bits(id as usize, 1);
+                        id
+                    };
+                    dst_guard.free_inode_hint = if dst_ino + 1 >= usable_inodes {
+                        0
+                    } else {
+                        dst_ino + 1
+                    };
+
+                    let mut touched_ranges: Vec<(usize, usize)> = Vec::new();
+                    let track_ranges = dst_guard.durability_mode().is_range_based();
+
+                    let mut stale_src = false;
+                    let transfer_res: Result<(), DiskManagerError> = (|| {
+                        if is_seekable {
+                            for ce in &seekable_chunks {
+                                let count = ce.entry.block_count() as usize;
+                                let dst_start = Self::allocate_contiguous_blocks_internal(
+                                    &mut dst_guard,
+                                    count,
+                                )?;
+                                let dst_start_u32 = match u32::try_from(dst_start) {
+                                    Ok(v) => v,
+                                    Err(_) => {
+                                        let _ = Self::free_contiguous_blocks_internal(
+                                            &mut dst_guard,
+                                            dst_start,
+                                            count,
+                                        );
+                                        return Err(DiskManagerError::Io(std::io::Error::other(
+                                            "Destination block exceeds 32-bit ChunkEntry range",
+                                        )));
+                                    }
+                                };
+                                let byte_len = count as u64 * BLOCK_SIZE as u64;
+                                let m = match transfer_byte_range_with_devs(
+                                    src_fd,
+                                    ce.entry.start_block() as u64 * BLOCK_SIZE as u64,
                                     dst_fd,
                                     dst_start * BLOCK_SIZE as u64,
                                     byte_len,
@@ -1811,14 +1949,14 @@ impl DiskManager {
                                         let _ = Self::free_contiguous_blocks_internal(
                                             &mut dst_guard,
                                             dst_start,
-                                            alloc_len,
+                                            count,
                                         );
                                         return Err(e.into());
                                     }
                                 };
                                 dst_guard
                                     .backing
-                                    .invalidate_block_range_caches(dst_start, alloc_len as u64);
+                                    .invalidate_block_range_caches(dst_start, count as u64);
                                 if track_ranges {
                                     touched_ranges.push((
                                         (dst_start as usize) * BLOCK_SIZE,
@@ -1829,78 +1967,259 @@ impl DiskManager {
                                 physical_bytes += byte_len;
                                 extents_transferred += 1;
 
-                                for k in 0..alloc_len {
-                                    if let Err(e) = Self::set_logical_block_ptr_in_place(
+                                let new_entry = rebase_chunk_entry(ce.entry, dst_start_u32);
+                                if let Err(e) = Self::set_logical_chunk_entry(
+                                    &mut dst_guard,
+                                    &mut new_inode,
+                                    ce.chunk_idx,
+                                    new_entry,
+                                    None,
+                                ) {
+                                    let _ = Self::free_contiguous_blocks_internal(
                                         &mut dst_guard,
-                                        &mut new_inode,
-                                        log_idx + k,
-                                        dst_start + k as u64,
-                                    ) {
-                                        let remaining_unlinked = alloc_len - k;
-                                        let _ = Self::free_contiguous_blocks_internal(
-                                            &mut dst_guard,
-                                            dst_start + k as u64,
-                                            remaining_unlinked,
-                                        );
-                                        return Err(e);
-                                    }
+                                        dst_start,
+                                        count,
+                                    );
+                                    return Err(e);
                                 }
-                                src_blk += alloc_len as u64;
-                                log_idx += alloc_len;
-                                rem -= alloc_len;
+                            }
+                        } else {
+                            for run in &standard_runs {
+                                let mut rem = run.count as usize;
+                                let mut src_blk = run.phys_start;
+                                let mut log_idx = run.logical_start;
+                                while rem > 0 {
+                                    let (dst_start, alloc_len) =
+                                        Self::alloc_run_greedy(&mut dst_guard, rem)?;
+                                    let byte_len = alloc_len as u64 * BLOCK_SIZE as u64;
+                                    let m = match transfer_byte_range_with_devs(
+                                        src_fd,
+                                        src_blk * BLOCK_SIZE as u64,
+                                        dst_fd,
+                                        dst_start * BLOCK_SIZE as u64,
+                                        byte_len,
+                                        dev_pair,
+                                    ) {
+                                        Ok(m) => m,
+                                        Err(e) => {
+                                            let _ = Self::free_contiguous_blocks_internal(
+                                                &mut dst_guard,
+                                                dst_start,
+                                                alloc_len,
+                                            );
+                                            return Err(e.into());
+                                        }
+                                    };
+                                    dst_guard
+                                        .backing
+                                        .invalidate_block_range_caches(dst_start, alloc_len as u64);
+                                    if track_ranges {
+                                        touched_ranges.push((
+                                            (dst_start as usize) * BLOCK_SIZE,
+                                            byte_len as usize,
+                                        ));
+                                    }
+                                    tracker.record(m);
+                                    physical_bytes += byte_len;
+                                    extents_transferred += 1;
+
+                                    for k in 0..alloc_len {
+                                        if let Err(e) = Self::set_logical_block_ptr_in_place(
+                                            &mut dst_guard,
+                                            &mut new_inode,
+                                            log_idx + k,
+                                            dst_start + k as u64,
+                                        ) {
+                                            let remaining_unlinked = alloc_len - k;
+                                            let _ = Self::free_contiguous_blocks_internal(
+                                                &mut dst_guard,
+                                                dst_start + k as u64,
+                                                remaining_unlinked,
+                                            );
+                                            return Err(e);
+                                        }
+                                    }
+                                    src_blk += alloc_len as u64;
+                                    log_idx += alloc_len;
+                                    rem -= alloc_len;
+                                }
                             }
                         }
+
+                        if !source_still_valid(&dst_guard) {
+                            stale_src = true;
+                            return Ok(());
+                        }
+
+                        if tracker.used_kernel_extent_op
+                            || (physical_bytes > 0
+                                && dst_guard.durability_mode() == DurabilityMode::Strict)
+                        {
+                            crate::retry_eintr(|| dst_guard.file.sync_data())?;
+                        }
+
+                        Self::write_inode_internal(&mut dst_guard, dst_ino, &new_inode)?;
+                        let entry = crate::directory::DirectoryEntry {
+                            inode: dst_ino,
+                            hash: stored_hash,
+                            name: stored_name.clone(),
+                        };
+
+                        let written_blk = if let Some((old_ino, old_dir_blk, ref old_blocks)) =
+                            replace_info
+                        {
+                            let mut entry_bytes = Vec::with_capacity(20 + entry.name.len());
+                            {
+                                let mut cursor = std::io::Cursor::new(&mut entry_bytes);
+                                entry.serialize_into(&mut cursor).map_err(|e| {
+                                    DiskManagerError::Io(std::io::Error::other(e.to_string()))
+                                })?;
+                            }
+                            dst_guard.backing.with_block_mut(old_dir_blk, |blk_buf| {
+                                crate::directory::remove_entry_in_block_bytes(
+                                    blk_buf,
+                                    &stored_name,
+                                    stored_hash,
+                                );
+                                let ins = crate::directory::find_insert_offset_in_block(blk_buf);
+                                if ins + entry_bytes.len() <= BLOCK_SIZE {
+                                    blk_buf[ins..ins + entry_bytes.len()]
+                                        .copy_from_slice(&entry_bytes);
+                                    let tail = ins + entry_bytes.len();
+                                    if tail + 18 <= BLOCK_SIZE {
+                                        blk_buf[tail..tail + 18].fill(0);
+                                    }
+                                }
+                            })?;
+                            dst_parent_inode.modified_at = now;
+                            Self::write_inode_internal(
+                                &mut dst_guard,
+                                dst_parent,
+                                &dst_parent_inode,
+                            )?;
+                            dst_guard.dir_cache.remove(dst_parent);
+
+                            if !old_blocks.is_empty() {
+                                let db_start = dst_guard.superblock.data_block_start;
+                                let mut min_b = u64::MAX;
+                                let mut max_b = 0u64;
+                                {
+                                    let mut slice =
+                                        dst_guard.data_bitmap_slice_mut().ok_or_else(|| {
+                                            DiskManagerError::Io(std::io::Error::other(
+                                                "data bitmap not found",
+                                            ))
+                                        })?;
+                                    let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
+                                    for &b in old_blocks {
+                                        da.free(b)?;
+                                        min_b = min_b.min(b);
+                                        max_b = max_b.max(b);
+                                    }
+                                    if min_b <= max_b && min_b >= db_start {
+                                        slice.set_dirty_bits(
+                                            (min_b - db_start) as usize,
+                                            (max_b - min_b + 1) as usize,
+                                        );
+                                    } else {
+                                        slice.set_dirty_bits(0, 0);
+                                    }
+                                }
+                                if min_b < dst_guard.free_block_hint {
+                                    dst_guard.free_block_hint = min_b;
+                                }
+                            }
+                            if let Some(mut ib) = dst_guard.inode_bitmap_slice_mut() {
+                                let mut ia = SimpleBlockAllocator::new(&mut ib, 0);
+                                ia.free(old_ino)?;
+                                ib.set_dirty_bits(old_ino as usize, 1);
+                            }
+                            if old_ino < dst_guard.free_inode_hint {
+                                dst_guard.free_inode_hint = old_ino;
+                            }
+                            dst_guard.bump_inode_gen(old_ino);
+                            dst_guard.inode_cache.remove(old_ino);
+                            dst_guard.invalidate_payload_caches(old_ino);
+                            old_dir_blk
+                        } else {
+                            let (wb, _, _) = Self::append_dir_entry_to_dir(
+                                &mut dst_guard,
+                                dst_parent,
+                                &mut dst_parent_inode,
+                                &entry,
+                            )?;
+                            dst_parent_inode.modified_at = now;
+                            Self::write_inode_internal(
+                                &mut dst_guard,
+                                dst_parent,
+                                &dst_parent_inode,
+                            )?;
+                            dst_guard.dir_cache.remove(dst_parent);
+                            wb
+                        };
+
+                        if track_ranges {
+                            let mut ranges = vec![
+                                dst_guard.inode_bitmap_byte_range(),
+                                dst_guard.data_bitmap_byte_range(),
+                                dst_guard.inode_byte_range(dst_ino),
+                                dst_guard.inode_byte_range(dst_parent),
+                                dst_guard.block_byte_range(written_blk),
+                            ];
+                            ranges.extend(touched_ranges);
+                            dst_guard.sync_mutation_ranges(&ranges)?;
+                        } else {
+                            dst_guard.sync_mutation_ranges(&[])?;
+                        }
+                        Ok(())
+                    })();
+
+                    if let Err(e) = transfer_res {
+                        Self::rollback_unlinked_file(&mut dst_guard, dst_ino, &new_inode);
+                        return Err(e);
                     }
-
-                    if tracker.used_kernel_extent_op
-                        || (physical_bytes > 0
-                            && dst_guard.durability_mode() == DurabilityMode::Strict)
-                    {
-                        crate::retry_eintr(|| dst_guard.file.sync_data())?;
-                    }
-
-                    Self::write_inode_internal(&mut dst_guard, dst_ino, &new_inode)?;
-                    let entry = crate::directory::DirectoryEntry {
-                        inode: dst_ino,
-                        hash: stored_hash,
-                        name: stored_name,
-                    };
-                    let (written_blk, _, _) = Self::append_dir_entry_to_dir(
-                        &mut dst_guard,
-                        dst_parent,
-                        &mut dst_parent_inode,
-                        &entry,
-                    )?;
-                    dst_parent_inode.modified_at = now;
-                    Self::write_inode_internal(&mut dst_guard, dst_parent, &dst_parent_inode)?;
-                    dst_guard.dir_cache.remove(dst_parent);
-
-                    if track_ranges {
-                        let mut ranges = vec![
-                            dst_guard.inode_bitmap_byte_range(),
-                            dst_guard.data_bitmap_byte_range(),
-                            dst_guard.inode_byte_range(dst_ino),
-                            dst_guard.inode_byte_range(dst_parent),
-                            dst_guard.block_byte_range(written_blk),
-                        ];
-                        ranges.extend(touched_ranges);
-                        dst_guard.sync_mutation_ranges(&ranges)?;
+                    if stale_src {
+                        Self::rollback_unlinked_file(&mut dst_guard, dst_ino, &new_inode);
+                        Stage2Outcome::RetrySourceChanged
                     } else {
-                        dst_guard.sync_mutation_ranges(&[])?;
+                        Stage2Outcome::Committed(
+                            dst_ino,
+                            physical_bytes,
+                            extents_transferred,
+                            tracker.finish(),
+                        )
                     }
-                    Ok(())
-                })();
-
-                if let Err(e) = transfer_res {
-                    Self::rollback_unlinked_file(&mut dst_guard, dst_ino, &new_inode);
-                    return Err(e);
                 }
-                (
-                    dst_ino,
-                    physical_bytes,
-                    extents_transferred,
-                    tracker.finish(),
-                )
+            };
+
+            match stage2_res {
+                Stage2Outcome::Committed(dst_ino, physical_bytes, extents_transferred, method) => {
+                    break (
+                        src_ino,
+                        src_inode,
+                        dst_ino,
+                        physical_bytes,
+                        extents_transferred,
+                        method,
+                    );
+                }
+                Stage2Outcome::RetrySourceChanged => {
+                    attempt += 1;
+                    if attempt >= 5 {
+                        let cur_src_ino = self.lookup(src_parent, src_name)?;
+                        let cur_src_inode = self.read_inode(cur_src_ino)?;
+                        return self.transfer_logical_fallback(
+                            src_parent,
+                            src_name,
+                            cur_src_ino,
+                            &cur_src_inode,
+                            dst,
+                            dst_parent,
+                            dst_name,
+                            options,
+                        );
+                    }
+                }
             }
         };
 
@@ -2043,7 +2362,6 @@ impl DiskManager {
             })?,
         };
 
-        let (dst_comp_mode, dst_filter_cfg) = inode_write_params(&dst_inode);
         let dev_pair = match (src_file_id, dst_file_id) {
             (Some((sd, _)), Some((dd, _))) => Some((sd, dd)),
             _ => None,
@@ -2076,16 +2394,56 @@ impl DiskManager {
             Ok(buf)
         };
 
+        // Helper for writing a logical splice slice without truncating the tail of a
+        // stream-compressed / encrypted / filtered non-seekable destination file.
+        let write_splice_logical =
+            |dst_off_u64: u64, slice: &[u8]| -> Result<(), DiskManagerError> {
+                if slice.is_empty() {
+                    return Ok(());
+                }
+                let cur_dst = dst.read_inode(dst_inode_id)?;
+                if cur_dst.mode != crate::inode::FileType::File {
+                    return Err(DiskManagerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "splice_range_to only supports regular files",
+                    )));
+                }
+                let (cur_comp_mode, cur_filter_cfg) = inode_write_params(&cur_dst);
+                let is_cur_seekable = (cur_dst.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+                let is_cur_transformed = cur_dst.compressed_size > 0
+                    || cur_dst.encrypted
+                    || dst.is_encrypted()
+                    || cur_filter_cfg.is_active();
+                if !is_cur_seekable
+                    && is_cur_transformed
+                    && dst_off_u64 == 0
+                    && (slice.len() as u64) < cur_dst.size
+                {
+                    let mut full = dst.read_data(dst_inode_id)?;
+                    if full.len() > slice.len() {
+                        full[..slice.len()].copy_from_slice(slice);
+                        return dst.write_data_with_filters(
+                            dst_inode_id,
+                            0,
+                            &full,
+                            cur_comp_mode,
+                            cur_filter_cfg,
+                        );
+                    }
+                }
+                dst.write_data_with_filters(
+                    dst_inode_id,
+                    dst_off_u64,
+                    slice,
+                    cur_comp_mode,
+                    cur_filter_cfg,
+                )
+            };
+
         // --- Phase 1 & 2: Populate Destination (`Head` -> `Body` -> `Tail`) ---
         if partition.head_len > 0 {
             let head_buf = read_exact_logical(partition.head_src_off, partition.head_len)?;
-            dst.write_data_with_filters(
-                dst_inode_id,
-                partition.head_dst_off,
-                &head_buf,
-                dst_comp_mode,
-                dst_filter_cfg,
-            )?;
+            write_splice_logical(partition.head_dst_off, &head_buf)?;
             logical_rmw_bytes += partition.head_len;
         }
 
@@ -2096,345 +2454,201 @@ impl DiskManager {
             let dst_start_unit = (partition.body_dst_off / unit_size) as usize;
             let num_units = (partition.body_len / unit_size) as usize;
 
-            // Flush source before FD-level transfer so dirty `MAP_SHARED` pages are committed.
-            if !self.is_read_only() {
-                self.flush()?;
+            enum SpliceBodyOutcome {
+                Retry,
+                FallbackLogical,
+                Done(u64, usize, TransferMethod),
             }
 
-            // Collect source extents in `[src_start_unit .. src_start_unit + num_units)`
-            // under `self.inner.read()`, then strictly drop `src_guard`.
-            let (src_chunks, src_runs, populated_rel_units) = {
-                let src_guard = self.inner.read().unwrap();
-                let cur_src = Self::read_inode_internal(&src_guard, src_inode_id)?;
-                let mut populated = vec![false; num_units];
-                if is_seekable {
-                    let mut chunks = Vec::new();
-                    Self::for_each_logical_leaf_in_range(
-                        &src_guard,
-                        &cur_src,
-                        src_start_unit,
-                        src_start_unit + num_units,
-                        |chunk_idx, val| {
-                            let entry = crate::inode::ChunkEntry(val);
-                            let start = entry.start_block() as u64;
-                            let cnt = entry.block_count() as u64;
-                            if !entry.is_empty()
-                                && cnt > 0
-                                && src_guard.is_data_block(start)
-                                && src_guard.is_data_block(start.saturating_add(cnt - 1))
-                            {
-                                let rel = chunk_idx - src_start_unit;
-                                populated[rel] = true;
-                                chunks.push(ChunkExtent {
-                                    chunk_idx: rel,
-                                    entry,
-                                });
-                            }
-                        },
-                    );
-                    (chunks, Vec::new(), populated)
-                } else {
-                    let mut runs: Vec<LogicalRun> = Vec::new();
-                    Self::for_each_logical_leaf_in_range(
-                        &src_guard,
-                        &cur_src,
-                        src_start_unit,
-                        src_start_unit + num_units,
-                        |logical_idx, phys_blk| {
-                            if src_guard.is_data_block(phys_blk) {
-                                let rel = logical_idx - src_start_unit;
-                                populated[rel] = true;
-                                push_logical_block_run(&mut runs, rel, phys_blk);
-                            }
-                        },
-                    );
-                    (Vec::new(), runs, populated)
+            let mut attempt = 0usize;
+            let body_outcome = loop {
+                if !self.is_read_only() {
+                    self.flush()?;
                 }
-            };
 
-            // Flush destination before FD-level writes.
-            dst.flush()?;
-
-            let (b_phys, b_ext, b_method) = {
-                let mut dst_guard = dst.inner.write().unwrap();
-                if dst_guard.read_only {
-                    return Err(DiskManagerError::ReadOnly);
-                }
-                let dst_fd = dst_guard.file.as_raw_fd();
-                let mut cur_dst = Self::read_inode_internal(&dst_guard, dst_inode_id)?;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-
-                // Record existing destination blocks in `[dst_start_unit..dst_start_unit + num_units)`
-                // that will be replaced or cleared to holes. Never free them until AFTER all new
-                // extents are allocated and transferred so pre-WAL crashes never corrupt live data.
-                let mut old_dst_spans: Vec<(u64, u64)> = Vec::new();
-                let mut dst_holes_to_clear: Vec<usize> = Vec::new();
-                Self::for_each_logical_leaf_in_range(
-                    &dst_guard,
-                    &cur_dst,
-                    dst_start_unit,
-                    dst_start_unit + num_units,
-                    |dst_unit, raw| {
-                        if let Some(span) = raw_slot_block_span(&dst_guard, raw, is_seekable) {
-                            old_dst_spans.push(span);
-                        }
-                        let rel = dst_unit - dst_start_unit;
-                        if !populated_rel_units[rel] {
-                            dst_holes_to_clear.push(dst_unit);
-                        }
-                    },
-                );
-                coalesce_block_spans(&mut old_dst_spans);
-
-                let journaled = dst_guard.superblock.has_journal_layout();
-                let mut tracker = TierTracker::default();
-                let mut b_phys = 0u64;
-                let mut b_ext = 0usize;
-
-                if journaled {
-                    let mut sim = crate::journal::AllocSim::new_data_only(
-                        &dst_guard,
-                        dst_guard.free_inode_hint,
-                        dst_guard.free_block_hint,
-                    )?;
-                    let mut ops = Vec::new();
-                    let mut payload_ranges: Vec<(usize, usize)> = Vec::new();
-                    let track_ranges = dst_guard.durability_mode() == DurabilityMode::RangeAsync;
-
+                // Collect source extents under `self.inner.read()`, then strictly drop `src_guard`.
+                let (src_gen, cur_src_snap, src_chunks, src_runs, populated_rel_units) = {
+                    let src_guard = self.inner.read().unwrap();
+                    if !src_guard.is_inode_allocated(src_inode_id) {
+                        return Err(DiskManagerError::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "Source inode not found",
+                        )));
+                    }
+                    let cur_src = Self::read_inode_internal(&src_guard, src_inode_id)?;
+                    if cur_src.mode != crate::inode::FileType::File {
+                        return Err(DiskManagerError::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "splice_range_to only supports regular files",
+                        )));
+                    }
+                    let cur_src_enc = src_guard.superblock.encrypted
+                        || src_guard.encryption_key.is_some()
+                        || cur_src.encrypted;
+                    let cur_src_seek = (cur_src.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+                    let expected_still_ok = !cur_src_enc
+                        && cur_src_seek == is_seekable
+                        && (is_seekable || cur_src.compressed_size == 0);
+                    if !expected_still_ok {
+                        break SpliceBodyOutcome::FallbackLogical;
+                    }
+                    let s_gen = src_guard.inode_gen(src_inode_id);
+                    let mut populated = vec![false; num_units];
                     if is_seekable {
-                        for ce in &src_chunks {
-                            let count = ce.entry.block_count() as usize;
-                            let dst_start = sim.alloc_contiguous(&dst_guard.backing, count)?;
-                            let dst_start_u32 = u32::try_from(dst_start).map_err(|_| {
-                                DiskManagerError::Io(std::io::Error::other(
-                                    "Destination block exceeds 32-bit ChunkEntry range",
-                                ))
-                            })?;
-                            let count_u32 = u32::try_from(count).map_err(|_| {
-                                DiskManagerError::Io(std::io::Error::other("Extent count overflow"))
-                            })?;
-                            crate::journal::push_data_bitmap_op(
-                                &mut ops, dst_start, count_u32, true,
-                            );
-
-                            let byte_len = count as u64 * BLOCK_SIZE as u64;
-                            let m = transfer_byte_range_with_devs(
-                                src_fd,
-                                ce.entry.start_block() as u64 * BLOCK_SIZE as u64,
-                                dst_fd,
-                                dst_start * BLOCK_SIZE as u64,
-                                byte_len,
-                                dev_pair,
-                            )?;
-                            dst_guard
-                                .backing
-                                .invalidate_block_range_caches(dst_start, count as u64);
-                            if track_ranges {
-                                payload_ranges
-                                    .push(((dst_start as usize) * BLOCK_SIZE, byte_len as usize));
-                            }
-                            tracker.record(m);
-                            b_phys += byte_len;
-                            b_ext += 1;
-
-                            let new_entry = rebase_chunk_entry(ce.entry, dst_start_u32);
-                            crate::journal::sim_set_logical_chunk_entry(
-                                &dst_guard.backing,
-                                &mut cur_dst,
-                                dst_start_unit + ce.chunk_idx,
-                                new_entry,
-                                &mut sim,
-                                &mut ops,
-                            )?;
-                        }
-                    } else {
-                        for run in &src_runs {
-                            let mut rem = run.count as usize;
-                            let mut src_blk = run.phys_start;
-                            let mut rel_idx = run.logical_start;
-                            while rem > 0 {
-                                let (dst_start, alloc_len) =
-                                    Self::sim_alloc_run_greedy(&dst_guard.backing, &mut sim, rem)?;
-                                let alloc_u32 = u32::try_from(alloc_len).map_err(|_| {
-                                    DiskManagerError::Io(std::io::Error::other(
-                                        "Extent count overflow",
-                                    ))
-                                })?;
-                                crate::journal::push_data_bitmap_op(
-                                    &mut ops, dst_start, alloc_u32, true,
-                                );
-                                let byte_len = alloc_len as u64 * BLOCK_SIZE as u64;
-                                let m = transfer_byte_range_with_devs(
-                                    src_fd,
-                                    src_blk * BLOCK_SIZE as u64,
-                                    dst_fd,
-                                    dst_start * BLOCK_SIZE as u64,
-                                    byte_len,
-                                    dev_pair,
-                                )?;
-                                dst_guard
-                                    .backing
-                                    .invalidate_block_range_caches(dst_start, alloc_len as u64);
-                                if track_ranges {
-                                    payload_ranges.push((
-                                        (dst_start as usize) * BLOCK_SIZE,
-                                        byte_len as usize,
-                                    ));
+                        let mut chunks = Vec::new();
+                        Self::for_each_logical_leaf_in_range(
+                            &src_guard,
+                            &cur_src,
+                            src_start_unit,
+                            src_start_unit + num_units,
+                            |chunk_idx, val| {
+                                let entry = crate::inode::ChunkEntry(val);
+                                let start = entry.start_block() as u64;
+                                let cnt = entry.block_count() as u64;
+                                if !entry.is_empty()
+                                    && cnt > 0
+                                    && src_guard.is_data_block(start)
+                                    && src_guard.is_data_block(start.saturating_add(cnt - 1))
+                                {
+                                    let rel = chunk_idx - src_start_unit;
+                                    populated[rel] = true;
+                                    chunks.push(ChunkExtent {
+                                        chunk_idx: rel,
+                                        entry,
+                                    });
                                 }
-                                tracker.record(m);
-                                b_phys += byte_len;
-                                b_ext += 1;
-
-                                for k in 0..alloc_len {
-                                    crate::journal::sim_set_logical_block_ptr(
-                                        &dst_guard.backing,
-                                        &mut cur_dst,
-                                        dst_start_unit + rel_idx + k,
-                                        dst_start + k as u64,
-                                        &mut sim,
-                                        &mut ops,
-                                    )?;
-                                }
-                                src_blk += alloc_len as u64;
-                                rel_idx += alloc_len;
-                                rem -= alloc_len;
-                            }
-                        }
-                    }
-
-                    // Clear any overwritten destination slots where source had sparse holes.
-                    for dst_unit in dst_holes_to_clear {
-                        crate::journal::sim_clear_logical_slot(
-                            &dst_guard.backing,
-                            &mut cur_dst,
-                            dst_unit,
-                            &mut sim,
-                            &mut ops,
+                            },
                         );
-                    }
-
-                    // Free old overwritten destination blocks in the same atomic WAL tx.
-                    for &(old_start, old_cnt) in &old_dst_spans {
-                        sim.free_contiguous(&dst_guard.backing, old_start, old_cnt as usize)?;
-                        let cnt_u32 = u32::try_from(old_cnt).map_err(|_| {
-                            DiskManagerError::Io(std::io::Error::other("Freed extent overflow"))
-                        })?;
-                        crate::journal::push_data_bitmap_op(&mut ops, old_start, cnt_u32, false);
-                    }
-
-                    // Ordered-mode crash consistency: persist host FS extent-tree changes
-                    // via `fdatasync` BEFORE committing the OIFS WAL transaction.
-                    if tracker.used_kernel_extent_op
-                        || (b_phys > 0 && dst_guard.durability_mode() == DurabilityMode::Strict)
-                    {
-                        crate::retry_eintr(|| dst_guard.file.sync_data())?;
-                    }
-
-                    cur_dst.size = cur_dst
-                        .size
-                        .max(partition.body_dst_off + partition.body_len);
-                    cur_dst.modified_at = now;
-                    let dst_img = Self::build_inode_post_image(&dst_guard, dst_inode_id, &cur_dst)?;
-                    ops.push(crate::journal::MetadataOp::WriteInode {
-                        inode_id: dst_inode_id,
-                        inode_bytes: Box::new(dst_img),
-                    });
-
-                    let ops = if crate::journal::is_already_coalesced(&ops) {
-                        ops
+                        (s_gen, cur_src, chunks, Vec::new(), populated)
                     } else {
-                        crate::journal::coalesce_ops(ops)
-                    };
-                    Self::commit_journal_tx(&mut dst_guard, &ops)?;
-                    Self::apply_journal_ops(&mut dst_guard, &ops)?;
-                    dst_guard.free_block_hint = sim.free_block_hint;
-                    dst_guard.invalidate_payload_caches(dst_inode_id);
-                    dst_guard.cache_inode(dst_inode_id, cur_dst);
-
-                    if dst_guard.durability_mode() == DurabilityMode::RangeAsync {
-                        let mut ranges = vec![
-                            dst_guard.data_bitmap_byte_range(),
-                            dst_guard.inode_byte_range(dst_inode_id),
-                        ];
-                        ranges.extend(payload_ranges);
-                        for op in &ops {
-                            if let crate::journal::MetadataOp::WriteBlockSlice {
-                                block_id, ..
-                            } = op
-                            {
-                                ranges.push(dst_guard.block_byte_range(*block_id));
-                            }
-                        }
-                        dst_guard.sync_mutation_ranges(&ranges)?;
-                    } else if dst_guard.durability_mode() == DurabilityMode::LegacyWholeMmapAsync {
-                        dst_guard.sync_mutation_ranges(&[])?;
-                    }
-                    Self::maybe_checkpoint(&mut dst_guard)?;
-                } else {
-                    // Non-journaled destination path: allocate & transfer all new extents first,
-                    // rolling back only newly allocated blocks if an I/O error occurs.
-                    let mut newly_alloc_spans: Vec<(u64, usize)> = Vec::new();
-                    let mut pending_chunks: Vec<(usize, crate::inode::ChunkEntry)> = Vec::new();
-                    let mut pending_blocks: Vec<(usize, u64)> = Vec::new();
-                    let mut touched_ranges: Vec<(usize, usize)> = Vec::new();
-                    let track_ranges = dst_guard.durability_mode().is_range_based();
-
-                    let stage_res: Result<(), DiskManagerError> = (|| {
-                        if is_seekable {
-                            for ce in &src_chunks {
-                                let count = ce.entry.block_count() as usize;
-                                let dst_start = Self::allocate_contiguous_blocks_internal(
-                                    &mut dst_guard,
-                                    count,
-                                )?;
-                                newly_alloc_spans.push((dst_start, count));
-                                let dst_start_u32 = u32::try_from(dst_start).map_err(|_| {
-                                    DiskManagerError::Io(std::io::Error::other(
-                                        "Destination block exceeds 32-bit ChunkEntry range",
-                                    ))
-                                })?;
-                                let byte_len = count as u64 * BLOCK_SIZE as u64;
-                                let m = transfer_byte_range_with_devs(
-                                    src_fd,
-                                    ce.entry.start_block() as u64 * BLOCK_SIZE as u64,
-                                    dst_fd,
-                                    dst_start * BLOCK_SIZE as u64,
-                                    byte_len,
-                                    dev_pair,
-                                )?;
-                                dst_guard
-                                    .backing
-                                    .invalidate_block_range_caches(dst_start, count as u64);
-                                if track_ranges {
-                                    touched_ranges.push((
-                                        (dst_start as usize) * BLOCK_SIZE,
-                                        byte_len as usize,
-                                    ));
+                        let mut runs: Vec<LogicalRun> = Vec::new();
+                        Self::for_each_logical_leaf_in_range(
+                            &src_guard,
+                            &cur_src,
+                            src_start_unit,
+                            src_start_unit + num_units,
+                            |logical_idx, phys_blk| {
+                                if src_guard.is_data_block(phys_blk) {
+                                    let rel = logical_idx - src_start_unit;
+                                    populated[rel] = true;
+                                    push_logical_block_run(&mut runs, rel, phys_blk);
                                 }
-                                tracker.record(m);
-                                b_phys += byte_len;
-                                b_ext += 1;
-                                pending_chunks.push((
-                                    dst_start_unit + ce.chunk_idx,
-                                    rebase_chunk_entry(ce.entry, dst_start_u32),
-                                ));
+                            },
+                        );
+                        (s_gen, cur_src, Vec::new(), runs, populated)
+                    }
+                };
+
+                // Flush destination before FD-level writes.
+                dst.flush()?;
+
+                #[cfg(test)]
+                run_splice_before_dst_commit_hook();
+
+                let step_outcome = {
+                    let mut dst_guard = dst.inner.write().unwrap();
+                    if dst_guard.read_only {
+                        return Err(DiskManagerError::ReadOnly);
+                    }
+                    if !dst_guard.is_inode_allocated(dst_inode_id) {
+                        return Err(DiskManagerError::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "Destination inode not found",
+                        )));
+                    }
+                    let dst_fd = dst_guard.file.as_raw_fd();
+                    let mut cur_dst = Self::read_inode_internal(&dst_guard, dst_inode_id)?;
+                    if cur_dst.mode != crate::inode::FileType::File {
+                        return Err(DiskManagerError::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "splice_range_to only supports regular files",
+                        )));
+                    }
+                    let cur_dst_enc = dst_guard.superblock.encrypted
+                        || dst_guard.encryption_key.is_some()
+                        || cur_dst.encrypted;
+                    if can_splice_fast_path(&cur_src_snap, &cur_dst, false, cur_dst_enc)
+                        != Some(unit_size)
+                    {
+                        SpliceBodyOutcome::FallbackLogical
+                    } else {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+
+                        let mut old_dst_spans: Vec<(u64, u64)> = Vec::new();
+                        let mut dst_holes_to_clear: Vec<usize> = Vec::new();
+                        Self::for_each_logical_leaf_in_range(
+                            &dst_guard,
+                            &cur_dst,
+                            dst_start_unit,
+                            dst_start_unit + num_units,
+                            |dst_unit, raw| {
+                                if let Some(span) =
+                                    raw_slot_block_span(&dst_guard, raw, is_seekable)
+                                {
+                                    old_dst_spans.push(span);
+                                }
+                                let rel = dst_unit - dst_start_unit;
+                                if !populated_rel_units[rel] {
+                                    dst_holes_to_clear.push(dst_unit);
+                                }
+                            },
+                        );
+                        coalesce_block_spans(&mut old_dst_spans);
+
+                        let src_still_valid = |dg: &DiskManagerInner| -> bool {
+                            if Arc::ptr_eq(&self.inner, &dst.inner) {
+                                dg.is_inode_allocated(src_inode_id)
+                                    && dg.inode_gen(src_inode_id) == src_gen
+                            } else if let Ok(sg) = self.inner.try_read() {
+                                sg.is_inode_allocated(src_inode_id)
+                                    && sg.inode_gen(src_inode_id) == src_gen
+                            } else {
+                                false
                             }
-                        } else {
-                            for run in &src_runs {
-                                let mut rem = run.count as usize;
-                                let mut src_blk = run.phys_start;
-                                let mut rel_idx = run.logical_start;
-                                while rem > 0 {
-                                    let (dst_start, alloc_len) =
-                                        Self::alloc_run_greedy(&mut dst_guard, rem)?;
-                                    newly_alloc_spans.push((dst_start, alloc_len));
-                                    let byte_len = alloc_len as u64 * BLOCK_SIZE as u64;
+                        };
+
+                        let journaled = dst_guard.superblock.has_journal_layout();
+                        let mut tracker = TierTracker::default();
+                        let mut b_phys = 0u64;
+                        let mut b_ext = 0usize;
+
+                        if journaled {
+                            let mut sim = crate::journal::AllocSim::new_data_only(
+                                &dst_guard,
+                                dst_guard.free_inode_hint,
+                                dst_guard.free_block_hint,
+                            )?;
+                            let mut ops = Vec::new();
+                            let mut payload_ranges: Vec<(usize, usize)> = Vec::new();
+                            let track_ranges =
+                                dst_guard.durability_mode() == DurabilityMode::RangeAsync;
+
+                            if is_seekable {
+                                for ce in &src_chunks {
+                                    let count = ce.entry.block_count() as usize;
+                                    let dst_start =
+                                        sim.alloc_contiguous(&dst_guard.backing, count)?;
+                                    let dst_start_u32 = u32::try_from(dst_start).map_err(|_| {
+                                        DiskManagerError::Io(std::io::Error::other(
+                                            "Destination block exceeds 32-bit ChunkEntry range",
+                                        ))
+                                    })?;
+                                    let count_u32 = u32::try_from(count).map_err(|_| {
+                                        DiskManagerError::Io(std::io::Error::other(
+                                            "Extent count overflow",
+                                        ))
+                                    })?;
+                                    crate::journal::push_data_bitmap_op(
+                                        &mut ops, dst_start, count_u32, true,
+                                    );
+
+                                    let byte_len = count as u64 * BLOCK_SIZE as u64;
                                     let m = transfer_byte_range_with_devs(
                                         src_fd,
-                                        src_blk * BLOCK_SIZE as u64,
+                                        ce.entry.start_block() as u64 * BLOCK_SIZE as u64,
                                         dst_fd,
                                         dst_start * BLOCK_SIZE as u64,
                                         byte_len,
@@ -2442,9 +2656,9 @@ impl DiskManager {
                                     )?;
                                     dst_guard
                                         .backing
-                                        .invalidate_block_range_caches(dst_start, alloc_len as u64);
+                                        .invalidate_block_range_caches(dst_start, count as u64);
                                     if track_ranges {
-                                        touched_ranges.push((
+                                        payload_ranges.push((
                                             (dst_start as usize) * BLOCK_SIZE,
                                             byte_len as usize,
                                         ));
@@ -2452,101 +2666,365 @@ impl DiskManager {
                                     tracker.record(m);
                                     b_phys += byte_len;
                                     b_ext += 1;
-                                    for k in 0..alloc_len {
-                                        pending_blocks.push((
-                                            dst_start_unit + rel_idx + k,
-                                            dst_start + k as u64,
-                                        ));
+
+                                    let new_entry = rebase_chunk_entry(ce.entry, dst_start_u32);
+                                    crate::journal::sim_set_logical_chunk_entry(
+                                        &dst_guard.backing,
+                                        &mut cur_dst,
+                                        dst_start_unit + ce.chunk_idx,
+                                        new_entry,
+                                        &mut sim,
+                                        &mut ops,
+                                    )?;
+                                }
+                            } else {
+                                for run in &src_runs {
+                                    let mut rem = run.count as usize;
+                                    let mut src_blk = run.phys_start;
+                                    let mut rel_idx = run.logical_start;
+                                    while rem > 0 {
+                                        let (dst_start, alloc_len) = Self::sim_alloc_run_greedy(
+                                            &dst_guard.backing,
+                                            &mut sim,
+                                            rem,
+                                        )?;
+                                        let alloc_u32 = u32::try_from(alloc_len).map_err(|_| {
+                                            DiskManagerError::Io(std::io::Error::other(
+                                                "Extent count overflow",
+                                            ))
+                                        })?;
+                                        crate::journal::push_data_bitmap_op(
+                                            &mut ops, dst_start, alloc_u32, true,
+                                        );
+                                        let byte_len = alloc_len as u64 * BLOCK_SIZE as u64;
+                                        let m = transfer_byte_range_with_devs(
+                                            src_fd,
+                                            src_blk * BLOCK_SIZE as u64,
+                                            dst_fd,
+                                            dst_start * BLOCK_SIZE as u64,
+                                            byte_len,
+                                            dev_pair,
+                                        )?;
+                                        dst_guard.backing.invalidate_block_range_caches(
+                                            dst_start,
+                                            alloc_len as u64,
+                                        );
+                                        if track_ranges {
+                                            payload_ranges.push((
+                                                (dst_start as usize) * BLOCK_SIZE,
+                                                byte_len as usize,
+                                            ));
+                                        }
+                                        tracker.record(m);
+                                        b_phys += byte_len;
+                                        b_ext += 1;
+
+                                        for k in 0..alloc_len {
+                                            crate::journal::sim_set_logical_block_ptr(
+                                                &dst_guard.backing,
+                                                &mut cur_dst,
+                                                dst_start_unit + rel_idx + k,
+                                                dst_start + k as u64,
+                                                &mut sim,
+                                                &mut ops,
+                                            )?;
+                                        }
+                                        src_blk += alloc_len as u64;
+                                        rel_idx += alloc_len;
+                                        rem -= alloc_len;
                                     }
-                                    src_blk += alloc_len as u64;
-                                    rel_idx += alloc_len;
-                                    rem -= alloc_len;
                                 }
                             }
+
+                            if !src_still_valid(&dst_guard) {
+                                SpliceBodyOutcome::Retry
+                            } else {
+                                for dst_unit in dst_holes_to_clear {
+                                    crate::journal::sim_clear_logical_slot(
+                                        &dst_guard.backing,
+                                        &mut cur_dst,
+                                        dst_unit,
+                                        &mut sim,
+                                        &mut ops,
+                                    );
+                                }
+                                for &(old_start, old_cnt) in &old_dst_spans {
+                                    sim.free_contiguous(
+                                        &dst_guard.backing,
+                                        old_start,
+                                        old_cnt as usize,
+                                    )?;
+                                    let cnt_u32 = u32::try_from(old_cnt).map_err(|_| {
+                                        DiskManagerError::Io(std::io::Error::other(
+                                            "Freed extent overflow",
+                                        ))
+                                    })?;
+                                    crate::journal::push_data_bitmap_op(
+                                        &mut ops, old_start, cnt_u32, false,
+                                    );
+                                }
+
+                                if tracker.used_kernel_extent_op
+                                    || (b_phys > 0
+                                        && dst_guard.durability_mode() == DurabilityMode::Strict)
+                                {
+                                    crate::retry_eintr(|| dst_guard.file.sync_data())?;
+                                }
+
+                                cur_dst.size = cur_dst
+                                    .size
+                                    .max(partition.body_dst_off + partition.body_len);
+                                cur_dst.modified_at = now;
+                                let dst_img = Self::build_inode_post_image(
+                                    &dst_guard,
+                                    dst_inode_id,
+                                    &cur_dst,
+                                )?;
+                                ops.push(crate::journal::MetadataOp::WriteInode {
+                                    inode_id: dst_inode_id,
+                                    inode_bytes: Box::new(dst_img),
+                                });
+
+                                let ops = if crate::journal::is_already_coalesced(&ops) {
+                                    ops
+                                } else {
+                                    crate::journal::coalesce_ops(ops)
+                                };
+                                Self::commit_journal_tx(&mut dst_guard, &ops)?;
+                                Self::apply_journal_ops(&mut dst_guard, &ops)?;
+                                dst_guard.free_block_hint = sim.free_block_hint;
+                                dst_guard.invalidate_payload_caches(dst_inode_id);
+                                dst_guard.cache_inode(dst_inode_id, cur_dst);
+
+                                if dst_guard.durability_mode() == DurabilityMode::RangeAsync {
+                                    let mut ranges = vec![
+                                        dst_guard.data_bitmap_byte_range(),
+                                        dst_guard.inode_byte_range(dst_inode_id),
+                                    ];
+                                    ranges.extend(payload_ranges);
+                                    for op in &ops {
+                                        if let crate::journal::MetadataOp::WriteBlockSlice {
+                                            block_id,
+                                            ..
+                                        } = op
+                                        {
+                                            ranges.push(dst_guard.block_byte_range(*block_id));
+                                        }
+                                    }
+                                    dst_guard.sync_mutation_ranges(&ranges)?;
+                                } else if dst_guard.durability_mode()
+                                    == DurabilityMode::LegacyWholeMmapAsync
+                                {
+                                    dst_guard.sync_mutation_ranges(&[])?;
+                                }
+                                Self::maybe_checkpoint(&mut dst_guard)?;
+
+                                SpliceBodyOutcome::Done(b_phys, b_ext, tracker.finish())
+                            }
+                        } else {
+                            let mut newly_alloc_spans: Vec<(u64, usize)> = Vec::new();
+                            let mut pending_chunks: Vec<(usize, crate::inode::ChunkEntry)> =
+                                Vec::new();
+                            let mut pending_blocks: Vec<(usize, u64)> = Vec::new();
+                            let mut touched_ranges: Vec<(usize, usize)> = Vec::new();
+                            let track_ranges = dst_guard.durability_mode().is_range_based();
+
+                            let stage_res: Result<(), DiskManagerError> = (|| {
+                                if is_seekable {
+                                    for ce in &src_chunks {
+                                        let count = ce.entry.block_count() as usize;
+                                        let dst_start = Self::allocate_contiguous_blocks_internal(
+                                            &mut dst_guard,
+                                            count,
+                                        )?;
+                                        newly_alloc_spans.push((dst_start, count));
+                                        let dst_start_u32 = u32::try_from(dst_start).map_err(|_| {
+                                            DiskManagerError::Io(std::io::Error::other(
+                                                "Destination block exceeds 32-bit ChunkEntry range",
+                                            ))
+                                        })?;
+                                        let byte_len = count as u64 * BLOCK_SIZE as u64;
+                                        let m = transfer_byte_range_with_devs(
+                                            src_fd,
+                                            ce.entry.start_block() as u64 * BLOCK_SIZE as u64,
+                                            dst_fd,
+                                            dst_start * BLOCK_SIZE as u64,
+                                            byte_len,
+                                            dev_pair,
+                                        )?;
+                                        dst_guard
+                                            .backing
+                                            .invalidate_block_range_caches(dst_start, count as u64);
+                                        if track_ranges {
+                                            touched_ranges.push((
+                                                (dst_start as usize) * BLOCK_SIZE,
+                                                byte_len as usize,
+                                            ));
+                                        }
+                                        tracker.record(m);
+                                        b_phys += byte_len;
+                                        b_ext += 1;
+                                        pending_chunks.push((
+                                            dst_start_unit + ce.chunk_idx,
+                                            rebase_chunk_entry(ce.entry, dst_start_u32),
+                                        ));
+                                    }
+                                } else {
+                                    for run in &src_runs {
+                                        let mut rem = run.count as usize;
+                                        let mut src_blk = run.phys_start;
+                                        let mut rel_idx = run.logical_start;
+                                        while rem > 0 {
+                                            let (dst_start, alloc_len) =
+                                                Self::alloc_run_greedy(&mut dst_guard, rem)?;
+                                            newly_alloc_spans.push((dst_start, alloc_len));
+                                            let byte_len = alloc_len as u64 * BLOCK_SIZE as u64;
+                                            let m = transfer_byte_range_with_devs(
+                                                src_fd,
+                                                src_blk * BLOCK_SIZE as u64,
+                                                dst_fd,
+                                                dst_start * BLOCK_SIZE as u64,
+                                                byte_len,
+                                                dev_pair,
+                                            )?;
+                                            dst_guard.backing.invalidate_block_range_caches(
+                                                dst_start,
+                                                alloc_len as u64,
+                                            );
+                                            if track_ranges {
+                                                touched_ranges.push((
+                                                    (dst_start as usize) * BLOCK_SIZE,
+                                                    byte_len as usize,
+                                                ));
+                                            }
+                                            tracker.record(m);
+                                            b_phys += byte_len;
+                                            b_ext += 1;
+                                            for k in 0..alloc_len {
+                                                pending_blocks.push((
+                                                    dst_start_unit + rel_idx + k,
+                                                    dst_start + k as u64,
+                                                ));
+                                            }
+                                            src_blk += alloc_len as u64;
+                                            rel_idx += alloc_len;
+                                            rem -= alloc_len;
+                                        }
+                                    }
+                                }
+                                Ok(())
+                            })(
+                            );
+
+                            if let Err(e) = stage_res {
+                                for (s, c) in newly_alloc_spans {
+                                    let _ =
+                                        Self::free_contiguous_blocks_internal(&mut dst_guard, s, c);
+                                }
+                                return Err(e);
+                            }
+
+                            if !src_still_valid(&dst_guard) {
+                                for (s, c) in newly_alloc_spans {
+                                    let _ =
+                                        Self::free_contiguous_blocks_internal(&mut dst_guard, s, c);
+                                }
+                                SpliceBodyOutcome::Retry
+                            } else {
+                                if tracker.used_kernel_extent_op
+                                    || (b_phys > 0
+                                        && dst_guard.durability_mode() == DurabilityMode::Strict)
+                                {
+                                    crate::retry_eintr(|| dst_guard.file.sync_data())?;
+                                }
+
+                                for (idx, entry) in pending_chunks {
+                                    Self::set_logical_chunk_entry(
+                                        &mut dst_guard,
+                                        &mut cur_dst,
+                                        idx,
+                                        entry,
+                                        None,
+                                    )?;
+                                }
+                                for (idx, blk) in pending_blocks {
+                                    Self::set_logical_block_ptr_in_place(
+                                        &mut dst_guard,
+                                        &mut cur_dst,
+                                        idx,
+                                        blk,
+                                    )?;
+                                }
+                                for dst_unit in dst_holes_to_clear {
+                                    Self::clear_logical_slot_in_place(
+                                        &mut dst_guard,
+                                        &mut cur_dst,
+                                        dst_unit,
+                                    );
+                                }
+
+                                cur_dst.size = cur_dst
+                                    .size
+                                    .max(partition.body_dst_off + partition.body_len);
+                                cur_dst.modified_at = now;
+                                Self::write_inode_internal(&mut dst_guard, dst_inode_id, &cur_dst)?;
+
+                                for &(old_start, old_cnt) in &old_dst_spans {
+                                    Self::free_contiguous_blocks_internal(
+                                        &mut dst_guard,
+                                        old_start,
+                                        old_cnt as usize,
+                                    )?;
+                                }
+                                dst_guard.invalidate_payload_caches(dst_inode_id);
+
+                                if track_ranges {
+                                    let mut ranges = vec![
+                                        dst_guard.data_bitmap_byte_range(),
+                                        dst_guard.inode_byte_range(dst_inode_id),
+                                    ];
+                                    ranges.extend(touched_ranges);
+                                    dst_guard.sync_mutation_ranges(&ranges)?;
+                                } else {
+                                    dst_guard.sync_mutation_ranges(&[])?;
+                                }
+                                SpliceBodyOutcome::Done(b_phys, b_ext, tracker.finish())
+                            }
                         }
-                        Ok(())
-                    })();
+                    }
+                };
 
-                    if let Err(e) = stage_res {
-                        for (s, c) in newly_alloc_spans {
-                            let _ = Self::free_contiguous_blocks_internal(&mut dst_guard, s, c);
+                match step_outcome {
+                    SpliceBodyOutcome::Retry => {
+                        attempt += 1;
+                        if attempt >= 5 {
+                            break SpliceBodyOutcome::FallbackLogical;
                         }
-                        return Err(e);
                     }
-
-                    if tracker.used_kernel_extent_op
-                        || (b_phys > 0 && dst_guard.durability_mode() == DurabilityMode::Strict)
-                    {
-                        crate::retry_eintr(|| dst_guard.file.sync_data())?;
-                    }
-
-                    for (idx, entry) in pending_chunks {
-                        Self::set_logical_chunk_entry(
-                            &mut dst_guard,
-                            &mut cur_dst,
-                            idx,
-                            entry,
-                            None,
-                        )?;
-                    }
-                    for (idx, blk) in pending_blocks {
-                        Self::set_logical_block_ptr_in_place(
-                            &mut dst_guard,
-                            &mut cur_dst,
-                            idx,
-                            blk,
-                        )?;
-                    }
-                    for dst_unit in dst_holes_to_clear {
-                        Self::clear_logical_slot_in_place(&mut dst_guard, &mut cur_dst, dst_unit);
-                    }
-
-                    cur_dst.size = cur_dst
-                        .size
-                        .max(partition.body_dst_off + partition.body_len);
-                    cur_dst.modified_at = now;
-                    Self::write_inode_internal(&mut dst_guard, dst_inode_id, &cur_dst)?;
-
-                    for &(old_start, old_cnt) in &old_dst_spans {
-                        Self::free_contiguous_blocks_internal(
-                            &mut dst_guard,
-                            old_start,
-                            old_cnt as usize,
-                        )?;
-                    }
-                    dst_guard.invalidate_payload_caches(dst_inode_id);
-
-                    if track_ranges {
-                        let mut ranges = vec![
-                            dst_guard.data_bitmap_byte_range(),
-                            dst_guard.inode_byte_range(dst_inode_id),
-                        ];
-                        ranges.extend(touched_ranges);
-                        dst_guard.sync_mutation_ranges(&ranges)?;
-                    } else {
-                        dst_guard.sync_mutation_ranges(&[])?;
-                    }
+                    other => break other,
                 }
-
-                (b_phys, b_ext, tracker.finish())
             };
 
-            dst.maybe_drain_async_ranges();
-            body_fast_path_bytes = partition.body_len;
-            physical_bytes += b_phys;
-            extents_transferred += b_ext;
-            body_method = Some(b_method);
+            match body_outcome {
+                SpliceBodyOutcome::Done(b_phys, b_ext, b_method) => {
+                    dst.maybe_drain_async_ranges();
+                    body_fast_path_bytes = partition.body_len;
+                    physical_bytes += b_phys;
+                    extents_transferred += b_ext;
+                    body_method = Some(b_method);
+                }
+                SpliceBodyOutcome::FallbackLogical | SpliceBodyOutcome::Retry => {
+                    let body_buf = read_exact_logical(partition.body_src_off, partition.body_len)?;
+                    write_splice_logical(partition.body_dst_off, &body_buf)?;
+                    logical_rmw_bytes += partition.body_len;
+                    body_method = Some(TransferMethod::LogicalReencode);
+                }
+            }
         }
 
         if partition.tail_len > 0 {
             let tail_buf = read_exact_logical(partition.tail_src_off, partition.tail_len)?;
-            dst.write_data_with_filters(
-                dst_inode_id,
-                partition.tail_dst_off,
-                &tail_buf,
-                dst_comp_mode,
-                dst_filter_cfg,
-            )?;
+            write_splice_logical(partition.tail_dst_off, &tail_buf)?;
             logical_rmw_bytes += partition.tail_len;
         }
 
@@ -2645,99 +3123,133 @@ impl DiskManager {
         if part.body_len > 0 {
             let start_unit = (part.body_src_off / unit_size) as usize;
             let num_units = (part.body_len / unit_size) as usize;
+            let mut fallback_params: Option<(CompressionMode, crate::filters::FilterConfig)> = None;
             let freed_spans = {
                 let mut guard = self.inner.write().unwrap();
                 if guard.read_only {
                     return Err(DiskManagerError::ReadOnly);
                 }
-                let mut inode = Self::read_inode_internal(&guard, src_inode_id)?;
-                let mut slots_to_clear: Vec<usize> = Vec::new();
-                let mut spans: Vec<(u64, u64)> = Vec::new();
-                Self::for_each_logical_leaf_in_range(
-                    &guard,
-                    &inode,
-                    start_unit,
-                    start_unit + num_units,
-                    |unit_idx, raw| {
-                        let mut slot = raw;
-                        if let Some(prev) = punch_table_slot(&mut slot) {
-                            slots_to_clear.push(unit_idx);
-                            if let Some(span) = raw_slot_block_span(&guard, prev, is_seekable) {
-                                spans.push(span);
-                            }
-                        }
-                    },
-                );
-                coalesce_block_spans(&mut spans);
-
-                if !slots_to_clear.is_empty() {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs();
-                    inode.modified_at = now;
-                    if guard.superblock.has_journal_layout() {
-                        let mut sim = crate::journal::AllocSim::new_data_only(
-                            &guard,
-                            guard.free_inode_hint,
-                            guard.free_block_hint,
-                        )?;
-                        let mut ops = Vec::new();
-                        for unit_idx in slots_to_clear {
-                            crate::journal::sim_clear_logical_slot(
-                                &guard.backing,
-                                &mut inode,
-                                unit_idx,
-                                &mut sim,
-                                &mut ops,
-                            );
-                        }
-                        for &(s, c) in &spans {
-                            sim.free_contiguous(&guard.backing, s, c as usize)?;
-                            let c_u32 = u32::try_from(c).map_err(|_| {
-                                DiskManagerError::Io(std::io::Error::other("Freed extent overflow"))
-                            })?;
-                            crate::journal::push_data_bitmap_op(&mut ops, s, c_u32, false);
-                        }
-                        let img = Self::build_inode_post_image(&guard, src_inode_id, &inode)?;
-                        ops.push(crate::journal::MetadataOp::WriteInode {
-                            inode_id: src_inode_id,
-                            inode_bytes: Box::new(img),
-                        });
-                        let ops = if crate::journal::is_already_coalesced(&ops) {
-                            ops
-                        } else {
-                            crate::journal::coalesce_ops(ops)
-                        };
-                        Self::commit_journal_tx(&mut guard, &ops)?;
-                        Self::apply_journal_ops(&mut guard, &ops)?;
-                        guard.free_block_hint = sim.free_block_hint;
-                        guard.invalidate_payload_caches(src_inode_id);
-                        guard.cache_inode(src_inode_id, inode);
-                        Self::maybe_checkpoint(&mut guard)?;
-                    } else {
-                        for unit_idx in slots_to_clear {
-                            Self::clear_logical_slot_in_place(&mut guard, &mut inode, unit_idx);
-                        }
-                        Self::write_inode_internal(&mut guard, src_inode_id, &inode)?;
-                        for &(s, c) in &spans {
-                            Self::free_contiguous_blocks_internal(&mut guard, s, c as usize)?;
-                        }
-                        guard.invalidate_payload_caches(src_inode_id);
-                    }
-
-                    // Best-effort host-OS hole punch AFTER source metadata commits so CoW
-                    // refcounts drop from 2 -> 1 without touching referenced blocks.
-                    let src_fd = guard.file.as_raw_fd();
-                    for &(s, c) in &spans {
-                        punch_host_file_blocks(src_fd, s, c);
-                        guard.backing.invalidate_block_range_caches(s, c);
-                    }
+                if !guard.is_inode_allocated(src_inode_id) {
+                    return Err(DiskManagerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Source inode not found",
+                    )));
                 }
-                spans
+                let mut inode = Self::read_inode_internal(&guard, src_inode_id)?;
+                if inode.mode != crate::inode::FileType::File {
+                    return Err(DiskManagerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "punch_hole only supports regular files",
+                    )));
+                }
+                let cur_enc =
+                    guard.superblock.encrypted || guard.encryption_key.is_some() || inode.encrypted;
+                let cur_seek = (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+                if cur_seek != is_seekable || cur_enc || (!cur_seek && inode.compressed_size > 0) {
+                    fallback_params = Some(inode_write_params(&inode));
+                    Vec::new()
+                } else {
+                    let mut slots_to_clear: Vec<usize> = Vec::new();
+                    let mut spans: Vec<(u64, u64)> = Vec::new();
+                    Self::for_each_logical_leaf_in_range(
+                        &guard,
+                        &inode,
+                        start_unit,
+                        start_unit + num_units,
+                        |unit_idx, raw| {
+                            let mut slot = raw;
+                            if let Some(prev) = punch_table_slot(&mut slot) {
+                                slots_to_clear.push(unit_idx);
+                                if let Some(span) = raw_slot_block_span(&guard, prev, is_seekable) {
+                                    spans.push(span);
+                                }
+                            }
+                        },
+                    );
+                    coalesce_block_spans(&mut spans);
+
+                    if !slots_to_clear.is_empty() {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        inode.modified_at = now;
+                        if guard.superblock.has_journal_layout() {
+                            let mut sim = crate::journal::AllocSim::new_data_only(
+                                &guard,
+                                guard.free_inode_hint,
+                                guard.free_block_hint,
+                            )?;
+                            let mut ops = Vec::new();
+                            for unit_idx in slots_to_clear {
+                                crate::journal::sim_clear_logical_slot(
+                                    &guard.backing,
+                                    &mut inode,
+                                    unit_idx,
+                                    &mut sim,
+                                    &mut ops,
+                                );
+                            }
+                            for &(s, c) in &spans {
+                                sim.free_contiguous(&guard.backing, s, c as usize)?;
+                                let c_u32 = u32::try_from(c).map_err(|_| {
+                                    DiskManagerError::Io(std::io::Error::other(
+                                        "Freed extent overflow",
+                                    ))
+                                })?;
+                                crate::journal::push_data_bitmap_op(&mut ops, s, c_u32, false);
+                            }
+                            let img = Self::build_inode_post_image(&guard, src_inode_id, &inode)?;
+                            ops.push(crate::journal::MetadataOp::WriteInode {
+                                inode_id: src_inode_id,
+                                inode_bytes: Box::new(img),
+                            });
+                            let ops = if crate::journal::is_already_coalesced(&ops) {
+                                ops
+                            } else {
+                                crate::journal::coalesce_ops(ops)
+                            };
+                            Self::commit_journal_tx(&mut guard, &ops)?;
+                            Self::apply_journal_ops(&mut guard, &ops)?;
+                            guard.free_block_hint = sim.free_block_hint;
+                            guard.invalidate_payload_caches(src_inode_id);
+                            guard.cache_inode(src_inode_id, inode);
+                            Self::maybe_checkpoint(&mut guard)?;
+                        } else {
+                            for unit_idx in slots_to_clear {
+                                Self::clear_logical_slot_in_place(&mut guard, &mut inode, unit_idx);
+                            }
+                            Self::write_inode_internal(&mut guard, src_inode_id, &inode)?;
+                            for &(s, c) in &spans {
+                                Self::free_contiguous_blocks_internal(&mut guard, s, c as usize)?;
+                            }
+                            guard.invalidate_payload_caches(src_inode_id);
+                        }
+
+                        // Best-effort host-OS hole punch AFTER source metadata commits so CoW
+                        // refcounts drop from 2 -> 1 without touching referenced blocks.
+                        let src_fd = guard.file.as_raw_fd();
+                        for &(s, c) in &spans {
+                            punch_host_file_blocks(src_fd, s, c);
+                            guard.backing.invalidate_block_range_caches(s, c);
+                        }
+                    }
+                    spans
+                }
             };
-            self.maybe_drain_async_ranges();
-            blocks_freed = freed_spans.iter().map(|&(_, c)| c as usize).sum();
+            if let Some((fb_comp_mode, fb_filter_cfg)) = fallback_params {
+                let zeros = vec![0u8; part.body_len as usize];
+                self.write_data_with_filters(
+                    src_inode_id,
+                    part.body_src_off,
+                    &zeros,
+                    fb_comp_mode,
+                    fb_filter_cfg,
+                )?;
+            } else {
+                self.maybe_drain_async_ranges();
+                blocks_freed = freed_spans.iter().map(|&(_, c)| c as usize).sum();
+            }
         }
 
         if part.tail_len > 0 {
@@ -2767,46 +3279,63 @@ impl DiskManager {
         if len == 0 {
             return Ok(0);
         }
-        let (src_inode, src_encrypted) = {
-            let guard = self.inner.read().unwrap();
-            let inode = Self::read_inode_internal(&guard, src_inode_id)?;
-            let enc =
+
+        #[cfg(test)]
+        run_collapse_before_write_hook();
+
+        // Inspect layout and perform pointer-shift collapse under a single `self.inner.write()`
+        // lock so concurrent appends/writes can never create a cross-lock TOCTOU mismatch.
+        let fallback_info: (Inode, bool, bool) = {
+            let mut guard = self.inner.write().unwrap();
+            if guard.read_only {
+                return Err(DiskManagerError::ReadOnly);
+            }
+            if !guard.is_inode_allocated(src_inode_id) {
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Source inode not found",
+                )));
+            }
+            let mut inode = Self::read_inode_internal(&guard, src_inode_id)?;
+            if inode.mode != crate::inode::FileType::File {
+                return Err(DiskManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "collapse_range only supports regular files",
+                )));
+            }
+            let src_encrypted =
                 guard.superblock.encrypted || guard.encryption_key.is_some() || inode.encrypted;
-            (inode, enc)
-        };
-        let is_seekable = (src_inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
-        let is_raw = !is_seekable && src_inode.compressed_size == 0;
-        let unit_size_opt = if is_seekable {
-            Some(crate::inode::CHUNK_SIZE_64K as u64)
-        } else if is_raw {
-            Some(BLOCK_SIZE as u64)
-        } else {
-            None
-        };
+            let is_seekable = (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
+            let is_raw = !is_seekable && inode.compressed_size == 0;
+            let unit_size_opt = if is_seekable {
+                Some(crate::inode::CHUNK_SIZE_64K as u64)
+            } else if is_raw {
+                Some(BLOCK_SIZE as u64)
+            } else {
+                None
+            };
 
-        let removes_to_eof = src_off.saturating_add(len) >= src_inode.size;
-        // Encrypted seekable chunks bind AEAD AAD to `chunk_idx`, so shifting trailing chunks
-        // left without re-encrypting is ONLY valid when unencrypted (or removing to EOF with
-        // no shifted trailing chunks).
-        let can_pointer_shift = unit_size_opt.is_some_and(|u| {
-            (!src_encrypted || removes_to_eof)
-                && src_off.is_multiple_of(u)
-                && (len.is_multiple_of(u) || removes_to_eof)
-        });
+            if src_off >= inode.size {
+                return Ok(0);
+            }
+            let eff_len = len.min(inode.size - src_off);
+            let removes_to_eof = src_off.saturating_add(eff_len) >= inode.size;
+            // Encrypted seekable chunks bind AEAD AAD to `chunk_idx`, so shifting trailing chunks
+            // left without re-encrypting is ONLY valid when unencrypted (or removing to EOF with
+            // no shifted trailing chunks).
+            let can_pointer_shift = unit_size_opt.is_some_and(|u| {
+                (!src_encrypted || removes_to_eof)
+                    && src_off.is_multiple_of(u)
+                    && (eff_len.is_multiple_of(u) || removes_to_eof)
+            });
 
-        if can_pointer_shift {
-            let unit_size = unit_size_opt.unwrap();
-            let start_unit = (src_off / unit_size) as usize;
-            let total_units = src_inode.size.div_ceil(unit_size) as usize;
-            let remove_units = len.div_ceil(unit_size) as usize;
-            let new_size = src_inode.size.saturating_sub(len);
+            if can_pointer_shift {
+                let unit_size = unit_size_opt.unwrap();
+                let start_unit = (src_off / unit_size) as usize;
+                let total_units = inode.size.div_ceil(unit_size) as usize;
+                let remove_units = eff_len.div_ceil(unit_size) as usize;
+                let new_size = inode.size.saturating_sub(eff_len);
 
-            let freed_spans = {
-                let mut guard = self.inner.write().unwrap();
-                if guard.read_only {
-                    return Err(DiskManagerError::ReadOnly);
-                }
-                let mut inode = Self::read_inode_internal(&guard, src_inode_id)?;
                 let mut table = vec![0u64; total_units];
                 Self::for_each_logical_leaf(&guard, &inode, total_units, |idx, raw| {
                     if idx < total_units {
@@ -2960,11 +3489,15 @@ impl DiskManager {
                     punch_host_file_blocks(src_fd, s, c);
                     guard.backing.invalidate_block_range_caches(s, c);
                 }
-                spans
-            };
-            self.maybe_drain_async_ranges();
-            return Ok(freed_spans.iter().map(|&(_, c)| c as usize).sum());
-        }
+                drop(guard);
+                self.maybe_drain_async_ranges();
+                return Ok(spans.iter().map(|&(_, c)| c as usize).sum());
+            }
+
+            (inode, src_encrypted, is_seekable)
+        };
+
+        let (src_inode, src_encrypted, is_seekable) = fallback_info;
 
         // Unaligned / stream-compressed / encrypted collapse fallback:
         // shift trailing bytes left and truncate to `src_inode.size - len`.
@@ -3250,8 +3783,11 @@ impl DiskManager {
         dst_name: &str,
         options: TransferOptions,
     ) -> Result<TransferStats, DiskManagerError> {
+        static NEXT_XFER_TMP_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(1);
+
         let data = self.read_data(src_ino)?;
-        if let Ok(existing_ino) = dst.lookup(dst_parent, dst_name) {
+        let existing_target = if let Ok(existing_ino) = dst.lookup(dst_parent, dst_name) {
             if !options.overwrite {
                 return Err(DiskManagerError::Io(std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
@@ -3264,8 +3800,10 @@ impl DiskManager {
                     "Is a directory",
                 )));
             }
-            dst.delete_file(dst_parent, dst_name)?;
-        }
+            true
+        } else {
+            false
+        };
 
         let is_seekable = (src_inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) != 0;
         let mode = if is_seekable {
@@ -3284,13 +3822,52 @@ impl DiskManager {
             shuffle: src_inode.filter_shuffle,
             bitshuffle: src_inode.filter_bitshuffle,
         };
-        let dst_ino = dst.create_file_with_data_with_filters(
-            dst_parent,
-            dst_name,
-            &data,
-            mode,
-            filter_config,
-        )?;
+
+        // Stage overwrite into a temporary entry and atomically `rename` it into place so
+        // `NoSpace` or write errors never destroy an existing destination file.
+        let stage_via_tmp = |dst: &DiskManager| -> Result<u64, DiskManagerError> {
+            let seq = NEXT_XFER_TMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let tmp_name = format!(".__oifs_xf_{}_{}", std::process::id(), seq);
+            let tmp_ino = dst.create_file_with_data_with_filters(
+                dst_parent,
+                &tmp_name,
+                &data,
+                mode,
+                filter_config,
+            )?;
+            if let Err(e) = dst.rename(dst_parent, &tmp_name, dst_parent, dst_name) {
+                let _ = dst.delete_file(dst_parent, &tmp_name);
+                return Err(e);
+            }
+            Ok(tmp_ino)
+        };
+
+        let dst_ino = if existing_target {
+            stage_via_tmp(dst)?
+        } else {
+            match dst.create_file_with_data_with_filters(
+                dst_parent,
+                dst_name,
+                &data,
+                mode,
+                filter_config,
+            ) {
+                Ok(id) => id,
+                Err(DiskManagerError::Io(ref io_err))
+                    if io_err.kind() == std::io::ErrorKind::AlreadyExists && options.overwrite =>
+                {
+                    let existing_ino = dst.lookup(dst_parent, dst_name)?;
+                    let existing = dst.read_inode(existing_ino)?;
+                    if existing.mode == crate::inode::FileType::Directory {
+                        return Err(DiskManagerError::Io(std::io::Error::other(
+                            "Is a directory",
+                        )));
+                    }
+                    stage_via_tmp(dst)?
+                }
+                Err(e) => return Err(e),
+            }
+        };
         if options.move_file {
             dst.flush()?;
             self.delete_file(src_parent, src_name)?;
@@ -3862,5 +4439,234 @@ mod kani_proofs {
         } else {
             assert_eq!(unit, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod bugfix_repro_tests {
+    use super::*;
+
+    #[test]
+    fn repro_bug5_transfer_stage1_to_stage2_concurrent_source_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.img");
+        let dst_path = dir.path().join("dst.img");
+
+        // Sub-case 1: Concurrent delete + block reuse between Stage 1 and Stage 2.
+        {
+            let src = DiskManager::open_journaled(&src_path, 4 * 1024 * 1024).unwrap();
+            let dst = DiskManager::open_journaled(&dst_path, 4 * 1024 * 1024).unwrap();
+            src.create_file_with_data(0, "a.bin", &vec![0xAA; 32 * 1024], CompressionMode::Never)
+                .unwrap();
+            src.flush().unwrap();
+
+            let src_clone = src.clone();
+            TRANSFER_STAGE1_HOOK.with(|cell| {
+                *cell.borrow_mut() = Some(Box::new(move || {
+                    src_clone.delete_file(0, "a.bin").unwrap();
+                    src_clone
+                        .create_file_with_data(
+                            0,
+                            "secret.bin",
+                            &vec![0xCC; 32 * 1024],
+                            CompressionMode::Never,
+                        )
+                        .unwrap();
+                    src_clone.flush().unwrap();
+                }));
+            });
+
+            let res =
+                src.transfer_file_to(0, "a.bin", &dst, 0, "out.bin", TransferOptions::default());
+            assert!(
+                res.is_err(),
+                "Transfer of concurrently deleted source file must fail instead of copying reused secret blocks"
+            );
+            assert!(
+                dst.lookup(0, "out.bin").is_err(),
+                "out.bin must not exist in dst after concurrent source delete"
+            );
+        }
+
+        // Sub-case 2: Concurrent overwrite + freed-block reuse between Stage 1 and Stage 2.
+        let src2_path = dir.path().join("src2.img");
+        let dst2_path = dir.path().join("dst2.img");
+        {
+            let src = DiskManager::open_journaled(&src2_path, 4 * 1024 * 1024).unwrap();
+            let dst = DiskManager::open_journaled(&dst2_path, 4 * 1024 * 1024).unwrap();
+            let a_ino = src
+                .create_file_with_data(0, "a.bin", &vec![0xAA; 32 * 1024], CompressionMode::Never)
+                .unwrap();
+            src.flush().unwrap();
+
+            let src_clone = src.clone();
+            TRANSFER_STAGE1_HOOK.with(|cell| {
+                *cell.borrow_mut() = Some(Box::new(move || {
+                    src_clone
+                        .write_data(a_ino, 0, &vec![0xBB; 32 * 1024], CompressionMode::Never)
+                        .unwrap();
+                    src_clone
+                        .create_file_with_data(
+                            0,
+                            "secret.bin",
+                            &vec![0xCC; 32 * 1024],
+                            CompressionMode::Never,
+                        )
+                        .unwrap();
+                    src_clone.flush().unwrap();
+                }));
+            });
+
+            let stats = src
+                .transfer_file_to(0, "a.bin", &dst, 0, "out.bin", TransferOptions::default())
+                .unwrap();
+            let got = dst.read_data(stats.dst_inode).unwrap();
+            assert_eq!(
+                got,
+                vec![0xBB; 32 * 1024],
+                "Transferred data must match updated 0xBB content, never stale/reused 0xCC secret blocks"
+            );
+            assert!(dst.verify_integrity().unwrap().is_clean);
+        }
+    }
+
+    #[test]
+    fn repro_bug6_splice_range_dst_toctou_layout_and_delete() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Sub-case 1: dst converts from Raw -> Stream-compressed between Stage 1 and Stage 2.
+        {
+            let src_path = dir.path().join("splice_src1.img");
+            let dst_path = dir.path().join("splice_dst1.img");
+            let src = DiskManager::open_journaled(&src_path, 4 * 1024 * 1024).unwrap();
+            let dst = DiskManager::open_journaled(&dst_path, 4 * 1024 * 1024).unwrap();
+
+            let src_ino = src
+                .create_file_with_data(0, "src.bin", &vec![0xAA; 32 * 1024], CompressionMode::Never)
+                .unwrap();
+            let dst_ino = dst
+                .create_file_with_data(0, "dst.bin", &vec![0x11; 32 * 1024], CompressionMode::Never)
+                .unwrap();
+
+            let dst_clone = dst.clone();
+            SPLICE_BEFORE_DST_COMMIT_HOOK.with(|cell| {
+                *cell.borrow_mut() = Some(Box::new(move || {
+                    dst_clone
+                        .write_data(dst_ino, 0, &vec![b'Z'; 32 * 1024], CompressionMode::Always)
+                        .unwrap();
+                }));
+            });
+
+            src.splice_range_to(
+                src_ino,
+                0,
+                &dst,
+                dst_ino,
+                0,
+                16 * 1024,
+                SpliceOptions::default(),
+            )
+            .unwrap();
+            let mut expected = vec![0xAAu8; 16 * 1024];
+            expected.extend_from_slice(&vec![b'Z'; 16 * 1024]);
+            assert_eq!(dst.read_data(dst_ino).unwrap(), expected);
+            assert!(dst.verify_integrity().unwrap().is_clean);
+        }
+
+        // Sub-case 2: dst inode deleted before Stage 2 write lock.
+        {
+            let src_path = dir.path().join("splice_src2.img");
+            let dst_path = dir.path().join("splice_dst2.img");
+            let src = DiskManager::open_journaled(&src_path, 4 * 1024 * 1024).unwrap();
+            let dst = DiskManager::open_journaled(&dst_path, 4 * 1024 * 1024).unwrap();
+
+            let src_ino = src
+                .create_file_with_data(0, "src.bin", &vec![0xAA; 32 * 1024], CompressionMode::Never)
+                .unwrap();
+            let dst_ino = dst
+                .create_file_with_data(0, "dst.bin", &vec![0x11; 32 * 1024], CompressionMode::Never)
+                .unwrap();
+
+            let dst_clone = dst.clone();
+            SPLICE_BEFORE_DST_COMMIT_HOOK.with(|cell| {
+                *cell.borrow_mut() = Some(Box::new(move || {
+                    dst_clone.delete_file(0, "dst.bin").unwrap();
+                }));
+            });
+
+            let res = src.splice_range_to(
+                src_ino,
+                0,
+                &dst,
+                dst_ino,
+                0,
+                16 * 1024,
+                SpliceOptions::default(),
+            );
+            assert!(
+                res.is_err(),
+                "splice_range_to must reject concurrently deleted dst inode"
+            );
+            let report = dst.verify_integrity().unwrap();
+            assert!(
+                report.is_clean,
+                "dst fsck must remain clean after rejected splice: {report:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn repro_bug6_collapse_range_src_toctou_concurrent_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("collapse_src.img");
+        let dst_path = dir.path().join("collapse_dst.img");
+        let src = DiskManager::open_journaled(&src_path, 4 * 1024 * 1024).unwrap();
+        let dst = DiskManager::open_journaled(&dst_path, 4 * 1024 * 1024).unwrap();
+
+        let mut initial = Vec::with_capacity(16 * 1024);
+        for pat in [0x11u8, 0x22, 0x33, 0x44] {
+            initial.extend_from_slice(&[pat; 4096]);
+        }
+        let src_ino = src
+            .create_file_with_data(0, "src.bin", &initial, CompressionMode::Never)
+            .unwrap();
+        let dst_ino = dst
+            .create_file_with_data(0, "dst.bin", &[], CompressionMode::Never)
+            .unwrap();
+
+        let src_clone = src.clone();
+        COLLAPSE_BEFORE_WRITE_HOOK.with(|cell| {
+            *cell.borrow_mut() = Some(Box::new(move || {
+                let mut appended = vec![0x55u8; 4096];
+                appended.extend_from_slice(&[0x66u8; 4096]);
+                src_clone
+                    .write_data(src_ino, 16 * 1024, &appended, CompressionMode::Never)
+                    .unwrap();
+            }));
+        });
+
+        src.splice_range_to(
+            src_ino,
+            0,
+            &dst,
+            dst_ino,
+            0,
+            4096,
+            SpliceOptions {
+                trim_mode: SpliceTrimMode::CollapseRange,
+            },
+        )
+        .unwrap();
+
+        let mut expected = Vec::with_capacity(20 * 1024);
+        for pat in [0x22u8, 0x33, 0x44, 0x55, 0x66] {
+            expected.extend_from_slice(&[pat; 4096]);
+        }
+        assert_eq!(src.read_data(src_ino).unwrap(), expected);
+        let report = src.verify_integrity().unwrap();
+        assert!(
+            report.is_clean,
+            "fsck after concurrent append + CollapseRange must be clean: {report:?}"
+        );
     }
 }

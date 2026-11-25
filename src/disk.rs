@@ -2010,6 +2010,11 @@ impl DiskManager {
         for op in &ops {
             backing.apply_journal_op(sb, op)?;
         }
+        if !ops.is_empty() {
+            // Ensure replayed metadata is durable on disk BEFORE resetting the WAL header
+            // so a crash immediately after recovery never drops replayed transactions.
+            backing.flush()?;
+        }
 
         // Phase 3: reset the ring and record a clean shutdown.
         let state = crate::journal::JournalState {
@@ -2681,14 +2686,14 @@ impl DiskManager {
                     region[..hdr_len].copy_from_slice(&prev_hdr[..hdr_len]);
                     return Err(e.into());
                 }
-                Some(written)
+                Some((written, wrap_pad))
             } else {
                 region.mark_clean();
                 None
             }
         };
 
-        let written = match append_res {
+        let (written, wrap_pad) = match append_res {
             Some(w) => w,
             None => {
                 // Under Strict durability, flush all previously applied in-place metadata
@@ -2710,7 +2715,7 @@ impl DiskManager {
                     region[..hdr_len].copy_from_slice(&prev_hdr[..hdr_len]);
                     return Err(e.into());
                 }
-                written
+                (written, wrap_pad)
             }
         };
 
@@ -2725,11 +2730,26 @@ impl DiskManager {
 
         // Without the header flush the cursor update could be reordered after the
         // frame, and recovery would never see the transaction.
+        let bs_usize = usize::try_from(bs).unwrap_or(0);
         let start = Self::journal_region_start(&sb).unwrap_or(0);
-        let ring_base = start + usize::try_from(bs).unwrap_or(0);
-        let header_len = usize::try_from(bs)
-            .unwrap_or(0)
-            .min(crate::journal::JOURNAL_HEADER_LEN);
+        let ring_base = start + bs_usize;
+        let region_end = start
+            .saturating_add(Self::journal_region_len(bs))
+            .min(guard.backing.len());
+        let header_len = bs_usize.min(crate::journal::JOURNAL_HEADER_LEN);
+
+        // If `append_inner` wrapped around the ring under `Mmap`, sync the zeroed tail
+        // `[old_head..ring_bytes]` BEFORE advancing the header past it; otherwise stale
+        // non-zero bytes from an earlier lap can survive power loss and truncate `recover()`.
+        if guard.backing.as_mmap_slice().is_some()
+            && let Some(pad) = wrap_pad
+        {
+            let pad_off = ring_base.saturating_add(usize::try_from(pad).unwrap_or(0));
+            if pad_off < region_end {
+                guard.backing.flush_range(pad_off, region_end - pad_off)?;
+            }
+        }
+
         if let Some((s, e)) = written
             && e > s
         {
@@ -5972,41 +5992,36 @@ impl DiskManager {
             }
         }; // Shared read-guard is dropped immediately here!
 
-        let (
-            initial_inode,
-            initial_gen,
-            existing_decompressed,
-            encryption_key,
-            encryption_scheme,
-        ) = match stage1 {
-            Stage1Prep::Seekable {
-                level,
-                compress,
-                stage1,
-            } => {
-                return self.finish_chunked_64k_pipeline(
-                    inode_id,
-                    file_offset,
-                    data,
+        let (initial_inode, initial_gen, existing_decompressed, encryption_key, encryption_scheme) =
+            match stage1 {
+                Stage1Prep::Seekable {
                     level,
                     compress,
                     stage1,
-                );
-            }
-            Stage1Prep::Standard {
-                initial_inode,
-                initial_gen,
-                existing_decompressed,
-                encryption_key,
-                encryption_scheme,
-            } => (
-                initial_inode,
-                initial_gen,
-                existing_decompressed,
-                encryption_key,
-                encryption_scheme,
-            ),
-        };
+                } => {
+                    return self.finish_chunked_64k_pipeline(
+                        inode_id,
+                        file_offset,
+                        data,
+                        level,
+                        compress,
+                        stage1,
+                    );
+                }
+                Stage1Prep::Standard {
+                    initial_inode,
+                    initial_gen,
+                    existing_decompressed,
+                    encryption_key,
+                    encryption_scheme,
+                } => (
+                    initial_inode,
+                    initial_gen,
+                    existing_decompressed,
+                    encryption_key,
+                    encryption_scheme,
+                ),
+            };
 
         // --- STAGE 2: CPU-Bound Processing (ZERO filesystem locks held) ---
         // Perform CPU-heavy filtering, Zstd compression, and XChaCha20 encryption
@@ -7126,17 +7141,17 @@ impl DiskManager {
             {
                 (matched_name.to_string(), id, phys_blk, initial_hash)
             } else {
-            let target_name = Self::stored_filename(guard, parent_inode_id, name)?;
-            let h = crate::directory::hash_filename(target_name.as_ref());
-            Self::locate_entry_in_dir(&guard.backing, &parent_inode, target_name.as_ref(), h)
-                .map(|(id, blk)| (target_name.into_owned(), id, blk, h))
-                .ok_or_else(|| {
-                    DiskManagerError::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "File not found",
-                    ))
-                })?
-        };
+                let target_name = Self::stored_filename(guard, parent_inode_id, name)?;
+                let h = crate::directory::hash_filename(target_name.as_ref());
+                Self::locate_entry_in_dir(&guard.backing, &parent_inode, target_name.as_ref(), h)
+                    .map(|(id, blk)| (target_name.into_owned(), id, blk, h))
+                    .ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "File not found",
+                        ))
+                    })?
+            };
 
         // ---- Phase 1: compute post-images (no mutation) ----
         let file_inode = Self::read_inode_internal(guard, target_inode_id)?;
@@ -7350,17 +7365,17 @@ impl DiskManager {
             {
                 (matched_name, id, phys_blk, initial_hash)
             } else {
-            let target_name = Self::stored_filename(&guard, parent_inode_id, name)?;
-            let h = crate::directory::hash_filename(target_name.as_ref());
-            Self::locate_entry_in_dir(&guard.backing, &parent_inode, target_name.as_ref(), h)
-                .map(|(id, blk)| (target_name.into_owned(), id, blk, h))
-                .ok_or_else(|| {
-                    DiskManagerError::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "File not found",
-                    ))
-                })?
-        };
+                let target_name = Self::stored_filename(&guard, parent_inode_id, name)?;
+                let h = crate::directory::hash_filename(target_name.as_ref());
+                Self::locate_entry_in_dir(&guard.backing, &parent_inode, target_name.as_ref(), h)
+                    .map(|(id, blk)| (target_name.into_owned(), id, blk, h))
+                    .ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "File not found",
+                        ))
+                    })?
+            };
 
         let file_inode = Self::read_inode_internal(&guard, target_inode_id)?;
         // Deleting a non-empty directory would orphan every child
@@ -7770,43 +7785,43 @@ impl DiskManager {
             found
         };
 
-        let (inserted_phys_blk, allocated_new_block) =
-            if let Some((phys_blk, insert_offset)) = target_slot {
-                let blk_buf = load_block_mut(&guard.backing, &mut modified_blocks, phys_blk)?;
-                blk_buf[insert_offset..insert_offset + entry_bytes.len()]
-                    .copy_from_slice(entry_bytes);
-                // Zero-terminate trailing header bytes if room remains so scans stop cleanly.
-                let end = insert_offset + entry_bytes.len();
-                if end + 18 <= BLOCK_SIZE {
-                    blk_buf[end..end + 18].fill(0);
-                }
-                (phys_blk, false)
+        let (inserted_phys_blk, allocated_new_block) = if let Some((phys_blk, insert_offset)) =
+            target_slot
+        {
+            let blk_buf = load_block_mut(&guard.backing, &mut modified_blocks, phys_blk)?;
+            blk_buf[insert_offset..insert_offset + entry_bytes.len()].copy_from_slice(entry_bytes);
+            // Zero-terminate trailing header bytes if room remains so scans stop cleanly.
+            let end = insert_offset + entry_bytes.len();
+            if end + 18 <= BLOCK_SIZE {
+                blk_buf[end..end + 18].fill(0);
+            }
+            (phys_blk, false)
+        } else {
+            // Grow `new_parent` by one directory block.
+            let np_mut = new_parent_opt.as_mut().unwrap_or(&mut old_parent);
+            let new_blk_idx = Self::dir_num_blocks(np_mut);
+            let new_phys_blk = if journaled {
+                let sim = sim_opt.insert(crate::journal::AllocSim::new_data_only(
+                    guard,
+                    guard.free_inode_hint,
+                    guard.free_block_hint,
+                )?);
+                crate::journal::sim_get_or_alloc_block(
+                    &guard.backing,
+                    np_mut,
+                    new_blk_idx,
+                    sim,
+                    &mut journal_ops,
+                )?
             } else {
-                // Grow `new_parent` by one directory block.
-                let np_mut = new_parent_opt.as_mut().unwrap_or(&mut old_parent);
-                let new_blk_idx = Self::dir_num_blocks(np_mut);
-                let new_phys_blk = if journaled {
-                    let sim = sim_opt.insert(crate::journal::AllocSim::new_data_only(
-                        guard,
-                        guard.free_inode_hint,
-                        guard.free_block_hint,
-                    )?);
-                    crate::journal::sim_get_or_alloc_block(
-                        &guard.backing,
-                        np_mut,
-                        new_blk_idx,
-                        sim,
-                        &mut journal_ops,
-                    )?
-                } else {
-                    Self::get_or_alloc_block(guard, np_mut, new_blk_idx, true)?
-                };
-                let mut block_image = vec![0u8; BLOCK_SIZE];
-                block_image[..entry_bytes.len()].copy_from_slice(entry_bytes);
-                modified_blocks.insert(new_phys_blk, block_image);
-                np_mut.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
-                (new_phys_blk, true)
+                Self::get_or_alloc_block(guard, np_mut, new_blk_idx, true)?
             };
+            let mut block_image = vec![0u8; BLOCK_SIZE];
+            block_image[..entry_bytes.len()].copy_from_slice(entry_bytes);
+            modified_blocks.insert(new_phys_blk, block_image);
+            np_mut.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
+            (new_phys_blk, true)
+        };
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -8261,7 +8276,10 @@ impl DiskManager {
                 Self::write_inode_internal(guard, inode_id, &inode)?;
                 if guard.durability_mode().is_range_based() {
                     if let Some(blk) = zeroed_last_blk {
-                        let ranges = [guard.block_byte_range(blk), guard.inode_byte_range(inode_id)];
+                        let ranges = [
+                            guard.block_byte_range(blk),
+                            guard.inode_byte_range(inode_id),
+                        ];
                         guard.sync_mutation_ranges(&ranges)?;
                     } else {
                         let range = guard.inode_byte_range(inode_id);
@@ -9708,7 +9726,12 @@ impl DiskManager {
         if len <= DecodedBlobCache::MAX_ENTRY_BYTES
             && let Ok(guard) = self.inner.try_read()
         {
-            let inode_opt = (if guard.uses_direct_mmap_inode(inode_id) { None } else { guard.inode_cache.get(inode_id) }).or_else(|| {
+            let inode_opt = (if guard.uses_direct_mmap_inode(inode_id) {
+                None
+            } else {
+                guard.inode_cache.get(inode_id)
+            })
+            .or_else(|| {
                 if guard.backing.as_mmap_slice().is_some() {
                     Self::read_inode_internal(&guard, inode_id).ok()
                 } else {
@@ -9744,7 +9767,12 @@ impl DiskManager {
         inode_id: u64,
     ) -> OifsAsyncTask<Result<Vec<u8>, DiskManagerError>> {
         if let Ok(guard) = self.inner.try_read() {
-            let inode_opt = (if guard.uses_direct_mmap_inode(inode_id) { None } else { guard.inode_cache.get(inode_id) }).or_else(|| {
+            let inode_opt = (if guard.uses_direct_mmap_inode(inode_id) {
+                None
+            } else {
+                guard.inode_cache.get(inode_id)
+            })
+            .or_else(|| {
                 if guard.backing.as_mmap_slice().is_some() {
                     Self::read_inode_internal(&guard, inode_id).ok()
                 } else {
@@ -9775,9 +9803,7 @@ impl DiskManager {
                 || inode.filter_shuffle
                 || inode.filter_bitshuffle)
                 && (inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K) == 0;
-            if cacheable_kind
-                && let Some(blob) = guard.decoded_blob_cache.get(inode_id, &inode)
-            {
+            if cacheable_kind && let Some(blob) = guard.decoded_blob_cache.get(inode_id, &inode) {
                 return Ok(blob.as_ref().clone());
             }
             let data = Self::read_data_internal(&guard, inode_id, &inode)?;
@@ -10608,5 +10634,220 @@ mod encryption_scheme_tests {
             is_dec_failed,
             "ReadSession::open_file accepted unencrypted inode with compressed_size > 0 on encrypted image"
         );
+    }
+}
+
+#[cfg(test)]
+mod bugfix_repro_tests {
+    use super::*;
+
+    #[test]
+    fn repro_bug1_wal_wrap_pad_not_flushed_mmap_strict() {
+        let path = std::env::temp_dir().join(format!(
+            "oifs_repro_bug1_wal_wrap_{}.img",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let dm =
+            DiskManager::open_with_options(&path, 8 * 1024 * 1024, None, true, StorageMode::Mmap)
+                .unwrap();
+        dm.set_durability_mode(DurabilityMode::Strict);
+
+        let sb = dm.superblock();
+        let bs = sb.block_size as u64;
+        let j_start = DiskManager::journal_region_start(&sb).unwrap();
+        let j_len = DiskManager::journal_region_len(bs);
+        let j_end = j_start + j_len;
+        let bs_usize = bs as usize;
+
+        // Advance through journal ring laps until:
+        // - tail > 4096 and tail < head (so recover() starts at tail < old_head)
+        // - ring_bytes - head is small (< 400 B) so the next create_file wraps around
+        // - at least one byte in the pre-wrap ring tail [head..ring_bytes] is non-zero
+        let mut seq = 0usize;
+        let mut ready = false;
+        while seq < 2500 {
+            let name = format!("f{seq:04}");
+            let _ = dm.create_file(0, &name).unwrap();
+            seq += 1;
+
+            let is_candidate = {
+                let guard = dm.inner.read().unwrap();
+                let mut reg = guard.backing.journal_region_ref(&sb).unwrap().to_vec();
+                let ring = crate::journal::JournalRing::open(&mut reg, bs).unwrap();
+                let st = ring.state();
+                let ring_bytes = ring.ring_bytes();
+                let ring_slice = &reg[bs_usize..];
+                let old_head = st.head as usize;
+                st.tail > 4096
+                    && st.tail < st.head
+                    && ring_bytes - st.head < 420
+                    && old_head < ring_slice.len()
+                    && ring_slice[old_head..].iter().any(|&b| b != 0)
+            };
+            if is_candidate {
+                ready = true;
+                break;
+            }
+            if seq.is_multiple_of(20) {
+                // Keep directory compact while generating WAL traffic across laps.
+                let _ = dm.delete_file(0, &format!("f{:04}", seq - 1));
+            }
+        }
+        assert!(
+            ready,
+            "Failed to position journal ring near wrap boundary with non-zero stale tail"
+        );
+
+        let (old_head, old_tail, persisted_before, ring_bytes) = {
+            let guard = dm.inner.read().unwrap();
+            let mut reg = guard.backing.journal_region_ref(&sb).unwrap().to_vec();
+            let (st, rbytes) = {
+                let ring = crate::journal::JournalRing::open(&mut reg, bs).unwrap();
+                (ring.state(), ring.ring_bytes())
+            };
+            (st.head, st.tail, reg, rbytes)
+        };
+
+        let _trace_guard = crate::storage::start_storage_trace();
+        let wrapped_ino = dm.create_file(0, "wrapped_tx.bin").unwrap();
+        let events = crate::storage::take_storage_trace();
+
+        let live_after = {
+            let guard = dm.inner.read().unwrap();
+            let mut reg = guard.backing.journal_region_ref(&sb).unwrap().to_vec();
+            {
+                let ring = crate::journal::JournalRing::open(&mut reg, bs).unwrap();
+                let st = ring.state();
+                assert!(
+                    st.head < old_head,
+                    "Expected wrap-around on wrapped_tx.bin (old_head={old_head}, new_head={}, ring_bytes={ring_bytes})",
+                    st.head
+                );
+                assert!(
+                    st.tail == old_tail,
+                    "Expected tail to remain before old_head (old_tail={old_tail}, new_tail={})",
+                    st.tail
+                );
+                let _ = ring.last_write();
+            }
+            reg
+        };
+
+        // Reconstruct only the journal bytes actually flushed during `create_file("wrapped_tx.bin")`.
+        let mut crashed_journal = persisted_before;
+        let mut flushed_wrap_tail = false;
+        let ring_base = j_start + bs_usize;
+        let tail_abs = ring_base + old_head as usize;
+        for ev in &events {
+            match *ev {
+                crate::storage::StorageTraceEvent::Flush => {
+                    crashed_journal.copy_from_slice(&live_after);
+                    flushed_wrap_tail = true;
+                }
+                crate::storage::StorageTraceEvent::FlushRange { offset, len } => {
+                    let s = offset.max(j_start);
+                    let e = offset.saturating_add(len).min(j_end);
+                    if s < e {
+                        crashed_journal[s - j_start..e - j_start]
+                            .copy_from_slice(&live_after[s - j_start..e - j_start]);
+                    }
+                    if s <= tail_abs && e >= j_end {
+                        flushed_wrap_tail = true;
+                    }
+                }
+                crate::storage::StorageTraceEvent::JournalHeaderReset => {}
+            }
+        }
+
+        let mut recovered_wrapped = false;
+        {
+            let mut ring = crate::journal::JournalRing::open(&mut crashed_journal, bs).unwrap();
+            let _ = ring
+                .recover(|op| {
+                    if let crate::journal::MetadataOp::WriteInode { inode_id, .. } = op
+                        && *inode_id == wrapped_ino
+                    {
+                        recovered_wrapped = true;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        }
+
+        drop(dm);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            flushed_wrap_tail,
+            "Strict WAL wrap commit did not flush zeroed tail [0x{tail_abs:x}..0x{j_end:x}); events={events:?}"
+        );
+        assert!(
+            recovered_wrapped,
+            "Simulated crash recovery lost wrapped transaction for inode {wrapped_ino}"
+        );
+    }
+
+    #[test]
+    fn repro_bug2_recover_journal_resets_header_before_flush() {
+        for mode in [StorageMode::Mmap, StorageMode::FileIo] {
+            let path = std::env::temp_dir().join(format!(
+                "oifs_repro_bug2_recover_{:?}_{}.img",
+                mode,
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+
+            let dm =
+                DiskManager::open_with_options(&path, 4 * 1024 * 1024, None, true, mode).unwrap();
+            let sb = dm.superblock();
+            let bs = sb.block_size as u64;
+            drop(dm);
+
+            // Simulate a crash with a pending unapplied WAL transaction on disk:
+            // append directly to the journal ring and flush without `DiskManager::Drop`.
+            {
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap();
+                let mut backing = crate::storage::ImageBacking::open(&file, mode).unwrap();
+                backing.configure_regions(&sb).unwrap();
+                {
+                    let mut reg = backing.journal_region_mut(&sb).unwrap();
+                    let mut ring = crate::journal::JournalRing::open(&mut reg, bs).unwrap();
+                    ring.append(&[crate::journal::MetadataOp::SetInodeBitmap {
+                        inode_id: 7,
+                        allocated: true,
+                    }])
+                    .unwrap();
+                }
+                backing.flush().unwrap();
+            }
+
+            let _trace_guard = crate::storage::start_storage_trace();
+            let dm2 = DiskManager::open_with_options(&path, 0, None, true, mode).unwrap();
+            let events = crate::storage::take_storage_trace();
+            drop(dm2);
+            let _ = std::fs::remove_file(&path);
+
+            let reset_idx = events
+                .iter()
+                .position(|e| matches!(e, crate::storage::StorageTraceEvent::JournalHeaderReset));
+            assert!(
+                reset_idx.is_some(),
+                "Expected JournalHeaderReset trace during recovery ({mode:?}): {events:?}"
+            );
+            let reset_pos = reset_idx.unwrap();
+            let flushed_before_reset = events[..reset_pos]
+                .iter()
+                .any(|e| matches!(e, crate::storage::StorageTraceEvent::Flush));
+            assert!(
+                flushed_before_reset,
+                "recover_journal reset WAL header before flushing replayed ops ({mode:?}); events={events:?}"
+            );
+        }
     }
 }

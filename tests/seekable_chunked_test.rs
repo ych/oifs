@@ -629,3 +629,59 @@ fn test_seekable_indirect_truncate_prunes_tables_without_leaked_blocks() {
         );
     }
 }
+
+#[test]
+fn repro_bug8_non_journaled_seekable_enospc_no_dangling_ptrs() {
+    use rand::RngCore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("repro_bug8_enospc.img");
+    let dm = DiskManager::open(&path, 1024 * 1024).unwrap();
+
+    // 2 highly compressible chunks (128 KiB -> 2 data blocks total).
+    let orig_data = vec![b'V'; 2 * CHUNK_SIZE_64K];
+    let victim_ino = dm
+        .create_file_with_data(
+            0,
+            "victim.zst",
+            &orig_data,
+            CompressionMode::Seekable {
+                chunk_size: CHUNK_SIZE_64K as u32,
+                level: 1,
+            },
+        )
+        .unwrap();
+
+    // Fill almost all free blocks so ~20 free blocks remain (fits 1 incompressible 64K chunk = 16
+    // blocks, but fails with NoSpace on chunk 2 = 32 blocks total).
+    let filler_ino = dm.create_file(0, "filler.bin").unwrap();
+    let free_blocks = dm.analyze_fragmentation().unwrap().free_blocks as usize;
+    assert!(free_blocks > 25);
+    let fill_blocks = free_blocks - 20;
+    let filler_data = vec![0x11u8; fill_blocks * 4096];
+    dm.write_data(filler_ino, 0, &filler_data, CompressionMode::Never)
+        .unwrap();
+
+    let mut prng_data = vec![0u8; 2 * CHUNK_SIZE_64K];
+    rand::thread_rng().fill_bytes(&mut prng_data);
+
+    let err = dm
+        .write_chunked_64k(victim_ino, 0, &prng_data, 1)
+        .unwrap_err();
+    assert!(
+        matches!(err, oifs::disk::DiskManagerError::Allocator(_)),
+        "expected NoSpace error, got: {err:?}"
+    );
+
+    let report = dm.verify_integrity().unwrap();
+    assert!(
+        report.is_clean,
+        "non-journaled seekable write leaked/left dangling blocks on NoSpace: {report:?}"
+    );
+    assert_eq!(dm.read_data(victim_ino).unwrap(), orig_data);
+
+    // Allocate a new file and confirm victim's blocks were NOT recycled while referenced.
+    dm.create_file_with_data(0, "canary.bin", &[0xEEu8; 4096], CompressionMode::Never)
+        .unwrap();
+    assert_eq!(dm.read_data(victim_ino).unwrap(), orig_data);
+}

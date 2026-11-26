@@ -5,13 +5,13 @@ description: "Complete reference for the oifs and oifs_mcp CLI commands: global 
 tags: ["cli", "reference", "operations", "oifs", "oifs_mcp"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-24T19:09:23.676Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-1d8ff572dc201d9ae2619645
     resource: repo://src/bin/oifs_mcp.rs
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
 ## Overview
@@ -46,6 +46,8 @@ Global options apply across all subcommands and must appear **before** the subco
 | | `--defrag-interval <SECONDS>` | Interval in seconds between background fragmentation checks. Default: `300` (5 minutes). Minimum: `1`. |
 | | `--no-mmap` | Use pure positional `pread`/`pwrite` file I/O instead of `mmap` (eliminates SIGBUS and mmap hazards on network filesystems). |
 | | `--read-only` | Open the image in read-only mode (shared `F_RDLCK` lock, zero writes, works on `0444` images). |
+| | `--dict <PATH>` | Custom Zstd dictionary file(s) to register (first is also set as default compressor). Can be specified multiple times. |
+| | `--auto-grow[=MAX_MB]` | Automatically expand image capacity on block or inode exhaustion (optional hard cap in MiB, e.g. `--auto-grow` or `--auto-grow=64`). Requires `=` when specifying a value. |
 | `-h` | `--help` | Prints help information. |
 | `-V` | `--version` | Prints version. |
 
@@ -109,6 +111,9 @@ The `--json` flag guarantees machine-readable outputs for automation, AI agent t
 | `clone` | `{"ok": true, "src": "...", "dst": "...", "method": "..."}` | Method reflects OS CoW reflink type |
 | `transfer` | See [Transfer JSON](#transfer-json-schemas) below | |
 | `filter-analyze` | Pretty-printed `FilterRecommendation` (see below) | |
+| `dict train` | `{"ok": true, "dict_id": <u32>, "bytes": <usize>, "output": "..."}` | |
+| `resize` | `{"ok": true, "bytes_before": <u64>, "bytes_after": <u64>, "blocks_before": <u64>, "blocks_after": <u64>, "inodes_before": <u64>, "inodes_after": <u64>, "method": "..."}` | |
+| `vacuum` | `{"ok": true, "bytes_before": <u64>, "bytes_after": <u64>, "bytes_reclaimed": <u64>, "blocks_before": <u64>, "blocks_after": <u64>, "blocks_relocated": <u64>, "method": "..."}` | |
 | Error (any) | `{"ok": false, "error": "<message>"}` | Exit code 1 |
 
 ---
@@ -453,6 +458,62 @@ Falls back to logical re-encode (read + write) if either session is a Remote IPC
   "trim_mode": "keep|punch-hole|collapse"
 }
 ```
+
+---
+
+#### `dict` — Zstd dictionary utilities
+
+```bash
+oifs -i <image.img> dict train [--dir <path>] --output <dict_path> [--max-size <bytes>] [--max-samples <N>]
+```
+
+| Subcommand | Description |
+| :--- | :--- |
+| `train` | Train a Zstd dictionary from sample files stored inside an OIFS directory. |
+
+**`train` options**:
+| Option | Description |
+| :--- | :--- |
+| `--dir <path>` | Directory path inside the image (e.g. "/" or "/logs"). Default: `/`. |
+| `-o`, `--output <PATH>` | Host output path for the trained Zstd dictionary (required). |
+| `--max-size <bytes>` | Target dictionary size in bytes (256..=16777216). Default: 112640. |
+| `--max-samples <N>` | Maximum number of regular files sampled from `--dir`. Default: 256. |
+
+**JSON success**: `{"ok": true, "dict_id": <u32>, "bytes": <usize>, "output": "..."}`
+
+---
+
+#### `resize` — Resize (grow or shrink) an OIFS image container
+
+```bash
+oifs -i <image.img> resize [--size <MiB> | --bytes <N>]
+```
+
+| Option | Description |
+| :--- | :--- |
+| `--size <MiB>` | New target image size in MiB. |
+| `--bytes <N>` | New target image size in exact bytes (rounded up to 4 KiB blocks). |
+
+**Mutually exclusive**: `--size` and `--bytes` cannot be used together. One is required.
+
+**JSON success**: `{"ok": true, "bytes_before": <u64>, "bytes_after": <u64>, "blocks_before": <u64>, "blocks_after": <u64>, "inodes_before": <u64>, "inodes_after": <u64>, "method": "..."}`
+
+---
+
+#### `vacuum` — Compact used blocks and shrink the image to reclaim unused space
+
+```bash
+oifs -i <image.img> vacuum [--headroom-mb <N>] [--headroom-pct <N>] [--min-size-mb <N>] [--no-relayout]
+```
+
+| Option | Description |
+| :--- | :--- |
+| `--headroom-mb <N>` | Minimum free headroom to retain in MiB (default: 1). |
+| `--headroom-pct <N>` | Free headroom percentage relative to used data blocks 0..=100 (default: 15). |
+| `--min-size-mb <N>` | Minimum image size floor in MiB (0 = no floor, default: 0). |
+| `--no-relayout` | Disallow atomic cross-boundary re-layout (in-place shrink only). |
+
+**JSON success**: `{"ok": true, "bytes_before": <u64>, "bytes_after": <u64>, "bytes_reclaimed": <u64>, "blocks_before": <u64>, "blocks_after": <u64>, "blocks_relocated": <u64>, "method": "..."}`
 
 ---
 

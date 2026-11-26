@@ -1,11 +1,11 @@
 ---
 type: architecture
-title: Atomic Rename and Metadata Operations
+title: Rename & Atomic Operations
 description: Documents the atomic POSIX rename implementation with WAL transactions, SIV re-encryption for cross-directory moves on encrypted filesystems, FUSE_RENAME/RENAME2 opcode handling, and the MetadataOp journal framing for create/delete/mkdir/rename.
 tags: [rename, wal, encryption, fuse, journaling, atomic-operations]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-24T19:09:23.676Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
@@ -15,12 +15,12 @@ sources:
     resource: repo://src/fuse.rs
   - id: openwiki-source-813113339610c0170804687f
     resource: repo://src/journal.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
-# Atomic Rename and Metadata Operations
+# Rename & Atomic Operations
 
-This page documents the atomic POSIX rename implementation in OIFS, covering the FUSE opcode handling, the WAL transaction structure using `MetadataOp` variants, SIV filename re-encryption when moving across directories on encrypted filesystems, and the single-transaction `create_file_with_data` atomicity.
+This page documents the atomic POSIX rename implementation in OIFS, covering the FUSE opcode handling, the WAL transaction structure using `MetadataOp` variants, SIV filename re-encryption when moving across directories on encrypted filesystems, and the single-transaction atomicity guarantees for rename, create, delete, and mkdir operations.
 
 ## FUSE Opcode Handling
 
@@ -120,10 +120,16 @@ fn map_rename_flags(platform: FuseAbiPlatform, raw_flags: u32) -> Result<u32, i3
 }
 ```
 
-The VFS layer validates flags and enforces `NOREPLACE` semantics before delegating to `DiskManager::rename`:
+**Supported renameat2 flags:**
+- **RENAME_NOREPLACE** (bit 0, value 1): Fail with `EEXIST` if the destination path already exists. This is exposed via `FUSE_RENAME2` on Linux and mapped from `MACOS_RENAME_EXCL` on macOS.
+- **RENAME_EXCHANGE**: Not currently supported — the kernel FUSE protocol does not expose exchange semantics, and the codebase rejects any non-zero flags other than `RENAME_NOREPLACE`.
+
+### FUSE rename handler
+
+The FUSE layer validates flags before invoking `DiskManager::rename`:
 
 ```rust
-// src/fuse.rs:3080-3110
+// src/fuse.rs:3081-3110
 pub fn rename(
     &self,
     dm: &DiskManager,
@@ -133,59 +139,28 @@ pub fn rename(
     newname: &str,
     flags: u32,
 ) -> Result<(), i32> {
-    if self.is_read_only(dm) { return Err(-libc::EROFS); }
-    if flags != 0 && flags != FUSE_RENAME_NOREPLACE { return Err(-libc::EINVAL); }
-    // NFD→NFC normalization and macOS metadata filtering
-    let name = self.normalize_name(name);
-    let newname = self.normalize_name(newname);
-    // NOREPLACE check
+    if self.is_read_only(dm) {
+        return Err(-libc::EROFS);
+    }
+    if flags != 0 && flags != FUSE_RENAME_NOREPLACE {
+        return Err(-libc::EINVAL);
+    }
+    // ...
     if flags == FUSE_RENAME_NOREPLACE && dm.lookup(new_parent_inode, newname.as_ref()).is_ok() {
         return Err(-libc::EEXIST);
     }
-    // ... perform rename via DiskManager ...
+    // ...
 }
 ```
-
-## MetadataOp Journal Framing
-
-The WAL (Write-Ahead Log) uses **idempotent post-image** operations. Every `MetadataOp` is an absolute assignment, never a relative delta, making redo replay safe and repeatable. There is **no** `MetadataOp::Rename` or `MetadataOp::LinkCount` variant; renames are composed from primitive operations.
-
-```rust
-// src/journal.rs:308-345
-pub enum MetadataOp {
-    /// Set or clear the allocation bit for `inode_id` in the inode bitmap.
-    SetInodeBitmap { inode_id: u64, allocated: bool },
-    /// Set or clear the allocation bit for `block_id` in the data bitmap.
-    SetDataBitmap { block_id: u64, allocated: bool },
-    /// Set or clear a contiguous run of bits in the data bitmap.
-    SetDataBitmapRange { start_block: u64, count: u32, allocated: bool },
-    /// Overwrite the 256-byte inode record for `inode_id`.
-    WriteInode { inode_id: u64, inode_bytes: Box<[u8; INODE_BYTES]> },
-    /// Overwrite a byte range inside a data block (directory entry updates).
-    WriteBlockSlice { block_id: u64, offset: u32, data: Vec<u8> },
-}
-```
-
-Operations are coalesced (`coalesce_ops`) to merge adjacent bitmap allocations into `SetDataBitmapRange` and contiguous `WriteBlockSlice` updates on the same block into single slice writes, shrinking WAL frame sizes for multi-block operations.
-
-### Transaction Encoding
-
-A transaction frame has the layout:
-```
-magic(4) | tx_seq(8) | payload_len(4) | crc32c(4) | payload | commit_marker(4)
-```
-The CRC32C (Castagnoli) covers `tx_seq || payload_len || payload`. The commit marker (`0xDEAD_BEEF`) is written only after the payload is fully written, enabling torn-write detection during recovery.
-
-### Mount-Time Recovery
-
-On mount, `JournalRing::recover` replays every valid transaction between `tail` and `head` in append order. Replay stops at the first frame that fails validation (torn or corrupt tail) — everything before it is durable and is applied. Because every `MetadataOp` is an absolute post-image write, replaying a transaction twice is indistinguishable from replaying it once. The ring is then reset (`head = tail = 0`, `cleanly_unmounted = true`).
 
 ## DiskManager::rename Implementation
 
-### Entry Point
+### Overview
+
+`DiskManager::rename` is the core entry point. It validates inputs, ensures capacity, and retries once on `NoSpace` with auto-grow.
 
 ```rust
-// src/disk.rs:7547-7575
+// src/disk.rs:7750-7800
 pub fn rename(
     &self,
     old_parent_inode_id: u64,
@@ -193,106 +168,451 @@ pub fn rename(
     new_parent_inode_id: u64,
     new_name: &str,
 ) -> Result<(), DiskManagerError> {
-    if self.is_read_only() { return Err(DiskManagerError::ReadOnly); }
-    for name in [old_name, new_name] { validate_filename(name)?; }
-    let mut guard = self.inner.write().unwrap();
-    let res = Self::rename_internal(&mut guard, old_parent_inode_id, old_name, new_parent_inode_id, new_name);
-    drop(guard);
-    if res.is_ok() { self.maybe_drain_async_ranges(); }
-    res
+    if self.is_read_only() {
+        return Err(DiskManagerError::ReadOnly);
+    }
+    for name in [old_name, new_name] {
+        crate::directory::validate_filename(name).map_err(|e| {
+            DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                e.to_string(),
+            ))
+        })?;
+    }
+
+    self.ensure_capacity_for(2, 0)?;
+
+    for attempt in 0..2 {
+        let mut guard = self.inner.write().unwrap();
+        if guard.read_only {
+            return Err(DiskManagerError::ReadOnly);
+        }
+        let res = Self::rename_internal(
+            &mut guard,
+            old_parent_inode_id,
+            old_name,
+            new_parent_inode_id,
+            new_name,
+        );
+        drop(guard);
+        match res {
+            Ok(()) => {
+                self.maybe_drain_async_ranges();
+                return Ok(());
+            }
+            Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
+                if attempt == 0 && self.try_auto_grow_on_nospace(2, 0)? =>
+            {
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
 }
 ```
 
-### Internal Rename Flow (`rename_internal`)
+### rename_internal — The Atomic Core
 
-The internal implementation orchestrates the entire atomic operation:
+`rename_internal` holds the inner write lock for the entire operation and builds a single WAL transaction on journaled images.
 
-1. **Validate parents** — Both old and new parent inodes must be directories.
-2. **Resolve stored filenames** — On encrypted filesystems, `stored_filename` computes the SIV-encrypted name bound to the parent inode (see [Cross-Directory Moves with SIV Re-encryption](#cross-directory-moves-with-siv-re-encryption)).
-3. **Locate source entry** — Finds `(src_inode_id, src_phys_blk)` in the old parent's directory blocks.
-4. **POSIX no-op** — If `same_parent && old_name == new_name`, returns `Ok(())` without mutating anything.
-5. **Cycle detection** — Rejects moving a directory into itself or any descendant via `is_ancestor_dir`.
-6. **Destination handling** — Checks for existing entry at new location; enforces POSIX overwrite rules:
-   - File → File: atomic replace, frees target blocks and inode.
-   - Dir → Dir: only if target is empty; otherwise `"Directory is not empty"`.
-   - Mismatched types: `"Is a directory"` / `"Not a directory"`.
-7. **Stage directory block post-images** — Uses a `BTreeMap<u64, Vec<u8>>` (`modified_blocks`) to compose all directory block mutations in memory:
-   - Remove old entry from `src_phys_blk`.
-   - If overwriting, remove target entry from `dst_phys_blk`.
-   - Insert new entry pointing to `src_inode_id` with freshly computed `new_hash` (using `new_stored` name).
-   - If no space in existing blocks, allocates a new directory block for new parent.
-8. **Commit WAL transaction** (journaled images only):
-   - Pushes `SetInodeBitmap { allocated: false }` for overwritten inode.
-   - Pushes `SetDataBitmap/SetDataBitmapRange { allocated: false }` for freed data blocks.
-   - Pushes `WriteBlockSlice` for each modified directory block (full post-image).
-   - Pushes `WriteInode` for old parent (updated `modified_at`).
-   - Pushes `WriteInode` for new parent (updated `modified_at` and potentially `size` if grown).
-   - Calls `commit_journal_tx` (flushes WAL to stable storage).
-   - Calls `apply_journal_ops` (applies in place).
-9. **Non-journaled path** — Directly writes modified blocks, updates bitmaps and inodes, flushes per `DurabilityMode`.
-10. **Cache refresh** — Updates `inode_cache`, invalidates `dir_cache` for both parents and overwritten destination, invalidates payload caches for freed inode.
-11. **Durability sync** — Calls `sync_mutation_ranges` with byte ranges covering inode bitmap, data bitmap, inode table slots, and modified directory blocks.
-
-```mermaid
-sequenceDiagram
-    participant FUSE as FUSE Layer
-    participant DM as DiskManager::rename
-    participant Journal as Metadata WAL
-    participant Disk as ImageBacking
-
-    FUSE->>DM: rename(old_parent, old_name, new_parent, new_name, flags)
-    DM->>DM: Validate parents are directories
-    DM->>DM: Resolve stored filenames (SIV on encrypted FS)
-    DM->>DM: Locate source entry
-    DM->>DM: Check cycles (is_ancestor_dir)
-    DM->>DM: Check destination (overwrite rules)
-    DM->>DM: Stage directory block post-images (BTreeMap)
-    alt Journaled FS
-        DM->>Journal: Build MetadataOp[] (SetInodeBitmap, SetDataBitmap, WriteBlockSlice, WriteInode)
-        DM->>Journal: commit_journal_tx() → flush WAL ring to stable storage
-        DM->>Journal: apply_journal_ops() → apply in place
-    else Non-journaled
-        DM->>Disk: Write modified blocks, bitmaps, inodes directly
-    end
-    DM->>DM: Refresh caches (inode_cache, dir_cache, payload caches)
-    DM->>DM: sync_mutation_ranges() per DurabilityMode
-    DM-->>FUSE: Result
-```
-
-## Cross-Directory Moves with SIV Re-encryption
-
-On encrypted filesystems, directory entry names are encrypted using a **deterministic 192-bit SIV (Synthetic IV)** construction with `XChaCha20-Poly1305`. The SIV nonce is derived from:
-- A domain-separated `filename_siv_key`
-- The **parent directory inode number** (`parent_inode`)
-- The plaintext filename bytes
+#### Stage 1: Validation & Resolution (read-only)
 
 ```rust
-// src/encryption.rs:651-720
-pub fn encrypt_filename(
-    key: &EncryptionKey,
-    parent_inode: u64,
-    name: &str,
-) -> Result<String, EncryptionError> {
-    // Returns "_e_" + Base64URL(nonce || ciphertext || tag)
-    // nonce = BLAKE2b512("OIFS_SIV_FILENAME_V2" || key || parent_inode || name)[..24]
-    // AAD   = BLAKE2b512("OIFS_FILENAME_AAD_V2" || key || parent_inode)[..16]
+// src/disk.rs:8012-8075
+fn rename_internal(
+    guard: &mut DiskManagerInner,
+    old_parent_inode_id: u64,
+    old_name: &str,
+    new_parent_inode_id: u64,
+    new_name: &str,
+) -> Result<(), DiskManagerError> {
+    let mut old_parent = Self::read_inode_internal(guard, old_parent_inode_id)?;
+    if old_parent.mode != crate::inode::FileType::Directory {
+        return Err(DiskManagerError::Io(std::io::Error::other("Not a directory")));
+    }
+
+    let same_parent = old_parent_inode_id == new_parent_inode_id;
+    let mut new_parent_opt = if same_parent {
+        None
+    } else {
+        let np = Self::read_inode_internal(guard, new_parent_inode_id)?;
+        if np.mode != crate::inode::FileType::Directory {
+            return Err(DiskManagerError::Io(std::io::Error::other("Not a directory")));
+        }
+        Some(np)
+    };
+
+    // Encrypted FS: compute SIV-encrypted stored names
+    let old_stored = Self::stored_filename(guard, old_parent_inode_id, old_name)?.into_owned();
+    let new_stored = Self::stored_filename(guard, new_parent_inode_id, new_name)?.into_owned();
+    let old_hash = crate::directory::hash_filename(&old_stored);
+    let new_hash = crate::directory::hash_filename(&new_stored);
+
+    // Locate source entry
+    let (src_inode_id, src_phys_blk) =
+        Self::locate_entry_in_dir(&guard.backing, &old_parent, &old_stored, old_hash)
+            .ok_or_else(|| DiskManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound, "File not found")))?;
+
+    // POSIX no-op: renaming an entry onto itself succeeds without mutating anything
+    if same_parent && old_name == new_name {
+        return Ok(());
+    }
+
+    let src_inode = Self::read_inode_internal(guard, src_inode_id)?;
+
+    // Prevent moving a directory into itself or any of its descendants
+    if src_inode.mode == crate::inode::FileType::Directory
+        && (src_inode_id == new_parent_inode_id
+            || (!same_parent
+                && Self::is_ancestor_dir(guard, src_inode_id, new_parent_inode_id)?))
+    {
+        return Err(DiskManagerError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Cannot move a directory into itself or its subdirectory",
+        )));
+    }
+```
+
+#### Stage 2: Destination Handling & Overwrite Semantics
+
+```rust
+// src/disk.rs:8077-8115
+// Check whether destination already exists.
+let dst_loc = {
+    let np_ref = new_parent_opt.as_ref().unwrap_or(&old_parent);
+    Self::locate_entry_in_dir(&guard.backing, np_ref, &new_stored, new_hash)
+};
+let dst_info = if let Some((dst_inode_id, dst_phys_blk)) = dst_loc {
+    if dst_inode_id == src_inode_id {
+        return Ok(());
+    }
+    let dst_inode = Self::read_inode_internal(guard, dst_inode_id)?;
+    match (src_inode.mode, dst_inode.mode) {
+        (crate::inode::FileType::Directory, m)
+            if m != crate::inode::FileType::Directory =>
+        {
+            return Err(DiskManagerError::Io(std::io::Error::other("Not a directory")));
+        }
+        (m, crate::inode::FileType::Directory)
+            if m != crate::inode::FileType::Directory =>
+        {
+            return Err(DiskManagerError::Io(std::io::Error::other("Is a directory")));
+        }
+        (crate::inode::FileType::Directory, crate::inode::FileType::Directory)
+            if !Self::is_dir_empty(guard, &dst_inode)? =>
+        {
+            return Err(DiskManagerError::Io(std::io::Error::other("Directory is not empty")));
+        }
+        _ => {}
+    }
+    let dst_blocks = Self::collect_inode_blocks(&guard.backing, &dst_inode);
+    Some((dst_inode_id, dst_phys_blk, dst_blocks))
+} else {
+    None
+};
+```
+
+**Overwrite rules:**
+- File → File: Atomic replace; victim inode and its blocks freed.
+- Directory → Empty Directory: Atomic replace; victim inode and its (empty) blocks freed.
+- Directory → Non-empty Directory: Rejected with "Directory is not empty".
+- Type mismatch (File → Directory or Directory → File): Rejected with "Is a directory" / "Not a directory".
+
+#### Stage 3: Build Post-Images In-Memory
+
+All directory block mutations are staged in a `BTreeMap<u64, Vec<u8>>` so that multiple edits to the same block compose cleanly.
+
+```rust
+// src/disk.rs:8117-8185
+// ---- Stage directory block post-images in memory ----
+let mut modified_blocks: std::collections::BTreeMap<u64, Vec<u8>> =
+    std::collections::BTreeMap::new();
+fn load_block_mut<'a>(
+    backing: &ImageBacking,
+    map: &'a mut std::collections::BTreeMap<u64, Vec<u8>>,
+    blk: u64,
+) -> Result<&'a mut Vec<u8>, DiskManagerError> {
+    match map.entry(blk) {
+        std::collections::btree_map::Entry::Occupied(e) => Ok(e.into_mut()),
+        std::collections::btree_map::Entry::Vacant(e) => {
+            let bytes = backing.with_block(blk, |s| s.to_vec()).map_err(|_| {
+                DiskManagerError::Io(std::io::Error::other("Directory block not found"))
+            })?;
+            Ok(e.insert(bytes))
+        }
+    }
+}
+
+// 1. Remove old directory entry from src_phys_blk.
+{
+    let blk_buf = load_block_mut(&guard.backing, &mut modified_blocks, src_phys_blk)?;
+    crate::directory::remove_entry_in_block_bytes(blk_buf, &old_stored, old_hash);
+}
+
+// 2. If overwriting an existing destination, remove its entry from dst_phys_blk.
+if let Some((_, dst_phys_blk, _)) = &dst_info {
+    let blk_buf = load_block_mut(&guard.backing, &mut modified_blocks, *dst_phys_blk)?;
+    crate::directory::remove_entry_in_block_bytes(blk_buf, &new_stored, new_hash);
+}
+
+// 3. Serialize the new directory entry pointing to src_inode_id onto the stack.
+let new_stored_for_cache = new_stored.clone();
+let new_entry = crate::directory::DirectoryEntry {
+    inode: src_inode_id,
+    hash: new_hash,
+    name: new_stored,
+};
+let mut entry_buf = [0u8; 20 + crate::directory::DirectoryEntry::MAX_FILENAME_LEN];
+let entry_len = {
+    let mut cursor = std::io::Cursor::new(&mut entry_buf[..]);
+    new_entry.serialize_into(&mut cursor)
+        .map_err(|e| DiskManagerError::Io(std::io::Error::other(e.to_string())))?;
+    cursor.position() as usize
+};
+let entry_bytes = &entry_buf[..entry_len];
+let needed_space = 20 + new_entry.name.len();
+```
+
+#### Stage 4: Find or Allocate Destination Slot
+
+```rust
+// src/disk.rs:8187-8225
+// 4. Find a free slot in new_parent's existing blocks (accounting for staged removals).
+let journaled = guard.superblock.has_journal_layout();
+let mut journal_ops: Vec<crate::journal::MetadataOp> = Vec::new();
+let mut sim_opt: Option<crate::journal::AllocSim> = None;
+
+let target_slot = {
+    let np_ref = new_parent_opt.as_ref().unwrap_or(&old_parent);
+    let num_blocks = Self::dir_num_blocks(np_ref);
+    let mut found: Option<(u64, usize)> = None;
+    for blk_idx in 0..num_blocks {
+        let phys_blk = Self::resolve_logical_block_id(&guard.backing, np_ref, blk_idx);
+        if !guard.is_data_block(phys_blk) {
+            continue;
+        }
+        let insert_offset = if let Some(staged) = modified_blocks.get(&phys_blk) {
+            crate::directory::find_insert_offset_in_block(staged)
+        } else {
+            guard.backing.with_block(phys_blk, crate::directory::find_insert_offset_in_block)
+                .unwrap_or(BLOCK_SIZE)
+        };
+        if insert_offset + needed_space <= BLOCK_SIZE {
+            found = Some((phys_blk, insert_offset));
+            break;
+        }
+    }
+    found
+};
+
+let (inserted_phys_blk, allocated_new_block) = if let Some((phys_blk, insert_offset)) = target_slot {
+    let blk_buf = load_block_mut(&guard.backing, &mut modified_blocks, phys_blk)?;
+    blk_buf[insert_offset..insert_offset + entry_bytes.len()].copy_from_slice(entry_bytes);
+    // Zero-terminate trailing header bytes if room remains so scans stop cleanly.
+    let end = insert_offset + entry_bytes.len();
+    if end + 18 <= BLOCK_SIZE {
+        blk_buf[end..end + 18].fill(0);
+    }
+    (phys_blk, false)
+} else {
+    // Grow new_parent by one directory block.
+    let np_mut = new_parent_opt.as_mut().unwrap_or(&mut old_parent);
+    let new_blk_idx = Self::dir_num_blocks(np_mut);
+    let new_phys_blk = if journaled {
+        let sim = sim_opt.insert(crate::journal::AllocSim::new_data_only(
+            guard,
+            guard.free_inode_hint,
+            guard.free_block_hint,
+        )?);
+        crate::journal::sim_get_or_alloc_block(
+            &guard.backing,
+            np_mut,
+            new_blk_idx,
+            sim,
+            &mut journal_ops,
+        )?
+    } else {
+        Self::get_or_alloc_block(guard, np_mut, new_blk_idx, true)?
+    };
+    let mut block_image = vec![0u8; BLOCK_SIZE];
+    block_image[..entry_bytes.len()].copy_from_slice(entry_bytes);
+    modified_blocks.insert(new_phys_blk, block_image);
+    np_mut.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
+    (new_phys_blk, true)
+};
+```
+
+#### Stage 5: Update Parent Inode Timestamps
+
+```rust
+// src/disk.rs:8227-8230
+let now = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .unwrap()
+    .as_secs();
+old_parent.modified_at = now;
+if let Some(np) = new_parent_opt.as_mut() {
+    np.modified_at = now;
 }
 ```
 
-**Critical implication for rename**: When moving an entry across directories, the stored filename **must be re-encrypted** because the `parent_inode` bound into the AAD and SIV nonce changes. The `rename_internal` function handles this by calling `stored_filename(guard, new_parent_inode_id, new_name)` for the destination, which produces a fresh `_e_` ciphertext. The old entry (encrypted under `old_parent_inode_id`) is removed, and the new entry (encrypted under `new_parent_inode_id`) is inserted.
+#### Stage 6: Build WAL Transaction (Journaled Images)
 
-The payload AEAD is **not** re-encrypted because it is bound to the `inode_id` (which remains constant during rename), not the parent directory.
+On journaled images, the entire rename commits in a **single atomic WAL transaction** containing:
 
 ```rust
-// src/disk.rs:7580-7581
+// src/disk.rs:8232-8280
+if journaled {
+    if let Some((dst_inode_id, _, ref dst_blocks)) = dst_info {
+        journal_ops.push(crate::journal::MetadataOp::SetInodeBitmap {
+            inode_id: dst_inode_id,
+            allocated: false,
+        });
+        for &blk in dst_blocks {
+            crate::journal::push_data_bitmap_op(&mut journal_ops, blk, 1, false);
+        }
+    }
+    for (&blk_id, blk_data) in &modified_blocks {
+        journal_ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+            block_id: blk_id,
+            offset: 0,
+            data: blk_data.clone(),
+        });
+    }
+    let old_parent_img =
+        Self::build_inode_post_image(guard, old_parent_inode_id, &old_parent)?;
+    journal_ops.push(crate::journal::MetadataOp::WriteInode {
+        inode_id: old_parent_inode_id,
+        inode_bytes: Box::new(old_parent_img),
+    });
+    if let Some(ref np) = new_parent_opt {
+        let new_parent_img = Self::build_inode_post_image(guard, new_parent_inode_id, np)?;
+        journal_ops.push(crate::journal::MetadataOp::WriteInode {
+            inode_id: new_parent_inode_id,
+            inode_bytes: Box::new(new_parent_img),
+        });
+    }
+    let ops = if crate::journal::is_already_coalesced(&journal_ops) {
+        journal_ops
+    } else {
+        crate::journal::coalesce_ops(journal_ops)
+    };
+
+    Self::commit_journal_tx(guard, &ops)?;
+    Self::apply_journal_ops(guard, &ops)?;
+    // ...
+}
+```
+
+**Transaction composition (canonical phase order):**
+1. `SetInodeBitmap` — free victim inode (if overwriting)
+2. `SetDataBitmapRange` — free victim data blocks (coalesced runs)
+3. `WriteBlockSlice` — all modified directory blocks (source removal, dest removal, new entry insertion)
+4. `WriteInode` — updated parent inode(s) with new `modified_at` and size
+
+The `coalesce_ops` pass merges adjacent `SetDataBitmap` into `SetDataBitmapRange` and ensures `WriteBlockSlice` ordering.
+
+#### Stage 7: Apply & Cache Refresh
+
+```rust
+// src/disk.rs:8282-8360
+if let Some(sim) = sim_opt {
+    guard.free_block_hint = sim.free_block_hint;
+}
+if let Some((dst_inode_id, _, ref dst_blocks)) = dst_info {
+    if let Some(min_freed) = dst_blocks.iter().copied().min()
+        && min_freed < guard.free_block_hint
+    {
+        guard.free_block_hint = min_freed;
+    }
+    if dst_inode_id < guard.free_inode_hint {
+        guard.free_inode_hint = dst_inode_id;
+    }
+}
+// Cache updates for parents and overwritten destination
+let encrypted = guard.superblock.encrypted;
+let dst_phys_blk_opt = dst_info.as_ref().map(|&(_, b, _)| b);
+guard.cache_inode(old_parent_inode_id, old_parent);
+if same_parent {
+    let mut cache = guard.dir_cache.write_shard(old_parent_inode_id);
+    if let Some(ix) = cache.get_mut(&old_parent_inode_id) {
+        if encrypted {
+            ix.plain.remove(old_name);
+            ix.plain.insert(
+                new_name.to_string(),
+                (src_inode_id, crate::directory::hash_filename(new_name)),
+            );
+        }
+        ix.stored.remove(&old_stored);
+        ix.stored.insert(
+            new_stored_for_cache,
+            (src_inode_id, inserted_phys_blk, new_hash),
+        );
+        ix.may_have_holes = true;
+        if allocated_new_block
+            || ix.tail_offset.is_some_and(|(tb, _)| {
+                tb == src_phys_blk
+                    || tb == inserted_phys_blk
+                    || dst_phys_blk_opt == Some(tb)
+            })
+        {
+            ix.tail_offset = None;
+        }
+    }
+} else {
+    // old parent cache updates
+    // new parent cache updates
+}
+// Invalidate overwritten destination
+if let Some((dst_inode_id, _, _)) = dst_info {
+    guard.inode_cache.remove(dst_inode_id);
+    guard.dir_cache.remove(dst_inode_id);
+    guard.invalidate_payload_caches(dst_inode_id);
+    guard.bump_inode_gen(dst_inode_id);
+}
+```
+
+#### Stage 8: Durability & Checkpoint
+
+```rust
+// src/disk.rs:8362-8380
+if guard.durability_mode().is_range_based() {
+    let mut ranges = vec![
+        guard.inode_bitmap_byte_range(),
+        guard.data_bitmap_byte_range(),
+        guard.inode_byte_range(old_parent_inode_id),
+    ];
+    if !same_parent {
+        ranges.push(guard.inode_byte_range(new_parent_inode_id));
+    }
+    for &blk_id in modified_blocks.keys() {
+        ranges.push(guard.block_byte_range(blk_id));
+    }
+    guard.sync_mutation_ranges(&ranges)?;
+} else if guard.durability_mode() == DurabilityMode::LegacyWholeMmapAsync {
+    guard.sync_mutation_ranges(&[])?;
+}
+if journaled {
+    Self::maybe_checkpoint(guard)?;
+}
+```
+
+## Encrypted Filesystem Semantics
+
+On encrypted images, **only the directory entry's SIV-encrypted filename is recomputed** for the new `(parent_inode_id, new_name)` tuple. Payload blocks are never re-encrypted because AEAD is bound to the stable `inode_id`.
+
+```rust
+// src/disk.rs:8040-8041
 let old_stored = Self::stored_filename(guard, old_parent_inode_id, old_name)?.into_owned();
 let new_stored = Self::stored_filename(guard, new_parent_inode_id, new_name)?.into_owned();
 ```
 
-The `stored_filename` helper:
+The `stored_filename` function derives the SIV ciphertext using the parent inode ID as additional authenticated data (AAD):
 
 ```rust
-// src/disk.rs:2279-2295
+// src/disk.rs:2478-2495
 fn stored_filename<'a>(
     guard: &DiskManagerInner,
     parent_inode_id: u64,
@@ -307,127 +627,50 @@ fn stored_filename<'a>(
 }
 ```
 
-## Durability Guarantees and Ordering
+The encryption implementation (`src/encryption.rs:665-710`) uses XChaCha20-Poly1305 with a SIV-derived nonce:
+- AAD = `parent_inode_id` (8 bytes LE)
+- Nonce = HMAC-SHA256(filename_key, parent_inode_id || name) truncated to 24 bytes
+- Ciphertext = `_e_` + Base64URL(nonce || ciphertext || tag)
 
-### WAL-Before-Metadata Ordering
+Cross-directory rename therefore produces a **different on-disk directory entry name** while the payload blocks remain byte-for-byte identical.
 
-The fundamental invariant: **the WAL describing a mutation must reach stable storage before the metadata it describes**. A power loss must never leave the image with partially applied metadata that recovery has no record of.
+## MetadataOp Journal Framing
 
-- `commit_journal_tx` writes the transaction frame to the journal ring, updates the ring header (`head` cursor), and flushes the journal region (`flush_writeback`).
-- On `DurabilityMode::Strict` (and when not using group-commit batching), `commit_journal_tx` additionally flushes the journal header block to ensure the cursor update is durable before returning.
-- `sync_journal_region` flushes the entire journal region (header + ring) and is called by `DiskManager::flush`/`flush_async` to preserve ordering even when individual transactions skipped their own barrier.
-
-### DurabilityMode Semantics
-
-| Mode | Behavior |
-|------|----------|
-| **Lazy** (default) | Mutations update shared mmap/OS page cache only. No per-mutation `msync`. Changes survive process crashes; persistence across power loss on explicit `flush()`, `Drop`, or OS writeback. ~45× faster bulk throughput. |
-| **RangeAsync** | Accumulates dirty ranges in `pending_async_ranges`; drains in coalesced batches (64 ops or 4 MiB) via `msync(MS_ASYNC)`. Journal region flushed first on each drain. |
-| **Strict** | `msync(MS_SYNC)` on modified byte ranges for every mutation. Guarantees physical storage durability before return. Bridges 256 KiB gap between bitmaps and inode table to collapse syscalls. |
-| **LegacyWholeMmapAsync** | Legacy whole-mapping `msync(MS_ASYNC)` after every mutation. |
-
-During `RangeAsync` batch drain (`flush_async_batch`), the journal region is **always flushed first**, preserving WAL-before-metadata ordering.
-
-### Drop Ordering
+All mutating metadata operations (`create_file`, `create_directory`, `delete_file`, `rename`, `mkdir`, `truncate`) use the same `MetadataOp` WAL framing. The enum variants are absolute post-image assignments, making redo replay idempotent and repeatable.
 
 ```rust
-// src/disk.rs:1290-1310
-impl Drop for DiskManagerInner {
-    fn drop(&mut self) {
-        let (flush_journal, flush_backing) = Self::should_sync_on_drop(self.read_only, self.superblock.has_journal_layout());
-        if flush_journal { /* flush journal region */ }
-        if flush_backing { /* flush backing */ }
-    }
-}
-```
-On shutdown, the journal region is flushed **before** the backing metadata, ensuring the log describing pending metadata does not lag behind the metadata itself.
-
-## Atomicity of Rename
-
-The entire rename operation (source unlink, optional target overwrite + block/inode release, destination link, parent inode updates) is committed in a **single atomic CRC32C WAL transaction** on journaled images. The transaction includes:
-
-1. `SetInodeBitmap { allocated: false }` — free overwritten inode (if any)
-2. `SetDataBitmapRange { allocated: false }` — free overwritten data blocks (if any)
-3. `WriteBlockSlice` — directory block post-images (old parent removal, new parent insertion, overwritten parent removal)
-4. `WriteInode` — old parent inode post-image (updated `modified_at`)
-5. `WriteInode` — new parent inode post-image (updated `modified_at`, `size` if grown)
-
-Because all operations are in one frame, recovery either replays the complete rename or none of it. There is no intermediate state where the source is unlinked but the destination not yet linked, or vice versa.
-
-## FUSE RENAME_NOREPLACE Semantics
-
-`FUSE_RENAME_NOREPLACE` (flag bit 0, value `1`) implements `renameat2(..., RENAME_NOREPLACE)`:
-
-- **VFS check** (`src/fuse.rs:3101`): Before calling `DiskManager::rename`, the VFS performs `dm.lookup(new_parent_inode, newname)`. If the target exists, returns `-EEXIST` immediately.
-- **DiskManager behavior**: The internal implementation always performs overwrite semantics (removes existing destination entry). The VFS `NOREPLACE` check prevents the call from reaching `DiskManager` when the flag is set and the target exists.
-- **Atomicity**: The existence check and rename are **not** atomic together in the current implementation (TOCTOU window between VFS lookup and DiskManager rename). This matches typical FUSE semantics where the VFS layer enforces `NOREPLACE`.
-
-## Edge Cases and Error Handling
-
-| Scenario | Behavior |
-|----------|----------|
-| **Same parent, same name** | POSIX no-op: returns `Ok(())` without any metadata mutation. |
-| **Directory into itself/descendant** | `is_ancestor_dir` check rejects with `EINVAL` ("Cannot move a directory into itself or its subdirectory"). |
-| **Overwrite file with file** | Atomic replace: target inode and blocks freed, source entry moved. |
-| **Overwrite empty dir with dir** | Target directory inode freed (must be empty), source moved. |
-| **Overwrite non-empty dir** | Fails with `ENOTEMPTY` ("Directory is not empty"). |
-| **File ↔ Dir mismatch** | Fails with `EISDIR` (source file → target dir) or `ENOTDIR` (source dir → target file). |
-| **Sticky directory** | Not explicitly enforced in `rename_internal`; would require additional permission checks on `old_parent`/`new_parent` inodes. |
-| **Cross-mount rename** | Not applicable — OIFS is a single-image filesystem; no mountpoint traversal. |
-| **Read-only mount** | Returns `EROFS` at both FUSE and `DiskManager` entry points. |
-| **Invalid filename** | Rejects empty, `.`, `..`, path separators, null bytes, >255 bytes. |
-| **Encrypted FS: plaintext injection** | `dir_lookup` only matches authenticated `_e_` ciphertext names; never falls back to plaintext matching. |
-
-## Related Operations
-
-### create_file_with_data Atomicity
-
-The `create_file_with_data` helper (used by FUSE `CREATE` with `O_TRUNC` semantics) atomically creates a file and writes initial data in a **single WAL transaction**:
-
-```rust
-// src/disk.rs:3754-3900
-fn create_file_with_data_journaled(...) -> Result<u64, DiskManagerError> {
-    // AllocSim stages inode + block allocation
-    // WAL transaction: SetInodeBitmap(alloc), SetDataBitmapRange(alloc), WriteInode, WriteBlockSlice (data)
-    // Single commit_journal_tx + apply_journal_ops
+// src/journal.rs:308-360
+pub enum MetadataOp {
+    SetInodeBitmap { inode_id: u64, allocated: bool },
+    SetDataBitmap { block_id: u64, allocated: bool },
+    SetDataBitmapRange { start_block: u64, count: u32, allocated: bool },
+    WriteInode { inode_id: u64, inode_bytes: Box<[u8; INODE_BYTES]> },
+    WriteBlockSlice { block_id: u64, offset: u32, data: Vec<u8> },
 }
 ```
 
-Under `DurabilityMode::Strict`, small payloads (≤ 2 blocks / 8 KiB) are inlined directly into the WAL frame as zero-padded `WriteBlockSlice` ops, making the file's data durable as part of the single WAL commit barrier.
+**Key properties:**
+- Every variant writes a **complete post-image** (no deltas).
+- `SetDataBitmapRange` coalesces adjacent bitmap bit updates.
+- `WriteBlockSlice` supports partial block updates for directory entry mutations.
+- Transaction commit order: bitmap frees → block writes → inode writes (phase order enforced by `coalesce_ops`).
 
-### delete_file / mkdir / rmdir
+## Crash Recovery & Atomicity Guarantees
 
-All metadata mutations follow the same pattern:
-1. Stage operations in `AllocSim` (journaled) or operate directly (non-journaled).
-2. Build `MetadataOp` list.
-3. `commit_journal_tx` → `apply_journal_ops` (journaled) or direct write + `sync_mutation_ranges` (non-journaled).
-4. Refresh caches.
+1. **WAL-first ordering**: `commit_journal_tx` flushes the journal region (including header cursor update) **before** returning. In-place metadata is applied by `apply_journal_ops` only after the WAL frame is durable.
+2. **Idempotent redo**: Recovery scans the journal ring, decodes frames, and re-applies all `MetadataOp` variants. Because each op is an absolute post-image, replay is safe regardless of how many times it runs.
+3. **Single-transaction rename**: The entire rename (source unlink, optional target overwrite + block/inode release, destination link, both parent inode updates) commits in **one CRC32C-protected WAL frame**. No partial rename state can survive a crash.
+4. **Checkpointing**: `maybe_checkpoint` advances the checkpoint pointer after groups of transactions, bounding replay work.
 
-This ensures **every metadata mutation is journaled**, preventing the class of bug where an unjournaled write (e.g., `write_data` updating size/block pointers) overwrites a pending WAL post-image on recovery.
+## Related Pages
 
-## Testing and Verification
+- [Disk Manager & Persistence](disk_manager_and_persistence.md) — WAL, journal layout, durability modes
+- [Inode & Directory](inode_and_directory.md) — directory entry format, inode structure, block allocation
+- [Journal](journal.md) — `MetadataOp` encoding, ring buffer, recovery, coalescing
 
-- **Kani proofs** (`src/journal.rs`): Idempotence of every `MetadataOp` variant under `apply_op_in_place`; encode/decode round-trips; `coalesce_ops` properties; ring cursor arithmetic.
-- **Property tests** (`src/directory.rs`): Hash filter soundness, lookup equivalence, `dir_block_count` legacy compatibility, panic-free on arbitrary corrupt blocks.
-- **Journal recovery tests** (`src/journal.rs`): Pre-wrap/post-wrap replay, checkpointed transactions not replayed, ops applied in append order, wrap survival.
+## Tests
 
-## Key Files
-
-| File | Responsibility |
-|------|----------------|
-| `src/fuse.rs` | FUSE_RENAME/RENAME2 opcode handling, VFS flag validation, NOREPLACE check |
-| `src/disk.rs` | `DiskManager::rename`, `rename_internal`, WAL transaction build, durability sync |
-| `src/journal.rs` | `MetadataOp` enum, frame encoding/decoding, `JournalRing::recover`, `commit_journal_tx`, `apply_journal_ops` |
-| `src/encryption.rs` | `encrypt_filename`/`decrypt_filename` (SIV construction with parent_inode binding) |
-| `src/directory.rs` | On-disk `DirectoryEntry` format, zero-allocation lookup/insert/remove, SipHash-2-4 |
-
-## Summary
-
-OIFS implements POSIX atomic rename by:
-- Composing the operation from idempotent `MetadataOp` primitives (no dedicated `Rename` op).
-- Committing all metadata changes (directory entries, bitmaps, inodes) in a **single WAL transaction** with CRC32C integrity.
-- Re-encrypting directory entry names via SIV when crossing directory boundaries on encrypted filesystems.
-- Enforcing WAL-before-metadata writeback ordering across all `DurabilityMode`s and on `Drop`.
-- Replaying incomplete transactions automatically on mount via idempotent redo.
-
-This design provides crash consistency without a full-image `fsck`, while maintaining high throughput via `Lazy`/`RangeAsync` durability modes for workloads that can tolerate OS-writeback persistence semantics.
+Key integration tests in `tests/rename_test.rs`:
+- `test_rename_matrix_plain_journaled_and_file_io` — same-dir, cross-dir, overwrite, type-mismatch, cycle prevention, fsck integrity across all storage/journal combinations
+- `test_rename_encrypted_cross_directory_recomputes_siv_without_touching_payload` — verifies SIV filename recomputation with untouched payload blocks on encrypted images
+- `test_rename_read_only_and_fuse_wire_protocol` — FUSE_RENAME/RENAME2 wire format, NOREPLACE flag, read-only rejection

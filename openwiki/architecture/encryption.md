@@ -5,7 +5,7 @@ description: "Argon2id KDF, BLAKE2b-512 subkeys, XChaCha20-Poly1305 AEAD for dat
 tags: ["encryption", "cryptography", "security", "argon2id", "xchacha20-poly1305", "siv", "blake2b", "ipc"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-24T19:09:23.676Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
@@ -19,14 +19,14 @@ sources:
     resource: repo://src/ipc.rs
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
 ## Responsibility and ownership
 
 The encryption subsystem (`src/encryption.rs`) provides cryptographic privacy and authenticated integrity for stored files, directory entries, and on-disk metadata. It isolates cryptographic primitives into clean layers:
 
-1. **Key Management and Hygiene**: Passphrase hashing with Argon2id, master-key-to-subkey derivation via BLAKE2b domain separation, and automatic secret erasure via `ZeroizeOnDrop` ([`EncryptionKey`](repo://src/encryption.rs#L49-L111)).
+1. **Key Management and Hygiene**: Passphrase hashing with Argon2id, master-key-to-subkey derivation via BLAKE2b domain separation, and automatic secret erasure via `ZeroizeOnDrop` ([`EncryptionKey`](repo://src/encryption.rs#L50-L111)).
 2. **File Payload AEAD**: Authenticated payload confidentiality via [`encrypt_data`](repo://src/encryption.rs#L184-L213) / [`decrypt_data`](repo://src/encryption.rs#L215-L241) and in-place variants.
 3. **Seekable Chunk AEAD**: Context-bound encryption for 64 KiB seekable chunks with AAD binding `inode_id`, `chunk_idx`, and `flags` ([`chunk_aad_stack`](repo://src/encryption.rs#L358-L375)).
 4. **Deterministic Filename Privacy**: SIV construction using BLAKE2b-512 synthetic nonce + XChaCha20-Poly1305 AEAD, parent inode bound in AAD ([`encrypt_filename`](repo://src/encryption.rs#L661-L779), [`decrypt_filename`](repo://src/encryption.rs#L770-L901)).
@@ -55,7 +55,7 @@ flowchart TD
 
 ### Memory hygiene with ZeroizeOnDrop
 
-[`EncryptionKey`](repo://src/encryption.rs#L49-L111) wraps the master key and all four subkeys with `zeroize` macros:
+[`EncryptionKey`](repo://src/encryption.rs#L50-L111) wraps the master key and all four subkeys with `zeroize` macros:
 
 ```rust
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -74,18 +74,18 @@ pub struct EncryptionKey {
 ```
 
 - When an `EncryptionKey` instance goes out of scope, `ZeroizeOnDrop` automatically executes volatile memory zeroization on all five `[u8; 32]` arrays.
-- The `fmt::Debug` implementation explicitly overrides formatted output with `EncryptionKey([REDACTED])` ([repo://src/encryption.rs#L109-L111](repo://src/encryption.rs#L109-L111)), preventing secrets from accidentally leaking into log outputs or panic strings.
+- The `fmt::Debug` implementation explicitly overrides formatted output with `EncryptionKey([REDACTED])` ([repo://src/encryption.rs#L128-L130](repo://src/encryption.rs#L128-L130)), preventing secrets from accidentally leaking into log outputs or panic strings.
 - `derive_subkey` also zeroizes the intermediate BLAKE2b-512 digest after extracting the 32-byte subkey ([repo://src/encryption.rs#L24-L44](repo://src/encryption.rs#L24-L44)).
 
 ### Argon2id password-based key derivation (PBKDF)
 
-Keys are derived from user-supplied passphrases using Argon2id via [`derive_key`](repo://src/encryption.rs#L124-L167):
+Keys are derived from user-supplied passphrases using Argon2id via [`derive_key`](repo://src/encryption.rs#L143-L171):
 
 - **Parameters**: `m = 65,536 KiB (64 MiB)`, `t = 3`, `p = 4` (OWASP / RFC 9106 hardened defaults). Constants are [`ARGON2_M_COST_KIB`](repo://src/encryption.rs#L7-L9), [`ARGON2_T_COST`](repo://src/encryption.rs#L7-L9), [`ARGON2_P_COST`](repo://src/encryption.rs#L7-L9).
-- **Salt Management**: A cryptographically secure 16-byte random salt is generated with `OsRng` via [`generate_salt()`](repo://src/encryption.rs#L301-L306). This salt is permanently stored in plaintext within the filesystem's `SuperBlock::encryption_salt` ([repo://src/superblock.rs#L47](repo://src/superblock.rs#L47)).
+- **Salt Management**: A cryptographically secure 16-byte random salt is generated with `OsRng` via [`generate_salt()`](repo://src/encryption.rs#L309-L314). This salt is permanently stored in plaintext within the filesystem's `SuperBlock::encryption_salt` ([repo://src/superblock.rs#L47](repo://src/superblock.rs#L47)).
 - **Rainbow Table and GPU Resistance**: Argon2id combines data-dependent and data-independent memory access passes, providing state-of-the-art resistance against both side-channel cache timing attacks and GPU/ASIC password cracking.
 - The 256-bit output hash is copied into `EncryptionKey::from_bytes(key)`, which immediately derives the four domain-separated subkeys via BLAKE2b-512.
-- The master key buffer is zeroized immediately after subkey derivation ([repo://src/encryption.rs#L161-L163](repo://src/encryption.rs#L161-L163)).
+- The master key buffer is zeroized immediately after subkey derivation ([repo://src/encryption.rs#L168-L170](repo://src/encryption.rs#L168-L170)).
 
 ### BLAKE2b-512 domain-separated subkey derivation
 
@@ -98,7 +98,7 @@ pub fn derive_subkey(master_key: &[u8; 32], context: &[u8]) -> [u8; 32] {
     hasher.update([context.len() as u8]);
     hasher.update(context);
     hasher.update(master_key);
-    let digest = hasher.finalize();
+    let mut digest = hasher.finalize_reset();
     let mut subkey = [0u8; 32];
     subkey.copy_from_slice(&digest[..32]);
     digest.zeroize();
@@ -107,12 +107,15 @@ pub fn derive_subkey(master_key: &[u8; 32], context: &[u8]) -> [u8; 32] {
 ```
 
 Domain separation labels (constants at [repo://src/encryption.rs#L13-L16](repo://src/encryption.rs#L13-L16)):
-- `KDF_CONTEXT_PAYLOAD` = `b"oifs.kdf.v2.payload.xchacha20poly1305"`
-- `KDF_CONTEXT_FILENAME_SIV` = `b"oifs.kdf.v2.filename.siv.blake2b"`
-- `KDF_CONTEXT_FILENAME_CIPHER` = `b"oifs.kdf.v2.filename.aead.xchacha20poly1305"`
-- `KDF_CONTEXT_IPC_AUTH` = `b"oifs.kdf.v2.ipc.auth.blake2b"`
 
-Each label is distinct and versioned (`v2`), guaranteeing cryptographic isolation: `payload_key` ≠ `filename_siv_key` ≠ `filename_cipher_key` ≠ `ipc_auth_key` ≠ `master_key`. Tests verify pairwise distinctness ([repo://src/encryption.rs#L1000-L1013](repo://src/encryption.rs#L1000-L1013)).
+| Subkey | Context Label | Purpose |
+|--------|---------------|---------|
+| `payload_key` | `oifs.kdf.v2.payload.xchacha20poly1305` | File & chunk payload encryption |
+| `filename_siv_key` | `oifs.kdf.v2.filename.siv.blake2b` | SIV synthetic nonce derivation |
+| `filename_cipher_key` | `oifs.kdf.v2.filename.aead.xchacha20poly1305` | Filename AEAD encryption |
+| `ipc_auth_key` | `oifs.kdf.v2.ipc.auth.blake2b` | IPC challenge-response MAC |
+
+Each label is distinct and versioned (`v2`), guaranteeing cryptographic isolation: `payload_key` ≠ `filename_siv_key` ≠ `filename_cipher_key` ≠ `ipc_auth_key` ≠ `master_key`. Tests verify pairwise distinctness ([repo://src/encryption.rs#L1050-L1057](repo://src/encryption.rs#L1050-L1057)).
 
 ## Encryption schemes (versioning)
 
@@ -273,7 +276,7 @@ transcript = direction(1) || client_nonce(32) || server_nonce(32) || salt(16)
 - **Constant-time tag comparison** (`ct_eq`) prevents timing side channels ([repo://src/ipc.rs#L333-L340](repo://src/ipc.rs#L333-L340)).
 - Password verifier stored in `DiskManagerInner` uses BLAKE2b-512 with domain `OIFS-PWD-VERIFIER-V1` over `ipc_auth_key || password` ([repo://src/disk.rs#L1541-L1553](repo://src/disk.rs#L1541-L1553)).
 
-## Per-file key hierarchy and key rotation considerations
+## Per-filesystem key hierarchy and key rotation considerations
 
 ### Current design
 
@@ -296,68 +299,12 @@ transcript = direction(1) || client_nonce(32) || server_nonce(32) || salt(16)
 3. Atomic superblock update with new salt/version.
 4. Crash-safe journaling of the re-encryption operation (supported via existing WAL).
 
-## Data structures summary
+## Error handling
 
-### `EncryptionConfig` (scheme selection)
+[`EncryptionError`](repo://src/encryption.rs#L902-L921) distinguishes:
+- `KeyDerivationFailed` — Argon2id parameter error or hash failure.
+- `InvalidKey` — Key length mismatch (e.g., not 32 bytes).
+- `EncryptionFailed` — AEAD encryption error (should not happen with valid inputs).
+- `DecryptionFailed` — AEAD authentication failure (wrong password, corrupted ciphertext, or nonce/AAD mismatch).
 
-```rust
-pub const ENCRYPTION_SCHEME_LEGACY: u8 = 1;           // Empty AAD
-pub const ENCRYPTION_SCHEME_CONTEXT_BOUND: u8 = 2;    // Binds inode/chunk/filename context
-```
-
-Stored in `SuperBlock.encryption_version` ([repo://src/superblock.rs#L47](repo://src/superblock.rs#L47)).
-
-### `MasterKey` (opaque 256-bit)
-
-- Directly output of Argon2id or externally supplied.
-- Never used for encryption directly.
-
-### `FileKey` ≡ `EncryptionKey`
-
-```rust
-pub struct EncryptionKey {
-    key: [u8; 32],                 // Master
-    payload_key: [u8; 32],         // File/chunk XChaCha20-Poly1305
-    filename_siv_key: [u8; 32],    // Filename SIV BLAKE2b-512
-    filename_cipher_key: [u8; 32], // Filename XChaCha20-Poly1305
-    ipc_auth_key: [u8; 32],        // IPC BLAKE2b-MAC
-}
-```
-
-All five arrays zeroized on drop.
-
-### `SubKey` (domain-separated 256-bit)
-
-Produced by `derive_subkey(master, context)`. Four contexts defined as constants ([repo://src/encryption.rs#L13-L16](repo://src/encryption.rs#L13-L16)).
-
-## Implementation files
-
-| File | Responsibility |
-|------|----------------|
-| `src/encryption.rs` | Core primitives: KDF, subkeys, AEAD, SIV filename, short-scalar XChaCha20, AAD builders |
-| `src/disk.rs` | Integration: `build_full_overwrite_buffer_pure`, `plan_write_prepared`, `encryption_key` field in `DiskManagerInner`, read/write paths |
-| `src/superblock.rs` | `encryption_salt`, `encryption_version`, `encrypted` flag persistence |
-| `src/ipc.rs` | Challenge-response handshake using `ipc_auth_key` |
-| `src/disk/chunked.rs` | Seekable 64 KiB chunk encryption with `chunk_aad_stack` |
-
-## Tests and verification
-
-- **Unit tests** ([repo://src/encryption.rs#L916-L1115](repo://src/encryption.rs#L916-L1115)):
-  - Key derivation determinism and salt isolation
-  - Encrypt/decrypt round-trips (payload, in-place, with nonce prefix)
-  - Wrong key / wrong nonce rejection
-  - Filename encryption determinism, tweakability, legacy fallback, tamper detection
-  - Subkey domain separation pairwise distinctness
-  - Short-scalar XChaCha20 byte-for-byte equivalence to reference (exhaustive up to 192 B)
-  - Argon2id parameter constants match OWASP/RFC 9106
-
-- **Kani formal verification** ([repo://src/encryption.rs#L1138-L1164](repo://src/encryption.rs#L1138-L1164)):
-  - AAD kind tags never collide across file/chunk/filename domains
-  - Filename AAD injective in `parent_inode`
-  - `file_aad_stack`, `chunk_aad_stack`, `filename_aad_stack` encode IDs bijectively
-
-## Related pages
-
-- [Compression and Filters](../architecture/compression_and_filters.md) — Filter → Compress → Encrypt pipeline
-- [Disk Manager and Persistence](../architecture/disk_manager_and_persistence.md) — Write paths, journaling, durability modes
-- [Encrypted Workflows](../workflows/encrypted_workflows.md) — End-to-end encrypted filesystem operations
+Decryption failures are intentionally indistinguishable between "wrong password" and "corrupted data" to avoid oracle attacks.

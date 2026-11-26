@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:1cc3fee79a20dc9ebde51cd286e8890adcaa9b76786411a9d01aafef8b724fc7",
+  "pageVersion": "sha256:e9b1fd35cbd7e5bc0743cb63667dcd04c8ae4c95e411e5f1b92529bcce19f356",
   "claims": [
     {
       "id": "claim_f31fe6fec67747df8ae6f6d9389f60a3",
@@ -171,11 +171,11 @@
       "statement": "The write-ahead logging protocol requires: (1) staging metadata ops, (2) encoding a transaction frame, (3) appending to the ring and persisting header+frame, (4) applying the ops in place, (5) checkpointing to advance the tail after in-place writes are durable.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2650-L2760",
-          "version": "repo-lines-v1:sha256:02d9243c30fccadfc217ba53c6ccd84cb2bb73bcd69150b8c28f8db6fc573a4e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmNDQ5MzNiZWJmNzhiMThhZDY3ODI5NDMzNTY3Y2M5ODFjZWI3YjNhZThiMmU0ZTYwOTY0ZTlmMDQ0ODIyZjU1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjMDM3ZDI4YmU1MTIyNmZhZDQxNWE0Nzk4NWY4MmYxODE2NTA0NTVkNzU5MmUyNTA1MDVhYmIxODNkM2U0NjEwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyYjAyOGJkOTExN2E1OGI1YzEzZDRiMGRhYzg5YjRmZTVkMzkzNTE4M2E3ZDExOGQ0M2E0ZTBjNzNjNGQyYjllIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2NmFhNWQwYmVhZWRkZWIyY2MzMjY0ZWFmMmVlNmE0NWY3MDhlMjZjNzU3ZjVjNjg3ZWNiZDVlNjk0YThmZjcwIn0"
+          "resource": "repo://src/disk.rs#L2849-L2974",
+          "version": "repo-lines-v1:sha256:70b9cc9fee48301dabf69a79a53669eca7d43c8ca23b16e2dfc4abce48407ffb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmNDQ5MzNiZWJmNzhiMThhZDY3ODI5NDMzNTY3Y2M5ODFjZWI3YjNhZThiMmU0ZTYwOTY0ZTlmMDQ0ODIyZjU1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjMDM3ZDI4YmU1MTIyNmZhZDQxNWE0Nzk4NWY4MmYxODE2NTA0NTVkNzU5MmUyNTA1MDVhYmIxODNkM2U0NjEwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyYjAyOGJkOTExN2E1OGI1YzEzZDRiMGRhYzg5YjRmZTVkMzkzNTE4M2E3ZDExOGQ0M2E0ZTBjNzNjNGQyYjllIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2NmFhNWQwYmVhZWRkZWIyY2MzMjY0ZWFmMmVlNmE0NWY3MDhlMjZjNzU3ZjVjNjg3ZWNiZDVlNjk0YThmZjcwIn0"
         },
         {
-          "resource": "repo://src/disk.rs#L2930-L3010",
+          "resource": "repo://src/disk.rs#L3144-L3224",
           "version": "repo-lines-v1:sha256:a320d19788ceae12beae749ff2268b4e2c992b5154ee8efef267e4e201ec0889:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1MTA5MWU5ZjdmMWY1NzdkMzliMjgyYzUyYTdlODI4NWQxODJmZTc5OTc3NjdjYzY0YTUyMjgxZjkzNWQ1MTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2NzhkNzcxMzdjOGJjODBhMWYyMjdiY2Y5MTE2YzU3MmQ2YjA2YjAzYTAzNzBlZTA1N2FkN2E2MGE3ODhjYzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhN2IwZGQ3Y2U1ODZmNDUxMTMwYWMzYzMxMTdlZGU5ZjA1N2M3ODdiOTA4YzJiZjg4ZWQyODE1MWM4NWY1ODEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmYWUwYzFkYTMzNmRkYjk1ZTIxYTI2M2Q2NDFjOThmOWU3ZGY3NjM0YjNhMjg5OWYyYTkyYjc4ZDdmYzk1Y2UifQ"
         },
         {
@@ -231,10 +231,112 @@
           "version": "repo-lines-v1:sha256:b3ee06d72aa5fac8265207119866c03dcdf2110c6e53a9c9e6baf7ab89119e3b:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzg5ODg1ZDcyNjc0MjIwNjlkMGIyMmZmMzU4NDNhMmMzNDgyMzJjZDc1ZmQxNjJjMjYwMjFmNWY0ZGM0YzJkZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODdjNTU0NWZlY2E1N2ExNzllZjY3OWNiNzQ4ZWFkODk4ZTQyMzBkZmEzYzUxOTdmNWQxNTFhNWIwNWUxNWVhZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmYxYzk0MWFjYTBlODM0ODA5MjEyZWNkODA2NTc4OGRmNjUyZTMzMGE2ZmM1YzVkOTFlZmI2YjM1YmE4Nzk0MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjhiN2Q5NDI3OTNiODU5Yzk0MTRkMzZlYWNhYjEzNWY3NTU5MzBkZjZiOGJmZTRmMmE3ZDgzZTA0MmI1NzUxYSJ9"
         }
       ]
+    },
+    {
+      "id": "claim_b46814823e4544e69b7ff2012a6c6fb1",
+      "statement": "The journaled mutation protocol follows five phases: (1) stage metadata ops using AllocSim to simulate allocations against copied bitmaps, (2) encode a transaction frame with coalescing and CRC32C, (3) append to the ring and persist header+frame with durability-mode-specific flush ordering, (4) apply ops in place via apply_op_in_place which performs absolute post-image writes, (5) checkpoint to advance the tail once in-place writes are durable.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L2848-L2960",
+          "version": "repo-lines-v1:sha256:42feca94d9852b68ade7b0ca62266beed61d424c25e953aa75a191d76122a37a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4ZjkxN2RmMzExOTRkMDA0YzI1ODliMTcyYjZmNTk2MzNlNWY4ZDNiYTFiYmQyOTZmN2NiMjhhMzk3ZWIyMzdjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1MDcxYzZlOTIyZDY0ZTNjMmQxMmQxYjQwMDg0YzMxY2M0ZTc4MDdmYjQyZTdmNzIyOWNjODg2MDVlN2ZjOGI1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwMDU2NjQ3OWQ5NGIyNjVjNjZjZGJlOWJjOTdmYmVhZTEwN2U0MTFkMjBkOTM3NzMxMjFiNzQzMzZmN2FkOTBmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NTJmMjU3YjdiZjcyOTY5Yjc4NjZlMTAwMTI2MTljZDhlMmY1YmI5MWE2ZDkxYTA1YTQzMDcwYWMzM2I5ZDdlIn0"
+        },
+        {
+          "resource": "repo://src/journal.rs#L1360-L1480",
+          "version": "repo-lines-v1:sha256:764ab85fd13f18687a3e52341dc484fc5b47ecf5a11b93c3f7411169ab490c59:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNmRlNWFhOWMzOGEyNjhiNTNlNGQxZDYwZDAwMmJkZjBmMzUzOWYxYTEwOWU5NDkxZWZmNmRmN2ZmYjY4YmI3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ZTQ2MmJkODVlYTM1MjI4MjJhOWFkM2ViMjQwOTliMDMyYTFiNjI3YmVjZmQ3YzU4MzFlOTkyN2Q0YmFjNDBlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjZmQxOWNiZDE0YzNlMzEzYWY3ODkyODA1OWM1MDE2ZGY4MmY3ZmRjNjFmNjQ4ODM1YmZhY2Y2Y2RjOTI1OGE1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmYmJiNzU2MDUwOTAwZjU4OTFmYjU5NjQ3ODg4YzViYzk5YzY2YjdiZGEyZTVhN2ExNjEwOGI2YzY3ODg5ZWI1In0"
+        },
+        {
+          "resource": "repo://src/journal.rs#L927-L964",
+          "version": "repo-lines-v1:sha256:e9a25c6fad09b30e85a28120bd0f328ed51c639d1873ca118176149728564f8c:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNWVmZWNmYTc3YzUwMDVlNDBkNjE0Yjc2ZjFkMGEyODEyMGQ4OWI1NzNiNDMxZTJmNDM4MjFlMTZkNDBiM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzZWJiZmIwNGIyNzEwNzg4ZjU3NzJiNTg1MzY2OTI3NzRkM2ZiODU1ZTc0YzA1YTc4NjgyNDFmODBkYjg3NjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMTcwM2ZmOTE0NGUxMWJmNzEzZGU2YjgzOGQwODYwYzYyZjkxMWJiNmEzNGNjZDYwYjk4NjkyMWEwNzczMTMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a578520cfe0244fb9ca05a9572ee657b",
+      "statement": "Crash recovery (recover_journal) snapshots the journal region, decodes and validates frames from tail to head stopping at the first invalid frame, replays collected ops against the live image, flushes replayed metadata, then resets the journal header to a clean state with head=0, tail=0, cleanly_unmounted=true.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L2172-L2210",
+          "version": "repo-lines-v1:sha256:9162d4dc33fe4c2bea392a31ebcd06990cd8b6eb777a8a3a086c929e61ec3261:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJkMDk4MjFkMzRiNzQ4YTRlZTJiZTFjMGJlZDBjNWQwODIxYjJkZmFmYzNlMDY3ZDQwMTU3YWEwMzFiZmFjYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1NjQ0NDdkM2Y1YmMxM2I0YTM2ZGZiOGVmMWVmYWE3MTU5MjEwNjdmZjYyMjBjZGQwNzZjZWM0NGJjMzE4MDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2MmVlNTdlNDFhOGMyMGFlMDE2NGRmMjYxNDM5ZGNjNDk5ZDM1MjA4MzQxNTE1MTZkMDQ3ZThkZWFlOGE0NjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlY2I1OTk1YzM1MzdiMWEzNWMwOGM2YWQ3OTJkYTMzNTBkYThlMTFmMjc0ZWNhNTliMzBkNWEwNDQ4ZjljZTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4c7e247e01a648678391408e356c7661",
+      "statement": "Four DurabilityMode variants control persistence: Strict (sync WAL per tx, deferred in-place flush batched at 50% ring watermark), Lazy (no per-tx barrier, relies on OS writeback), RangeAsync (batched async msync of mutation ranges), LegacyWholeMmapAsync (whole-file async msync).",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L2960-L3010",
+          "version": "repo-lines-v1:sha256:a304fbd2dedb8e887f2b5c5ccdedce340ef9424107da493db9d88a4613548908:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwNzFjNmU5MjJkNjRlM2MyZDEyZDFiNDAwODRjMzFjYzRlNzgwN2ZiNDJlN2Y3MjI5Y2M4ODYwNWU3ZmM4YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNkMzY4YzFiNzg5N2FiMWZiMjljZTM1MGE0ZTNiYzY5ZjM0YzVmNTZkODhhMDdmOTg4Yzg0Zjg0ZTYxZTdhMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU1ZmFkNzUwMmRiYjY1OGI2ZTkxNGFjNzcxMmNkMThjMWEwMjk3NjM4MTJiM2QxMDk4YThlOTdlNmFkNjM5YTQifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L3180-L3195",
+          "version": "repo-lines-v1:sha256:2bd2cfb8d433bad65e30652c5afe4942f0834fe96c9437be4eeeaac5d45605aa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjYzFjMThlNmI2YTE1Y2IzYzkzN2U2NWY3Y2I2NzE5OTBlNzZhNTQwODNhNmJjNjgwYmQ3ZGE1MWE4Mjg0NDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQyOGY3ODY2OWFjZTAzYzZmNDY3MzA0OTJkZWI3MjI1NDk2NDJmNGRkNGYyZWU4ZDdiZDdkMzg0ZTM0NGVjNWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkMGQzZWM1MWYxYTAwOWYxOGFmOWNmYzI1OWViNjg3ZTA5MmE1ZjBhNGMwYTA3Yjk4ZmMyYjk5ZDMzMjE4Y2IifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d28c97f05e73409f8c98dbf5b7f0db74",
+      "statement": "Under Strict durability, group commit batches multiple transactions: when is_strict_sync_deferred() is true, individual commits skip their final flush_range and a background drainer performs a unified flush() barrier before completing the batch, amortizing msync cost while preserving WAL-before-data ordering.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L2930-L2960",
+          "version": "repo-lines-v1:sha256:3ec14ed991244d124364a8b83e86c6d7d083891cdcb9f790ba2b34c2ea26223a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmNjk5NDUwMjg5Nzg5NTIyN2MzNTQyZWE4N2MwOWIwM2UwZGI5Yzg1Y2FmM2FiZTlhYWQ1MjFmZDYzNmI5MTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwNzFjNmU5MjJkNjRlM2MyZDEyZDFiNDAwODRjMzFjYzRlNzgwN2ZiNDJlN2Y3MjI5Y2M4ODYwNWU3ZmM4YjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ5N2ZiZjIwODE5Yjc2NTdjODc0YjU3NGU0NTkwNmZmMjE5MDg4YzIzZDAyMWVhMDA3N2I4MTE5Y2I2YjViYmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1MmYyNTdiN2JmNzI5NjliNzg2NmUxMDAxMjYxOWNkOGUyZjViYjkxYTZkOTFhMDVhNDMwNzBhYzMzYjlkN2UifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_017c51d6cdfb41ca99a220ef2d141977",
+      "statement": "JBD2-style deferred checkpointing: in Strict mode, in-place metadata stays in page cache after apply; checkpoint_journal flushes all in-place metadata, sets tail=head, and persists the header. This is safe because the WAL still contains every transaction since the last checkpoint and replay is idempotent.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L3180-L3200",
+          "version": "repo-lines-v1:sha256:8dd59434554cbd07e7def3d585c43f9f4689049c11943cfb1831b92f28966e8a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjYzFjMThlNmI2YTE1Y2IzYzkzN2U2NWY3Y2I2NzE5OTBlNzZhNTQwODNhNmJjNjgwYmQ3ZGE1MWE4Mjg0NDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1ZmYwNjg2ZjM2MzM0MDhkYTAxODY0NTEwYTJhOWI4YWIyN2YwODJiMDc2MWFlNmVhYWIzNTA0MDQxMzUzMTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQyOGY3ODY2OWFjZTAzYzZmNDY3MzA0OTJkZWI3MjI1NDk2NDJmNGRkNGYyZWU4ZDdiZDdkMzg0ZTM0NGVjNWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBjZjViZjhjZDU1MmZhZjgzNTRmMGJlNjYwZmYxYjY1NzE4OTUxYTUzZWZmNWRiNDlkZGVhMzY4Y2VkZjkzMWEifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L1600-L1650",
+          "version": "repo-lines-v1:sha256:283278c9b818359d1a8e4916ad5c60cfaf8b5e76d862010b57c928e5ab763c69:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkYTcyMThmOWI0ZTBiMWIzN2FkOWFhYzczODVmYTk4OTQ5N2MzYjBiMjJhMGQ3NWE3MTM1ZDUwYjRlMTFlMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NDkzM2JlYmY3OGIxOGFkNjc4Mjk0MzM1NjdjYzk4MWNlYjdiM2FlOGIyZTRlNjA5NjRlOWYwNDQ4MjJmNTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjllZDE0ZWQ5NzM4ODVkYzdmM2ZhOWQzNTAwNjAzMzFiZWI3MmE0MGQ5YmU3MTg5YTkyZDUzMmVhMzdjMWE2ZTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwNzRmMjZjYTg5YTUwZDAxMzg4NDYyMGMzYzM0ZmE1ODVhNWEwMThiYmRlZmQwMTNmYjBmNWU4MWJjMmY3MGIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f1b50373f8394ec9aedd2cefe0fe9cd2",
+      "statement": "AllocSim provides local simulation of block/inode allocation against copied bitmaps mirroring SimpleBlockAllocator semantics exactly (same hint handling, first-free-bit rule), enabling deterministic post-image construction before WAL commit. AllocSim::new_data_only avoids inode bitmap copy for data-only transactions.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L3361-L3420",
+          "version": "repo-lines-v1:sha256:2dfab33755d452455d099ec8ad3b64d80e168a315724ec74248349237c213fab:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhZjY2NjNhMjQ5OTc1ZTMxZWMxOWUzMmQ5YTIxNTg0MTdjYjg0MDU5MDNjZGFiNmI3ZWJhZDBkYTExODhlNjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmMzY3ODRlOTRjZTZjNGYzZDY3YTdmMDNhNTc1ZmU0ZmY3MjE1Y2JiODBkNTdiMWI1MTBhZjM4MTJjZWNjNGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0OGJhODFiYjA5YTA1OWViZGZhYTAyNzE1NjkwZmJiYWM3Zjc3ZDcwZjI4NzJhYmZlZmM5NDdjN2I3NjI0YTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVhYWM0NTVjYWFmZDBlNWNlYmIxNWM2MjM0YmI1Y2JmMTA4OTBiNzE5NTljZTRiMzY4OGNkYzhmOTMxMDlmNzMifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L3420-L3480",
+          "version": "repo-lines-v1:sha256:42379e3ee4df151a5f2fdccc522932d8ac222d7fdead13a0e79f0a21a36f3822:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmMzY3ODRlOTRjZTZjNGYzZDY3YTdmMDNhNTc1ZmU0ZmY3MjE1Y2JiODBkNTdiMWI1MTBhZjM4MTJjZWNjNGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyNGVjN2Y2ZTBiMTdiODc3MTI3MzM2ZTBiMTNjNTYzNDEwM2EzNzc3YmRlMjc4NDM5MjAwNWQyZWY5ZGFmYWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxMDlmOGU5ZDYxYTE2YjBkNWMzNzBjODA1OThhZmM1MzhlZTY1ZDdjYzFiZDMyZDJjNjQxNDhkNThiMDI5NmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFmZjEzOGFlZDY3NTM0NjBlOGQ2YTkwYjkwZWU4YThlNjBkOTZmOGRiMzczNmU1ZTkyYzdiMjA2NTQzMTU1YTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_94f587fab32b492ea422625165e6671c",
+      "statement": "DiskManager integration: commit_journal_tx is the central commit point handling Strict overwrite logic; apply_journal_ops is the shared redo path for commit-time apply and mount-time recovery; recover_journal runs during open before publishing the manager; maybe_checkpoint drives deferred checkpointing after each journaled mutation under Strict.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L2172-L2210",
+          "version": "repo-lines-v1:sha256:9162d4dc33fe4c2bea392a31ebcd06990cd8b6eb777a8a3a086c929e61ec3261:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJkMDk4MjFkMzRiNzQ4YTRlZTJiZTFjMGJlZDBjNWQwODIxYjJkZmFmYzNlMDY3ZDQwMTU3YWEwMzFiZmFjYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1NjQ0NDdkM2Y1YmMxM2I0YTM2ZGZiOGVmMWVmYWE3MTU5MjEwNjdmZjYyMjBjZGQwNzZjZWM0NGJjMzE4MDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2MmVlNTdlNDFhOGMyMGFlMDE2NGRmMjYxNDM5ZGNjNDk5ZDM1MjA4MzQxNTE1MTZkMDQ3ZThkZWFlOGE0NjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlY2I1OTk1YzM1MzdiMWEzNWMwOGM2YWQ3OTJkYTMzNTBkYThlMTFmMjc0ZWNhNTliMzBkNWEwNDQ4ZjljZTEifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L2848-L2960",
+          "version": "repo-lines-v1:sha256:42feca94d9852b68ade7b0ca62266beed61d424c25e953aa75a191d76122a37a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4ZjkxN2RmMzExOTRkMDA0YzI1ODliMTcyYjZmNTk2MzNlNWY4ZDNiYTFiYmQyOTZmN2NiMjhhMzk3ZWIyMzdjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1MDcxYzZlOTIyZDY0ZTNjMmQxMmQxYjQwMDg0YzMxY2M0ZTc4MDdmYjQyZTdmNzIyOWNjODg2MDVlN2ZjOGI1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwMDU2NjQ3OWQ5NGIyNjVjNjZjZGJlOWJjOTdmYmVhZTEwN2U0MTFkMjBkOTM3NzMxMjFiNzQzMzZmN2FkOTBmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NTJmMjU3YjdiZjcyOTY5Yjc4NjZlMTAwMTI2MTljZDhlMmY1YmI5MWE2ZDkxYTA1YTQzMDcwYWMzM2I5ZDdlIn0"
+        },
+        {
+          "resource": "repo://src/disk.rs#L3000-L3020",
+          "version": "repo-lines-v1:sha256:39a8e7e71258b76f0479ca287c8e2f7e8c757a7100fd725ada01d35f39bce5fc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhMTAzMjkxYjhhZTk0NmUzYzg0N2YzNDI0MWU0NzkxYjk1YzliNmRkYTdlMzgyZTdkNzg2OGZkY2EyMTc1MGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2ZTBhMmI3YWIwZjNiOWNiZjA3MWQ3Y2NmNDg2ODMzNjVjY2FjYWFjNTc2MTRkMDYyYjE0ZTZiZjBlNzQ3MDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OWJiMzA5OWViMjM4NmU2MjQ2NDk1MjgzNWMyYzRhYTYzNjc2MTBkMDc2ZjljZjVmNmFlMjhjZTU5YzBjMGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzNDgwYWE4OWIwZjAyZGJmOGFhN2MxMzk2ODU2MThhNmFiZDM0ZjIzMTUyMTFiOTFkOTVmZWQ4MTIyZTM1NDIifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L3180-L3200",
+          "version": "repo-lines-v1:sha256:8dd59434554cbd07e7def3d585c43f9f4689049c11943cfb1831b92f28966e8a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjYzFjMThlNmI2YTE1Y2IzYzkzN2U2NWY3Y2I2NzE5OTBlNzZhNTQwODNhNmJjNjgwYmQ3ZGE1MWE4Mjg0NDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1ZmYwNjg2ZjM2MzM0MDhkYTAxODY0NTEwYTJhOWI4YWIyN2YwODJiMDc2MWFlNmVhYWIzNTA0MDQxMzUzMTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQyOGY3ODY2OWFjZTAzYzZmNDY3MzA0OTJkZWI3MjI1NDk2NDJmNGRkNGYyZWU4ZDdiZDdkMzg0ZTM0NGVjNWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBjZjViZjhjZDU1MmZhZjgzNTRmMGJlNjYwZmYxYjY1NzE4OTUxYTUzZWZmNWRiNDlkZGVhMzY4Y2VkZjkzMWEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-24T19:09:23.676Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

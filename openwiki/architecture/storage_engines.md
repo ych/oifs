@@ -1,11 +1,11 @@
 ---
 type: "Reference"
 title: "Storage Engines"
-description: "OIFS dual storage backends—Mmap for zero-copy memory-mapped I/O and FileIo for pure positional pread/pwrite I/O—operating over the exact same on-disk format."
+description: "OIFS dual storage backends—Mmap (zero-copy MAP_SHARED/PROT_READ) and FileIo (pread/pwrite + 64-shard DataPageCache)—operating over the exact same on-disk format. Covers mode selection, trade-offs, cache interactions, and coherence protocols."
 tags: ["storage", "mmap", "fileio", "backend", "architecture"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-24T19:09:23.676Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
@@ -13,7 +13,7 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-62eef0b8799186dd9e2faae9
     resource: repo://src/storage.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
 # Dual Storage Engine: Mmap and FileIo
@@ -58,208 +58,274 @@ StorageMode::Mmap => {
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        DiskManager (public API)                     │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                    ┌─────────────┴─────────────┐
-                    ▼                           ▼
-            ┌───────────────┐             ┌───────────────┐
-            │  Mmap Backend │             │  FileIo Backend│
-            │ (StorageMode::│             │ (StorageMode::│
-            │    Mmap)      │             │    FileIo)    │
-            └───────┬───────┘             └───────┬───────┘
-                    │                           │
-        ┌───────────┼───────────┐       ┌───────┼───────┐
-        ▼           ▼           ▼       ▼       ▼       ▼
-    MmapMut    MmapReadOnly   -   FileBacking  BlockCache DataCache
-    (RW)       (RO)                (pwrite)   (16 shard) (64 shard)
-        │           │                │         4 MiB      Config
-        └───────────┴────────────────┴────────────────────┘
-                              │
-                    ┌─────────┴─────────┐
-                    ▼                   ▼
-            ┌───────────┐         ┌───────────┐
-            │  Metadata │         │  Payload  │
-            │ (bitmaps, │         │  (file    │
-            │  inodes,  │         │  blocks)  │
-            │  journal) │         │           │
-            └───────────┘         └───────────┘
+```mermaid
+flowchart TD
+    subgraph API["DiskManager (public API)"]
+    end
+
+    subgraph Selection["Mode Selection"]
+        CLI["--no-mmap / OIFS_STORAGE_MODE"]
+        API2["DiskManager::open_with_storage_mode()"]
+        ReadOnly["read-only auto-selects MmapReadOnly"]
+    end
+
+    subgraph Backends["Storage Backends"]
+        Mmap["Mmap (StorageMode::Mmap)"]
+        FileIo["FileIo (StorageMode::FileIo)"]
+    end
+
+    subgraph MmapVariants["Mmap Variants"]
+        MmapMut["MmapMut (RW, MAP_SHARED)"]
+        MmapRO["MmapReadOnly (RO, PROT_READ)"]
+    end
+
+    subgraph FileIoComponents["FileIo Components"]
+        FileBacking["FileBacking (pread/pwrite)"]
+        MetaCache["MetadataBlockCache (16-shard, 4 MiB)"]
+        DataCache["DataPageCache (64-shard, configurable)"]
+        Mirrors["Write-through Bitmap & Journal Mirrors"]
+    end
+
+    API --> Selection
+    Selection --> Backends
+    Mmap --> MmapVariants
+    FileIo --> FileIoComponents
+    FileIoComponents --> MetaCache
+    FileIoComponents --> DataCache
+    FileIoComponents --> Mirrors
+
+    style Mmap fill:#e8f5e9,stroke:#2e7d32
+    style FileIo fill:#e3f2fd,stroke:#1565c0
+    style MmapVariants fill:#f3e5f5,stroke:#7b1fa2
+    style FileIoComponents fill:#fff3e0,stroke:#ef6c00
 ```
 
 ---
 
 ## ImageBacking Trait and Implementations
 
-The unified abstraction is `ImageBacking` (src/storage.rs:964), an enum with three variants:
+The unified abstraction is `ImageBacking` ([src/storage.rs:1043](repo://src/storage.rs#L1043)), an enum with three variants:
 
 ```rust
 pub(crate) enum ImageBacking {
     Mmap(MmapMut),           // read-write, MAP_SHARED
     MmapReadOnly(Mmap),      // read-only, PROT_READ
-    File(Box<FileBacking>),  // pure pread/pwrite I/O
+    File(Box<FileBacking>),  // pread/pwrite + caches + mirrors
 }
 ```
 
-### Mmap Backend (`StorageMode::Mmap`)
+### Mmap (StorageMode::Mmap)
 
-- **Mechanism**: Maps the entire `.img` container with `memmap2::MmapMut` (read-write) or `Mmap` (read-only `PROT_READ`).
-- **Performance**: Zero-copy memory access (`40–58 GB/s` on resident pages).
-- **Read-write**: `MmapMut` with `MAP_SHARED`; modifications propagate to disk via page cache.
-- **Read-only**: `MmapReadOnly` with `PROT_READ`; works on `0444` files.
-- **Hazards**: Vulnerable to `SIGBUS` on truncation or I/O error; uses `unsafe` for mapping.
-- **Flush**: `msync(MS_SYNC)` / `flush_async` via `mmap` methods.
+- **Read-write**: `MmapMut` via `memmap2::MmapMut` with `MAP_SHARED`, providing zero-copy access to the entire container. Typical throughput: **40–58 GB/s** on resident pages.
+- **Read-only**: `MmapReadOnly` via `memmap2::Mmap` with `PROT_READ`. Works on `0444` image files. Also zero-copy—no syscalls for reads.
+- **Mutations**: Direct memory writes (`m[start..end].copy_from_slice(src)`). The kernel flushes dirty pages asynchronously; `flush()` calls `msync(MS_SYNC)`.
+- **Hazards**: `SIGBUS` if the underlying file is truncated while mapped. OIFS prevents this by remapping after growth and dropping the mapping before `set_len()` during truncation.
 
-### FileIo Backend (`StorageMode::FileIo`)
+### MmapReadOnly (StorageMode::Mmap + read-only)
 
-- **Mechanism**: 100% `mmap`-free positional `pread(2)` / `pwrite(2)` I/O.
-- **Mirrors**: In-memory write-through mirrors for inode bitmap, data bitmap, and journal (WAL).
-- **Metadata block cache**: 16-shard bounded 4 KiB block cache (max 1,024 blocks = 4 MiB) for indirect pointer and directory blocks.
-- **Data page cache**: 64-shard bounded Second-Chance Clock cache (default 32 MiB, configurable via `OIFS_FILE_IO_CACHE_MB`, max 4 GiB), scan-resistant with `MAX_CACHED_EXTENT = 64 KiB`.
-- **Safety**: All I/O in Safe Rust; eliminates `SIGBUS` crashes and `unsafe` memory-mapping hazards.
-- **Flush**: `fd.sync_data()`; `flush_async` is a no-op (no dirty page tracking).
+- Selected automatically when opening an image read-only with `StorageMode::Mmap`.
+- Uses `PROT_READ` mapping—**no `SIGBUS` risk** from external truncation (the file cannot be truncated by writers while read-locked).
+- All read paths (`read_exact_at`, `read_data_cached`, `with_block`) are zero-copy slices from the mapping.
+
+### FileIo (StorageMode::FileIo)
+
+- **Pure positional I/O**: Uses `pread(2)`/`pwrite(2)` (or `ReadFile`/`WriteFile` with `OVERLAPPED` on Windows) via `file_read_exact_at` / `file_write_all_at` ([src/storage.rs:83-123](repo://src/storage.rs#L83-L123)).
+- **No `mmap()` calls ever**—eliminates `SIGBUS` hazards and `unsafe` memory-mapping code entirely.
+- **100% Safe Rust** in the `FileBacking` implementation.
+- **Write-through mirrors**: Maintains in-memory copies of the inode bitmap, data bitmap, and journal region. Every `pwrite` updates the corresponding mirror via `sync_mirrors_on_write()` ([src/storage.rs:728-775](repo://src/storage.rs#L728-L775)).
+- **Two cache layers**:
+  1. **MetadataBlockCache** – 16-shard, 4 MiB bounded cache for indirect pointer blocks and directory blocks.
+  2. **DataPageCache** – 64-shard, configurable (default 32 MiB, max 4 GiB) Second-Chance Clock cache for file payload blocks.
 
 ---
 
-## FileBacking — FileIo Internals
+## FileIo Deep Dive
 
-### Write-Through Mirrors
+### MetadataBlockCache
 
-`FileBacking` maintains three in-memory mirrors loaded at `configure_regions()`:
+**Purpose**: Cache 4 KiB metadata blocks (indirect pointer blocks, directory blocks) accessed via `with_block`, allowing concurrent readers to resolve block pointers and scan directories without repeated `pread` syscalls or cross-thread lock contention.
 
-1. **Inode bitmap** (`inode_bitmap: Vec<u8>`)
-2. **Data bitmap** (`data_bitmap: Vec<u8>`)
-3. **Journal ring** (`journal_buf: Vec<u8>`) — only when `superblock.has_journal_layout()`
+**Structure** ([src/storage.rs:153-224](repo://src/storage.rs#L153-L224)):
 
-Every `pwrite` via `write_all_at()` calls `sync_mirrors_on_write()`, which updates any overlapping mirror bytes and invalidates/updates the two caches.
+| Property | Value |
+|----------|-------|
+| Shards | 16 (`NUM_SHARDS`) |
+| Max entries per shard | 64 (`MAX_PER_SHARD`) |
+| Total capacity | 16 × 64 × 4 KiB = **4 MiB** |
+| Entry type | `Arc<[u8; BLOCK_SIZE]>` (4096-byte array) |
+| Eviction | Simple LRU-ish: drops one arbitrary entry when full |
+| Shard index | Fibonacci hash: `(block_id * 0x9E37_79B9_7F4A_7C15) >> 60` |
 
-### Metadata Block Cache (16-shard, 4 MiB)
+**Key design points**:
+
+- `Arc<[u8; BLOCK_SIZE]>` storage: `get()` clones the `Arc` under a **shared** shard read lock, then releases the lock before returning. This makes **nested `with_block` calls strictly deadlock-free** even when two blocks (e.g., double-indirect traversal) hash to the same shard.
+- `read_u64_le()`: Reads an 8-byte pointer directly under the shard read lock **without cloning the `Arc`**, eliminating atomic refcount contention on hot indirect pointer blocks.
+- Write path coherence: `update_if_present()` mutates the cached block in-place via `Arc::make_mut()` when a `pwrite` overlaps a cached metadata block.
+- Invalidation: `invalidate()` and `invalidate_block_range()` remove entries; used on `zero_block`, `copy_block`, and truncation.
+
+### DataPageCache
+
+**Purpose**: Serve hot random and small-file reads straight from RAM without `pread` syscalls while staying scan-resistant and strictly coherent on every write, zero, copy, and WAL replay.
+
+**Structure** ([src/storage.rs:226-455](repo://src/storage.rs#L226-L455)):
+
+| Property | Value |
+|----------|-------|
+| Shards | 64 (`NUM_SHARDS`) |
+| Entry type | `DataCacheEntry { data: Box<[u8; BLOCK_SIZE]>, referenced: AtomicBool }` |
+| Eviction | **Second-Chance Clock** per shard |
+| Max cached extent | **64 KiB** (`MAX_CACHED_EXTENT`) — larger streaming reads bypass the cache |
+| Default capacity | **32 MiB** (configurable via `OIFS_FILE_IO_CACHE_MB`, 0 = disabled) |
+| Maximum capacity | **4 GiB** (`MAX_FILE_IO_CACHE_BYTES`) |
+| Shard index | Fibonacci hash: `(block_id * 0x9E37_79B9_7F4A_7C15) >> 58` |
+
+**Capacity calculation** ([src/storage.rs:266-282](repo://src/storage.rs#L266-L282)):
 
 ```rust
-// src/storage.rs:115-180
-struct MetadataBlockCache {
-    shards: [RwLock<FxHashMap<u64, Arc<[u8; BLOCK_SIZE]>>>; 16],
+fn default_capacity_bytes() -> usize {
+    if let Ok(val) = std::env::var(FILE_IO_CACHE_MB_ENV)
+        && let Ok(mb) = val.trim().parse::<usize>()
+    {
+        return mb.saturating_mul(1024 * 1024).min(MAX_FILE_IO_CACHE_BYTES);
+    }
+    DEFAULT_FILE_IO_CACHE_BYTES  // 32 MiB
+}
+
+fn blocks_per_shard_for_bytes(bytes: usize) -> usize {
+    let clamped = bytes.min(MAX_FILE_IO_CACHE_BYTES);
+    if clamped == 0 { return 0; }
+    let total_blocks = clamped / BLOCK_SIZE;
+    if total_blocks == 0 { 0 } else { total_blocks.div_ceil(NUM_SHARDS) }
 }
 ```
 
-- **Sharding**: Fibonacci hash `((block_id * 0x9E37_79B9_7F4A_7C15) >> 60) as usize` for uniform distribution.
-- **Capacity**: 64 blocks per shard = 16 × 64 × 4 KiB = 4 MiB total.
-- **Eviction**: Arbitrary single-entry drop when a shard is full and a new block arrives.
-- **API**: `get()`, `read_u64_le()` (lock-free u64 read under shard read lock), `insert()`, `update_if_present()`, `invalidate()`, `invalidate_block_range()`, `clear()`.
-- **Deadlock-free**: `get()` and `read_u64_le()` release the shard read lock before returning `Arc`/value, allowing nested `with_block` calls (e.g., double-indirect traversal) even when two blocks hash to the same shard.
+**Second-Chance Clock eviction** ([src/storage.rs:312-349](repo://src/storage.rs#L312-L349)):
 
-### Data Page Cache (64-shard, Second-Chance Clock)
+Each shard maintains a `ring: Vec<u64>` of block IDs and a `hand` index. On eviction:
+1. Skip stale ring entries (keys no longer in the map).
+2. Check the `referenced` flag of the entry at `hand`.
+3. If `false`, evict it; if `true`, clear the flag and advance `hand`.
+4. Fallback: if the ring empties while the map is non-empty, evict an arbitrary key.
+
+This provides **scan resistance**: a large streaming read touches each block once (setting `referenced = true`), but a subsequent scan will clear those flags and evict them, preserving hot random-access pages.
+
+**Read path** (`try_copy_into` / `read_data_cached`) ([src/storage.rs:351-370](repo://src/storage.rs#L351-L370), [src/storage.rs:1312-1355](repo://src/storage.rs#L1312-L1355)):
 
 ```rust
-// src/storage.rs:182-370
-struct DataPageCache {
-    shards: [RwLock<DataCacheShard>; 64],
-    max_per_shard: AtomicUsize,
-    count: AtomicUsize,
+// Try cache-only read (non-blocking)
+fn try_read_data_cached_only(&self, offset: u64, dst: &mut [u8]) -> Option<io::Result<()>> {
+    // Mmap: direct copy
+    // FileIo: iterate blocks, try_copy_into each; return None if any miss
+}
+
+// Read with cache population
+fn read_data_cached(&self, offset: u64, dst: &mut [u8]) -> io::Result<()> {
+    // Mmap: direct copy
+    // FileIo: if cache disabled or len > 64 KiB -> single pread
+    //         else: per-block try_copy_into; on miss, pread whole block, insert, copy
 }
 ```
 
-- **Sharding**: Fibonacci hash `((block_id * 0x9E37_79B9_7F4A_7C15) >> 58) as usize` → 64 shards.
-- **Default capacity**: 32 MiB (`DEFAULT_FILE_IO_CACHE_BYTES`).
-- **Configurable**: `OIFS_FILE_IO_CACHE_MB` environment variable (0 = disabled, max 4 GiB).
-- **Scan resistance**: Extents `> MAX_CACHED_EXTENT` (64 KiB) bypass the cache entirely—single contiguous `pread` preserves sequential throughput and prevents large scans from evicting hot random-access pages.
-- **Eviction**: Second-Chance Clock (CLOCK with reference bit). Each shard maintains a ring buffer of block IDs and a clock hand. On insertion when full, the hand scans up to `2 * ring.len() + 1` steps, clearing reference bits, until finding an unreferenced entry to evict.
-- **Reference bit**: Set on cache hit in `try_copy_into()` (lock-free `AtomicBool::store(true, Relaxed)` under shared shard read lock) and on `insert()`.
-- **Coherency**: `update_if_present()` (for partial-block writes), `invalidate()`, `invalidate_block_range()` (for large streaming writes), `clear()` (on capacity resize to 0 or `configure_regions()`).
-- **Read path** (`read_data_cached`): For each 4 KiB block, `try_copy_into()` under shared lock; on miss, `pread` full block, copy slice, `insert()` full block.
+**Write path coherence** (`sync_mirrors_on_write`) ([src/storage.rs:728-775](repo://src/storage.rs#L728-L775)):
+
+Every `pwrite` (via `write_all_at`, `zero_block`, `copy_block`, `write_block_ptr`, `apply_journal_op`) calls `sync_mirrors_on_write(offset, src)` which:
+
+1. **Updates bitmap mirrors**: Copies overlapping bytes into `inode_bitmap`, `data_bitmap`, `journal_buf`.
+2. **Updates caches**: For the affected block range `[first_blk..last_blk]`:
+   - If span ≤ 64 blocks: per-block `update_if_present()` on both `MetadataBlockCache` and `DataPageCache`.
+   - If span > 64 blocks (large streaming write): `invalidate_block_range()` on both caches to avoid O(blocks) shard lock traffic.
+
+This guarantees **strict coherence**: a subsequent `read_data_cached` or `with_block` will never see stale data.
+
+### Write-Through Bitmap & Journal Mirrors
+
+`FileBacking` holds in-memory copies of three on-disk regions loaded at `configure_regions()` ([src/storage.rs:517-700](repo://src/storage.rs#L517-L700)):
+
+| Mirror | Source | Size | Updated by |
+|--------|--------|------|------------|
+| `inode_bitmap` | SuperBlock `inode_bitmap_block` × `inode_bitmap_blocks()` | Variable | `write_all_at` (overlapping), `apply_journal_op(SetInodeBitmap)` |
+| `data_bitmap` | SuperBlock `data_bitmap_block` × `data_bitmap_blocks()` | Variable | `write_all_at`, `apply_journal_op(SetDataBitmap/Range)` |
+| `journal_buf` | SuperBlock `journal_header_block()` × `JOURNAL_RESERVED_BLOCKS` | 132 KiB (33 × 4 KiB) | `write_all_at`, `apply_journal_op`, `JournalRegionMut::flush_writeback()` |
+
+**Mutability guards**: `BitmapSliceMut` and `JournalRegionMut` are `Deref`/`DerefMut` wrappers that carry optional `file_writeback: Option<(&File, u64)>`. On `Drop`, they `pwrite` the dirty range (or narrowed range via `set_dirty_bits`/`mark_append_written`). Under `Mmap`, these are zero-cost wrappers with `file_writeback = None`.
 
 ---
 
-## DiskManager Public Cache Control API
+## Coherence & Invalidation Summary
 
-`DiskManager` exposes three methods to inspect and configure the FileIo data page cache at runtime:
+| Operation | Mmap / MmapReadOnly | FileIo |
+|-----------|---------------------|--------|
+| `read_exact_at` | `memcpy` from mapping | `pread` |
+| `read_data_cached` | `memcpy` from mapping | Cache lookup → `pread` on miss → insert (≤64 KiB); direct `pread` (>64 KiB) |
+| `try_read_data_cached_only` | `memcpy` | Cache-only; `None` on any miss |
+| `write_all_at` | `memcpy` to mapping | `pwrite` + `sync_mirrors_on_write` |
+| `zero_block` | `fill(0)` | `pwrite(ZERO_BLOCK)` + invalidate both caches |
+| `copy_block` | `copy_within` | `pread` + `pwrite` + invalidate dst in both caches |
+| `with_block` | Zero-copy slice | Cache hit: `Arc` clone; miss: `pread` → insert `Arc` → return slice |
+| `with_block_mut` | Direct `&mut [u8]` | Load (cache or `pread`) → mutate → `pwrite` → update metadata cache + invalidate data cache |
+| `read_block_ptr` | Direct from mapping | `MetadataBlockCache::read_u64_le` (lock-free) or `with_block` fallback |
+| `write_block_ptr` | Direct to mapping | `pwrite` 8 bytes + `update_if_present` on both caches |
+| `flush` | `msync(MS_SYNC)` | `sync_data()` |
+| `truncate_and_remap` | Drop mapping → `set_len` → remap | Invalidate truncated blocks in both caches → `set_len` + `sync_data` |
 
-| Method | Description |
-|--------|-------------|
-| `set_file_io_cache_bytes(bytes: usize)` | Sets the cache budget in bytes. `0` disables the cache and releases all cached pages. No-op under `Mmap`. |
-| `file_io_cache_bytes() -> usize` | Returns the configured capacity in bytes (`0` for `Mmap` or when disabled). |
-| `file_io_cache_used_bytes() -> usize` | Returns the approximate number of bytes currently resident in the cache. |
+---
+
+## Configuration Reference
+
+| Environment Variable | Purpose | Default | Range |
+|----------------------|---------|---------|-------|
+| `OIFS_STORAGE_MODE` | Select backend: `mmap`, `pread`, `file`, `file_io`, `no-mmap` | `mmap` | Enum |
+| `OIFS_FILE_IO_CACHE_MB` | FileIo DataPageCache capacity in MiB (0 = disabled) | `32` | `0` – `4096` |
+
+**API**:
 
 ```rust
-// src/disk.rs:1440-1460
-pub fn set_file_io_cache_bytes(&self, bytes: usize) { ... }
-pub fn file_io_cache_bytes(&self) -> usize { ... }
-pub fn file_io_cache_used_bytes(&self) -> usize { ... }
+use oifs::{DiskManager, StorageMode, IoBackend};
+
+// Storage mode at open time
+let dm = DiskManager::open_with_storage_mode("data.oifs", 10 * 1024 * 1024, StorageMode::FileIo)?;
+
+// Or change default for subsequent opens
+oifs::storage::set_default_storage_mode(StorageMode::FileIo);
+
+// DataPageCache capacity at runtime (FileIo only)
+dm.image_backing().set_data_cache_capacity_bytes(64 * 1024 * 1024); // 64 MiB
+let cap = dm.image_backing().data_cache_capacity_bytes();
+let used = dm.image_backing().data_cache_used_bytes();
 ```
 
 ---
 
-## BitmapSliceMut and JournalRegionMut — Auto-Flush Guards
+## Trade-off Matrix
 
-Both backends use RAII guards for mutable bitmap and journal access:
-
-- **`BitmapSliceMut`** — `DerefMut` to `[u8]`; on `Drop`, flushes dirty byte range via `pwrite` (FileIo) or no-op (Mmap). `set_dirty_bits(start_bit, bit_count)` narrows the flush range.
-- **`JournalRegionMut`** — `DerefMut` to `[u8]`; `mark_append_written()`, `mark_header_only()`, `mark_clean()` control which sub-range is flushed on `Drop`. Under FileIo, writes the WAL frame (and optional wrap pad) then the 64-byte header atomically.
-
----
-
-## Read-Only Mount Semantics
-
-| Operation | Mmap (RO) | FileIo (RO) |
-|-----------|-----------|-------------|
-| `read_exact_at` | ✅ zero-copy | ✅ `pread` |
-| `read_data_cached` | ✅ zero-copy | ✅ cache + `pread` |
-| `with_block` | ✅ zero-copy slice | ✅ cache + `pread` |
-| `try_read_data_cached_only` | ✅ | ✅ cache-only |
-| `write_all_at` | ❌ `PermissionDenied` | ❌ `PermissionDenied` |
-| `zero_block` | ❌ | ❌ |
-| `copy_block` | ❌ | ❌ |
-| `with_block_mut` | ❌ | ❌ |
-| `inode_bitmap_slice_mut` | `None` | `None` |
-| `data_bitmap_slice_mut` | `None` | `None` |
-| `journal_region_mut` | `Err` | `Err` |
-| `apply_journal_op` | ❌ | ❌ |
-| `flush*` | ✅ no-op / `msync` | ✅ no-op / `sync_data` |
-
-Read-only mounts are rejected if the image has a journal with unrecovered transactions (`pending_txs > 0`).
+| Dimension | Mmap (default) | FileIo |
+|-----------|----------------|--------|
+| **Read throughput (hot)** | 40–58 GB/s (zero-copy) | ~memory bandwidth (cache hit) |
+| **Read throughput (cold)** | Page fault per 4 KiB | `pread` syscall per 4 KiB (or 64 KiB extent) |
+| **Write throughput** | Async dirty page writeback | Synchronous `pwrite` + mirror update |
+| **Latency predictability** | Variable (page faults) | Predictable (explicit syscalls) |
+| **SIGBUS risk** | Yes (external truncation) | **None** |
+| **Unsafe code** | `mmap`/`munmap` | **None** (100% Safe Rust) |
+| **Memory usage** | Page cache only | Page cache + 4 MiB metadata cache + configurable data cache (default 32 MiB) |
+| **Read-only `0444` support** | Yes (`MmapReadOnly`, `PROT_READ`) | Yes (`pread` on read-only FD) |
+| **Coherence model** | Kernel page cache | User-space mirrors + caches (strict) |
+| **Best for** | General purpose, large working sets, read-heavy | Containers, read-only media, SIGBUS-sensitive envs, deterministic latency |
 
 ---
 
-## Journal Replay Under FileIo
+## Extension Points
 
-`apply_journal_op()` (src/storage.rs:2000-2150) applies committed `MetadataOp` entries directly to the backing store:
-
-- **SetInodeBitmap / SetDataBitmap / SetDataBitmapRange**: Updates mirror byte(s) + `pwrite` single byte or range.
-- **WriteInode**: `pwrite` inode slot + `sync_mirrors_on_write()` for cache coherency.
-- **WriteBlockSlice**: `pwrite` data slice + updates both `block_cache` and `data_cache` via `update_if_present()`.
-
-Bounds checks mirror the Mmap in-place applicator exactly.
+- **Custom `StorageMode`**: Not currently extensible; the enum is closed.
+- **Cache tuning**: `OIFS_FILE_IO_CACHE_MB` and `ImageBacking::set_data_cache_capacity_bytes()`.
+- **Invalidation hook**: `ImageBacking::invalidate_block_range_caches()` for external FD-level writes (`FICLONERANGE`, `copy_file_range`, raw `pwrite`) that bypass `ImageBacking`.
+- **Testing**: Kani proofs cover shard index bounds, eviction clamping, read-only policy invariants, and `BitmapSliceMut` dirty range computation ([src/storage.rs:2350-2483](repo://src/storage.rs#L2350-L2483)).
 
 ---
 
-## Cache Invalidation for External Writes
+## Related Pages
 
-`invalidate_block_range_caches(start_block, count)` (src/storage.rs:2280) invalidates both `data_cache` and `block_cache` for a block range. Use after external FD-level writes (`FICLONERANGE`, `copy_file_range`, raw `pwrite`) bypass `ImageBacking`.
-
----
-
-## Configuration Constants
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `BLOCK_SIZE` | 4096 | Fundamental block size |
-| `DEFAULT_FILE_IO_CACHE_BYTES` | 32 MiB | Default data page cache budget |
-| `MAX_FILE_IO_CACHE_BYTES` | 4 GiB | Maximum data page cache budget |
-| `MAX_CACHED_EXTENT` | 64 KiB | Maximum read extent eligible for data cache |
-| `MetadataBlockCache::NUM_SHARDS` | 16 | Metadata block cache shards |
-| `MetadataBlockCache::MAX_PER_SHARD` | 64 | Blocks per metadata shard (4 MiB total) |
-| `DataPageCache::NUM_SHARDS` | 64 | Data page cache shards |
-
----
-
-## Formal Verification Invariants (Kani)
-
-The codebase includes Kani proof harnesses verifying:
-
-1. **`BitmapSliceMut::set_dirty_bits`** — Computes a valid byte range `[byte_start..byte_end)` never exceeding `slice.len()` and covering every bit in the requested range.
-2. **Shard index bounds & mixing** — `MetadataBlockCache::shard_idx < 16` and `DataPageCache::shard_idx < 64` for all `u64` block IDs; Fibonacci step never collides in top 4/6 bits for consecutive IDs.
-3. **`DataPageCache::blocks_per_shard_for_bytes`** — Clamps against `MAX_FILE_IO_CACHE_BYTES`, no overflow in total capacity computation.
-4. **Read-only access policy** — Every mutating operation (`Write`, `BitmapWrite`, `JournalWrite`, `Flush`) forbidden under `read_only=true`; all reads permitted. Zero-copy mmap slicing enabled exactly for `StorageMode::Mmap` (including `MmapReadOnly`).
-
-See `src/storage.rs` `#[cfg(kani)] mod verification` for the complete proofs.
+- [Async I/O & Pluggable Engines](./async_io_and_engines.md) — io_uring, Pread, and Mmap data-block read engines
+- [Compression & Filters](./compression_and_filters.md) — chunked/encrypted payloads and their caches
+- [Disk Manager & Persistence](./disk_manager_and_persistence.md) — higher-level DiskManager API, durability modes, journal replay
+<!-- openwiki: broken internal link [../overview.md] file "../overview.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+- [Architecture Overview](../overview.md) — system-wide component diagram

@@ -1,11 +1,11 @@
 ---
 type: "Reference"
 title: "Thread Sanitizer (TSAN) Testing"
-description: "Document TSAN-based concurrency testing: data race detection in sharded caches, IPC, session management, and async task pipeline."
+description: "Document ThreadSanitizer-based concurrency testing: data race detection in sharded caches, IPC, session management, and async task pipeline. No tsan Cargo feature exists; run locally with nightly toolchain."
 tags: ["testing", "concurrency", "tsan", "data-races", "ipc", "session"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-24T19:09:23.676Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-886fbb2336c3635ef8adb3c3
     resource: repo://.github/workflows/rust.yml
@@ -31,14 +31,14 @@ sources:
     resource: repo://tests/session_ipc_test.rs
   - id: openwiki-source-5b30823597738f668b07d33c
     resource: repo://tests/shuttle_concurrency_test.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
 ThreadSanitizer (TSan) is a dynamic data race detector that can be used with OIFS to identify memory safety issues arising from concurrent access. The project includes specialized stress tests designed to expose data races, atomicity violations, and other concurrency-related bugs when executed under TSan's instrumentation. **There is no `tsan` Cargo feature and no CI integration for ThreadSanitizer**; tests are run locally using the nightly toolchain with `-Zsanitizer=thread`.
 
 ## Running ThreadSanitizer Locally
 
-ThreadSanitizer requires the nightly Rust toolchain and a compatible clang installation with TSAN support. Tests are executed with the `-Zsanitizer=thread` flag:
+ThreadSanitizer requires the nightly Rust toolchain and a compatible clang installation with TSAN support. Tests are executed with the `-Zsanitizer=thread` flag. **Do not use `--features tsan`** — no such feature exists in `Cargo.toml`.
 
 ```bash
 # Requires nightly toolchain and clang with TSAN support
@@ -171,7 +171,21 @@ The `OifsAsyncTask<T>` type implements an inline fast-path for cache hits and a 
 - Worker pool job submission and completion under contention
 - `wait_on_drop` FFI guard preventing use-after-free
 
-### 5. DiskManager Lock Hierarchy
+### 5. Group-Commit Worker Yield (`src/disk.rs`)
+
+In the group-commit worker loop (`src/disk.rs:9736`), a `std::thread::yield_now()` is invoked when the work queue has exactly one pending operation. This gives other threads a scheduling opportunity and reduces contention on the queue mutex before the next batch drain:
+
+```rust
+if guard.len() == 1 {
+    drop(guard);
+    std::thread::yield_now();
+    guard = crate::lock_unpoisoned(&q_worker.queue);
+}
+```
+
+This `yield_now()` call is not gated behind any feature flag and executes in all builds.
+
+### 6. DiskManager Lock Hierarchy
 
 Two-tier locking strategy validated under TSAN:
 

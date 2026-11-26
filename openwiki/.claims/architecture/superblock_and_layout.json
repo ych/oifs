@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:accbf1c5dc3d00b0461cafac528315edd5a189db7a9821f7a3de8ac581e723b7",
+  "pageVersion": "sha256:e8b029d3baab4ec3bf0f9c9a0b3592d53e1de32948da0c7498d7be042f7c07de",
   "claims": [
     {
       "id": "claim_e845d187861a403f8d664437f6a7bf03",
@@ -27,7 +27,7 @@
       "statement": "Kani formal proofs verify SuperBlock layout ordering guarantees superblock(0) < inode_bitmap(1) < data_bitmap(2) < inode_table <= data_block_start and that data never overruns the image.",
       "evidence": [
         {
-          "resource": "repo://src/superblock.rs#L492-L522",
+          "resource": "repo://src/superblock.rs#L600-L630",
           "version": "repo-lines-v1:sha256:a9419f833497fc4cf3f387925c70f1ff190bedee598878807bd5e7ef34654ee8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZTZkMTBjMTFkNmJiM2M4NGY1YzRiMjVmZjcxNTI5ODk4NzA2ZDk1MWEzZWMzMzFmNjdhMDMzZjBlN2E4NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3NjI4Y2FhZDg0OWZjYmE0MDAzNTkwZDhhM2MyYjYwNzg4ZjVmOGUyMzgwZDc1MjY5ZDg1ZmUxNjMyMGVmMDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzMjU4NmExYmQzYWU3YzVjZTU0NjBiMjMxNjk3NTRjY2ZmY2Q4MDgxODQyMmEwYjg1YmQwMzM1NGFhZjA0NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4NTI0NTBjODYxMjQwZTQ0M2ExOTQ2YTMwMGU3OTdmNTMyNmY0ZWE2NjVkN2NhZWE2NWI5YzU5YWFmZTBmNzIifQ"
         }
       ]
@@ -37,8 +37,8 @@
       "statement": "SuperBlock::new_v3 is the primary layout constructor for v3 images (format_version=3). It computes bitmap spans in a single pass (no iterative fixed-point) to keep CBMC tractable: inode bitmap sized to inode_count, data bitmap sized to remaining data blocks, inode table capped at 1024 blocks (16,384 inodes at 256 bytes/record). Minimum 5 blocks for non-journaled; journaled requires 37+ blocks for the 33-block WAL region.",
       "evidence": [
         {
-          "resource": "repo://src/superblock.rs#L153-L204",
-          "version": "repo-lines-v1:sha256:8d94e907feec0e3547fc21d9e45c3f0e9105eec77d1840612ddaa11f4d555a13:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5N2EzY2ViMzBlZjZiZGE1MzIyNTAzMDUyMzk5MTA0ZDQ3OGE5ZWM0YTdlNjZlODc1NjNmMTg3YWM5ZDA1ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjMmRhYTQxNWVlNzIyNjBiYjVmYjA4YWY2ODI4MTg2YzJiYzUxZjJmMWY4ZDEyY2E2MTcxOGNiOWUyZDE0ODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0ZjZmNmYxODRiZjBhNjlhNDdiYmYxNjZmOWZiNDM0MjNiNTNhZGYyYzNkMTNkOTQ1N2Y2MjM5ZmUyNWQ2NzUifQ"
+          "resource": "repo://src/superblock.rs#L151-L210",
+          "version": "repo-lines-v1:sha256:43d426f251534f3b2fe9dc8a95a987c1d9ad4124444f0a7446b3f2a8cd838dc7:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NDkzM2JlYmY3OGIxOGFkNjc4Mjk0MzM1NjdjYzk4MWNlYjdiM2FlOGIyZTRlNjA5NjRlOWYwNDQ4MjJmNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkZGI5YmQ1OThiMjNiZjExMGI1NzRhNWUwZmE2Mjc3ZmQ5ZTA2ZGZiZjRkMmIwMTkyMTYzYjQ1YTk0OTQ3ZTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwNTE5NTNlYzU3OWRmOTA3OWNhNjQyOWZjZDg3MmZjNzk4MmIzYTY0NGYyODVmZDQ0YmJlZDc4NDFmNmFiNjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkwZTZhNzkwNTIyZDBmZWNlY2U3ZjMxOGUxZDE1Yzc4MzBiYTg3MzZiMmYxMzRkYTY0YWEwYWMyOTNhZDhmYzcifQ"
         },
         {
           "resource": "repo://src/superblock.rs#L255-L270",
@@ -51,7 +51,7 @@
       "statement": "SuperBlock::validate performs exhaustive bounds, geometry, and alignment checks against the mapped image size. It verifies magic, block size, minimum block count, block count vs mapped file size, fixed bitmap block positions (legacy) or derived bitmap spans (v3), region ordering and non-overlap, data block availability, inode count limits, table capacity vs data area, root inode bounds, format version support, migration cursor bounds, and encryption version consistency.",
       "evidence": [
         {
-          "resource": "repo://src/superblock.rs#L431-L501",
+          "resource": "repo://src/superblock.rs#L539-L609",
           "version": "repo-lines-v1:sha256:1a6bac8470c2a09f5e6150254fa6a50ef5fda6894d0c10603ff1703bea47bf29:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiNzYwOWVhZTVlNmZkYTE2YWEzZWI1ZDBkMTU3YjdkZDc5Y2VhYWI5NGRiNWI4NjUxZWVmNTk3NzM2NTkyNDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyYWFjOGU1MGFkZTVhNTcyMTZhZDJhYzFhNzQ4NDVlZjI0ZDg5OTU0NTg4ZDY3ZTc2ZGFlYzA3MzMxMzg1YzAifQ"
         }
       ]
@@ -61,11 +61,11 @@
       "statement": "Two encryption schemes are supported: version 1 (ENCRYPTION_SCHEME_LEGACY) uses XChaCha20-Poly1305 without associated data; version 2 (ENCRYPTION_SCHEME_CONTEXT_BOUND) adds AAD binding ciphertext to file/chunk/filename context (domain separator OIFS-AAD-v1, kind byte, inode ID, chunk index, flags). Validation rejects unknown versions and requires encryption_version=0 when encrypted=false.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L321-L328",
+          "resource": "repo://src/encryption.rs#L339-L346",
           "version": "repo-lines-v1:sha256:3224ea6ff068266b821c34abe16162b44cecf0bb7478906b3e811e35a5b1a5f9:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmM5YjE2NTNmMTA3OTgyNDRlN2IwOTc4NzY3ZWVlZGEyNmI0ZjAxZTI2MGM5NjNlNmU1YTZjMTc2OGNmN2FiMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2Y2NzM0MjQ1ODlmZWUwZDkzMWU5NjNkOTk4NjAwNGMyYjQ0NzNlODQ3YThhOWVhNzUyMWFlNDRjOWM5MWJmOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmEwYjJlZjAzODhkMWQ5NWQ5ZjEyZjg0YTEzYTI0YmM3M2YzMmEyYTY5NzllMTY0MzMyOGUzNzFiNzhkNWYyYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjc1ZTBiYjJkZjk3OTdlN2JhMDdkYWRkZTY2ZmI4OWNlZDk1MGNjYjFkMTU5YTRlYzQ4MDYzYTcwN2Y1ZGZiNCJ9"
         },
         {
-          "resource": "repo://src/superblock.rs#L462-L467",
+          "resource": "repo://src/superblock.rs#L570-L575",
           "version": "repo-lines-v1:sha256:4e366f8fc2c53dc71f973a2147e113eb72a30567b5472d2e8bd1bac68125725f:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzE4ZjAyOTU3ZTU1YTFkZmU4ODgwODRhM2RmMDFlZGI1Nzk4ODY0NGU3MmIwNmIwMjRlYmQ5ZWM5YTk1OWYyNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDcxMTI3ZWQ0MjYyNjA4ZGNkNDkxYmZiMDE0NWRkZWRhZTcwNTFkMGVjMjA0N2RlMDhmMmQ1MGUxOTJjMTY5ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGQwZDUxMjlkYmI4MTUxODJjNTk4MTgxYjk0N2Q2ZWMyMzAyMzRkNzQxNDA4MGFjMDA3YjhkZWUyZGViZTMxMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjc1YjBjYWY3NjRmY2U5ZjU3NWM2NjQ4ZWQ1YTA3NTdjYjYzNTA1YTllMDdkOGExZTkxOGRjZGU3MWQxYTM1NiJ9"
         }
       ]
@@ -75,16 +75,12 @@
       "statement": "Journaled layout is detected purely by geometry: for v3 images, has_journal_layout() checks inode_table_block == data_bitmap_block + data_bitmap_blocks() + JOURNAL_RESERVED_BLOCKS (33 blocks: 1 header + 32 ring). The journal header at data_bitmap_block + data_bitmap_blocks() carries magic JRNL (0x4A52_4E4C). Non-journaled images are unchanged; SuperBlock struct is identical.",
       "evidence": [
         {
-          "resource": "repo://src/journal.rs#L113-L116",
-          "version": "repo-lines-v1:sha256:6f7ceae16743bd89275b0bc07b0ee23f8c813d958064562fee02ca2b8f361e6b:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGZkNDEwNDMzNjgyNGY0YWI3MTA2NjUzMGYzOGYyMGJlMDMzZTg0MjdkMDU2OTFhMjkwZWE1ZWFlMTA0NjczNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTkzNzhmOWI5YWZlODE3NGI0ZGY4MzBkOTU2YWJkNzUzNjYyYTg4YmUxM2RlOWQ5OTY4NTkyOTgwMDM4MWMxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjE3MDhhN2ExMmMyMzBiMTYzMmMwOGNkMTAzZjFiOTVjM2IyYThiMzVmOGY0MjUwZTdkMTgzZjQ4ZTc2Njc4MSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2Y2OWM0OTA2ZGU4MThhNDYyZmEwZTVlMDkwNWE4OTgyNWQwOTlhOTQ4ZWFmN2I4YWFiOGQ1NGQxMzk2MWY0OCJ9"
+          "resource": "repo://src/journal.rs#L101-L116",
+          "version": "repo-lines-v1:sha256:5a580428ea97ae8e9ffa2b8fd2f1cc80d950d29ad162ba1249c543ee615a7925:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3NjA5MDIxMjBjM2I2MTk4ZTQ0OWQyNmU2NTllNWVjZDhlMzIyMmZlNGRhMmU4NTA3NTBiMmQ3NGZkMjBmYTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5Mzc4ZjliOWFmZTgxNzRiNGRmODMwZDk1NmFiZDc1MzY2MmE4OGJlMTNkZTlkOTk2ODU5Mjk4MDAzODFjMTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0NGRmYjdlOTgxMWRhM2UxNzA3ZTI2NjNlNjA0MDIxYWZjYzI3MzMyMTZkMzM1ZDEwNTJmYTg3ZjM3ZDI0NmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNmNjljNDkwNmRlODE4YTQ2MmZhMGU1ZTA5MDVhODk4MjVkMDk5YTk0OGVhZjdiOGFhYjhkNTRkMTM5NjFmNDgifQ"
         },
         {
-          "resource": "repo://src/journal.rs#L1682-L1687",
-          "version": "repo-lines-v1:sha256:f406c243376b07386fddd1b30a1fca4935b2a0120d4bb2345104e11ad2a076d5:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjBjNDIzOTZmYTM3MGU4YjNhYmJiOTg2NTZhZjgwODAzNDFlZmMxYmVhNjI2Njc5ZGU1ODdjN2Q2NWY5M2EwNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjdmMmRlMjliZGJkNWY3ZmM5ZGQ3ZDkyMjlkYjFmZWFhNmNmNmVlNDE0MzIzM2FhNDk4ODM5ZGVmMDk1YzgyMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTJhZGU0ZjE2MzMwZjlmZGQ0M2M0OTViODYxZjU1NDYzODVjZThmMGNkMTBiZWE1ZWY5M2YyZmVmYTA1YjY5NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2UxMTFkZTA5NDcyMjMwMTI1MmY4Y2MyMzIwMjc2NWRlYmZjYTM2YmViMzJjZjgwNThmNWM0MTM3ZGEzZDkzOCJ9"
-        },
-        {
-          "resource": "repo://src/superblock.rs#L285-L306",
-          "version": "repo-lines-v1:sha256:ecffabc9c1e72dcfd538416b908f3942f56cd8f361b194c0fc74308384bb9ca8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0ZWZjODQ2ODdiNWM4NjA4OTA2NTBhYjU2NzQ0NzM3MjEyNjA1OGFjNDBjMWIyZTM2ODBhZjhjOThiNmUyYjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJhMGE3NjZkMGUxMjYxMzczMDJkZTA2ZjJkNWE5Mjc2YjA2ZDA4ZGU3MDMxZGIzNjVlOWRhMTMzZTJjMGI3NzMifQ"
+          "resource": "repo://src/superblock.rs#L404-L420",
+          "version": "repo-lines-v1:sha256:c76d5375778fa4fca76fbde5fafd3852cf8e0e7d2e00c6deeb0df79f36e62775:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhYmFiNjJhNDUzYTkwOTIzNTIwZDgwODA0NjA4NWIwMjcyOWYwNGQ4MjRiNzhjMDk4ZmQzODZiM2E2M2Y5ODQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwM2FiMTNlZTk0NzgxYzlhNDczODA2NmY4NDA2MzY2ZDQ0MDA5OGQyODY3ODY1NTQzZjgzNDIwOTgxNDc3ZDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIyODQyNTEwZTU2MDNjNjlkZGQ5MDg2MTkwYzI0NzBkNjUxNzAzOTQyZGFiZjExM2M5NThlNDE0NTJjMDM5YzAifQ"
         }
       ]
     },
@@ -103,12 +99,12 @@
       "statement": "The v3 layout (format_version = 3) introduces multi-block bitmaps sized to image capacity (BITMAP_BLOCK_BITS = 32,768 bits per block), removing the 128 MiB / 32K inode caps; bitmap spans are implicit in recorded block offsets and validated by SuperBlock::validate().",
       "evidence": [
         {
-          "resource": "repo://src/superblock.rs#L153-L204",
-          "version": "repo-lines-v1:sha256:8d94e907feec0e3547fc21d9e45c3f0e9105eec77d1840612ddaa11f4d555a13:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5N2EzY2ViMzBlZjZiZGE1MzIyNTAzMDUyMzk5MTA0ZDQ3OGE5ZWM0YTdlNjZlODc1NjNmMTg3YWM5ZDA1ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjMmRhYTQxNWVlNzIyNjBiYjVmYjA4YWY2ODI4MTg2YzJiYzUxZjJmMWY4ZDEyY2E2MTcxOGNiOWUyZDE0ODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0ZjZmNmYxODRiZjBhNjlhNDdiYmYxNjZmOWZiNDM0MjNiNTNhZGYyYzNkMTNkOTQ1N2Y2MjM5ZmUyNWQ2NzUifQ"
+          "resource": "repo://src/superblock.rs#L151-L210",
+          "version": "repo-lines-v1:sha256:43d426f251534f3b2fe9dc8a95a987c1d9ad4124444f0a7446b3f2a8cd838dc7:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NDkzM2JlYmY3OGIxOGFkNjc4Mjk0MzM1NjdjYzk4MWNlYjdiM2FlOGIyZTRlNjA5NjRlOWYwNDQ4MjJmNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkZGI5YmQ1OThiMjNiZjExMGI1NzRhNWUwZmE2Mjc3ZmQ5ZTA2ZGZiZjRkMmIwMTkyMTYzYjQ1YTk0OTQ3ZTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwNTE5NTNlYzU3OWRmOTA3OWNhNjQyOWZjZDg3MmZjNzk4MmIzYTY0NGYyODVmZDQ0YmJlZDc4NDFmNmFiNjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkwZTZhNzkwNTIyZDBmZWNlY2U3ZjMxOGUxZDE1Yzc4MzBiYTg3MzZiMmYxMzRkYTY0YWEwYWMyOTNhZDhmYzcifQ"
         },
         {
           "resource": "repo://src/superblock.rs#L352-L358",
-          "version": "repo-lines-v1:sha256:c37be313f254e3a347421aa8bbfc660e8b6ceeeabd1afc83dec52f7682c34063:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTViZDc0MmUxOGE3MWM1MDc5MmViNTI3NmY2ZjhjM2I2OTM0ODEzNzE5NjU0NTUyOWQxMjU0NWQ1OTk4MDIzZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjU3ZjJkOGU5ODY3NmJlZjdkMmE2ODViODQwOWYyODg5NjcwMGM0MzI2MTNjZWJiYmYxZWI5NzZmZTI1ZDE5NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzY5NjcwOWI4ODM1MjI3NmRhOTkyYWM3MmNiZDI0ZmZhNGY5YjI5N2YyYzQyMmY1NWJhMjRhNjJhMGFjNTEzNyJ9"
+          "version": "repo-lines-v1:sha256:5d261a5291108cafe5f6f9ed2e7d82e992f3be007a7b466f0cccee9e12664467:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmRkYjI2ZWMzMGEyZjVkMTRhZmE0N2Y4OGU5YzhjNDhhZDU5NmUzMDc2ZjMxZGFmNzM1ODA1NjE3ODIzZWVjYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjlmZmJjNzc0OWI1NzU1ZGM4NDdlZmQzMGIzYTY3Yjc5OWEyNGEzYmJhNDU2OTRhMzE0MDE5Y2E1ZmUxNDc4ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWQzYWM0MTc4NmNlYWI1OTg0NWNmOTgwZDliMzU1Y2IwYzRkZDg0NTJmYzFlMjA4OGUwMWQwZGM2MjE2ZDgwOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2Y3MDZiYTJiZThmOTAxMzcwNzg5YjU2NWY3MTA3YTU2NjRjMmUzZGY1MTBlYzYyYzdjZjQzZGRiMjRmMDgzYSJ9"
         }
       ]
     },
@@ -121,8 +117,8 @@
           "version": "repo-lines-v1:sha256:ce1652cb6c85e7183409c86db54ef85eec930bda4211e261dfe80f6b4332cce8:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjBjNDIzOTZmYTM3MGU4YjNhYmJiOTg2NTZhZjgwODAzNDFlZmMxYmVhNjI2Njc5ZGU1ODdjN2Q2NWY5M2EwNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTJhZGU0ZjE2MzMwZjlmZGQ0M2M0OTViODYxZjU1NDYzODVjZThmMGNkMTBiZWE1ZWY5M2YyZmVmYTA1YjY5NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTE1OWMyY2YxYjRkNDIxODU3MDgxYTY4OGM3NDI1ZTQ2ZTk4MzlhNmFmZjQxNDdmZTVhMWFlZGYzNTI4ZmUxMCJ9"
         },
         {
-          "resource": "repo://src/superblock.rs#L285-L306",
-          "version": "repo-lines-v1:sha256:ecffabc9c1e72dcfd538416b908f3942f56cd8f361b194c0fc74308384bb9ca8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0ZWZjODQ2ODdiNWM4NjA4OTA2NTBhYjU2NzQ0NzM3MjEyNjA1OGFjNDBjMWIyZTM2ODBhZjhjOThiNmUyYjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJhMGE3NjZkMGUxMjYxMzczMDJkZTA2ZjJkNWE5Mjc2YjA2ZDA4ZGU3MDMxZGIzNjVlOWRhMTMzZTJjMGI3NzMifQ"
+          "resource": "repo://src/superblock.rs#L404-L420",
+          "version": "repo-lines-v1:sha256:c76d5375778fa4fca76fbde5fafd3852cf8e0e7d2e00c6deeb0df79f36e62775:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhYmFiNjJhNDUzYTkwOTIzNTIwZDgwODA0NjA4NWIwMjcyOWYwNGQ4MjRiNzhjMDk4ZmQzODZiM2E2M2Y5ODQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwM2FiMTNlZTk0NzgxYzlhNDczODA2NmY4NDA2MzY2ZDQ0MDA5OGQyODY3ODY1NTQzZjgzNDIwOTgxNDc3ZDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIyODQyNTEwZTU2MDNjNjlkZGQ5MDg2MTkwYzI0NzBkNjUxNzAzOTQyZGFiZjExM2M5NThlNDE0NTJjMDM5YzAifQ"
         }
       ]
     },
@@ -131,11 +127,11 @@
       "statement": "Encryption scheme versions: 0 = unencrypted, 1 = ENCRYPTION_SCHEME_LEGACY (XChaCha20-Poly1305 without AAD), 2 = ENCRYPTION_SCHEME_CONTEXT_BOUND (XChaCha20-Poly1305 with AAD binding ciphertext to inode ID, chunk index, and flags via domain separator OIFS-AAD-v1). Validation requires encryption_version in {1,2} when encrypted=true, and 0 when encrypted=false.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L321-L328",
+          "resource": "repo://src/encryption.rs#L339-L346",
           "version": "repo-lines-v1:sha256:3224ea6ff068266b821c34abe16162b44cecf0bb7478906b3e811e35a5b1a5f9:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmM5YjE2NTNmMTA3OTgyNDRlN2IwOTc4NzY3ZWVlZGEyNmI0ZjAxZTI2MGM5NjNlNmU1YTZjMTc2OGNmN2FiMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2Y2NzM0MjQ1ODlmZWUwZDkzMWU5NjNkOTk4NjAwNGMyYjQ0NzNlODQ3YThhOWVhNzUyMWFlNDRjOWM5MWJmOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmEwYjJlZjAzODhkMWQ5NWQ5ZjEyZjg0YTEzYTI0YmM3M2YzMmEyYTY5NzllMTY0MzMyOGUzNzFiNzhkNWYyYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjc1ZTBiYjJkZjk3OTdlN2JhMDdkYWRkZTY2ZmI4OWNlZDk1MGNjYjFkMTU5YTRlYzQ4MDYzYTcwN2Y1ZGZiNCJ9"
         },
         {
-          "resource": "repo://src/superblock.rs#L462-L467",
+          "resource": "repo://src/superblock.rs#L570-L575",
           "version": "repo-lines-v1:sha256:4e366f8fc2c53dc71f973a2147e113eb72a30567b5472d2e8bd1bac68125725f:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzE4ZjAyOTU3ZTU1YTFkZmU4ODgwODRhM2RmMDFlZGI1Nzk4ODY0NGU3MmIwNmIwMjRlYmQ5ZWM5YTk1OWYyNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDcxMTI3ZWQ0MjYyNjA4ZGNkNDkxYmZiMDE0NWRkZWRhZTcwNTFkMGVjMjA0N2RlMDhmMmQ1MGUxOTJjMTY5ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGQwZDUxMjlkYmI4MTUxODJjNTk4MTgxYjk0N2Q2ZWMyMzAyMzRkNzQxNDA4MGFjMDA3YjhkZWUyZGViZTMxMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjc1YjBjYWY3NjRmY2U5ZjU3NWM2NjQ4ZWQ1YTA3NTdjYjYzNTA1YTllMDdkOGExZTkxOGRjZGU3MWQxYTM1NiJ9"
         }
       ]
@@ -157,6 +153,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-24T19:09:23.676Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

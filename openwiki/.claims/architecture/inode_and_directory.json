@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:9a4f8ce4ae2e8fd8972d5b14863d829d8d4d21c82173615a0045ed9c98c9abd7",
+  "pageVersion": "sha256:95f7c8d73e575eadf67e2d9dc240936521b3c823047473032fa1ddf1f61f4025",
   "claims": [
     {
       "id": "claim_eee6149ed80a41e688eb92aa53776a94",
@@ -57,16 +57,16 @@
       "statement": "DirIndex promotion logic promotes directories to complete in-memory indexes after 8 cold scans or on negative lookup, using a 32-shard ShardedDirCache with Fibonacci hashing for O(1) lookups and O(1) inserts via tail_offset tracking.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2292-L2433",
+          "resource": "repo://src/disk.rs#L2491-L2632",
           "version": "repo-lines-v1:sha256:4a7efaa8866ccfd9579b4e04374f3700b74b1239e5caf7a83061140738636631:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ZTdmYTBmMzFhZWNhYjZlZjdkNmNkMzc3NmY3Y2YxMzAzMTg0OWRjMGZiYjJlNzVhYzlmMjVhYTM5ZGI3NDYzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmZDhkZTUyZTM3ZGFkYWZhM2JmZTViMzEyMGFlZWFlNGI2NTA1NDM1ZjhjMzNhZWM3Y2E0NTI5NjQ2MWFjYTJhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5OTliZGVmZWVhY2E2MzQwZTAyOTBkYzg2ZTg4OWM4OWQ1ZTE4OWFhNWJhNDRiNTg1YjNiNzA3MzRmNGE2MmQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzYTRkMTA4ZDEyNmUzNzlkNTUwZDczOWJjOTVjMjM1MTZlMjY1MjcwMDRjYzI1YmVjMWY3ZWY2NTUzZmIwNzQ0In0"
         },
         {
-          "resource": "repo://src/disk/caches.rs#L353-L373",
+          "resource": "repo://src/disk/caches.rs#L360-L380",
           "version": "repo-lines-v1:sha256:0a0c1db152da5474f316492fd731656a091f5f69b2fe0053e0560d9b05b97a25:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkZGVhZTg2Y2FkNWJhNDNhZThjZTVmYTQzMDYyODQ0MjhhNmYxMGRjYzc0MGFhY2FmMjRlMGIxNGFkOWJmM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ4MzU1ZDZlNTlkZDYxZmZkNmE3YTc0ZmViYzg5ZTc4MDFkYzUwZTNmN2FmOThiNTdlZjEzMjI5NmVmYTM0NzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNlMWJmNzk0YWViNTUyNTRlZjU1MmRiZGRlM2ViZmQwZWY3MjlhNzM1ZjNlOTVjZmU4NjBiNDJmNTViNTY0ZjcifQ"
         },
         {
-          "resource": "repo://src/disk/caches.rs#L380-L432",
-          "version": "repo-lines-v1:sha256:347475b04127fe1a65466ce5b9e4fed3169299dc34b90fc44f2f134e99f7d9dd:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2MWIwZWIwODYyMDljYmI3ZjQ2MGE5MmU0YjM3N2E3MzA1ZDZjMjVlN2RiOTY4MTBlNGRkMGI4M2FlODUwNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBiMDExZTVkNTYwYjgzMjk0ODdiZWYyNTI5MzQ2YjE0MmM2NzNhYTk3NzI0NjQ3ODUzOWVmMjFiZDZjNzExZWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMWJjZjk5NmU5ZDllOTQ5N2IxMjM0NjlmODVjMWU0MTc0NjNlZDZlYzVlNDFhZmIzZDM3YjcxOGQ0YzUwOTUifQ"
+          "resource": "repo://src/disk/caches.rs#L387-L441",
+          "version": "repo-lines-v1:sha256:1ae09826812183b2639f1cdf9d1a209a1fb45e41da2bbd0c4f83a2a4a464dce5:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4ZDAwY2E0MTBkNjgyYjM5ZDViZDZmNDllMmY3NmZiMjEyYjk0YzNhNDQ0MjcxMGQ4MzgwNGI4OWNlYjMxNGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBiMDExZTVkNTYwYjgzMjk0ODdiZWYyNTI5MzQ2YjE0MmM2NzNhYTk3NzI0NjQ3ODUzOWVmMjFiZDZjNzExZWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMWJjZjk5NmU5ZDllOTQ5N2IxMjM0NjlmODVjMWU0MTc0NjNlZDZlYzVlNDFhZmIzZDM3YjcxOGQ0YzUwOTUifQ"
         }
       ]
     },
@@ -75,12 +75,12 @@
       "statement": "Filename encryption uses deterministic SIV construction with BLAKE2b-512 deriving a 192-bit XNonce from parent_inode and plaintext, XChaCha20-Poly1305 AEAD with parent_inode in AAD, and Base64URL encoding with '_e_' prefix; decryption verifies SIV nonce constant-time and falls back to legacy v1 format.",
       "evidence": [
         {
-          "resource": "repo://src/encryption.rs#L616-L656",
+          "resource": "repo://src/encryption.rs#L634-L674",
           "version": "repo-lines-v1:sha256:6d3ade3ae7983297181cd3635d685ff4dbe6a5835d50f7f6fe27b5c8b62f39a6:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiNzhhMWRjMjAzZmI5NmFmNGIwODc0Y2JmNWVhOGY0NDJhMGY5OTg5OWUwZmJlM2MyNGIwNmEzMzY0M2M3YzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiOTNmYjU5YWIyYzJlZDQ5NTUzNmZmMTA1ZWY4YzU3YTI3NmZmY2E0NTRjMjI2MzYyYTJlNjM1ODMzZWNjNmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhYTNiNDMyNmU0NDRmMzIxNjg4OTM2OTM0ZTBhYzhmMmYyZTUwODNkN2E0ZmNmMDM3NGI4OTZlN2M5MGE5YzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5YTcwN2ExYjgzNWRlZmYwYzJkZGU2NDJlNjYyOGFmNzVlNGM3ZTVmODExYWU3MTg2YTk0MjAyMTJhZTE3YmYifQ"
         },
         {
-          "resource": "repo://src/encryption.rs#L704-L838",
-          "version": "repo-lines-v1:sha256:84d4006615dd0a8dae812a83e1105a22c5c7bff96a400b2fed288b95ba98a56d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkOGZmZTkwMmRiOGM4MTNmYTcyYTJlOTRjMTY0NGY5YTFhMjBiMzhkNzA1Mzg4Mzk2ZjFhMjI0NzVkOWEyNzQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1MGNhOWMxZTNlZWIyMGY0NTc0ZjBjY2M4OGU5MjRmYWRiOGFmNzEzNTM4YjYxYjQwZTU1OTc2NjljOTkxNTNhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4MDVjZGY4ZTlmMzJiNzBiMTZkZmMwYzA1ODE5OGU5NmYxM2Y4ODhkMzgzYzdkZDc5NTllY2JkNjY5YmM3NDA2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MTAzYmRhODg3Yzk1MGJkZjI5ZWYyNTU5ZTVhMDQxZTYzOWU3ZTk2Yjc5OWZjNGMwMTk5M2Y1NmRhNmU5NjIzIn0"
+          "resource": "repo://src/encryption.rs#L722-L857",
+          "version": "repo-lines-v1:sha256:b4039e6481844f684fec24dd2fad2c9769fd07061d609a7e71dd3f430fc66b1a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkOGZmZTkwMmRiOGM4MTNmYTcyYTJlOTRjMTY0NGY5YTFhMjBiMzhkNzA1Mzg4Mzk2ZjFhMjI0NzVkOWEyNzQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1MGNhOWMxZTNlZWIyMGY0NTc0ZjBjY2M4OGU5MjRmYWRiOGFmNzEzNTM4YjYxYjQwZTU1OTc2NjljOTkxNTNhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4MDVjZGY4ZTlmMzJiNzBiMTZkZmMwYzA1ODE5OGU5NmYxM2Y4ODhkMzgzYzdkZDc5NTllY2JkNjY5YmM3NDA2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MTAzYmRhODg3Yzk1MGJkZjI5ZWYyNTU5ZTVhMDQxZTYzOWU3ZTk2Yjc5OWZjNGMwMTk5M2Y1NmRhNmU5NjIzIn0"
         }
       ]
     },
@@ -115,6 +115,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-24T19:09:23.676Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

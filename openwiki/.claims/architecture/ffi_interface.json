@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:853c36fdb155353c9bd962f51cbb013a4f0580764bf3cff46d770b2d1873d069",
+  "pageVersion": "sha256:06b98a16fac80cb23e782b3bfac31c6b84f2ea651291939dfec77994394fbe36",
   "claims": [
     {
       "id": "claim_fa4050d6cc934a0e8248f7e9c261db33",
@@ -31,7 +31,7 @@
           "version": "repo-lines-v1:sha256:3c8fd5d16a417dedd91ee17753223ce366ce25e1f300d7eaa73433458ffcf450:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1Y2RlZjgwODVhZTc0YWI2MzZkNjQ1OWY1YzZkNWZiZmIwZGIyNjRmMWIwZDc1YmFjNTE5YzliM2Y2NzE3YWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiZjI0YThjM2Q1YzI3ODZiY2FmZjdiMDVlYWQ2MDA5MGNiZGVkZTUxY2UwMWViOWRmNGUxMWUyYjk4NGNhNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmYzk1Y2YxNjk2MjYxYTgwMjI5MTQ2MGRkZjA0MzM4MGFjZWE1ZTE0ZGYxMGI0YTVmMDQ2MjYzMDRmOWNmNjEifQ"
         },
         {
-          "resource": "repo://src/ffi.rs#L869-L915",
+          "resource": "repo://src/ffi.rs#L870-L916",
           "version": "repo-lines-v1:sha256:e5d95068d7064502233658b289aa978ba05867117f5a9b16e6485717aa48aad4:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjYjhjYjQxYzJlMjg1OWRmNWFkNzI0MWU2MDkyZGEwNjNmMmMwYWUxNzFkZTMyZDlkZWUxNTIzNDM1MzY3MGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4YmJlY2M4N2NmOTAwYTcwYWFjMDdjMWEzY2UzMjU3M2UzZmRhZTBhMDBiOTc1YWI4NTM1OWE1YTdjODE4ZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNiNjg2ZmVmYzNhMTgzNjYxMGJlZGZiM2M5ZjllOWRhY2VlNTM0MDA2ODI5MGVjM2JhZmMwNWZmN2ZjZmM4MTEifQ"
         },
         {
@@ -45,7 +45,7 @@
       "statement": "oifs_set_io_backend and oifs_get_io_backend expose runtime I/O engine configuration to foreign C callers, converting backend discriminants and returning the effective backend after automatic fallback.",
       "evidence": [
         {
-          "resource": "repo://src/ffi.rs#L918-L949",
+          "resource": "repo://src/ffi.rs#L919-L950",
           "version": "repo-lines-v1:sha256:4c5f9d58a6e6e1ffb58ce33019311679be42c573262e03904015a0df069396f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ5ODEzZGJlMDJkNGJiMzcyNDI5YzdiNmU1Zjk1YWFjNTU2ODg5ZDg5Zjk2ZjVkZTZiMTdmZDE1NTgzNmY0ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiYmQ5Y2NiOWMzMTUzNDQyNzdmNzkyYjg2MGJkYTJjZGJmNDY2MzEzZjIxZjNlOGIwMDM4NGI0YmE2ODUwN2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhNmNjOGFjZTY5NWViYTQ1NzM5ZjZkNTRiOGJjMTQ4NDZjMjMwNGMwZmMyODBkYzExMGY2ZTgwZWQxN2NjNzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIyZTA4ZmE1ZjMwYjkxMDM0M2ViZTY3YmNiYmM5ZTdiMzBjY2NkNTRmNmJiMzQwZTliMmUzMWEwM2I2NGJkM2EifQ"
         }
       ]
@@ -55,7 +55,7 @@
       "statement": "The C FFI exposes version handshake functions: oifs_version_major, oifs_version_minor, oifs_version_patch, oifs_version_code, oifs_version_string, and oifs_check_version to allow host programs to verify compatibility with the loaded dynamic library.",
       "evidence": [
         {
-          "resource": "repo://src/ffi.rs#L952-L1025",
+          "resource": "repo://src/ffi.rs#L953-L1026",
           "version": "repo-lines-v1:sha256:3d59aee7ce14fff9b4613f25109d285709d6d94de1eb7bc212908c615cc134aa:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMWU4YjYyZTMzYmM0ODQxYzg2YTUyYmJmZDQyNGFlNDFlMGJiZWE4MjQyMmQxMGUwZDIwYjlmMzA1ZmI0MGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0YTZmYjFlNGM4MmIwZWNhZWQ1OGExM2U3ZjU3NmQ4NTJjZmEwNTlhOGVlNGIzOTQxNzE1OTMxYTc3ZTdjOTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjNDhhZjNmNjE5NmE3N2JlMzBjYzQ4NGFjZWE1YzhiMzU4ZGE3MmM5NzVkMDUxMTBiMDAzYmEzNTYyYmY3Y2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliMWJkMDM5MTQwZWU0NDE0Y2NjZWI2YjQ2ZTc0MWYzZDQ5NGM5Mjk0NzRhMTVlMTBhNzdkYWFiYmUyNTJlMTkifQ"
         }
       ]
@@ -69,7 +69,7 @@
           "version": "repo-lines-v1:sha256:b46f4d609378331d36bdca3aa6cfb4cd2910105270ed03f0a9fa07e2717ba7c5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOWViMmY4MjNlMmQ0ODM1OTA5OGM3ZmM2NjRmOTI0NWM4ZjY5MmFhOGU3MjEzMDVmNThlNWNkODNjZTg2ZjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYjQ0YzFlYzFjMmRiNTcyZGNkZGRhZWU3NGUwODkwOGY5YTk1YTMzOThlZjVmMzhmODBiOTQ3NmJlNThhZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNmMWYyYzk5NDA5MGIzYjdmM2ZiZjI1MzFmNGMwOThhM2ZlMDgwMzgwNzFkMzYxYjMxNDcwZmEzMjRjYzI3N2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmZjQ0YzljMzhhZmZkNWE3NzQ5YTM4NGUwMzUwZDNiZWVhYjY1MzFiZjQ2ZDBkYWFlY2VkN2ZlMTRhYTZiMDEifQ"
         },
         {
-          "resource": "repo://src/ffi.rs#L1909-L2059",
+          "resource": "repo://src/ffi.rs#L1910-L2060",
           "version": "repo-lines-v1:sha256:a20a33f08e79f490e58f5f9def636c4de01604d4ce724b4ff60dc474953ee9c6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0OTgxM2RiZTAyZDRiYjM3MjQyOWM3YjZlNWY5NWFhYzU1Njg4OWQ4OWY5NmY1ZGU2YjE3ZmQxNTU4MzZmNGY2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhNmNkMTgwYzQ3ZGM3NmIxMTQ0NTBmYTZkZWI0MTFmOWE5MzU1YzRiNjg0MmRiYWFhN2NiYzgwZjBlMjQ5OTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlZTFkNjhiZWU5Mzk3YmY3ODM1YzY1YzI1MmRmZmU5ZTE4Y2UxZjVlNDE1Mzc0MmMwYmE3YmVlNTc1NmM3YmVmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0OGVkNGM3NjVmNGVkM2NmMGMyNWM4ZmNmMjYwY2FlMjM1NzViYTU1MGVkZjkwYTdiNjA1ZWZhZTFlODBlNzZiIn0"
         }
       ]
@@ -93,7 +93,7 @@
           "version": "repo-lines-v1:sha256:44a5d4a1a2fb5561e060408ae4ebe86fec654b97c2dc851e1f5928338b9e8e5d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYjQ0YzFlYzFjMmRiNTcyZGNkZGRhZWU3NGUwODkwOGY5YTk1YTMzOThlZjVmMzhmODBiOTQ3NmJlNThhZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwYTk4Y2FmYWRjYWRjOTcwYTkwYTYxZGZkMjRlZDBjMGVjNWZiMDdiZGQwZjU0ZDkyZjI2NjU5MjMyMmUzODIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI1N2IxMGRlZDExZWI3ZjI5ZmE1YWM2YWI4ZTc2ZjhjNjhiNGZhMzIzY2MzN2RhODQ0NGJmZjBkNWRiZjIxZDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzOTZjMzgwZGE2ZDg2MTY0ZjYwOTRjMGM0YTk2ODgxMDcxNDZhMDBjZjM5ZTFhNGI1MWM3OWViOGMzMDg1N2UifQ"
         },
         {
-          "resource": "repo://src/ffi.rs#L2209-L2359",
+          "resource": "repo://src/ffi.rs#L2210-L2360",
           "version": "repo-lines-v1:sha256:b1c62d59c59a006b76da217ef166c7eadbae9788ac5d6082dfb578e51d493c62:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwNWZiOTg1ZTE2MjBmMzJkNTdjMDE1Nzc5Y2U0OTMwOTk3MWFlOThkOWE0YjE5NzYwMDgwNWNlNGVkNmMxNzNhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5MTFlOGI2MmUzM2JjNDg0MWM4NmE1MmJiZmQ0MjRhZTQxZTBiYmVhODI0MjJkMTBlMGQyMGI5ZjMwNWZiNDBjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2ZDNlZjczYjc5YWM4Y2UxMGUwN2MyMTNkMDY4ZTYyZTEyMjZjYTAxODQ4ZTM3ZGM3YTUyMzdiMThhZjFmNDhiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkY2Q3YmQ2MGFkZWY5YTBjZTdiYjA2OWE3YTFmYzdjZjg0ZTdjNzgyYTUwNDBkOTMzYjFkZTRjMDJjNGYyMTFkIn0"
         }
       ]
@@ -127,7 +127,7 @@
       "statement": "AsyncFuture in oifs.hpp provides C++20 co_await integration: await_ready() returns true for inline fast-path hits (zero suspension), await_suspend() spawns a background thread to wait on oifs_async_wait, and await_resume() returns the result or throws Error.",
       "evidence": [
         {
-          "resource": "repo://include/oifs.hpp#L1150-L1250",
+          "resource": "repo://include/oifs.hpp#L1181-L1281",
           "version": "repo-lines-v1:sha256:24b3bfdf24bb769d2d69fedc7e011f36909ab019a81b250b320f25803c4790e1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjYzA3YjZiMzZhY2I3YjQ5NjA1Yzc1NmI1NGU2Y2M4MmVhYjViZjQ2YzhiZTE3ZmU3MjlmMWFjNjM3N2VkZjFjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzYmI1ODA5OTIyODM5ZjZkNjA2YTQ4YTFlMGMyOGNjZmQ5OGEwMzIzM2Y0NGMwMGNjOWRkMjY2ZmE4YTU0NWYyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5OTliZGVmZWVhY2E2MzQwZTAyOTBkYzg2ZTg4OWM4OWQ1ZTE4OWFhNWJhNDRiNTg1YjNiNzA3MzRmNGE2MmQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxNDVmZmNmZWM1N2Q2MDI1MWU1NTcwZGIzMmIyOTc1OWRkMmNiZWJjYWJkZDlmNzNmMWQwYTcxMzM5NDlkZDM1In0"
         }
       ]
@@ -141,7 +141,7 @@
           "version": "repo-lines-v1:sha256:44a5d4a1a2fb5561e060408ae4ebe86fec654b97c2dc851e1f5928338b9e8e5d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYjQ0YzFlYzFjMmRiNTcyZGNkZGRhZWU3NGUwODkwOGY5YTk1YTMzOThlZjVmMzhmODBiOTQ3NmJlNThhZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwYTk4Y2FmYWRjYWRjOTcwYTkwYTYxZGZkMjRlZDBjMGVjNWZiMDdiZGQwZjU0ZDkyZjI2NjU5MjMyMmUzODIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI1N2IxMGRlZDExZWI3ZjI5ZmE1YWM2YWI4ZTc2ZjhjNjhiNGZhMzIzY2MzN2RhODQ0NGJmZjBkNWRiZjIxZDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzOTZjMzgwZGE2ZDg2MTY0ZjYwOTRjMGM0YTk2ODgxMDcxNDZhMDBjZjM5ZTFhNGI1MWM3OWViOGMzMDg1N2UifQ"
         },
         {
-          "resource": "repo://src/ffi.rs#L1900-L2000",
+          "resource": "repo://src/ffi.rs#L1901-L2001",
           "version": "repo-lines-v1:sha256:cd16e2cb2620fcd775a82bde7d187003e1bdc9ec9700d708d929e2a042713c00:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkMTJiYWU0OTU3ZmI0YjhkZjkxODVlNzExNGVlZmY0NzE4OTg2ZWIyODgzZTZhMjYwNjA5ZWJlZGEyMjlmNWVkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyZDMxZDQ2YzgyMTQxY2I0YmZhNDAzNGM1NzA3MDEyYzZkNWI3ODM2MzYyY2RmNDVhZGRjMDk4NWU4ZmE2YjAxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmYzhjZGI4ZDU2ODlkZDkyNGUzY2NjMDkzYmRlZGU1MDZjYTJjZTc0NDNhYjcwODk2ZDZjMmQwNTk4NDc3YjYwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwMDBlNmQ2ZWNhOGZkMzk3ZTEyMDhmMDRmZmVlYzc4ZTFjOTA5OGI2ODQzZDU4YjBkMTRkMTA1Y2VlNWNiNjFmIn0"
         }
       ]
@@ -151,7 +151,7 @@
       "statement": "OIFSReadSession and OIFSFileHandle both hold Arc<FfiSharedSession> (owning DiskManager + RwLockReadGuard), enabling out-of-order destruction safety: C callers can destroy the session before the file handle or vice versa without UAF.",
       "evidence": [
         {
-          "resource": "repo://src/ffi.rs#L1510-L1540",
+          "resource": "repo://src/ffi.rs#L1511-L1541",
           "version": "repo-lines-v1:sha256:48f29f5c914d8ec8678d10fea50cfb5e6c62adcf74f39e7dfdfb5eef4583d740:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhM2JkMWJhYzg4NmI5MjZkM2FiZjA5Mjg0NjJkMDEwYWRlZTk1ZDA3MWY1NDVjYWVmYzk1MWIzZTU1YWQ4ZGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiM2I5MTI1M2JhZjQ0YTEzMzIyMDFkNTQ0NmUxMmM0OGU0YjU0NmJhOGU5ZTk3N2UxMmQxMGUzNWY4ZDdiNDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY0MmI3NzM5MjQ1MDUwNzljZjg2NTE2MjBjODYzMGI3NTc1MGFmZWRiNDBlZjZhNTdiMjlkOWQ1MzJkZmM2NTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3NWU5MWNlNmYxZDkzMTFkMTE3ZThmZmVhNWMyNTA0YTFhMzNlOTkzZGI2NDdhMzg4NTM5NGEzZDMyODgwYTUifQ"
         }
       ]
@@ -161,7 +161,7 @@
       "statement": "The C++ RAII wrappers (FileSystem, ReadSession, FileReadHandle, AsyncFuture) are move-only with deleted copy constructors, default move operations, and destructors that call corresponding C FFI close/free functions.",
       "evidence": [
         {
-          "resource": "repo://include/oifs.hpp#L1100-L1200",
+          "resource": "repo://include/oifs.hpp#L1131-L1231",
           "version": "repo-lines-v1:sha256:e4d8c77047ea365b3330d529a7987f3e114f1a45f3c116684487e8b84320d68c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzNWZkNmI5MDA0YWI2MWIwYTY3ZWEyYjQ3N2E1ODI5NTNmM2EzNGQwNjBhYjQyMDAxYTdhMzZiYzNiODI4NjY0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiYWRhYWQ1NDgwZjg4ZDI2MGE0NmIzM2EzZTlhYzJkZjhjNGE4NzI3NjI1ZjBkODc4NTQ1MTA0YTBlY2RhZGY4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjZTVjNzdlNzE5MGFiNTI5NjEwYjk2OWFmYWJjNDY4NDliYzMxYzA2ZGM1YmZmYWY5ZTM0N2I1ZWU4NGM5NWI4In0"
         },
         {
@@ -169,14 +169,14 @@
           "version": "repo-lines-v1:sha256:737eeae01aa51e8d2531d52638b82d486076a0973f6f0419db61f4d9a0078645:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhMWM4OWQwYmQwNDVhMDU1MWFjODBhODkyZjQwM2Q1N2YzZjgzNGQ3MmM4MjExODg0ZTA0YjQ0ODRjZWM5ZGQwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNmIwNDQ5MTQ2OTcyMmU4MzYzYTk0ZTQwNDQ1MzhlMDEzYTJhMjE3ZTM2YjFlNTY4YmE2MGFjYjdiNGM4ZjJlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlZjI4NTk5ZTkwNjZjNjZlZGYzMWUzZjE1N2RhODY1YmI2NjY2MTNlYzhkYTA0YzM4NjEyZTE4MGY2YTVlNzBjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzNWNhODYwZDYxZDkyNzEwNGNkMmYwOTE1OTFlNWQyNjZlNTE0ZWM3ZGUxM2NlN2RjMGZjNjY1NmE0ZGExNWNmIn0"
         },
         {
-          "resource": "repo://include/oifs.hpp#L700-L900",
-          "version": "repo-lines-v1:sha256:f964b0ded37932542cb96199a9217ec405db02fc2f6261d30384df7dba3a5d2d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlNmIwNDQ5MTQ2OTcyMmU4MzYzYTk0ZTQwNDQ1MzhlMDEzYTJhMjE3ZTM2YjFlNTY4YmE2MGFjYjdiNGM4ZjJlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNmIwNDQ5MTQ2OTcyMmU4MzYzYTk0ZTQwNDQ1MzhlMDEzYTJhMjE3ZTM2YjFlNTY4YmE2MGFjYjdiNGM4ZjJlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWQ2NmJlODZmYTk4ZDZjZDBjODRmZDRiOTNjYzQyY2U4ZjE4MmU3YjVkYmI1NjI3YjAwMmZlZDE0ZDIzYzQzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YTI1MmI1YjNmZjQxNzE4N2ZjNTI1NDA0MzYzZTM4ZjM4ZmZhYzE0NDJmNjJhMTQ4NGI1NDg1NWIwZTYxMzg1In0"
+          "resource": "repo://include/oifs.hpp#L700-L919",
+          "version": "repo-lines-v1:sha256:2591755e1ba12e2fc8a4719b5c824dac6ca9953b1efcbac9a836f3771d358a2b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlNmIwNDQ5MTQ2OTcyMmU4MzYzYTk0ZTQwNDQ1MzhlMDEzYTJhMjE3ZTM2YjFlNTY4YmE2MGFjYjdiNGM4ZjJlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNmIwNDQ5MTQ2OTcyMmU4MzYzYTk0ZTQwNDQ1MzhlMDEzYTJhMjE3ZTM2YjFlNTY4YmE2MGFjYjdiNGM4ZjJlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWQ2NmJlODZmYTk4ZDZjZDBjODRmZDRiOTNjYzQyY2U4ZjE4MmU3YjVkYmI1NjI3YjAwMmZlZDE0ZDIzYzQzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YTI1MmI1YjNmZjQxNzE4N2ZjNTI1NDA0MzYzZTM4ZjM4ZmZhYzE0NDJmNjJhMTQ4NGI1NDg1NWIwZTYxMzg1In0"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-24T19:09:23.676Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

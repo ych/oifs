@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:56535d834c42d157a827d0798d475da5a772ffb989b8ff5e03815522c5867d63",
+  "pageVersion": "sha256:6db5865d040493fea113c6b2e63eee593e63fe4df00ff559148841960edf178c",
   "claims": [
     {
       "id": "claim_9808e460c6314de5ada2d5186d40afe4",
@@ -8,13 +8,137 @@
       "evidence": [
         {
           "resource": "repo://src/filters.rs",
-          "version": "repo-file-v1:sha256:a952b106c6ad0e56e923b74801a113129340741f6f464d351ae3d57b098fa0b3"
+          "version": "repo-file-v1:sha256:e250b78268097edfd113b560e00e30f1782475dd1fcd703757d08d23d3ba1698"
+        }
+      ]
+    },
+    {
+      "id": "claim_ca7d6dbfb3614b31b7c74a3e64b867c8",
+      "statement": "OIFS maintains 131 AWS Kani proof harnesses across 17 core modules (superblock, inode, inode_format, bitmap, allocator, directory, disk, disk::resize, disk::batch, disk::caches, disk::transfer, journal, storage, encryption, filters, zstd_pool, io_engine, auto_defrag, ipc, ffi, fuse, nfs) verifying bijectivity, arithmetic safety, memory safety, layout correctness, and state machine invariants.",
+      "evidence": [
+        {
+          "resource": "repo://docs/formal_verification/README.md",
+          "version": "repo-file-v1:sha256:b123331d2bdc23b14ed4de19202e5d79d7129f6b7b1b07bb8b12a40dc895d5cc"
+        },
+        {
+          "resource": "repo://src/allocator.rs#L227-L392",
+          "version": "repo-lines-v1:sha256:9fa10100c0897bce38e488124960949537cab5b8515b6271f4a34a25963656f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/bitmap.rs#L576-L725",
+          "version": "repo-lines-v1:sha256:6612d0f7f116d4076804d9f0fd78f5f30bf268728aa1553d577981d50a8b2ce6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/directory.rs#L741-L851",
+          "version": "repo-lines-v1:sha256:d34b1d5e5ba483443d419a7884efc0a389f2a8e989cbfb0a319a68002fef17cf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiNGEzNjVhOTBlYzExZTkwNDMyNzUyY2Y5Mzc2ZWM1ZWQzNmI4MGJhNWU4ZTY4NTRmY2Y5ODk3MGQzMDQ0NDY5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/disk.rs#L10321-L10920",
+          "version": "repo-lines-v1:sha256:c528b098b4ddb92c1464a7a387309102d541b7283754112539586bfdfb16f5ff:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlYjdiYzc3YzBlYzM1OGNmMzBmMDM5ZGVmZWQ3YTM0YjM3MjdkMDBkNTM4OTA0MDI0NWE3MDA0MjFkMzQwMmQxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3ODk4YTU2YmI5Y2IzNzNhOTAxNGZkMzI2NGFjZjY4MzVlYzM1OTlmNWY0YjMyN2JkZDE0OGRlZGQ3NmZhNGQyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5NmY0OTU4Y2Q5MzYyMTA2YmM4ZjQyZTU4Yzk3NmI0N2JiNTQzNmNhMDgyMjBjY2U3OWVkYWUwOWM5MjcxYTYzIn0"
+        },
+        {
+          "resource": "repo://src/disk/resize.rs#L1291-L1451",
+          "version": "repo-lines-v1:sha256:339966e7ac4a061abf3c6f59e2aa90f96552b71d0638cdcf004cdc0b6cc39150:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmMmEwOTlhMzA0OWI5ZDRhNGE2NDlmYjZkNzBlMDdlYTRlMzA4NzYwMTg1MDcyNjU2ZjA0ZGZmZWUzMGEzNzkzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiZmI1ODk5MjBhZGIzNDI1YmY1OTkzZDU3YjJkMTQ3MzM2NTZjMDBlNTg0NWM4ODFiYzViNjM2YzZjMmRiYjc3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/filters.rs#L1108-L1330",
+          "version": "repo-lines-v1:sha256:cdcfc7d441bd8236b652259be8274a1461e0521ba96b954f551e221b6d5fb8c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/inode.rs#L281-L570",
+          "version": "repo-lines-v1:sha256:2d9685371fa34d21239929acc60ee31ec565dc8dfa0b3d9abb11a609ef75094d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjkwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmM2I3YWNiZjMwNWY0NjNiMTBiZjEwNDljZDhiM2ZmMGJlOGY1MjcxOWIyY2I2ZDhiOGQyOTNkODQ1MjNiN2QyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyNGE3N2JkNGQwZTFmYjFkYzE2MjA4NDYxOGI0MDZiNDI1MzQyMmNiOTAxZDJjN2Q5NmRmMGMzMDdmZTRmZGI3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/journal.rs#L1681-L2580",
+          "version": "repo-lines-v1:sha256:cebaa174185aa50559b4d69916a95079f8a2b4a8212b5d682219d4734bbd5885:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3MGIxNjIzODUwZTA0ZGExZWFmMmE5MGFkZjBmYWI5MzlmMDY1NzhkMDUyYjAxNzA4NDVmNzMxZDBmYWQwMjMyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmOGQxNjI3NzUyMWRiZWM2MjAzY2JmNDhhNTJkMzI5MDA3YzMxM2YxNDE5YzNiMGQ4MzVhN2E3NzcxNjk2MGFlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4YjVmOGYyNTdkNWMxMzFkZjc2ZjExZDA5OTAyZDY2OGQ3MmZiMzY1ODM5NWE1YmEzMjcwM2QzNjg2YjljOGZjIn0"
+        },
+        {
+          "resource": "repo://src/superblock.rs#L591-L990",
+          "version": "repo-lines-v1:sha256:98f78aea1f010f1c4f638e07f4787a245a41c3b861a76aa15ff9ad7e22358aee:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZTQwMGM4NGVhN2Y3NDg3ZDdiN2YwZmIzNDlkNGM4Yjc0YjA0OWE5MGIwNDFjYmVlNzJjZDMzOWZjMDc1NDdlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkYTRlNDFkYzI2ZGE2ODllYTQ1MGI5ZThmZDRhZjkzOGZiODZhYzcxNDQ5ZDJmM2EzMWQyODVkOWQwNzQ0MGFmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4MzBjMzY2MjU3YjQ1NmE2NjIwMDg0MjkxOWFmYTAzOWEwNDQ3YzI3MmZhMWQwNzk1ODMyYmE4NzkyMjFmYWIxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwZDk2OTViZmU3ZjVmZjU0NGNiYWYwOWY0ZDllYTQ2YTQzZmUyMTZhOTIwYzc4OTViYTYwODg3ODg2OThmNzY3In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_aeb9224ef9f94a649b2a25f94ea386bc",
+      "statement": "Kani proof harnesses are embedded directly in production source modules under #[cfg(kani)] modules named kani_proofs or verification, using kani::any() for symbolic inputs, kani::assume() for domain constraints, and kani::cover! for branch coverage tracking.",
+      "evidence": [
+        {
+          "resource": "repo://src/allocator.rs#L227-L392",
+          "version": "repo-lines-v1:sha256:9fa10100c0897bce38e488124960949537cab5b8515b6271f4a34a25963656f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/bitmap.rs#L576-L725",
+          "version": "repo-lines-v1:sha256:6612d0f7f116d4076804d9f0fd78f5f30bf268728aa1553d577981d50a8b2ce6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/directory.rs#L741-L851",
+          "version": "repo-lines-v1:sha256:d34b1d5e5ba483443d419a7884efc0a389f2a8e989cbfb0a319a68002fef17cf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiNGEzNjVhOTBlYzExZTkwNDMyNzUyY2Y5Mzc2ZWM1ZWQzNmI4MGJhNWU4ZTY4NTRmY2Y5ODk3MGQzMDQ0NDY5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/disk.rs#L10321-L10920",
+          "version": "repo-lines-v1:sha256:c528b098b4ddb92c1464a7a387309102d541b7283754112539586bfdfb16f5ff:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlYjdiYzc3YzBlYzM1OGNmMzBmMDM5ZGVmZWQ3YTM0YjM3MjdkMDBkNTM4OTA0MDI0NWE3MDA0MjFkMzQwMmQxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3ODk4YTU2YmI5Y2IzNzNhOTAxNGZkMzI2NGFjZjY4MzVlYzM1OTlmNWY0YjMyN2JkZDE0OGRlZGQ3NmZhNGQyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5NmY0OTU4Y2Q5MzYyMTA2YmM4ZjQyZTU4Yzk3NmI0N2JiNTQzNmNhMDgyMjBjY2U3OWVkYWUwOWM5MjcxYTYzIn0"
+        },
+        {
+          "resource": "repo://src/filters.rs#L1108-L1330",
+          "version": "repo-lines-v1:sha256:cdcfc7d441bd8236b652259be8274a1461e0521ba96b954f551e221b6d5fb8c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/inode.rs#L281-L570",
+          "version": "repo-lines-v1:sha256:2d9685371fa34d21239929acc60ee31ec565dc8dfa0b3d9abb11a609ef75094d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjkwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmM2I3YWNiZjMwNWY0NjNiMTBiZjEwNDljZDhiM2ZmMGJlOGY1MjcxOWIyY2I2ZDhiOGQyOTNkODQ1MjNiN2QyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyNGE3N2JkNGQwZTFmYjFkYzE2MjA4NDYxOGI0MDZiNDI1MzQyMmNiOTAxZDJjN2Q5NmRmMGMzMDdmZTRmZGI3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://src/journal.rs#L1681-L2580",
+          "version": "repo-lines-v1:sha256:cebaa174185aa50559b4d69916a95079f8a2b4a8212b5d682219d4734bbd5885:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3MGIxNjIzODUwZTA0ZGExZWFmMmE5MGFkZjBmYWI5MzlmMDY1NzhkMDUyYjAxNzA4NDVmNzMxZDBmYWQwMjMyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmOGQxNjI3NzUyMWRiZWM2MjAzY2JmNDhhNTJkMzI5MDA3YzMxM2YxNDE5YzNiMGQ4MzVhN2E3NzcxNjk2MGFlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4YjVmOGYyNTdkNWMxMzFkZjc2ZjExZDA5OTAyZDY2OGQ3MmZiMzY1ODM5NWE1YmEzMjcwM2QzNjg2YjljOGZjIn0"
+        },
+        {
+          "resource": "repo://src/superblock.rs#L591-L990",
+          "version": "repo-lines-v1:sha256:98f78aea1f010f1c4f638e07f4787a245a41c3b861a76aa15ff9ad7e22358aee:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZTQwMGM4NGVhN2Y3NDg3ZDdiN2YwZmIzNDlkNGM4Yjc0YjA0OWE5MGIwNDFjYmVlNzJjZDMzOWZjMDc1NDdlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkYTRlNDFkYzI2ZGE2ODllYTQ1MGI5ZThmZDRhZjkzOGZiODZhYzcxNDQ5ZDJmM2EzMWQyODVkOWQwNzQ0MGFmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4MzBjMzY2MjU3YjQ1NmE2NjIwMDg0MjkxOWFmYTAzOWEwNDQ3YzI3MmZhMWQwNzk1ODMyYmE4NzkyMjFmYWIxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwZDk2OTViZmU3ZjVmZjU0NGNiYWYwOWY0ZDllYTQ2YTQzZmUyMTZhOTIwYzc4OTViYTYwODg3ODg2OThmNzY3In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_9115e715f48546468fb6278a9d128626",
+      "statement": "All 131 Kani proofs can be executed in parallel with 'cargo kani --lib -j 8 --output-format=terse' and individual harnesses can be targeted with 'cargo kani --lib --harness <name> --enable-unstable' for CI integration.",
+      "evidence": [
+        {
+          "resource": "repo://docs/formal_verification/README.md#L35-L45",
+          "version": "repo-lines-v1:sha256:dfaeec162ed9be3ad24f9b19f6495d6fd8b5c31860fbddf867d0bf83673b16fc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzZTZiZjJkMjk0YmY5ZDk3ZTZjYTA4YjIyYjcxNTlhM2FjN2E2YjQ0NjMyNDA0NTI1M2E4ZjFlNTNlNTYxZTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkzMDk0NzU0YjY2YWRkNGQzNmMyNTczNGFkNjhkYWQzNTY3YzI1ZjE0ODkyNjI1ZjA5MWIxNjRlZTU0NjRjZTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3NWNhY2VjMDZkNTRlODU4M2UzMDhlZWY5NWFlZDFhM2YxZDQxNDlmOWYyMGE4MTQ3ZmFmOGMzYjU4MmExZjkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3b5021d991994a92927743e52ef05fde",
+      "statement": "The filters.rs module contains 16 Kani proofs covering delta encoding/decoding roundtrips for u16/u32/u64, byte/bit shuffle involution properties, full pipeline roundtrip fidelity, wrapping arithmetic edge cases, zero typesize panic freedom, arbitrary symbolic typesize safety, and the transpose_8x8_u64 mathematical involution property.",
+      "evidence": [
+        {
+          "resource": "repo://src/filters.rs#L1108-L1330",
+          "version": "repo-lines-v1:sha256:cdcfc7d441bd8236b652259be8274a1461e0521ba96b954f551e221b6d5fb8c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_f2c5974ae5a74f02a26521527eb4fa97",
+      "statement": "The inode.rs module contains 9 Kani proofs covering complete logical block index coverage (262,144 indices), tier boundary validation for direct/single/double/triple indirect pointers, zero-initialization guarantees, ChunkEntry bitfield roundtrip and field isolation, and state predicate mutual exclusivity.",
+      "evidence": [
+        {
+          "resource": "repo://src/inode.rs#L281-L570",
+          "version": "repo-lines-v1:sha256:2d9685371fa34d21239929acc60ee31ec565dc8dfa0b3d9abb11a609ef75094d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjkwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmM2I3YWNiZjMwNWY0NjNiMTBiZjEwNDljZDhiM2ZmMGJlOGY1MjcxOWIyY2I2ZDhiOGQyOTNkODQ1MjNiN2QyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyNGE3N2JkNGQwZTFmYjFkYzE2MjA4NDYxOGI0MDZiNDI1MzQyMmNiOTAxZDJjN2Q5NmRmMGMzMDdmZTRmZGI3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_e5f779663d884364b79f8ce5859159ef",
+      "statement": "The journal.rs module contains 15 Kani proofs covering ring buffer cursor arithmetic bounds, CRC32C single-bit flip detection, frame length overflow rejection, metadata operation idempotency (5 operation types), span coalescing, JournalState/MetadataOp encode-decode bijections, checkpoint empty-ring invariant, and append state-transition invariants.",
+      "evidence": [
+        {
+          "resource": "repo://src/journal.rs#L1681-L2580",
+          "version": "repo-lines-v1:sha256:cebaa174185aa50559b4d69916a95079f8a2b4a8212b5d682219d4734bbd5885:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3MGIxNjIzODUwZTA0ZGExZWFmMmE5MGFkZjBmYWI5MzlmMDY1NzhkMDUyYjAxNzA4NDVmNzMxZDBmYWQwMjMyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmOGQxNjI3NzUyMWRiZWM2MjAzY2JmNDhhNTJkMzI5MDA3YzMxM2YxNDE5YzNiMGQ4MzVhN2E3NzcxNjk2MGFlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4YjVmOGYyNTdkNWMxMzFkZjc2ZjExZDA5OTAyZDY2OGQ3MmZiMzY1ODM5NWE1YmEzMjcwM2QzNjg2YjljOGZjIn0"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-24T19:09:23.676Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

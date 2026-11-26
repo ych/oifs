@@ -1,6 +1,6 @@
 # Files
 
-- [Basic File/Directory Operations](basic_operations.md) - End-to-end flows for create/read/update/delete files, directory management, metadata inspection, and truncate/extend. Covers Direct (DiskManager) and Remote (IPC) paths, image creation options, read-only mounts, and JSON output mode.
+- [Basic File/Directory Operations](basic_operations.md)
 - [Compression Workflows](compression_workflows.md) - Guide for compression usage: filter analysis, mode selection (auto/always/never/stream/seekable), numerical data optimization, and performance tuning.
 - [Defragmentation Workflow](defragmentation_workflow.md) - Step-by-step guide to analyzing filesystem fragmentation, executing safe defragmentation, running in-place WAL-atomic defragmentation, and configuring the background auto-defrag coordinator while maintaining data integrity.
 - [Encrypted Filesystem Workflows](encrypted_workflows.md) - Step-by-step guide for creating, opening, and using encrypted OIFS images including password management, key derivation, context-bound AEAD, filename encryption (SIV), IPC authentication, and the key hierarchy.

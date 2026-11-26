@@ -5,11 +5,11 @@ description: "Central coordinator for OIFS storage: image open/create, superbloc
 tags: ["disk-manager", "persistence", "storage", "durability", "encryption", "compression", "superblock", "inode"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-24T19:09:23.676Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
 # DiskManager & Persistence
@@ -36,405 +36,242 @@ Internally, state is maintained by `DiskManagerInner` ([`src/disk.rs#L191-L213`]
 - **`io_engine`**: Pluggable data-block read engine supporting `Mmap`, `Pread`, and Linux `io_uring` backends.
 - **`inode_write_gen`**: Per-inode write generation counters (indexed by `inode_id & 4095`) for lock-free Stage-1 → Stage-3 staleness detection.
 - **`read_only`**: `bool` — strictly read-only mount (`F_RDLCK`, zero disk writes).
+- **`zstd_dicts`**: `Arc<ZstdDictRegistry>` — custom Zstd dictionaries registered on this mount.
+- **`auto_grow`**: `AutoGrowConfig` — policy controlling automatic image growth on block/inode exhaustion.
 
-## Architecture Overview
+## Open / Create / Mount Flows
 
-<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Parse error on line 4: ...ync_mutex[Arc<Mutex<()>>] async_ Expecting 'SQE', 'DOUBLECIRCLEEND', 'PE', '-)', 'STADIUMEND', 'SUBROUTINEEND', 'PIPE', 'CYLINDEREND', 'DIAMOND_STOP', 'TAGEND', 'TRAPEND', 'INVTRAPEND', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got 'PS' -->
-```text
-flowchart TB
-    subgraph DM[DiskManager]
-        inner[Arc<RwLock<DiskManagerInner>>]
-        sync_mutex[Arc<Mutex<()>>]
-        async_drain[Arc<AtomicBool>]
-        auto_defrag[AutoDefragController]
-    end
+`DiskManager` exposes a family of factory methods that cover all common provisioning scenarios:
 
-    subgraph Inner[DiskManagerInner]
-        file[(File Handle)]
-        backing[ImageBacking]
-        sb[SuperBlock]
-        enc_key[EncryptionKey?]
-        pwd_verifier[PasswordVerifier?]
-        free_blk_hint[u64]
-        free_ino_hint[u64]
-        inode_cache[BoundedInodeCache]
-        dir_cache[ShardedDirCache]
-        chunk_cache[ChunkReadCache]
-        blob_cache[DecodedBlobCache]
-        durability[AtomicU8]
-        pending_ranges[PendingAsyncRanges]
-        async_drain_ready[Arc<AtomicBool>]
-        io_engine[IoEngine]
-        inode_write_gen[Box<[u64;4096]>]
-        read_only[bool]
-    end
+| Method | Use Case | Journal | Encryption | StorageMode |
+|--------|----------|---------|------------|-------------|
+| `open(path, size)` | Open existing or create new | No | No | Default (Mmap) |
+| `open_with_options(path, size, pwd, journaled, mode)` | Full control | Opt-in | Opt-in | Explicit |
+| `open_journaled(path, size)` | New or existing with WAL | Yes | No | Default |
+| `create_encrypted(path, size, pwd)` | New encrypted FS | No | Yes | Default |
+| `create_encrypted_journaled(path, size, pwd)` | New encrypted + WAL | Yes | Yes | Default |
+| `open_read_only(path)` | **Read-only mount** | N/A | Optional | Default |
+| `open_read_only_with_password(path, pwd)` | Encrypted read-only | N/A | Required | Default |
+| `open_read_only_with_storage_mode(path, pwd, mode)` | Encrypted read-only + explicit I/O | N/A | Optional | Explicit |
 
-    subgraph IO[Pluggable I/O Engines]
-        mmap[Mmap]
-        pread[Pread]
-        iouring[IoUring]
-    end
+### Mount Sequence
 
-    inner --> Inner
-    Inner --> file
-    Inner --> backing
-    Inner --> sb
-    Inner --> enc_key
-    Inner --> pwd_verifier
-    Inner --> free_blk_hint
-    Inner --> free_ino_hint
-    Inner --> inode_cache
-    Inner --> dir_cache
-    Inner --> chunk_cache
-    Inner --> blob_cache
-    Inner --> durability
-    Inner --> pending_ranges
-    Inner --> async_drain_ready
-    Inner --> io_engine
-    Inner --> inode_write_gen
-    Inner --> read_only
+1. **File Lock Acquisition**  
+   - Read-write: `F_SETLK` with `F_WRLCK` (exclusive) — fails if another process holds any lock.  
+   - Read-only: `F_SETLK` with `F_RDLCK` (shared) — allows multiple concurrent readers; blocks writers.
 
-    io_engine --> mmap
-    io_engine --> pread
-    io_engine --> iouring
+2. **Superblock Read & Validation**  
+   Reads block 0, deserializes `SuperBlock`, checks magic (`0x4F494653`), and validates geometry against image size.
 
-    sync_mutex -.->|serializes msync| Inner
-    async_drain -.->|signals drain| pending_ranges
+3. **Encryption Key Derivation**  
+   If `superblock.encrypted`:
+   - Derives `EncryptionKey` from password + `encryption_salt` (Argon2id).
+   - Computes `password_verifier` (keyed BLAKE2b) for session reuse.
+
+4. **Storage Engine Initialization**  
+   - `StorageMode::Mmap`: `mmap` with `PROT_READ|PROT_WRITE` (or `PROT_READ` for read-only).  
+   - `StorageMode::FileIo`: `Pread`/`IoUring` with optional user-space page cache.  
+   - Loads in-memory bitmap mirrors and journal region for `FileIo`.
+
+5. **Journal Recovery (journaled images, non-read-only)**  
+   - Snapshots the WAL ring, decodes & validates frames (CRC32C).  
+   - Redo-replays every `MetadataOp` in-place against the image.  
+   - Flushes replayed metadata, then resets ring header to `cleanly_unmounted = true`.
+
+6. **Clean-shutdown Marker (non-journaled or read-only)**  
+   Writes `cleanly_unmounted = true` into the journal header (journaled images) so next mount skips recovery scan.
+
+7. **Root Inode Initialization (new images)**  
+   Allocates inode 0 + one data block, writes root directory inode, flushes.
+
+The resulting `DiskManager` is `Clone` + `Send + Sync`; all public methods acquire the inner `RwLock` as needed.
+
+## Read-Only Mount Enforcement
+
+`open_read_only*` variants enforce a strictly read-only mount at every layer:
+
+1. **OS File Descriptor**: Opened `O_RDONLY` — succeeds on `0444` image files.
+2. **Advisory Lock**: `fcntl(F_SETLK, F_RDLCK)` — multiple readers share the lock; any writer requesting `F_WRLCK` blocks.
+3. **Memory Protection**: Under `StorageMode::Mmap`, maps `PROT_READ` (`MmapReadOnly` backing). No `PROT_WRITE` pages exist.
+4. **Write Path Guards**: Every mutating public method begins with `if guard.read_only { return Err(ReadOnly); }`.
+5. **Journal State Check**: On journaled images, verifies `0` unrecovered transactions remain (`is_journal_clean_read_only`). A dirty journal forces the caller to open read-write first.
+6. **Drop Behavior**: `DiskManagerInner::drop` performs **zero** flushes when `read_only == true` (no `msync`, no bitmap writes).
+
+```rust
+// Enforced at the API boundary
+pub fn write_inode(&self, inode_id: u64, inode: &Inode) -> Result<(), DiskManagerError> {
+    let mut guard = self.inner.write().unwrap();
+    if guard.read_only { return Err(DiskManagerError::ReadOnly); }
+    // ...
+}
 ```
-
-## Lifecycle, Image Locking, and Initialization
-
-`DiskManager` instances are constructed via factory methods that all delegate to the unified `init_or_open_with_key` routine ([`src/disk.rs#L1475-L1550`](../../src/disk.rs#L1475-L1550)):
-
-```mermaid
-flowchart LR
-    subgraph Factory[Factory Methods]
-        new[new/create]
-        open[open]
-        open_ro[open_read_only*]
-        open_ro_pwd[open_read_only_with_password]
-        open_ro_sm[open_read_only_with_storage_mode]
-    end
-    subgraph Core[init_or_open_with_key]
-        lock[F_SETLK / F_RDLCK]
-        mmap[Mmap or FileIo]
-        sb[SuperBlock]
-        enc[Encryption Key]
-        jrnl[Journal Recovery]
-        init[Inner State]
-    end
-    Factory --> Core
-    Core --> lock
-    lock --> mmap
-    mmap --> sb
-    sb --> enc
-    enc --> jrnl
-    jrnl --> init
-```
-
-### Read-Write Mount (`new`, `open`, `open_with_password`)
-
-1. Open the image file with `O_RDWR|O_CREAT` (no `O_TRUNC` before locking).
-2. Acquire an **exclusive non-blocking advisory lock** (`fcntl(F_SETLK, F_WRLCK)` on the whole file). This prevents concurrent read-write mounts and read-only mounts.
-3. If the file is new/empty/truncated, create a fresh `SuperBlock` (journaled or legacy layout), generate encryption salt/key if requested, serialize and write block 0.
-4. If the file exists, read and validate the superblock (magic, bounds, geometry).
-5. Load bitmap mirrors and journal mirrors for `FileIo` mode.
-6. **Mount-time journal recovery**: On journaled images, replay all durable-but-unapplied transactions from the WAL ring **before** the manager is published. This ensures no caller ever observes a filesystem mid-replay.
-7. If newly created, allocate root inode (0) and root data block; write root inode; flush.
-8. If existing, mark journal clean (write a clean-shutdown marker) for fast future mounts.
-
-### Read-Only Mount (`open_read_only*`)
-
-1. Open the image file with `O_RDONLY` (succeeds on `0444` files).
-2. Acquire a **shared non-blocking advisory lock** (`fcntl(F_SETLK, F_RDLCK)`). Multiple read-only processes can coexist; a read-write mount (`F_WRLCK`) is rejected.
-3. Map the image `PROT_READ` (`MmapReadOnly` backing) — full zero-copy read support.
-4. Read and validate superblock; derive encryption key if encrypted.
-5. **Journal cleanliness check**: Verify with **zero disk writes** that the WAL ring contains `0` unrecovered transactions. If `pending_txs > 0`, reject the mount and instruct the user to open read-write first to recover.
-6. Initialize inner state with `read_only = true`; `Drop` performs **no flushes**.
-
-### Locking Guarantees
-
-| Mount Type | File Mode | Advisory Lock | Allows Concurrent | Blocks |
-|------------|-----------|---------------|-------------------|--------|
-| Read-Write | `O_RDWR`  | `F_WRLCK` (exclusive) | — | All other mounts |
-| Read-Only  | `O_RDONLY`| `F_RDLCK` (shared)    | Other read-only   | Read-write |
-
-The lock is held for the lifetime of the `DiskManager` and released on `Drop`.
 
 ## Durability Modes
 
-`DurabilityMode` ([`src/disk.rs#L210-L232`](../../src/disk.rs#L210-L232)) controls when and how `msync` is called on the backing memory map. Shared memory mappings (`MAP_SHARED`) write directly to the OS page cache, ensuring modifications survive application process crashes (e.g. `SIGKILL`). Policies balance power-loss resilience against write throughput.
+[`DurabilityMode`](../../src/disk.rs#L145-L182) controls when and how modified pages reach stable storage. Shared `MAP_SHARED` mappings already survive process crashes (SIGKILL); these modes balance power-loss resilience against throughput.
 
-<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Parse error on line 13: ...ck] R1[msync(MS_ASYNC) on modifi Expecting 'SQE', 'DOUBLECIRCLEEND', 'PE', '-)', 'STADIUMEND', 'SUBROUTINEEND', 'PIPE', 'CYLINDEREND', 'DIAMOND_STOP', 'TAGEND', 'TRAPEND', 'INVTRAPEND', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got 'PS' -->
+| Mode | Behavior | Sync Barrier | Throughput (bulk writes) |
+|------|----------|--------------|--------------------------|
+| **Lazy** (default) | No per-mutation `msync`; relies on OS writeback, explicit `flush()`, or `Drop` | None per-op | **Baseline ×45** |
+| **RangeAsync** | Accumulates mutated byte ranges; coalesces & issues `msync(MS_ASYNC)` in batches (64 ops / 4 MiB) outside write lock | Async, batched | ~Lazy |
+| **Strict** | `msync(MS_SYNC)` on **every** mutation over coalesced ranges (256 KiB gap bridge) | Sync per-op | Baseline |
+| **LegacyWholeMmapAsync** | `msync(MS_ASYNC)` on entire mapping after every mutation | Async, whole map | Slowest |
+
+### Implementation Details
+
+- **Range Coalescing**: `coalesce_ranges_with_gap(ranges, mmap_len, max_gap)` expands to page/block boundaries, sorts, merges, and bridges gaps ≤ `max_gap` (1 MiB for RangeAsync, 256 KiB for Strict).
+- **Journal-Before-Metadata Ordering**: `sync_mutation_ranges` always flushes the WAL region **before** metadata ranges so a power loss never leaves metadata without its WAL record.
+- **PendingAsyncRanges Drain**: Under `RangeAsync`, mutations push ranges into a `Mutex<PendingAsyncRanges>`; when `pending_ops ≥ 64` or `approx_bytes ≥ 4 MiB`, an atomic flag (`async_drain_ready`) triggers an async drain (under `sync_mutex`, no write lock held).
+
+```rust
+pub fn set_durability_mode(&self, mode: DurabilityMode) {
+    let prev = { let g = self.inner.read().unwrap(); let p = g.durability_mode(); g.set_durability_mode(mode); p };
+    if prev == DurabilityMode::RangeAsync && mode != DurabilityMode::RangeAsync {
+        self.drain_pending_async_ranges(); // flush residual batch
+    }
+}
+```
+
+## Write Path: Three-Stage Pipeline
+
+`write_data_with_filters` (the core write entrypoint) uses a lock-segmented pipeline that minimizes exclusive-lock hold time:
+
+<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Parse error on line 21: ...mit via journal<br/>(single WAL tx) or<b Expecting 'SQE', 'DOUBLECIRCLEEND', 'PE', '-)', 'STADIUMEND', 'SUBROUTINEEND', 'PIPE', 'CYLINDEREND', 'DIAMOND_STOP', 'TAGEND', 'TRAPEND', 'INVTRAPEND', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got 'PS' -->
 ```text
-flowchart TD
-    subgraph Modes[DurabilityMode enum]
-        Lazy[Lazy = 0<br/>default]
-        RangeAsync[RangeAsync = 1]
-        Strict[Strict = 2]
-        Legacy[LegacyWholeMmapAsync = 3]
+flowchart TB
+    subgraph S1["Stage 1: Shared Read Lock (inner.read())"]
+        A1[Read inode & detect<br/>Seekable 64K fast path] --> B1{Transformed payload?}
+        B1 -->|No| C1[Capture initial_gen,<br/>size, flags, blocks]
+        B1 -->|Yes| D1[Read & decode full<br/>file payload]
+        C1 --> E1[Compute AAD for inode_id]
+        D1 --> E1
+        E1 --> F1[Release read lock]
     end
 
-    subgraph Behavior[Flush Behavior]
-        L1[No per-mutation msync]
-        L2[Survives process crash]
-        L3[Power-loss: explicit flush/Drop/OS writeback]
-        R1[msync(MS_ASYNC) on modified byte ranges]
-        R2[Batched outside write lock]
-        R3[Coalesced with 1 MB gap bridging]
-        S1[msync(MS_SYNC) on modified byte ranges]
-        S2[Synchronous; data on physical media before return]
-        S3[Coalesced with 256 KB gap bridging]
-        W1[msync(MS_ASYNC) on ENTIRE mmap]
-        W2[Legacy whole-mapping flush]
+    subgraph S2["Stage 2: Zero Locks (CPU-bound)"]
+        F1 --> G2[plan_write_prepared:<br/>filter → compress → encrypt]
+        G2 --> H2[Produce WritePlan:<br/>FullOverwrite /<br/>CompressedAppend /<br/>Recompress / Raw]
     end
 
-    Lazy --> L1
-    Lazy --> L2
-    Lazy --> L3
-    RangeAsync --> R1
-    RangeAsync --> R2
-    RangeAsync --> R3
-    Strict --> S1
-    Strict --> S2
-    Strict --> S3
-    Legacy --> W1
-    Legacy --> W2
+    subgraph S3["Stage 3: Exclusive Write Lock (inner.write())"]
+        H2 --> I3[Re-read inode & verify<br/>inode_gen == initial_gen]
+        I3 --> J3{Stale?}
+        J3 -->|Yes| K3[Re-plan under lock]
+        J3 -->|No| L3[Use prepared plan]
+        K3 --> M3[Commit via journal<br/>(single WAL tx) or<br/>legacy in-place]
+        L3 --> M3
+        M3 --> N3[sync_mutation_ranges<br/>per durability mode]
+        N3 --> O3[Release write lock]
+    end
 ```
 
-### Detailed Semantics
+### Stage 1 — Inspection & Snapshot (Shared Lock)
 
-| Mode | Value | Per-Mutation Flush | Syscall | Scope | Ordering Guarantees |
-|------|-------|-------------------|---------|-------|---------------------|
-| **Lazy** | 0 (default) | None | — | — | Process-crash safe (page cache). Power-loss safe only on explicit `flush()`, `Drop`, or kernel writeback. Up to ~45× faster bulk write throughput. |
-| **RangeAsync** | 1 | Async | `msync(MS_ASYNC)` | Modified byte ranges only, coalesced, 1 MB gap bridging | Accumulated in `pending_async_ranges`, drained in batches (64 ops / 4 MiB / 256 ranges) **outside** the exclusive write lock via background thread or inline fallback. Journal region flushed first to preserve WAL-before-metadata ordering. |
-| **Strict** | 2 | Sync | `msync(MS_SYNC)` | Modified byte ranges only, coalesced, 256 KB gap bridging | Data reaches physical storage before the mutating function returns. Under **Group Commit** (`DeferStrictSyncGuard`), per-op sync barriers are deferred; the batch drainer issues one flush per involved `DiskManager` after applying all ops in memory. |
-| **LegacyWholeMmapAsync** | 3 | Async | `msync(MS_ASYNC)` | Entire virtual memory map | Legacy behavior; kept for compatibility. |
+- Acquires `inner.read()`.
+- Reads inode; detects **Seekable 64K** (`INODE_FLAG_SEEKABLE_64K`) or **encrypted partial upgrade** (random-offset write on encrypted v2+ file).
+- For transformed payloads (compressed / encrypted / filtered): reads & decodes the **entire** logical file (`read_data_internal`) to enable splicing.
+- Captures `initial_gen = inode_write_gen[inode_id & 4095]`, size, compressed_size, flags, block pointers, encryption nonce, filter metadata.
+- Computes stack-staged AAD (`file_aad_for_scheme_stack`) binding ciphertext to `(inode_id, encryption_version)`.
+- Releases read lock immediately.
 
-### RangeAsync Batching
+### Stage 2 — CPU-Bound Transformation (No Filesystem Locks)
 
-- `RANGE_ASYNC_BATCH_OPS = 64` — drain after 64 mutations.
-- `RANGE_ASYNC_BATCH_BYTES = 4 MiB` — drain after 4 MiB of dirty data.
-- `RANGE_ASYNC_FALLBACK_INLINE_OPS = 256` — safety cap; forces inline drain if internal callers bypass public wrappers.
-- `async_drain_ready` (atomic flag) signals the caller to invoke `drain_pending_async_ranges()` (done automatically at the end of public mutating APIs via `maybe_drain_async_ranges()`).
-- Coalescing expands ranges to page/block boundaries (4 KiB), sorts, merges overlapping/contiguous, and bridges gaps ≤ 1 MiB.
+`plan_write_prepared` executes the full filter → compress → encrypt pipeline **outside** any lock:
 
-### Strict Mode Group Commit
+| WriteCase | Trigger | Action |
+|-----------|---------|--------|
+| **FullOverwrite** | `file_offset == 0` ∧ (`size == 0` ∨ `data.len() ≥ old_size` ∨ transformed) | Filter → compress (optional) → encrypt (optional) entire new payload |
+| **CompressedAppend** | Appending at EOF to unencrypted, uncompressed, unfiltered stream | Compress new data as independent Zstd frame; append to physical end |
+| **Recompress** | Transformed payload + non-full-overwrite (random offset, encryption, filters) | Decode existing → splice → filter → compress → encrypt from offset 0 |
+| **Raw** | Uncompressed, unencrypted, unfiltered | Borrow caller slice directly; no transformation |
 
-When multiple `Strict` mutations are submitted concurrently via `submit_group_write_op()` ([`src/disk.rs#L9323-L9440`](../../src/disk.rs#L9323-L9440)):
+Returns a `WritePlan` containing `case`, `phys_off`, `buffer` (`Cow<[u8]>`), `new_size`, `new_compressed_size`, `encryption_nonce`.
 
-1. A dedicated **group-commit worker thread** (`oifs-group-commit`) collects up to 128 operations into a batch.
-2. Enters `DeferStrictSyncGuard` (thread-local flag) which causes `is_strict_sync_deferred()` to return `true`, suppressing per-op `msync(MS_SYNC)` inside `sync_mutation_ranges()`.
-3. Executes all operations in memory (under each operation's exclusive write lock).
-4. After the batch, **deduplicates** `DiskManager` instances by `Arc` pointer and issues **one `flush()` per unique `DiskManager`**.
-5. Notifies each caller's completion callback with the result (or flush error).
-
-This amortizes the `msync(MS_SYNC)` syscall across many operations while preserving per-operation durability semantics.
-
-### Kani-Verified Invariants
-
-The durability enum has machine-checked proofs ([`src/disk.rs#L9888-L9910`](../../src/disk.rs#L9888-L9910)):
-
-- `proof_durability_mode_from_u8_soundness`: lossless round-tripping for all `u8` inputs.
-- `proof_durability_mode_is_range_based_consistency`: `is_range_based()` is `true` iff `RangeAsync` or `Strict`.
-
-## Write Path: `write_data_with_filters`
-
-The write path uses a **three-stage design** to minimize exclusive lock hold time ([`src/disk.rs#L5879-L6107`](../../src/disk.rs#L5879-L6107)):
-
-```mermaid
-sequenceDiagram
-    participant Caller
-    participant Stage1 as Stage 1: Shared Read Lock
-    participant Stage2 as Stage 2: CPU-Bound (No Locks)
-    participant Stage3 as Stage 3: Exclusive Write Lock
-    participant Journal as Journal (if enabled)
-
-    Caller->>Stage1: write_data_with_filters(inode_id, offset, data, ...)
-    Stage1->>Stage1: Read inode, detect Seekable 64K fast path
-    alt Seekable 64K / Encrypted Partial Upgrade
-        Stage1->>Stage1: prepare_chunked_64k_stage1
-        Stage1-->>Stage3: Stage1Prep::Seekable (hand off to chunked pipeline)
-    else Standard Path
-        Stage1->>Stage1: Read existing decompressed data if needed
-        Stage1-->>Stage2: Stage1Prep::Standard (inode, gen, existing, key, scheme)
-    end
-
-    Stage2->>Stage2: plan_write_prepared (filters, compression, encryption)
-    Note right of Stage2: Pure CPU work: delta/shuffle/bitshuffle,<br/>Zstd frame compress, XChaCha20 AEAD encrypt
-    Stage2-->>Stage3: WritePlan (buffer, new size, ranges, encryption nonce, case)
-
-    Stage3->>Stage3: Acquire exclusive write lock
-    Stage3->>Stage3: Verify inode_gen unchanged (staleness check)
-    alt Staleness check passes
-        Stage3->>Stage3: Use prepared plan
-    else Staleness check fails
-        Stage3->>Stage3: Re-compute plan under write lock (plan_write)
-    end
-
-    alt Journaled
-        Stage3->>Journal: Stage via AllocSim, commit WAL tx, apply ops
-    else Legacy
-        Stage3->>Stage3: In-place block allocation + write + inode update
-    end
-
-    Stage3->>Stage3: sync_mutation_ranges per durability mode
-    Stage3-->>Caller: Result
-```
-
-### Stage 1 — Shared Read Lock (`inner.read()`)
-
-- Reads the inode and determines the compression/encryption path.
-- **Seekable 64K fast path**: If `INODE_FLAG_SEEKABLE_64K` is set or `CompressionMode::Seekable` is requested, or if a non-zero-offset write on an encrypted Format-v2+ file without filters triggers **encrypted partial upgrade** (transparent upgrade to 64 KiB context-bound AEAD chunks), the method delegates to `finish_chunked_64k_pipeline` and returns early.
-- Otherwise, captures `initial_inode`, `initial_gen` (from `inode_write_gen`), existing decompressed data (if transformed payload requires read-modify-recompress), encryption key, and encryption scheme. The shared lock is **dropped immediately** after this snapshot.
-
-### Stage 2 — CPU-Bound Processing (Zero Filesystem Locks)
-
-- `plan_write_prepared` executes the full filter→compress→encrypt pipeline on the caller's thread:
-  - **Filters**: Delta, Shuffle, Bitshuffle (typesize-aware).
-  - **Compression**: Zstd frame (pooled `CCtx` to avoid per-call allocation). Modes: `Always`, `Never`, `Auto` (≥ 8 KiB), `Stream` (explicit level), `Seekable` (64 KiB independent chunks).
-  - **Encryption**: XChaCha20-Poly1305 AEAD in-place (nonce generated, AAD bound to `inode_id` and encryption scheme version).
-- Produces a `WritePlan` enum with four cases:
-  - **FullOverwrite**: Offset 0 rewrite with full filter-compression-encryption pipeline.
-  - **CompressedAppend**: Fast Zstd frame append at EOF for eligible compressed files (unencrypted, no filters, appending at EOF).
-  - **Recompress**: Read-modify-recompress for compressed files when fast path unavailable.
-  - **Raw**: Direct block writes for uncompressed files.
-
-### Stage 3 — Exclusive Lock Acquisition & Commit
+### Stage 3 — Commit (Exclusive Lock)
 
 - Acquires `inner.write()`.
-- Verifies inode still allocated and `inode_gen(inode_id) == initial_gen` (lock-free staleness detection).
-- If generation matches, uses the prepared plan; otherwise re-computes under the write lock via `plan_write`.
-- **Journaled images**: Stages through `AllocSim`, commits a single CRC32C WAL transaction (`commit_journal_tx` + `apply_journal_ops`), updates hints.
-- **Legacy images**: In-place block allocation, payload write, inode update.
-- Calls `sync_mutation_ranges` per durability mode; drains `RangeAsync` batch via `maybe_drain_async_ranges`.
+- Re-reads inode; verifies `inode_gen == initial_gen` **and** all captured fields match. Mismatch → re-plan under lock.
+- **Journaled images**: Stage payload + metadata ops into `AllocSim`, `commit_journal_tx` (WAL frame + `msync` per durability), `apply_journal_ops`, checkpoint if ring ≥ 50% full (`Strict` only).
+- **Legacy images**: In-place bitmap updates, block writes, inode write, `sync_mutation_ranges`.
+- Updates `inode_write_gen`, invalidates payload caches, bumps `free_block_hint`/`free_inode_hint`.
 
-### Atomic Rename
+## Atomic Rename Implementation
 
-`DiskManager::rename` ([`src/disk.rs#L7532-L7930`](../../src/disk.rs#L7532-L7930)) provides POSIX atomic rename with crash safety:
+[`DiskManager::rename`](../../src/disk.rs#L7948-L7963) provides POSIX `renameat2` semantics with crash safety via the metadata WAL.
 
-- **Metadata-only**: Never reads, decrypts, re-compresses, or copies file payload blocks. On encrypted images, only the directory entry's SIV-encrypted filename is recomputed for the new parent (payload AEAD is bound to `inode_id`).
-- **POSIX overwrite semantics**: Atomic replacement of regular files (target blocks/inode freed), empty directories (removed), mismatch errors (`Is a directory` / `Not a directory`), cycle prevention (moving a directory into itself or descendants rejected).
-- **Crash safety**: On journaled images, the entire rename (source unlink, optional target overwrite + block/inode release, destination link, parent inode updates) is committed in a **single atomic CRC32C WAL transaction**.
-- Implementation stages post-images of modified directory blocks in a `BTreeMap`, builds journal ops for block writes, inode updates, and bitmap frees, then commits and applies atomically.
+### Semantics
 
-## Asynchronous I/O: `OifsAsyncTask` Inline Fast-Path
+- **Metadata-only**: Never touches file payload blocks. On encrypted images, only recomputes the directory entry's SIV-encrypted filename (payload AEAD is bound to `inode_id`).
+- **POSIX Overwrite**:
+  - File → File: atomic replace, old inode+blocks freed.
+  - Dir → Dir: allowed only if target directory is empty.
+  - File ↔ Dir mismatch: `ENOTDIR` / `EISDIR`.
+  - Move into own subtree: `EINVAL`.
+- **No-op**: `rename(x, y)` where `x == y` succeeds silently.
 
-`OifsAsyncTask<T>` ([`src/disk.rs#L9049-L9210`](../../src/disk.rs#L9049-L9210)) is a lightweight future that implements `std::future::Future` for zero-dependency `.await` in any Rust async runtime, while also supporting synchronous polling (`is_ready`, `try_take`) and blocking wait (`wait`).
+### Two-Phase Commit via Journal
 
-### Inline Fast-Path (~50 ns)
+1. **Stage Mutations In-Memory** (under `inner.write()`):
+   - Loads source & destination directory blocks into a `BTreeMap<u64, Vec<u8>>` (composes multiple edits to the same block).
+   - Removes old entry from source block.
+   - Removes existing target entry (if overwriting).
+   - Inserts new entry (with encrypted filename for `new_parent`) into destination block; grows directory if needed.
+   - Prepares parent inode post-images (updated `size`, `modified_at`).
+   - If overwriting: collects target inode's blocks for bitmap free ops.
 
-Hot cache-hit and `Mmap` reads complete **without spawning or waking background threads**:
+2. **Single WAL Transaction** (journaled images):
+   - `SetInodeBitmap(target_inode, false)` + `SetDataBitmap(block, false)` for all freed blocks.
+   - `WriteBlockSlice` for every modified directory block.
+   - `WriteInode` for source parent, dest parent (and new inode if created).
+   - `commit_journal_tx` → `apply_journal_ops` → checkpoint check.
 
-<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Parse error on line 3: ...Guard[inner.try_read()?] Guard -> C Expecting 'SQE', 'DOUBLECIRCLEEND', 'PE', '-)', 'STADIUMEND', 'SUBROUTINEEND', 'PIPE', 'CYLINDEREND', 'DIAMOND_STOP', 'TAGEND', 'TRAPEND', 'INVTRAPEND', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got 'PS' -->
-```text
-flowchart TD
-    Caller[Caller] --> TryRead[try_read_at_inline_into / try_read_at_inline_vec]
-    TryRead --> Guard[inner.try_read()?]
-    Guard --> CacheHit{Cache Hit?}
-    CacheHit -->|Mmap Raw| MmapCopy[memcpy from mmap slice]
-    CacheHit -->|FileIo DataPageCache| PageCacheCopy[copy from page cache]
-    CacheHit -->|ChunkReadCache| ChunkCopy[decompressed chunk slice]
-    CacheHit -->|DecodedBlobCache| BlobCopy[decoded payload slice]
-    CacheHit -->|Miss| None[Return None]
-    MmapCopy --> Ready[OifsAsyncTask::ready(Ok(n))]
-    PageCacheCopy --> Ready
-    ChunkCopy --> Ready
-    BlobCopy --> Ready
-    None --> Spawn[OifsAsyncTask::spawn(background read)]
-```
-
-- `try_read_at_inline_into` probes caches under a non-blocking `try_read()` guard:
-  1. **Seekable 64K**: Single-chunk `ChunkReadCache` hit.
-  2. **Compressed/Encrypted/Filtered**: `DecodedBlobCache` hit.
-  3. **Raw uncompressed/unencrypted**: `Mmap` direct slice or `FileIo` `DataPageCache` hit via `try_read_data_cached_only`.
-- On hit, returns `Some(Ok(bytes))` immediately; caller wraps in `OifsAsyncTask::ready`.
-- On miss, returns `None`; caller falls back to `OifsAsyncTask::spawn` which submits to a persistent async read/compute thread pool (2–8 workers, `oifs-async-N`).
-
-### Background Pool
-
-- `submit_async_job` enqueues work to a global `AsyncPoolQueue` with a condition variable.
-- Workers are spawned once on first use; pool size = `available_parallelism().clamp(2, 8)`.
-- `OifsAsyncTask::wait()` blocks synchronously; `poll()` enables async `.await`.
-
-## Journaling and Recovery
-
-The metadata WAL (Write-Ahead Logging) subsystem ([`src/journal.rs`](../../src/journal.rs)) provides crash-safe metadata mutations:
-
-- **Geometry**: Journaled images reserve blocks 3–35 for journal (1 header + 32 ring blocks = 132 KiB). Inode table starts at block 36 (vs. block 3 for non-journaled).
-- **Idempotent redo**: Every `MetadataOp` is a post-image write or absolute bit set (never incremental). Replaying any number of times yields the same state.
-- **Torn-write detection**: Each frame carries CRC32C (Castagnoli) over header+payload + trailing commit marker (`0xDEAD_BEEF`). Partially written frames fail verification and are discarded.
-- **Mount-time recovery**: `recover_journal` replays all durable-but-unapplied transactions **before** the `DiskManager` is published. Zero callers observe mid-replay state.
-- **Clean-shutdown marker**: On clean unmount, a marker is written so next mount can distinguish clean vs. crashed without a ring scan.
-- **Read-only mount verification**: `is_journal_clean_read_only` checks `pending_txs == 0` with zero disk writes.
-
-## Flush and Drop Semantics
-
-- `DiskManager::flush()`: Explicit synchronous flush of all dirty data (journal region first, then backing).
-- `Drop`:
-  - **Read-write**: Flushes journal region (if journaled) then backing.
-  - **Read-only**: **Zero disk writes** (`should_sync_on_drop` returns `(false, false)`).
-- `set_durability_mode`: Switching away from `RangeAsync` drains pending async ranges immediately.
-
-## Configuration & Operations
-
-### Durability Mode API
+3. **Cache Invalidation & Sync**:
+   - Removes overwritten inode from caches, bumps `inode_write_gen`.
+   - Updates `dir_cache` for both parents (plain + stored name indices).
+   - `sync_mutation_ranges` over inode bitmap, data bitmap, inode slots, modified directory blocks.
 
 ```rust
-dm.durability_mode()            // Get current mode
-dm.set_durability_mode(Strict)  // Set mode (drains RangeAsync if leaving it)
-dm.with_durability_mode(Strict) // Builder pattern
+// Journaled path: single atomic transaction
+if guard.superblock.has_journal_layout() {
+    // Stage all ops...
+    Self::commit_journal_tx(guard, &ops)?;
+    Self::apply_journal_ops(guard, &ops)?;
+    // Sync per durability mode
+    guard.sync_mutation_ranges(&ranges)?;
+    Self::maybe_checkpoint(guard)?;
+}
 ```
 
-### Read-Only Detection
+## Read Path: `read_data_internal`
 
-```rust
-dm.is_read_only()  // bool
-```
+[`read_data_internal`](../../src/disk.rs#L4839-L5079) materializes a file's logical content from on-disk payload:
 
-### Storage Mode
+1. **Seekable 64K Fast Path**: Delegates to `read_chunked_64k_internal` (parallel chunk reads, per-chunk AEAD).
+2. **Physical Size Resolution**: `physical_size = compressed_size > 0 ? compressed_size : size`.
+3. **Block Walk**: `walk_payload_blocks` traverses the inode's block pointer hierarchy in logical order:
+   - **Direct** (0..9): `inode.blocks[i]`
+   - **Single Indirect** (10..521): Reads `inode.blocks[10]` pointer block; batch-resolves 512 `u64` entries.
+   - **Double Indirect** (522..262665): Reads `inode.blocks[11]` DIB → per-SIB batch resolution.
+   - **Triple Indirect** (262666..134480393): Reads `inode.triple_indirect` TIB → DIB → SIB → leaf.
+   - Skips zero pointers and pointers outside `[data_start, block_count)` (sparse holes + safety).
+4. **Zero-Copy Read**:
+   - `Mmap` + `IoBackend::Mmap`: Coalesces physically contiguous runs, `memcpy` from mapping.
+   - `Pread`/`IoUring`: Builds `ExtentList`, submits to `IoEngine::read_backing`.
+5. **Reverse Pipeline** (in exact order):
+   - **Decrypt**: XChaCha20-Poly1305 (if `inode.encrypted`) with stack-staged AAD.
+   - **Decompress**: Zstd streaming (concatenated frames, dictionary support) with 256 MiB hard cap.
+   - **Unapply Filters**: Delta / Shuffle / Bitshuffle / Typesize (if `filter_typesize > 0` etc.).
 
-```rust
-dm.storage_mode()              // StorageMode::Mmap or FileIo
-dm.set_file_io_cache_bytes(n)  // User-space page cache budget (FileIo only)
-dm.file_io_cache_bytes()       // Configured capacity
-dm.file_io_cache_used_bytes()  // Current usage
-```
+## Persistence Guarantees Summary
 
-## Invariants & Failure Modes
+| Operation | Journaled (`Strict`) | Journaled (`RangeAsync`/`Lazy`) | Legacy |
+|-----------|----------------------|----------------------------------|--------|
+| `create_file` / `mkdir` | 1 sync (WAL + metadata) | Async batch | In-place + `msync` per mode |
+| `write_data` (full overwrite) | 1 sync (WAL + payload + metadata) | Async batch | In-place + `msync` per mode |
+| `rename` | 1 sync (single WAL tx) | Async batch | In-place + `msync` per mode |
+| `truncate` (compressed/encrypted) | 1 sync | Async batch | In-place + `msync` per mode |
+| `flush()` | Full `msync` (WAL → metadata → data) | Drains `RangeAsync` batch | Full `msync` |
+| Clean `Drop` | WAL header + full backing `flush()` | Same | Full backing `flush()` |
+| Crash mid-transaction | Mount-time Redo replay (idempotent) | Mount-time Redo replay | Potential corruption (no WAL) |
 
-| Invariant | Enforcement |
-|-----------|-------------|
-| Exclusive access per image | POSIX advisory lock (`F_SETLK`/`F_RDLCK`) held for `DiskManager` lifetime |
-| No mutation on read-only | `read_only` flag checked at start of every mutating public API; returns `DiskManagerError::ReadOnly` |
-| Journal replay before publish | `recover_journal` called in `init_or_open_with_key` before returning `DiskManager` |
-| Read-only rejects dirty journal | `validate_read_only_journal_state` rejects `pending_txs > 0` |
-| WAL-before-metadata ordering | `flush_async_batch` flushes journal region first; Group Commit deduplicates Strict flushes |
-| Inode generation staleness detection | `inode_write_gen` per-slot counter; Stage 1 captures `initial_gen`, Stage 3 verifies before commit |
-| Crash-safe format migration | `migration_cursor` records progress; readers decode per-slot version; `checkpoint_journal` precedes rewrite |
-| Atomic rename on journaled images | Single WAL transaction commits source unlink, target overwrite, dest link, parent updates |
-
-## Extension Points
-
-- **Pluggable I/O backends**: `IoEngine` with `Mmap`, `Pread`, `IoUring` (selected via `OIFS_IO_BACKEND` env var or `StorageMode`).
-- **Compression modes**: `CompressionMode` enum with `Auto`, `Always`, `Never`, `Stream`, `Seekable`.
-- **Filters**: `FilterConfig` (delta, shuffle, bitshuffle, typesize) applied pre-compression.
-- **Encryption**: XChaCha20-Poly1305 AEAD with Argon2id key derivation; scheme versioning (`ENCRYPTION_SCHEME_CONTEXT_BOUND`).
-- **Async read pool**: Global `submit_async_job` for CPU-bound decompression/decryption offload.
-- **Group commit**: `submit_group_write_op` for batched Strict-mode sync amortization.
-
-## Focused Tests
-
-- **Kani proofs** (`src/disk.rs` verification module):
-  - `proof_durability_mode_from_u8_soundness`
-  - `proof_durability_mode_is_range_based_consistency`
-  - `proof_get_block_checked_arithmetic_prevents_wrap_around`
-  - `proof_inode_byte_range_checked_bounds`
-  - `proof_write_from_start_size_invariant`
-  - `proof_read_only_mount_drop_and_open_mode_invariants`
-  - `proof_read_only_storage_access_invariants`
-- **Journal recovery tests**: Corrupt frame detection, torn write simulation, clean vs. crashed mount discrimination.
-- **Read-only mount tests**: `0444` file open, shared lock concurrency, dirty journal rejection.
-- **Durability mode tests**: `RangeAsync` batch coalescing, `Strict` group commit deduplication, `Lazy` no-flush behavior.
-- **Rename tests**: Overwrite semantics, cycle prevention, journaled atomicity, encrypted filename recomputation.
-- **Write path tests**: Seekable 64K fast path, compressed append, recompress fallback, filter-compress-encrypt pipeline.
+The **write-ahead rule** is invariant: the WAL frame describing a mutation reaches stable storage **before** the in-place metadata it describes. This holds across all durability modes because `sync_mutation_ranges` always flushes the journal region first.

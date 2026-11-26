@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-26
+
+### Fixed
+- **Reduced `DiskManager` / `FileBacking` Stack Footprint (`src/disk.rs`, `src/disk/caches.rs`, `src/storage.rs`)**:
+  - Heap-boxed the 128-byte `CachePadded` shard arrays in `ChunkReadCache`, `DecodedBlobCache`, `MetadataBlockCache`, and `DataPageCache`, and replaced `Box::new([0u64; 4096])` with direct heap allocation (`DiskManagerInner::alloc_zeroed_inode_write_gen`), shrinking `DiskManager::init_or_open_with_key`'s unoptimized debug stack frame below 64 KiB coroutine stacks (fixing debug `SIGBUS` in `shuttle_concurrency_test`) while preserving full 128-byte cache-line isolation.
+- **Inode v3 CRC32C Tampering Test Alignment (`tests/encryption_test.rs`)**:
+  - Updated `test_encrypted_image_rejects_unencrypted_inode_injection` to recompute the unkeyed Inode v3 CRC32C checksum (`[171..175)`) after raw byte injection so reads exercise the `!inode.encrypted` -> `DiskManagerError::DecryptionFailed` guard instead of stopping earlier at `InodeFormatError::ChecksumMismatch`.
+
 ## [1.6.0] - 2026-11-26
 
 ### Added

@@ -913,7 +913,7 @@ dependencies = [
 
 [[package]]
 name = "oifs"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "argon2",
  "base64ct",

@@ -209,7 +209,7 @@ pub(crate) fn file_write_all_at(file: &File, mut offset: u64, mut buf: &[u8]) ->
 type MetadataBlockShard = crate::CachePadded<RwLock<FxHashMap<u64, Arc<[u8; BLOCK_SIZE]>>>>;
 
 struct MetadataBlockCache {
-    shards: [MetadataBlockShard; Self::NUM_SHARDS],
+    shards: Box<[MetadataBlockShard]>,
 }
 
 impl MetadataBlockCache {
@@ -217,10 +217,12 @@ impl MetadataBlockCache {
     const MAX_PER_SHARD: usize = 64; // 16 * 64 * 4 KiB = 4 MiB total cap
 
     fn new() -> Self {
+        let mut shards = Vec::with_capacity(Self::NUM_SHARDS);
+        for _ in 0..Self::NUM_SHARDS {
+            shards.push(crate::CachePadded::new(RwLock::new(FxHashMap::default())));
+        }
         Self {
-            shards: std::array::from_fn(|_| {
-                crate::CachePadded::new(RwLock::new(FxHashMap::default()))
-            }),
+            shards: shards.into_boxed_slice(),
         }
     }
 
@@ -284,7 +286,7 @@ impl MetadataBlockCache {
     }
 
     fn invalidate_block_range(&self, first_blk: u64, last_blk: u64) {
-        for lock in &self.shards {
+        for lock in self.shards.iter() {
             let mut shard = lock.write().unwrap_or_else(|e| e.into_inner());
             if !shard.is_empty() {
                 shard.retain(|&k, _| k < first_blk || k > last_blk);
@@ -293,7 +295,7 @@ impl MetadataBlockCache {
     }
 
     fn clear(&self) {
-        for s in &self.shards {
+        for s in self.shards.iter() {
             s.write().unwrap_or_else(|e| e.into_inner()).clear();
         }
     }
@@ -326,7 +328,7 @@ impl DataCacheShard {
 /// staying scan-resistant (large streaming extents `> MAX_CACHED_EXTENT` bypass the cache)
 /// and strictly coherent on every write, zero, copy, and WAL replay.
 struct DataPageCache {
-    shards: [crate::CachePadded<RwLock<DataCacheShard>>; Self::NUM_SHARDS],
+    shards: Box<[crate::CachePadded<RwLock<DataCacheShard>>]>,
     /// Maximum cached blocks per shard (`0` disables the cache).
     max_per_shard: crate::CachePadded<AtomicUsize>,
     /// Total currently cached blocks across all shards; allows `O(1)` lock-free skip on writes
@@ -363,10 +365,12 @@ impl DataPageCache {
     }
 
     fn new(capacity_bytes: usize) -> Self {
+        let mut shards = Vec::with_capacity(Self::NUM_SHARDS);
+        for _ in 0..Self::NUM_SHARDS {
+            shards.push(crate::CachePadded::new(RwLock::new(DataCacheShard::new())));
+        }
         Self {
-            shards: std::array::from_fn(|_| {
-                crate::CachePadded::new(RwLock::new(DataCacheShard::new()))
-            }),
+            shards: shards.into_boxed_slice(),
             max_per_shard: crate::CachePadded::new(AtomicUsize::new(
                 Self::blocks_per_shard_for_bytes(capacity_bytes),
             )),
@@ -409,7 +413,7 @@ impl DataPageCache {
         if self.count.load(Ordering::Acquire) == 0 {
             return;
         }
-        for lock in &self.shards {
+        for lock in self.shards.iter() {
             let mut shard = lock.write().unwrap_or_else(|e| e.into_inner());
             let mut shard_removed = 0usize;
             while shard.map.len() > new_limit {
@@ -565,7 +569,7 @@ impl DataPageCache {
             }
             return;
         }
-        for lock in &self.shards {
+        for lock in self.shards.iter() {
             let mut shard = lock.write().unwrap_or_else(|e| e.into_inner());
             if shard.map.is_empty() {
                 continue;
@@ -580,7 +584,7 @@ impl DataPageCache {
     }
 
     fn clear(&self) {
-        for lock in &self.shards {
+        for lock in self.shards.iter() {
             let mut shard = lock.write().unwrap_or_else(|e| e.into_inner());
             let removed = shard.map.len();
             shard.map.clear();

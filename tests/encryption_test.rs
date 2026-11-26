@@ -330,6 +330,20 @@ fn patch_image_bytes(path: &std::path::Path, offset: u64, bytes: &[u8]) {
     f.write_all(bytes).unwrap();
 }
 
+fn recompute_inode_v3_crc(path: &std::path::Path, slot_offset: u64) {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = fs::OpenOptions::new().read(true).open(path).unwrap();
+    f.seek(SeekFrom::Start(slot_offset)).unwrap();
+    let mut prefix = [0u8; oifs::inode_format::INODE_V2_CRC32C_OFFSET];
+    f.read_exact(&mut prefix).unwrap();
+    let crc = oifs::journal::crc32c(&prefix);
+    patch_image_bytes(
+        path,
+        slot_offset + oifs::inode_format::INODE_V2_CRC32C_OFFSET as u64,
+        &crc.to_le_bytes(),
+    );
+}
+
 #[test]
 fn test_encrypted_image_rejects_unencrypted_inode_injection() {
     let temp_dir = TempDir::new().unwrap();
@@ -363,7 +377,9 @@ fn test_encrypted_image_rejects_unencrypted_inode_injection() {
         dm.flush().unwrap();
     }
 
-    // Tamper raw file inode: clear `encrypted` byte (offset 129) and write plaintext into its block.
+    // Tamper raw file inode: clear `encrypted` byte (offset 129), write plaintext into its block,
+    // and recompute the unkeyed v3 CRC32C ([171..175)) as an active disk attacker could, so reads
+    // exercise the `!inode.encrypted` -> `DecryptionFailed` guard rather than failing on ChecksumMismatch.
     let raw_slot = itb * 4096 + raw_ino * 256;
     let payload = b"ATTACKER CONTROLLED";
     patch_image_bytes(&image_path, raw_blk * 4096, payload);
@@ -374,10 +390,12 @@ fn test_encrypted_image_rejects_unencrypted_inode_injection() {
     );
     patch_image_bytes(&image_path, raw_slot + 9, &0u64.to_le_bytes());
     patch_image_bytes(&image_path, raw_slot + 129, &[0]);
+    recompute_inode_v3_crc(&image_path, raw_slot);
 
-    // Tamper seekable file inode: clear `encrypted` byte (offset 129).
+    // Tamper seekable file inode: clear `encrypted` byte (offset 129) and recompute v3 CRC32C.
     let seek_slot = itb * 4096 + seek_ino * 256;
     patch_image_bytes(&image_path, seek_slot + 129, &[0]);
+    recompute_inode_v3_crc(&image_path, seek_slot);
 
     let dm = DiskManager::open_with_password(&image_path, 0, Some(password)).unwrap();
 

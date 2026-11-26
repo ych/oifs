@@ -131,7 +131,7 @@ int main(void) {
     // 1. Verify compile-time macros
     assert(OIFS_VERSION_MAJOR == 1);
     assert(OIFS_VERSION_MINOR == 6);
-    assert(OIFS_VERSION_PATCH == 0);
+    assert(OIFS_VERSION_PATCH == 1);
     assert(OIFS_VERSION_COMPAT_OK == 0);
     assert(OIFS_VERSION_COMPAT_WARN == 1);
     assert(OIFS_VERSION_COMPAT_ERR == -1);

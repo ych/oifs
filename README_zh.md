@@ -1,7 +1,7 @@
 # OIFS (O's Inode File System)
 
 [![CI](https://github.com/ych/oifs/actions/workflows/rust.yml/badge.svg)](https://github.com/ych/oifs/actions/workflows/rust.yml)
-[![Release](https://img.shields.io/badge/release-v1.6.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.6.0)
+[![Release](https://img.shields.io/badge/release-v1.6.1-blue.svg)](https://github.com/ych/oifs/releases/tag/1.6.1)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
 [![Kani Verified](https://img.shields.io/badge/Kani%20Verified-131%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
@@ -76,7 +76,7 @@ flowchart TB
 
 ```bash
 # 方式一：一行免 Clone 直接從 GitHub Release Tag 安裝
-cargo install --git https://github.com/ych/oifs --tag 1.6.0
+cargo install --git https://github.com/ych/oifs --tag 1.6.1
 
 # 方式二：直接下載預編譯執行檔（Linux x86_64/arm64 與 macOS Intel/Apple Silicon）
 #   https://github.com/ych/oifs/releases

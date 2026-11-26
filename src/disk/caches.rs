@@ -18,7 +18,7 @@ type ChunkCacheKey = (u64, usize, u64, usize);
 type ChunkCacheShard = crate::CachePadded<RwLock<VecDeque<(ChunkCacheKey, Arc<[u8]>)>>>;
 
 pub(crate) struct ChunkReadCache {
-    shards: [ChunkCacheShard; NUM_PAYLOAD_CACHE_SHARDS],
+    shards: Box<[ChunkCacheShard]>,
     entry_count: crate::CachePadded<AtomicUsize>,
 }
 
@@ -32,8 +32,12 @@ impl ChunkReadCache {
     const MAX_PER_SHARD: usize = 2;
 
     pub(crate) fn new() -> Self {
+        let mut shards = Vec::with_capacity(NUM_PAYLOAD_CACHE_SHARDS);
+        for _ in 0..NUM_PAYLOAD_CACHE_SHARDS {
+            shards.push(crate::CachePadded::new(RwLock::new(VecDeque::new())));
+        }
         Self {
-            shards: std::array::from_fn(|_| crate::CachePadded::new(RwLock::new(VecDeque::new()))),
+            shards: shards.into_boxed_slice(),
             entry_count: crate::CachePadded::new(AtomicUsize::new(0)),
         }
     }
@@ -144,7 +148,7 @@ impl ChunkReadCache {
             return;
         }
         let mut removed = 0usize;
-        for lock in &mut self.shards {
+        for lock in self.shards.iter_mut() {
             let shard = lock.get_mut().unwrap_or_else(|e| e.into_inner());
             if !shard.is_empty() {
                 let before = shard.len();
@@ -162,7 +166,7 @@ impl ChunkReadCache {
         if self.entry_count.load(Ordering::Relaxed) == 0 {
             return;
         }
-        for lock in &mut self.shards {
+        for lock in self.shards.iter_mut() {
             lock.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
         }
         self.entry_count.store(0, Ordering::Relaxed);
@@ -177,7 +181,7 @@ impl ChunkReadCache {
 type DecodedBlobShard = crate::CachePadded<RwLock<VecDeque<(DecodedBlobKey, Arc<Vec<u8>>)>>>;
 
 pub(crate) struct DecodedBlobCache {
-    shards: [DecodedBlobShard; NUM_PAYLOAD_CACHE_SHARDS],
+    shards: Box<[DecodedBlobShard]>,
     entry_count: crate::CachePadded<AtomicUsize>,
     total_bytes: crate::CachePadded<AtomicUsize>,
 }
@@ -203,8 +207,12 @@ impl DecodedBlobCache {
     pub(crate) const MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
 
     pub(crate) fn new() -> Self {
+        let mut shards = Vec::with_capacity(NUM_PAYLOAD_CACHE_SHARDS);
+        for _ in 0..NUM_PAYLOAD_CACHE_SHARDS {
+            shards.push(crate::CachePadded::new(RwLock::new(VecDeque::new())));
+        }
         Self {
-            shards: std::array::from_fn(|_| crate::CachePadded::new(RwLock::new(VecDeque::new()))),
+            shards: shards.into_boxed_slice(),
             entry_count: crate::CachePadded::new(AtomicUsize::new(0)),
             total_bytes: crate::CachePadded::new(AtomicUsize::new(0)),
         }
@@ -335,7 +343,7 @@ impl DecodedBlobCache {
         if self.entry_count.load(Ordering::Relaxed) == 0 {
             return;
         }
-        for lock in &mut self.shards {
+        for lock in self.shards.iter_mut() {
             lock.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
         }
         self.entry_count.store(0, Ordering::Relaxed);

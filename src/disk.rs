@@ -358,6 +358,15 @@ pub(crate) struct DiskManagerInner {
 }
 
 impl DiskManagerInner {
+    /// Allocates `inode_write_gen` directly on the heap so debug builds do not construct
+    /// a 32 KiB zeroed array temporary on the caller's stack.
+    fn alloc_zeroed_inode_write_gen() -> Box<[u64; 4096]> {
+        vec![0u64; 4096]
+            .into_boxed_slice()
+            .try_into()
+            .expect("4096 u64 elements")
+    }
+
     /// Returns the monotonic mutation generation for `inode_id`'s slot.
     #[inline]
     pub(crate) fn inode_gen(&self, inode_id: u64) -> u64 {
@@ -1506,7 +1515,7 @@ impl DiskManager {
             pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
             async_drain_ready: async_drain_ready.clone(),
             io_engine: IoEngine::new(requested_io_backend),
-            inode_write_gen: Box::new([0u64; 4096]),
+            inode_write_gen: DiskManagerInner::alloc_zeroed_inode_write_gen(),
             read_only: true,
             zstd_dicts: Arc::new(crate::zstd_pool::ZstdDictRegistry::new()),
             auto_grow: AutoGrowConfig::disabled(),
@@ -1931,7 +1940,7 @@ impl DiskManager {
             pending_async_ranges: Mutex::new(PendingAsyncRanges::default()),
             async_drain_ready: async_drain_ready.clone(),
             io_engine: IoEngine::new(requested_io_backend),
-            inode_write_gen: Box::new([0u64; 4096]),
+            inode_write_gen: DiskManagerInner::alloc_zeroed_inode_write_gen(),
             read_only: false,
             zstd_dicts: Arc::new(crate::zstd_pool::ZstdDictRegistry::new()),
             auto_grow: AutoGrowConfig::disabled(),

@@ -1498,6 +1498,15 @@ impl DiskManager {
 
             // Flush destination before FD-level writes so no dirty `MAP_SHARED` pages race with
             // kernel `FICLONERANGE`/`copy_file_range`/`pwrite`.
+            let est_dst_blks = {
+                let b = if src_inode.compressed_size > 0 {
+                    src_inode.compressed_size
+                } else {
+                    src_inode.size
+                };
+                b.div_ceil(BLOCK_SIZE as u64) + 8
+            };
+            dst.ensure_capacity_for(est_dst_blks, 1)?;
             dst.flush()?;
 
             let dev_pair = match (src_file_id, dst_file_id) {
@@ -2376,6 +2385,7 @@ impl DiskManager {
                 "splice_range_to destination range overflow",
             )));
         }
+        dst.ensure_capacity_for(eff_len.div_ceil(BLOCK_SIZE as u64) + 8, 0)?;
 
         let same_backing_file = Arc::ptr_eq(&self.inner, &dst.inner)
             || (src_file_id.is_some() && src_file_id == dst_file_id);

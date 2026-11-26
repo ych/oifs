@@ -459,9 +459,9 @@ struct SharedTask {
     run: unsafe fn(*const (), usize),
     ctx: *const (),
     total: usize,
-    next: AtomicUsize,
-    remaining_workers: AtomicUsize,
-    panicked: AtomicBool,
+    next: crate::CachePadded<AtomicUsize>,
+    remaining_workers: crate::CachePadded<AtomicUsize>,
+    panicked: crate::CachePadded<AtomicBool>,
 }
 
 // SAFETY: `ctx` points to a `Sync` closure on the caller's stack, and `WaitGuard`
@@ -621,9 +621,9 @@ where
         run: trampoline::<F>,
         ctx: (&f as *const F).cast::<()>(),
         total,
-        next: AtomicUsize::new(0),
-        remaining_workers: AtomicUsize::new(active_workers),
-        panicked: AtomicBool::new(false),
+        next: crate::CachePadded::new(AtomicUsize::new(0)),
+        remaining_workers: crate::CachePadded::new(AtomicUsize::new(active_workers)),
+        panicked: crate::CachePadded::new(AtomicBool::new(false)),
     };
 
     struct WaitGuard<'a> {

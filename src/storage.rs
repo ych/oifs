@@ -206,8 +206,10 @@ pub(crate) fn file_write_all_at(file: &File, mut offset: u64, mut buf: &[u8]) ->
 /// Entries are stored behind `Arc<[u8; BLOCK_SIZE]>` so `get()` releases its shard read lock
 /// before returning — making nested `with_block` calls (such as double-indirect traversal)
 /// strictly deadlock-free even when two blocks hash to the same shard.
+type MetadataBlockShard = crate::CachePadded<RwLock<FxHashMap<u64, Arc<[u8; BLOCK_SIZE]>>>>;
+
 struct MetadataBlockCache {
-    shards: [RwLock<FxHashMap<u64, Arc<[u8; BLOCK_SIZE]>>>; Self::NUM_SHARDS],
+    shards: [MetadataBlockShard; Self::NUM_SHARDS],
 }
 
 impl MetadataBlockCache {
@@ -216,7 +218,9 @@ impl MetadataBlockCache {
 
     fn new() -> Self {
         Self {
-            shards: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+            shards: std::array::from_fn(|_| {
+                crate::CachePadded::new(RwLock::new(FxHashMap::default()))
+            }),
         }
     }
 
@@ -322,12 +326,12 @@ impl DataCacheShard {
 /// staying scan-resistant (large streaming extents `> MAX_CACHED_EXTENT` bypass the cache)
 /// and strictly coherent on every write, zero, copy, and WAL replay.
 struct DataPageCache {
-    shards: [RwLock<DataCacheShard>; Self::NUM_SHARDS],
+    shards: [crate::CachePadded<RwLock<DataCacheShard>>; Self::NUM_SHARDS],
     /// Maximum cached blocks per shard (`0` disables the cache).
-    max_per_shard: AtomicUsize,
+    max_per_shard: crate::CachePadded<AtomicUsize>,
     /// Total currently cached blocks across all shards; allows `O(1)` lock-free skip on writes
     /// when the cache is empty.
-    count: AtomicUsize,
+    count: crate::CachePadded<AtomicUsize>,
 }
 
 impl DataPageCache {
@@ -360,9 +364,13 @@ impl DataPageCache {
 
     fn new(capacity_bytes: usize) -> Self {
         Self {
-            shards: std::array::from_fn(|_| RwLock::new(DataCacheShard::new())),
-            max_per_shard: AtomicUsize::new(Self::blocks_per_shard_for_bytes(capacity_bytes)),
-            count: AtomicUsize::new(0),
+            shards: std::array::from_fn(|_| {
+                crate::CachePadded::new(RwLock::new(DataCacheShard::new()))
+            }),
+            max_per_shard: crate::CachePadded::new(AtomicUsize::new(
+                Self::blocks_per_shard_for_bytes(capacity_bytes),
+            )),
+            count: crate::CachePadded::new(AtomicUsize::new(0)),
         }
     }
 
@@ -2119,6 +2127,75 @@ impl ImageBacking {
         match self {
             Self::Mmap(m) => crate::retry_eintr(|| m.flush_async()),
             Self::MmapReadOnly(_) | Self::File(_) => Ok(()),
+        }
+    }
+
+    /// Re-maps `Mmap` or updates cached byte length for `FileIo` after growing the underlying
+    /// image file to `new_len` bytes in place.
+    pub(crate) fn remap_after_grow(&mut self, file: &File, new_len: u64) -> io::Result<()> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Write) {
+            return Err(Self::read_only_error());
+        }
+        let new_usize = usize::try_from(new_len).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "image size overflows usize")
+        })?;
+        match self {
+            Self::Mmap(_) => {
+                // SAFETY: caller holds exclusive write lock and extended `file` to `new_len`.
+                let mmap = unsafe { MmapOptions::new().map_mut(file)? };
+                *self = Self::Mmap(mmap);
+                Ok(())
+            }
+            Self::MmapReadOnly(_) => Err(Self::read_only_error()),
+            Self::File(fb) => {
+                fb.len = new_usize;
+                Ok(())
+            }
+        }
+    }
+
+    /// Truncates the underlying image file to `new_len` bytes and remaps `Mmap` (or invalidates
+    /// truncated tail caches and updates `fb.len` under `FileIo`).
+    ///
+    /// On `Mmap`, drops the old mapping BEFORE `file.set_len(new_len)` so virtual memory never
+    /// retains out-of-range mapped pages during OS truncation.
+    pub(crate) fn truncate_and_remap(&mut self, file: &File, new_len: u64) -> io::Result<()> {
+        if !storage_op_permitted(self.is_read_only(), StorageOpKind::Write) {
+            return Err(Self::read_only_error());
+        }
+        let new_usize = usize::try_from(new_len).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "image size overflows usize")
+        })?;
+        match self {
+            Self::Mmap(_) => {
+                // Temporarily release the mmap only when remapping succeeds; overwrite `*self`
+                // directly after `file.set_len` if we first replace with a tiny dummy? Even better:
+                // unmap cleanly after flushing, truncate, sync, and remap.
+                let cloned = file.try_clone()?;
+                let placeholder = Box::new(FileBacking::new(cloned, new_usize));
+                *self = Self::File(placeholder);
+                file.set_len(new_len)?;
+                file.sync_data()?;
+                // SAFETY: caller holds exclusive write lock on `file` and just truncated to `new_len`.
+                let mmap = unsafe { MmapOptions::new().map_mut(file)? };
+                *self = Self::Mmap(mmap);
+                Ok(())
+            }
+            Self::MmapReadOnly(_) => Err(Self::read_only_error()),
+            Self::File(fb) => {
+                let old_blocks = (fb.len / BLOCK_SIZE) as u64;
+                let new_blocks = new_len / BLOCK_SIZE as u64;
+                if old_blocks > new_blocks {
+                    fb.block_cache
+                        .invalidate_block_range(new_blocks, old_blocks.saturating_sub(1));
+                    fb.data_cache
+                        .invalidate_block_range(new_blocks, old_blocks.saturating_sub(1));
+                }
+                fb.len = new_usize;
+                file.set_len(new_len)?;
+                file.sync_data()?;
+                Ok(())
+            }
         }
     }
 

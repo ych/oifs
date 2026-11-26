@@ -15,11 +15,11 @@ const NUM_PAYLOAD_CACHE_SHARDS: usize = 16;
 /// pay a single atomic load on invalidation and concurrent seekable readers contend only
 /// on matching `(inode_id, chunk_idx)` shards.
 type ChunkCacheKey = (u64, usize, u64, usize);
-type ChunkCacheShard = RwLock<VecDeque<(ChunkCacheKey, Arc<[u8]>)>>;
+type ChunkCacheShard = crate::CachePadded<RwLock<VecDeque<(ChunkCacheKey, Arc<[u8]>)>>>;
 
 pub(crate) struct ChunkReadCache {
     shards: [ChunkCacheShard; NUM_PAYLOAD_CACHE_SHARDS],
-    entry_count: AtomicUsize,
+    entry_count: crate::CachePadded<AtomicUsize>,
 }
 
 impl Default for ChunkReadCache {
@@ -33,8 +33,8 @@ impl ChunkReadCache {
 
     pub(crate) fn new() -> Self {
         Self {
-            shards: std::array::from_fn(|_| RwLock::new(VecDeque::new())),
-            entry_count: AtomicUsize::new(0),
+            shards: std::array::from_fn(|_| crate::CachePadded::new(RwLock::new(VecDeque::new()))),
+            entry_count: crate::CachePadded::new(AtomicUsize::new(0)),
         }
     }
 
@@ -174,12 +174,12 @@ impl ChunkReadCache {
 ///
 /// Eliminates the $O(\text{calls} \times \text{file\_size})$ full-file decode cliff while
 /// avoiding a single global mutex across concurrent readers.
-type DecodedBlobShard = RwLock<VecDeque<(DecodedBlobKey, Arc<Vec<u8>>)>>;
+type DecodedBlobShard = crate::CachePadded<RwLock<VecDeque<(DecodedBlobKey, Arc<Vec<u8>>)>>>;
 
 pub(crate) struct DecodedBlobCache {
     shards: [DecodedBlobShard; NUM_PAYLOAD_CACHE_SHARDS],
-    entry_count: AtomicUsize,
-    total_bytes: AtomicUsize,
+    entry_count: crate::CachePadded<AtomicUsize>,
+    total_bytes: crate::CachePadded<AtomicUsize>,
 }
 
 impl Default for DecodedBlobCache {
@@ -204,9 +204,9 @@ impl DecodedBlobCache {
 
     pub(crate) fn new() -> Self {
         Self {
-            shards: std::array::from_fn(|_| RwLock::new(VecDeque::new())),
-            entry_count: AtomicUsize::new(0),
-            total_bytes: AtomicUsize::new(0),
+            shards: std::array::from_fn(|_| crate::CachePadded::new(RwLock::new(VecDeque::new()))),
+            entry_count: crate::CachePadded::new(AtomicUsize::new(0)),
+            total_bytes: crate::CachePadded::new(AtomicUsize::new(0)),
         }
     }
 
@@ -376,8 +376,10 @@ pub(crate) const NUM_DIR_CACHE_SHARDS: usize = 32;
 /// 64-bit Fibonacci hashing bijection, so cold indexing (`build_dir_index`), `list_dir`
 /// promotion, or `create_file`/`delete_file` cache maintenance on one directory never
 /// stalls concurrent `lookup`, `resolve_path`, or `list_dir` operations on other directories.
+type DirCacheShard = crate::CachePadded<RwLock<FxHashMap<u64, DirIndex>>>;
+
 pub(crate) struct ShardedDirCache {
-    shards: Box<[RwLock<FxHashMap<u64, DirIndex>>]>,
+    shards: Box<[DirCacheShard]>,
     num_shards: usize,
 }
 
@@ -391,7 +393,7 @@ impl ShardedDirCache {
     pub(crate) fn new() -> Self {
         let num_shards = NUM_DIR_CACHE_SHARDS;
         let shards = (0..num_shards)
-            .map(|_| RwLock::new(FxHashMap::default()))
+            .map(|_| crate::CachePadded::new(RwLock::new(FxHashMap::default())))
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Self { shards, num_shards }
@@ -527,7 +529,7 @@ impl InodeCacheShard {
 
 /// Sharded, thread-safe bounded inode cache (32 independent `RwLock` shards).
 pub(crate) struct BoundedInodeCache {
-    shards: Box<[RwLock<InodeCacheShard>]>,
+    shards: Box<[crate::CachePadded<RwLock<InodeCacheShard>>]>,
     num_shards: usize,
 }
 
@@ -542,7 +544,7 @@ impl BoundedInodeCache {
             )
         };
         let shards = (0..num_shards)
-            .map(|_| RwLock::new(InodeCacheShard::new(shard_cap)))
+            .map(|_| crate::CachePadded::new(RwLock::new(InodeCacheShard::new(shard_cap))))
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Self { shards, num_shards }
@@ -880,5 +882,18 @@ mod range_coalesce_tests {
         let ranges = vec![(9 * BS + 100, 2 * BS)];
         let coalesced = DiskManagerInner::coalesce_ranges(&ranges, mmap_len);
         assert_eq!(coalesced, vec![(9 * BS, BS)]);
+    }
+
+    #[test]
+    fn test_cache_padded_alignment_prevents_false_sharing() {
+        assert_eq!(std::mem::align_of::<crate::CachePadded<AtomicUsize>>(), 128);
+        assert!(std::mem::size_of::<crate::CachePadded<AtomicUsize>>() >= 128);
+        assert_eq!(
+            std::mem::align_of::<ChunkCacheShard>(),
+            128,
+            "ChunkCacheShard must be 128-byte aligned to avoid false sharing across cores"
+        );
+        assert!(std::mem::size_of::<ChunkCacheShard>() >= 128);
+        assert!(std::mem::size_of::<DecodedBlobShard>() >= 128);
     }
 }

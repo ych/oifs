@@ -294,6 +294,114 @@ impl SuperBlock {
         Self::new_v3(total_blocks, true)
     }
 
+    /// Creates a new SuperBlock with the v3 layout and an optional minimum inode table span.
+    ///
+    /// Returns `Err` instead of panicking if `total_blocks` is too small to accommodate the
+    /// requested metadata regions plus at least one data block.
+    pub fn new_v3_with_min_inodes(
+        total_blocks: u64,
+        journaled: bool,
+        min_inode_table_blocks: u64,
+    ) -> Result<Self, &'static str> {
+        let journal_blocks = if journaled {
+            crate::journal::JOURNAL_RESERVED_BLOCKS
+        } else {
+            0
+        };
+        let inodes_per_block = Self::INODE_SLOTS_PER_BLOCK;
+        let max_table_blocks = Self::MAX_TRACKED_INODES / inodes_per_block; // 2048 blocks = 32,768 inodes
+        let default_cap: u64 = 1024;
+        let metadata_blocks = 1 + 1 + 1 + journal_blocks;
+
+        let default_table = if total_blocks > metadata_blocks + default_cap {
+            default_cap
+        } else {
+            (total_blocks
+                .saturating_sub(metadata_blocks)
+                .saturating_sub(1)
+                / 4)
+            .max(1)
+        };
+        let min_tbl = min_inode_table_blocks.clamp(1, max_table_blocks);
+        let inode_table_blocks = default_table.max(min_tbl).min(max_table_blocks);
+        let inode_count = inode_table_blocks * inodes_per_block;
+        let inode_bitmap_blocks = inode_count.div_ceil(Self::BITMAP_BLOCK_BITS).max(1);
+        let data_blocks = total_blocks
+            .saturating_sub(1 + inode_bitmap_blocks + 1 + journal_blocks + inode_table_blocks);
+        let data_bitmap_blocks = data_blocks.div_ceil(Self::BITMAP_BLOCK_BITS).max(1);
+
+        let inode_bitmap_block = 1;
+        let data_bitmap_block = inode_bitmap_block + inode_bitmap_blocks;
+        let inode_table_block = data_bitmap_block + data_bitmap_blocks + journal_blocks;
+        let data_block_start = inode_table_block + inode_table_blocks;
+
+        if total_blocks <= data_block_start {
+            return Err("Image too small for metadata layout and minimum inode table");
+        }
+
+        let sb = Self {
+            magic: Self::MAGIC,
+            block_size: crate::BLOCK_SIZE as u32,
+            block_count: total_blocks,
+            inode_bitmap_block,
+            data_bitmap_block,
+            inode_table_block,
+            inode_count,
+            data_block_start,
+            root_inode: 0,
+            encrypted: false,
+            encryption_salt: [0u8; 16],
+            encryption_version: 0,
+            format_version: Self::FORMAT_VERSION_V3_LAYOUT,
+            migration_cursor: 0,
+        };
+        let total_bytes = total_blocks
+            .checked_mul(crate::BLOCK_SIZE as u64)
+            .and_then(|b| usize::try_from(b).ok())
+            .ok_or("Total block count overflows platform image size")?;
+        sb.validate(total_bytes)?;
+        Ok(sb)
+    }
+
+    /// Returns the inclusive `(min_blocks, max_blocks)` `block_count` range that preserves the
+    /// current metadata region offsets (`inode_bitmap`, `data_bitmap`, `journal`, `inode_table`),
+    /// permitting O(1) in-place grow/shrink without relocating metadata or data blocks.
+    pub fn in_place_block_count_range(&self) -> (u64, u64) {
+        if self.is_v3_layout() {
+            let n = self.inode_bitmap_blocks();
+            let m = self.data_bitmap_blocks();
+            let j = if self.has_journal_layout() {
+                crate::journal::JOURNAL_RESERVED_BLOCKS
+            } else {
+                0
+            };
+            let t = self.data_block_start.saturating_sub(self.inode_table_block);
+            // Match `Self::data_bitmap_blocks()`, which derives `data_blocks` using `+ 1` for
+            // the bitmap slot placeholder (`1 + N + 1 + J + T`).
+            let base = 1u64
+                .saturating_add(n)
+                .saturating_add(1)
+                .saturating_add(j)
+                .saturating_add(t);
+            let max_blocks = base.saturating_add(m.saturating_mul(Self::BITMAP_BLOCK_BITS));
+            let min_data = self.data_block_start.saturating_add(1);
+            let min_blocks = if m <= 1 {
+                min_data
+            } else {
+                base.saturating_add((m - 1).saturating_mul(Self::BITMAP_BLOCK_BITS))
+                    .saturating_add(1)
+                    .max(min_data)
+            };
+            (min_blocks, max_blocks)
+        } else {
+            let min_blocks = self.data_block_start.saturating_add(1);
+            let max_blocks = self
+                .data_block_start
+                .saturating_add(Self::BITMAP_BLOCK_BITS);
+            (min_blocks, max_blocks)
+        }
+    }
+
     /// Returns `true` when this image reserves a metadata WAL region.
     pub fn has_journal_layout(&self) -> bool {
         if self.is_v3_layout() {
@@ -592,6 +700,49 @@ mod kani_proofs {
             "the usable inode ids must fit in the inode table"
         );
         assert!(usable <= sb.inode_table_capacity());
+    }
+
+    /// Prove that `in_place_block_count_range` yields a valid SuperBlock at every point
+    /// in `[min_blocks, max_blocks]` while keeping `data_bitmap_blocks` and `has_journal_layout` invariant.
+    #[kani::proof]
+    fn proof_in_place_resize_bounds_sound() {
+        let initial_blocks: u64 = kani::any();
+        let journaled: bool = kani::any();
+        kani::assume((100..=120_000).contains(&initial_blocks));
+        let mut sb = SuperBlock::new_v3(initial_blocks, journaled);
+        let orig_m = sb.data_bitmap_blocks();
+        let orig_n = sb.inode_bitmap_blocks();
+        let (min_b, max_b) = sb.in_place_block_count_range();
+        assert!(min_b <= sb.block_count && sb.block_count <= max_b);
+
+        let target: u64 = kani::any();
+        kani::assume(target >= min_b && target <= max_b);
+        sb.block_count = target;
+        assert_eq!(sb.data_bitmap_blocks(), orig_m);
+        assert_eq!(sb.inode_bitmap_blocks(), orig_n);
+        assert_eq!(sb.has_journal_layout(), journaled);
+        assert!(sb.block_count - sb.data_block_start <= orig_m * SuperBlock::BITMAP_BLOCK_BITS);
+        assert!(sb.validate((target as usize) * crate::BLOCK_SIZE).is_ok());
+    }
+
+    /// Prove that `new_v3_with_min_inodes` produces valid non-overlapping layouts matching requested capacity.
+    #[kani::proof]
+    fn proof_new_v3_with_min_inodes_valid() {
+        let total_blocks: u64 = kani::any();
+        let min_tbl: u64 = kani::any();
+        let journaled: bool = kani::any();
+        kani::assume((120..=200_000).contains(&total_blocks));
+        kani::assume((1..=2048).contains(&min_tbl));
+
+        if let Ok(sb) = SuperBlock::new_v3_with_min_inodes(total_blocks, journaled, min_tbl) {
+            assert_eq!(sb.has_journal_layout(), journaled);
+            assert!(sb.usable_inode_count() >= min_tbl * SuperBlock::INODE_SLOTS_PER_BLOCK);
+            assert!(sb.data_block_start < sb.block_count);
+            assert!(
+                sb.validate((total_blocks as usize) * crate::BLOCK_SIZE)
+                    .is_ok()
+            );
+        }
     }
 
     /// Prove that new SuperBlock defaults to unencrypted.
@@ -928,6 +1079,38 @@ mod tests {
                 good_enc.validate(mmap_len).is_ok(),
                 "encryption_version={good_ver} must be accepted"
             );
+        }
+    }
+
+    #[test]
+    fn test_in_place_resize_range_and_v3_min_inodes_across_bitmap_boundaries() {
+        for journaled in [false, true] {
+            let sb1 = SuperBlock::new_v3(2560, journaled);
+            assert_eq!(sb1.data_bitmap_blocks(), 1);
+            let (min1, max1) = sb1.in_place_block_count_range();
+            assert!(min1 <= 2560 && 2560 <= max1);
+            for b in [min1, max1] {
+                let mut resized = sb1;
+                resized.block_count = b;
+                assert_eq!(resized.data_bitmap_blocks(), 1);
+                assert_eq!(resized.has_journal_layout(), journaled);
+                assert!(resized.validate(b as usize * crate::BLOCK_SIZE).is_ok());
+            }
+
+            // Cross into M = 2 (e.g. 40,000 blocks) with expanded inode table (2048 blocks = 32,768 inodes)
+            let sb2 = SuperBlock::new_v3_with_min_inodes(40_000, journaled, 2048).expect("v3 m=2");
+            assert_eq!(sb2.data_bitmap_blocks(), 2);
+            assert_eq!(sb2.usable_inode_count(), 32_768);
+            assert_eq!(sb2.has_journal_layout(), journaled);
+            let (min2, max2) = sb2.in_place_block_count_range();
+            assert!(min2 <= 40_000 && 40_000 <= max2);
+            for b in [min2, max2] {
+                let mut resized = sb2;
+                resized.block_count = b;
+                assert_eq!(resized.data_bitmap_blocks(), 2);
+                assert_eq!(resized.has_journal_layout(), journaled);
+                assert!(resized.validate(b as usize * crate::BLOCK_SIZE).is_ok());
+            }
         }
     }
 }

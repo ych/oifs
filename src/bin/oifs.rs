@@ -198,6 +198,17 @@ struct Cli {
     #[arg(long = "dict", global = true, value_name = "PATH")]
     dict: Vec<PathBuf>,
 
+    /// Automatically expand image capacity on block or inode exhaustion (optional hard cap in MiB, e.g. `--auto-grow` or `--auto-grow=64`)
+    #[arg(
+        long = "auto-grow",
+        global = true,
+        value_name = "MAX_MB",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "0"
+    )]
+    auto_grow: Option<u64>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -378,6 +389,30 @@ enum Commands {
         #[command(subcommand)]
         action: DictCommands,
     },
+    /// Resize (grow or shrink) an OIFS image container
+    Resize {
+        /// New target image size in MiB
+        #[arg(long, conflicts_with = "bytes")]
+        size: Option<u64>,
+        /// New target image size in exact bytes (rounded up to 4 KiB blocks)
+        #[arg(long, conflicts_with = "size")]
+        bytes: Option<u64>,
+    },
+    /// Compact used blocks and shrink the image to reclaim unused space
+    Vacuum {
+        /// Minimum free headroom to retain in MiB
+        #[arg(long = "headroom-mb", default_value_t = 1)]
+        headroom_mb: u64,
+        /// Free headroom percentage relative to used data blocks (0..=100)
+        #[arg(long = "headroom-pct", default_value_t = 15)]
+        headroom_pct: u8,
+        /// Minimum image size floor in MiB (0 = no floor)
+        #[arg(long = "min-size-mb", default_value_t = 0)]
+        min_size_mb: u64,
+        /// Disallow atomic cross-boundary re-layout (in-place shrink only)
+        #[arg(long = "no-relayout")]
+        no_relayout: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -454,6 +489,19 @@ fn apply_cli_dicts(
     Ok(())
 }
 
+fn apply_cli_runtime_opts(
+    session: &OifsSession,
+    auto_grow: Option<&oifs::disk::AutoGrowConfig>,
+    json_mode: bool,
+) {
+    if let Some(cfg) = auto_grow
+        && let Err(e) = session.set_auto_grow(*cfg)
+        && !json_mode
+    {
+        eprintln!("⚠️  Auto-grow not enabled: {e}");
+    }
+}
+
 /// Helper function to open OifsSession with auto-detection of encrypted filesystems and SessionMode.
 ///
 /// Password precedence: `--password` flag > `OIFS_PASSWORD` env > interactive prompt
@@ -464,6 +512,7 @@ fn open_session(
     mode: &oifs::ipc::SessionMode,
     json_mode: bool,
     auto_defrag: Option<&AutoDefragConfig>,
+    auto_grow: Option<&oifs::disk::AutoGrowConfig>,
     read_only: bool,
 ) -> Result<OifsSession, Box<dyn std::error::Error>> {
     let resolve_password = || -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
@@ -559,6 +608,7 @@ fn open_session(
     {
         eprintln!("⚠️  Background auto-defragmentation not enabled: {e}");
     }
+    apply_cli_runtime_opts(&session, auto_grow, json_mode);
 
     Ok(session)
 }
@@ -593,6 +643,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let auto_defrag: Option<AutoDefragConfig> = cli.auto_defrag.map(|threshold| {
         AutoDefragConfig::new(threshold)
             .with_check_interval(std::time::Duration::from_secs(cli.defrag_interval.max(1)))
+    });
+    let auto_grow: Option<oifs::disk::AutoGrowConfig> = cli.auto_grow.map(|max_mb| {
+        oifs::disk::AutoGrowConfig::enabled()
+            .with_max_size_bytes(max_mb.saturating_mul(1024 * 1024))
     });
     // Refuse to expose the plain-TCP IPC master to other machines
     // unless the operator asks for it explicitly.
@@ -886,6 +940,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -952,6 +1007,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1005,6 +1061,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1065,6 +1122,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1094,6 +1152,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1140,6 +1199,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1199,6 +1259,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1230,6 +1291,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1326,6 +1388,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1467,6 +1530,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1552,6 +1616,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1604,6 +1669,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1652,6 +1718,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1710,6 +1777,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&dm, &cli.dict)?;
@@ -1760,6 +1828,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &oifs::ipc::SessionMode::Standalone,
                 cli.json,
                 auto_defrag.as_ref(),
+                auto_grow.as_ref(),
                 cli.read_only,
             )?;
             apply_cli_dicts(&session, &cli.dict)?;
@@ -1914,10 +1983,19 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &session_mode,
                 cli.json,
                 None,
+                None,
                 cli.read_only,
             )?;
             apply_cli_dicts(&src_session, &cli.dict)?;
-            let dst_session = open_session(to, to_password, &session_mode, cli.json, None, false)?;
+            let dst_session = open_session(
+                to,
+                to_password,
+                &session_mode,
+                cli.json,
+                None,
+                auto_grow.as_ref(),
+                false,
+            )?;
             apply_cli_dicts(&dst_session, &cli.dict)?;
 
             let split_parent_name =
@@ -2239,6 +2317,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &session_mode,
                     cli.json,
                     auto_defrag.as_ref(),
+                    auto_grow.as_ref(),
                     cli.read_only,
                 )?;
                 apply_cli_dicts(&session, &cli.dict)?;
@@ -2277,5 +2356,117 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
             }
         },
+        Commands::Resize { size, bytes } => {
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
+            }
+            if cli.read_only {
+                return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
+            let target_bytes = match (size, bytes) {
+                (Some(mb), None) => mb
+                    .checked_mul(1024 * 1024)
+                    .ok_or("Target size (--size MiB) overflows u64")?,
+                (None, Some(b)) => *b,
+                (None, None) => {
+                    return Err("Either --size <MiB> or --bytes <N> must be specified".into());
+                }
+                (Some(_), Some(_)) => {
+                    return Err("--size and --bytes cannot be specified together".into());
+                }
+            };
+            let session = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+                auto_grow.as_ref(),
+                cli.read_only,
+            )?;
+            let stats = session.resize(target_bytes)?;
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "bytes_before": stats.bytes_before,
+                        "bytes_after": stats.bytes_after,
+                        "blocks_before": stats.blocks_before,
+                        "blocks_after": stats.blocks_after,
+                        "inodes_before": stats.inodes_before,
+                        "inodes_after": stats.inodes_after,
+                        "method": format!("{:?}", stats.method),
+                    })
+                );
+            } else {
+                println!(
+                    "Resized {:?}: {} -> {} bytes ({} -> {} blocks, {} -> {} inodes, {:?})",
+                    image,
+                    stats.bytes_before,
+                    stats.bytes_after,
+                    stats.blocks_before,
+                    stats.blocks_after,
+                    stats.inodes_before,
+                    stats.inodes_after,
+                    stats.method,
+                );
+            }
+            Ok(())
+        }
+        Commands::Vacuum {
+            headroom_mb,
+            headroom_pct,
+            min_size_mb,
+            no_relayout,
+        } => {
+            if !image.exists() {
+                return Err(format!("Image {:?} does not exist.", image).into());
+            }
+            if cli.read_only {
+                return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
+            let opts = oifs::VacuumOptions::default()
+                .with_min_headroom_bytes(headroom_mb.saturating_mul(1024 * 1024))
+                .with_headroom_percent(*headroom_pct)
+                .with_min_image_bytes(min_size_mb.saturating_mul(1024 * 1024))
+                .with_allow_relayout(!*no_relayout);
+            let session = open_session(
+                image,
+                &cli.password,
+                &session_mode,
+                cli.json,
+                auto_defrag.as_ref(),
+                auto_grow.as_ref(),
+                cli.read_only,
+            )?;
+            let stats = session.vacuum(opts)?;
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "bytes_before": stats.bytes_before,
+                        "bytes_after": stats.bytes_after,
+                        "bytes_reclaimed": stats.bytes_reclaimed,
+                        "blocks_before": stats.blocks_before,
+                        "blocks_after": stats.blocks_after,
+                        "blocks_relocated": stats.blocks_relocated,
+                        "method": format!("{:?}", stats.method),
+                    })
+                );
+            } else {
+                println!(
+                    "Vacuumed {:?}: {} -> {} bytes (reclaimed {} bytes, relocated {} blocks, {:?})",
+                    image,
+                    stats.bytes_before,
+                    stats.bytes_after,
+                    stats.bytes_reclaimed,
+                    stats.blocks_relocated,
+                    stats.method,
+                );
+            }
+            Ok(())
+        }
     }
 }

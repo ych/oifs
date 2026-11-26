@@ -210,8 +210,42 @@ impl<'a> WriteBatch<'a> {
         };
 
         let mut prepared_ops = Vec::with_capacity(self.ops.len());
+        let mut est_data_blocks: u64 = 0;
+        let mut est_new_inodes: u64 = 0;
         for op in self.ops {
-            prepared_ops.push(prepare_op_stage2(op, &dicts, has_encryption)?);
+            let prep = prepare_op_stage2(op, &dicts, has_encryption)?;
+            match &prep {
+                PreparedBatchOp::CreateFileWithData { payload, .. } => {
+                    est_new_inodes += 1;
+                    let pay_blks = match payload {
+                        PreparedPayload::Standard { bytes, .. } => {
+                            (bytes.len() + 16).div_ceil(BLOCK_SIZE) as u64
+                        }
+                        PreparedPayload::Seekable { orig_data, chunks } => {
+                            if orig_data.is_empty() {
+                                0
+                            } else {
+                                (orig_data.len() + chunks.len() * 64).div_ceil(BLOCK_SIZE) as u64
+                            }
+                        }
+                    };
+                    est_data_blocks += pay_blks + pay_blks.div_ceil(512) + 2;
+                }
+                PreparedBatchOp::Mkdir { .. } => {
+                    est_new_inodes += 1;
+                    est_data_blocks += 2;
+                }
+                PreparedBatchOp::Rename { .. } => {
+                    est_data_blocks += 2;
+                }
+                PreparedBatchOp::Delete { .. } => {}
+            }
+            prepared_ops.push(prep);
+        }
+
+        if est_data_blocks > 0 || est_new_inodes > 0 {
+            self.dm
+                .ensure_capacity_for(est_data_blocks + 4, est_new_inodes)?;
         }
 
         // --- STAGE 3: Exclusive Write Lock, Atomic Pre-Validation, & Commit ---

@@ -20,10 +20,11 @@ pub mod zstd_pool;
 
 pub use auto_defrag::{AutoDefragConfig, AutoDefragStats};
 pub use disk::{
-    BatchCommitResult, BatchOp, CloneMethod, DiskManager, DiskManagerError, DurabilityMode,
-    FileReadHandle, LogicalRun, OifsAsyncTask, ReadRequest, ReadSession, ReflinkFallback,
-    SpliceOptions, SplicePartition, SpliceStats, SpliceTrimMode, TransferMethod, TransferOptions,
-    TransferStats, WriteBatch, can_splice_fast_path, canonical_file_id, classify_reflink_errno,
+    AutoGrowConfig, BatchCommitResult, BatchOp, CloneMethod, DiskManager, DiskManagerError,
+    DurabilityMode, FileReadHandle, LogicalRun, OifsAsyncTask, ReadRequest, ReadSession,
+    ReflinkFallback, ResizeMethod, ResizeStats, SpliceOptions, SplicePartition, SpliceStats,
+    SpliceTrimMode, TransferMethod, TransferOptions, TransferStats, VacuumOptions, VacuumStats,
+    WriteBatch, can_splice_fast_path, canonical_file_id, classify_reflink_errno,
     clear_unsupported_reflink_cache, coalesce_logical_runs, combine_transfer_tier,
     is_reflink_device_pair_unsupported, mark_reflink_device_pair_unsupported,
     plan_splice_partition, punch_host_file_blocks, punch_table_slot, push_logical_block_run,
@@ -42,6 +43,40 @@ pub use storage::StorageMode;
 pub use zstd_pool::{MAX_ZSTD_DICT_BYTES, ZstdDictRegistry};
 
 pub const BLOCK_SIZE: usize = 4096;
+
+/// Cache-line (128 B) padding wrapper to prevent false sharing across CPU cores
+/// (covers both 128-byte Apple Silicon and 64-byte x86_64 cache lines).
+#[repr(align(128))]
+#[derive(Debug, Default)]
+pub(crate) struct CachePadded<T>(pub(crate) T);
+
+impl<T> CachePadded<T> {
+    #[inline]
+    pub(crate) const fn new(val: T) -> Self {
+        Self(val)
+    }
+
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> std::ops::Deref for CachePadded<T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for CachePadded<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
 
 /// Lock a mutex, recovering from poisoning.
 ///

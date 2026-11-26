@@ -292,7 +292,9 @@ mod batch;
 mod caches;
 mod chunked;
 mod maintenance;
+mod resize;
 pub use batch::{BatchCommitResult, BatchOp, WriteBatch};
+pub use resize::{AutoGrowConfig, ResizeMethod, ResizeStats, VacuumOptions, VacuumStats};
 mod transfer;
 
 pub use caches::INODE_CACHE_CAPACITY;
@@ -351,6 +353,8 @@ pub(crate) struct DiskManagerInner {
     pub(crate) read_only: bool,
     /// Custom Zstd dictionaries registered on this mount (`CDict`/`DDict` cache)
     pub(crate) zstd_dicts: Arc<crate::zstd_pool::ZstdDictRegistry>,
+    /// Policy controlling automatic image growth on block/inode exhaustion
+    pub(crate) auto_grow: AutoGrowConfig,
 }
 
 impl DiskManagerInner {
@@ -764,27 +768,11 @@ impl Drop for DiskManagerInner {
     }
 }
 
-/// Main disk manager interface for the OIFS file system
+/// Main disk manager interface for the OIFS file system.
 ///
 /// Cache-line (128 B) isolates the lock state word from the hot, read-mostly
 /// `DiskManagerInner` fields so reader-count atomics never false-share with them.
-#[repr(align(128))]
-pub(crate) struct CachePadded<T>(pub(crate) T);
-
-impl<T> std::ops::Deref for CachePadded<T> {
-    type Target = T;
-    #[inline]
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
-
-impl<T> std::ops::DerefMut for CachePadded<T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.0
-    }
-}
+pub(crate) use crate::CachePadded;
 
 pub(crate) type InnerLock = RwLock<CachePadded<DiskManagerInner>>;
 
@@ -801,6 +789,8 @@ pub struct DiskManager {
     sync_mutex: Arc<Mutex<()>>,
     /// Shared fast-path flag indicating buffered `RangeAsync` ranges are ready to drain
     async_drain_ready: Arc<std::sync::atomic::AtomicBool>,
+    /// Cache-line-isolated fast flag for lock-free auto-grow bypass on steady-state mutations
+    auto_grow_enabled: Arc<CachePadded<std::sync::atomic::AtomicBool>>,
     /// Background automatic defragmentation coordinator
     auto_defrag: Arc<crate::auto_defrag::AutoDefragController>,
 }
@@ -1496,6 +1486,7 @@ impl DiskManager {
             inode_write_gen: Box::new([0u64; 4096]),
             read_only: true,
             zstd_dicts: Arc::new(crate::zstd_pool::ZstdDictRegistry::new()),
+            auto_grow: AutoGrowConfig::disabled(),
         };
 
         let inner = Arc::new(RwLock::new(CachePadded(inner)));
@@ -1503,6 +1494,9 @@ impl DiskManager {
             inner: inner.clone(),
             sync_mutex: Arc::new(Mutex::new(())),
             async_drain_ready,
+            auto_grow_enabled: Arc::new(CachePadded::new(std::sync::atomic::AtomicBool::new(
+                false,
+            ))),
             auto_defrag: Arc::new(crate::auto_defrag::AutoDefragController::new(&inner)),
         })
     }
@@ -1917,6 +1911,7 @@ impl DiskManager {
             inode_write_gen: Box::new([0u64; 4096]),
             read_only: false,
             zstd_dicts: Arc::new(crate::zstd_pool::ZstdDictRegistry::new()),
+            auto_grow: AutoGrowConfig::disabled(),
         };
 
         let inner = Arc::new(RwLock::new(CachePadded(inner)));
@@ -1924,6 +1919,9 @@ impl DiskManager {
             inner: inner.clone(),
             sync_mutex: Arc::new(Mutex::new(())),
             async_drain_ready,
+            auto_grow_enabled: Arc::new(CachePadded::new(std::sync::atomic::AtomicBool::new(
+                false,
+            ))),
             auto_defrag: Arc::new(crate::auto_defrag::AutoDefragController::new(&inner)),
         };
 
@@ -3488,140 +3486,196 @@ impl DiskManager {
             (stored_name, stored_hash)
         }; // Shared read-guard is dropped immediately here!
 
-        // --- STAGE 2: In-Lock Allocation & Commitment ---
-        let mut guard = self.inner.write().unwrap();
+        self.ensure_capacity_for(2, 1)?;
 
-        // Journaled images take the WAL-first path; legacy images keep the
-        // original in-place implementation untouched (zero-overhead guarantee).
-        if guard.superblock.has_journal_layout() {
-            let res = Self::create_entry_journaled(
-                &mut guard,
-                parent_inode_id,
-                name,
-                stored_name,
-                stored_hash,
-                file_type,
-            );
-            drop(guard);
-            self.maybe_drain_async_ranges();
-            return res;
-        }
+        for attempt in 0..2 {
+            // --- STAGE 2: In-Lock Allocation & Commitment ---
+            let mut guard = self.inner.write().unwrap();
 
-        // 1. Read Parent (re-verify under write lock in case of concurrent changes)
-        let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
-        if parent_inode.mode != crate::inode::FileType::Directory {
-            return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
-        }
-
-        // Check if file or directory was created in a race
-        if Self::dir_lookup(&guard, parent_inode_id, name)?.is_some() {
-            let type_str = if file_type == crate::inode::FileType::Directory {
-                "Directory"
-            } else {
-                "File"
-            };
-            return Err(DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!("{} '{}' already exists", type_str, name),
-            )));
-        }
-
-        // 2. Allocate Inode with bounded wrapping search hint
-        let hint = guard.free_inode_hint;
-        let usable_inodes = guard.superblock.usable_inode_count();
-        let new_inode_id = {
-            let mut bitmap_slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
-                DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
-            })?;
-            let mut allocator = SimpleBlockAllocator::new(&mut bitmap_slice, 0);
-            let id = allocator.allocate_bounded(Some(hint), usable_inodes)?;
-            bitmap_slice.set_dirty_bits(id as usize, 1);
-            id
-        };
-        guard.free_inode_hint = if new_inode_id + 1 >= usable_inodes {
-            0
-        } else {
-            new_inode_id + 1
-        };
-
-        // 3. Init Inode with proper timestamps
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let mut new_inode = Inode::new(file_type);
-        new_inode.created_at = now;
-        new_inode.modified_at = now;
-
-        if file_type == crate::inode::FileType::Directory {
-            let dir_data_block = Self::alloc_and_zero_block(&mut guard)?;
-            new_inode.blocks[0] = dir_data_block;
-            new_inode.size = BLOCK_SIZE as u64;
-        }
-
-        Self::write_inode_internal(&mut guard, new_inode_id, &new_inode)?;
-
-        // 4. Update Parent Dir
-        let entry = crate::directory::DirectoryEntry {
-            inode: new_inode_id,
-            hash: stored_hash,
-            name: stored_name,
-        };
-        let (written_blk, new_tail, all_earlier_full) =
-            Self::append_dir_entry_to_dir(&mut guard, parent_inode_id, &mut parent_inode, &entry)?;
-
-        // 5. Update Parent Mtime
-        parent_inode.modified_at = now;
-        Self::write_inode_internal(&mut guard, parent_inode_id, &parent_inode)?;
-
-        // Keep the directory index consistent (only if one exists; otherwise nothing is stale).
-        let stored_name = entry.name;
-        let encrypted = guard.encryption_key.is_some();
-        if let Some(ix) = guard
-            .dir_cache
-            .write_shard(parent_inode_id)
-            .get_mut(&parent_inode_id)
-        {
-            if encrypted {
-                ix.plain.insert(
-                    name.to_string(),
-                    (new_inode_id, crate::directory::hash_filename(name)),
+            // Journaled images take the WAL-first path; legacy images keep the
+            // original in-place implementation untouched (zero-overhead guarantee).
+            let res: Result<u64, DiskManagerError> = if guard.superblock.has_journal_layout() {
+                let r = Self::create_entry_journaled(
+                    &mut guard,
+                    parent_inode_id,
+                    name,
+                    stored_name.clone(),
+                    stored_hash,
+                    file_type,
                 );
-            }
-            ix.stored
-                .insert(stored_name, (new_inode_id, written_blk, stored_hash));
-            if encrypted && ix.complete && ix.plain.len() == ix.stored.len() {
-                ix.plain_complete = true;
-            }
-            if let Some(tail) = new_tail {
-                ix.tail_offset = Some(tail);
-            }
-            if all_earlier_full {
-                ix.may_have_holes = false;
+                drop(guard);
+                self.maybe_drain_async_ranges();
+                r
+            } else {
+                // 1. Read Parent (re-verify under write lock in case of concurrent changes)
+                let mut parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
+                if parent_inode.mode != crate::inode::FileType::Directory {
+                    return Err(DiskManagerError::Io(std::io::Error::other("Not dir")));
+                }
+
+                // Check if file or directory was created in a race
+                if Self::dir_lookup(&guard, parent_inode_id, name)?.is_some() {
+                    let type_str = if file_type == crate::inode::FileType::Directory {
+                        "Directory"
+                    } else {
+                        "File"
+                    };
+                    return Err(DiskManagerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!("{} '{}' already exists", type_str, name),
+                    )));
+                }
+
+                // 2. Allocate Inode with bounded wrapping search hint
+                let hint = guard.free_inode_hint;
+                let usable_inodes = guard.superblock.usable_inode_count();
+                let new_inode_id = (|| -> Result<u64, DiskManagerError> {
+                    let mut bitmap_slice = guard.inode_bitmap_slice_mut().ok_or_else(|| {
+                        DiskManagerError::Io(std::io::Error::other("inode bitmap not found"))
+                    })?;
+                    let mut allocator = SimpleBlockAllocator::new(&mut bitmap_slice, 0);
+                    let id = allocator.allocate_bounded(Some(hint), usable_inodes)?;
+                    bitmap_slice.set_dirty_bits(id as usize, 1);
+                    Ok(id)
+                })();
+                let new_inode_id = match new_inode_id {
+                    Ok(id) => id,
+                    Err(DiskManagerError::Allocator(AllocatorError::NoSpace)) if attempt == 0 => {
+                        drop(guard);
+                        if self.try_auto_grow_on_nospace(2, 1)? {
+                            continue;
+                        }
+                        return Err(DiskManagerError::Allocator(AllocatorError::NoSpace));
+                    }
+                    Err(e) => return Err(e),
+                };
+                guard.free_inode_hint = if new_inode_id + 1 >= usable_inodes {
+                    0
+                } else {
+                    new_inode_id + 1
+                };
+
+                // 3. Init Inode with proper timestamps
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let mut new_inode = Inode::new(file_type);
+                new_inode.created_at = now;
+                new_inode.modified_at = now;
+
+                if file_type == crate::inode::FileType::Directory {
+                    let dir_data_block = match Self::alloc_and_zero_block(&mut guard) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            Self::rollback_unlinked_file(&mut guard, new_inode_id, &new_inode);
+                            if attempt == 0
+                                && matches!(e, DiskManagerError::Allocator(AllocatorError::NoSpace))
+                            {
+                                drop(guard);
+                                if self.try_auto_grow_on_nospace(2, 1)? {
+                                    continue;
+                                }
+                            }
+                            return Err(e);
+                        }
+                    };
+                    new_inode.blocks[0] = dir_data_block;
+                    new_inode.size = BLOCK_SIZE as u64;
+                }
+
+                Self::write_inode_internal(&mut guard, new_inode_id, &new_inode)?;
+
+                // 4. Update Parent Dir
+                let entry = crate::directory::DirectoryEntry {
+                    inode: new_inode_id,
+                    hash: stored_hash,
+                    name: stored_name.clone(),
+                };
+                let (written_blk, new_tail, all_earlier_full) = match Self::append_dir_entry_to_dir(
+                    &mut guard,
+                    parent_inode_id,
+                    &mut parent_inode,
+                    &entry,
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        Self::rollback_unlinked_file(&mut guard, new_inode_id, &new_inode);
+                        if attempt == 0
+                            && matches!(e, DiskManagerError::Allocator(AllocatorError::NoSpace))
+                        {
+                            drop(guard);
+                            if self.try_auto_grow_on_nospace(2, 1)? {
+                                continue;
+                            }
+                        }
+                        return Err(e);
+                    }
+                };
+
+                // 5. Update Parent Mtime
+                parent_inode.modified_at = now;
+                Self::write_inode_internal(&mut guard, parent_inode_id, &parent_inode)?;
+
+                // Keep the directory index consistent (only if one exists; otherwise nothing is stale).
+                let stored_name = entry.name;
+                let encrypted = guard.encryption_key.is_some();
+                if let Some(ix) = guard
+                    .dir_cache
+                    .write_shard(parent_inode_id)
+                    .get_mut(&parent_inode_id)
+                {
+                    if encrypted {
+                        ix.plain.insert(
+                            name.to_string(),
+                            (new_inode_id, crate::directory::hash_filename(name)),
+                        );
+                    }
+                    ix.stored
+                        .insert(stored_name, (new_inode_id, written_blk, stored_hash));
+                    if encrypted && ix.complete && ix.plain.len() == ix.stored.len() {
+                        ix.plain_complete = true;
+                    }
+                    if let Some(tail) = new_tail {
+                        ix.tail_offset = Some(tail);
+                    }
+                    if all_earlier_full {
+                        ix.may_have_holes = false;
+                    }
+                }
+
+                let sync_res = if guard.durability_mode().is_range_based() {
+                    let ranges = [
+                        guard.inode_bitmap_byte_range(),
+                        guard.data_bitmap_byte_range(),
+                        guard.inode_byte_range(new_inode_id),
+                        guard.inode_byte_range(parent_inode_id),
+                        guard.block_byte_range(written_blk),
+                        if file_type == crate::inode::FileType::Directory {
+                            guard.block_byte_range(new_inode.blocks[0])
+                        } else {
+                            (0, 0)
+                        },
+                    ];
+                    guard.sync_mutation_ranges(&ranges)
+                } else {
+                    guard.sync_mutation_ranges(&[])
+                };
+                drop(guard);
+                self.maybe_drain_async_ranges();
+                sync_res?;
+                return Ok(new_inode_id);
+            };
+            match res {
+                Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
+                    if attempt == 0 && self.try_auto_grow_on_nospace(2, 1)? =>
+                {
+                    continue;
+                }
+                other => return other,
             }
         }
-
-        let sync_res = if guard.durability_mode().is_range_based() {
-            let ranges = [
-                guard.inode_bitmap_byte_range(),
-                guard.data_bitmap_byte_range(),
-                guard.inode_byte_range(new_inode_id),
-                guard.inode_byte_range(parent_inode_id),
-                guard.block_byte_range(written_blk),
-                if file_type == crate::inode::FileType::Directory {
-                    guard.block_byte_range(new_inode.blocks[0])
-                } else {
-                    (0, 0)
-                },
-            ];
-            guard.sync_mutation_ranges(&ranges)
-        } else {
-            guard.sync_mutation_ranges(&[])
-        };
-        drop(guard);
-        self.maybe_drain_async_ranges();
-        sync_res?;
-        Ok(new_inode_id)
+        Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
     }
 
     /// Creates a new file in a directory
@@ -3721,6 +3775,9 @@ impl DiskManager {
             &[],
             cdict.as_deref(),
         )?;
+        let est_payload_blks = (prep.buffer.len() + 16).div_ceil(BLOCK_SIZE) as u64;
+        let est_needed_blks = est_payload_blks + est_payload_blks.div_ceil(512) + 4;
+        self.ensure_capacity_for(est_needed_blks, 1)?;
 
         // --- STAGE 3: Exclusive Lock Allocation & Single-Commit Persistence ---
         let mut guard = self.inner.write().unwrap();
@@ -3738,6 +3795,19 @@ impl DiskManager {
             );
             drop(guard);
             self.maybe_drain_async_ranges();
+            if matches!(
+                res,
+                Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
+            ) && self.try_auto_grow_on_nospace(est_needed_blks, 1)?
+            {
+                return self.create_file_with_data_with_filters(
+                    parent_inode_id,
+                    name,
+                    data,
+                    compression_mode,
+                    filter_config,
+                );
+            }
             return res;
         }
 
@@ -6136,6 +6206,39 @@ impl DiskManager {
         if self.is_read_only() {
             return Err(DiskManagerError::ReadOnly);
         }
+        let est_blks = {
+            let p = data.len().div_ceil(BLOCK_SIZE) as u64;
+            p + p.div_ceil(512) + 8
+        };
+        self.ensure_capacity_for(est_blks, 0)?;
+
+        for attempt in 0..2 {
+            match self.write_data_with_filters_once(
+                inode_id,
+                file_offset,
+                data,
+                compression_mode,
+                filter_config,
+            ) {
+                Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
+                    if attempt == 0 && self.try_auto_grow_on_nospace(est_blks, 0)? =>
+                {
+                    continue;
+                }
+                other => return other,
+            }
+        }
+        Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
+    }
+
+    fn write_data_with_filters_once(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        data: &[u8],
+        compression_mode: CompressionMode,
+        filter_config: crate::filters::FilterConfig,
+    ) -> Result<(), DiskManagerError> {
         // --- STAGE 1: Single Shared Read-Lock Inspection ---
         // Merges seekable routing + Stage 1 preparation under ONE `inner.read()` lock.
         enum Stage1Prep<'a> {
@@ -7836,22 +7939,35 @@ impl DiskManager {
             })?;
         }
 
-        let mut guard = self.inner.write().unwrap();
-        if guard.read_only {
-            return Err(DiskManagerError::ReadOnly);
+        self.ensure_capacity_for(2, 0)?;
+
+        for attempt in 0..2 {
+            let mut guard = self.inner.write().unwrap();
+            if guard.read_only {
+                return Err(DiskManagerError::ReadOnly);
+            }
+            let res = Self::rename_internal(
+                &mut guard,
+                old_parent_inode_id,
+                old_name,
+                new_parent_inode_id,
+                new_name,
+            );
+            drop(guard);
+            match res {
+                Ok(()) => {
+                    self.maybe_drain_async_ranges();
+                    return Ok(());
+                }
+                Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
+                    if attempt == 0 && self.try_auto_grow_on_nospace(2, 0)? =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
-        let res = Self::rename_internal(
-            &mut guard,
-            old_parent_inode_id,
-            old_name,
-            new_parent_inode_id,
-            new_name,
-        );
-        drop(guard);
-        if res.is_ok() {
-            self.maybe_drain_async_ranges();
-        }
-        res
+        Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
     }
 
     fn rename_internal(

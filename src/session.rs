@@ -1392,6 +1392,72 @@ impl OifsSession {
         }
     }
 
+    /// Returns the total byte size of the mounted image (`Direct` mode).
+    pub fn image_size_bytes(&self) -> Result<u64, SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.image_size_bytes()),
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "image_size_bytes is only supported in Direct/Standalone sessions".into(),
+            )),
+        }
+    }
+
+    /// Configures automatic container expansion on capacity exhaustion (`Direct` mode).
+    pub fn set_auto_grow(&self, config: crate::disk::AutoGrowConfig) -> Result<(), SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => {
+                dm.set_auto_grow(config);
+                Ok(())
+            }
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "auto_grow is only supported in Direct/Standalone sessions".into(),
+            )),
+        }
+    }
+
+    /// Returns the active [`crate::disk::AutoGrowConfig`] (`Direct` mode).
+    pub fn auto_grow_config(&self) -> Result<crate::disk::AutoGrowConfig, SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.auto_grow_config()),
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "auto_grow_config is only supported in Direct/Standalone sessions".into(),
+            )),
+        }
+    }
+
+    /// Explicitly grows the container to at least `new_size_bytes` (`Direct` mode).
+    pub fn grow(&self, new_size_bytes: u64) -> Result<crate::disk::ResizeStats, SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.grow(new_size_bytes)?),
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "grow is only supported in Direct/Standalone sessions".into(),
+            )),
+        }
+    }
+
+    /// Resizes (grows or shrinks) the container to `new_size_bytes` (`Direct` mode).
+    pub fn resize(&self, new_size_bytes: u64) -> Result<crate::disk::ResizeStats, SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.resize(new_size_bytes)?),
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "resize is only supported in Direct/Standalone sessions".into(),
+            )),
+        }
+    }
+
+    /// Compacts allocated blocks and reclaims unused space (`Direct` mode).
+    pub fn vacuum(
+        &self,
+        options: crate::disk::VacuumOptions,
+    ) -> Result<crate::disk::VacuumStats, SessionError> {
+        match self {
+            OifsSession::Direct { dm, .. } => Ok(dm.vacuum(options)?),
+            OifsSession::Remote { .. } => Err(SessionError::Remote(
+                "vacuum is only supported in Direct/Standalone sessions".into(),
+            )),
+        }
+    }
+
     /// Reads a copy of a raw block (used by debug and low level tools)
     pub fn get_block_copy(&self, block_id: u64) -> Result<Option<Vec<u8>>, SessionError> {
         match self {

@@ -121,7 +121,7 @@ impl DiskManager {
     }
 
     /// Write the in-memory superblock back into block 0.
-    fn persist_superblock(guard: &mut DiskManagerInner) -> Result<(), DiskManagerError> {
+    pub(super) fn persist_superblock(guard: &mut DiskManagerInner) -> Result<(), DiskManagerError> {
         let bytes = bincode::serialize(&guard.superblock)?;
         if bytes.len() > BLOCK_SIZE {
             return Err(DiskManagerError::Serialization(Box::new(

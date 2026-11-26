@@ -27,7 +27,22 @@ impl DiskManager {
         if self.is_read_only() {
             return Err(DiskManagerError::ReadOnly);
         }
-        self.write_chunked_64k_pipeline(inode_id, file_offset, data, level)
+        let est_blks = {
+            let p = data.len().div_ceil(BLOCK_SIZE) as u64;
+            p + p.div_ceil(512) + 8
+        };
+        self.ensure_capacity_for(est_blks, 0)?;
+        for attempt in 0..2 {
+            match self.write_chunked_64k_pipeline(inode_id, file_offset, data, level) {
+                Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
+                    if attempt == 0 && self.try_auto_grow_on_nospace(est_blks, 0)? =>
+                {
+                    continue;
+                }
+                other => return other,
+            }
+        }
+        Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
     }
 
     #[inline]

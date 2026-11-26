@@ -33,6 +33,21 @@ pub struct OIFSHandle {
     pub fuse_state: std::sync::OnceLock<crate::fuse::OifsFuseState>,
 }
 
+#[inline]
+fn set_thread_last_error(err: Option<String>) {
+    match err {
+        None => {
+            // Lock-free and TLV-free fast path when no thread in the process currently
+            // holds a recorded FFI error (the common case on hot FFI reads).
+            if FFI_ACTIVE_ERROR_THREADS.load(std::sync::atomic::Ordering::Acquire) == 0 {
+                return;
+            }
+            OIFSHandle::clear_last_error_slow();
+        }
+        Some(msg) => OIFSHandle::set_last_error_some(msg),
+    }
+}
+
 impl OIFSHandle {
     pub fn new(dm: DiskManager) -> Self {
         Self {
@@ -53,17 +68,7 @@ impl OIFSHandle {
 
     #[inline]
     pub fn set_last_error(&self, err: Option<String>) {
-        match err {
-            None => {
-                // Lock-free and TLV-free fast path when no thread in the process currently
-                // holds a recorded FFI error (the common case on hot FFI reads).
-                if FFI_ACTIVE_ERROR_THREADS.load(std::sync::atomic::Ordering::Acquire) == 0 {
-                    return;
-                }
-                Self::clear_last_error_slow();
-            }
-            Some(msg) => Self::set_last_error_some(msg),
-        }
+        set_thread_last_error(err);
     }
 
     #[cold]
@@ -3235,6 +3240,972 @@ pub extern "C" fn oifs_defragment(handle: *mut OIFSHandle, out_stats: *mut OIFSD
     }
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic Auto-Grow, Online Resize & Vacuum
+// ---------------------------------------------------------------------------
+
+pub const OIFS_RESIZE_METHOD_NO_OP: u8 = 0;
+pub const OIFS_RESIZE_METHOD_IN_PLACE: u8 = 1;
+pub const OIFS_RESIZE_METHOD_ATOMIC_RELAYOUT: u8 = 2;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSAutoGrowConfig {
+    pub enabled: u8,
+    pub allow_relayout: u8,
+    pub _pad: [u8; 6],
+    pub growth_factor: f64,
+    pub min_increment_bytes: u64,
+    pub max_size_bytes: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSResizeStats {
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+    pub blocks_before: u64,
+    pub blocks_after: u64,
+    pub inodes_before: u64,
+    pub inodes_after: u64,
+    pub method: u8,
+    pub _pad: [u8; 7],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSVacuumOptions {
+    pub min_headroom_bytes: u64,
+    pub min_image_bytes: u64,
+    pub headroom_percent: u8,
+    pub allow_relayout: u8,
+    pub _pad: [u8; 6],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSVacuumStats {
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+    pub bytes_reclaimed: u64,
+    pub blocks_before: u64,
+    pub blocks_after: u64,
+    pub blocks_relocated: u64,
+    pub method: u8,
+    pub _pad: [u8; 7],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OIFSBatchCommitResult {
+    pub ops_executed: u64,
+    pub wal_transactions: u64,
+    pub created_count: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct OIFSByteSlice {
+    pub data: *const u8,
+    pub len: usize,
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<OIFSAutoGrowConfig>() == 32);
+    assert!(std::mem::size_of::<OIFSResizeStats>() == 56);
+    assert!(std::mem::size_of::<OIFSVacuumOptions>() == 24);
+    assert!(std::mem::size_of::<OIFSVacuumStats>() == 56);
+    assert!(std::mem::size_of::<OIFSBatchCommitResult>() == 24);
+    assert!(std::mem::size_of::<OIFSByteSlice>() == 2 * std::mem::size_of::<usize>());
+};
+
+#[inline]
+const fn resize_method_to_u8(method: crate::disk::ResizeMethod) -> u8 {
+    match method {
+        crate::disk::ResizeMethod::NoOp => OIFS_RESIZE_METHOD_NO_OP,
+        crate::disk::ResizeMethod::InPlace => OIFS_RESIZE_METHOD_IN_PLACE,
+        crate::disk::ResizeMethod::AtomicRelayout => OIFS_RESIZE_METHOD_ATOMIC_RELAYOUT,
+    }
+}
+
+#[inline]
+fn ffi_auto_grow_config_to_rust(c: &OIFSAutoGrowConfig) -> crate::disk::AutoGrowConfig {
+    let factor = if c.growth_factor.is_finite() && c.growth_factor > 0.0 {
+        c.growth_factor.clamp(1.1, 4.0)
+    } else {
+        1.5
+    };
+    crate::disk::AutoGrowConfig {
+        enabled: c.enabled != 0,
+        growth_factor: factor,
+        min_increment_bytes: c.min_increment_bytes,
+        max_size_bytes: c.max_size_bytes,
+        allow_relayout: c.allow_relayout != 0,
+    }
+}
+
+#[inline]
+fn ffi_vacuum_options_to_rust(o: &OIFSVacuumOptions) -> crate::disk::VacuumOptions {
+    crate::disk::VacuumOptions {
+        min_headroom_bytes: o.min_headroom_bytes,
+        headroom_percent: o.headroom_percent.min(100),
+        min_image_bytes: o.min_image_bytes,
+        allow_relayout: o.allow_relayout != 0,
+    }
+}
+
+#[inline]
+fn write_resize_stats_out(out_stats: *mut OIFSResizeStats, stats: crate::disk::ResizeStats) {
+    if !out_stats.is_null() {
+        unsafe {
+            *out_stats = OIFSResizeStats {
+                bytes_before: stats.bytes_before,
+                bytes_after: stats.bytes_after,
+                blocks_before: stats.blocks_before,
+                blocks_after: stats.blocks_after,
+                inodes_before: stats.inodes_before,
+                inodes_after: stats.inodes_after,
+                method: resize_method_to_u8(stats.method),
+                _pad: [0; 7],
+            };
+        }
+    }
+}
+
+/// Returns the container image size in bytes according to the superblock, or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_image_size_bytes(handle: *const OIFSHandle) -> i64 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match i64::try_from(handle_ref.dm.image_size_bytes()) {
+            Ok(bytes) => {
+                handle_ref.set_last_error(None);
+                bytes
+            }
+            Err(_) => {
+                handle_ref.set_last_error(Some("Image size overflows i64".to_string()));
+                -1
+            }
+        }
+    }));
+    res.unwrap_or_else(|_| {
+        handle_ref.set_last_error(Some("Panic occurred during oifs_image_size_bytes".to_string()));
+        -1
+    })
+}
+
+/// Configures dynamic Auto-Grow on `handle` (`NULL` disables auto-grow).
+///
+/// Rejects read-only handles with `DiskManagerError::ReadOnly`. Returns `0` on success or `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_set_auto_grow(
+    handle: *mut OIFSHandle,
+    config: *const OIFSAutoGrowConfig,
+) -> i32 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle_ref.dm.is_read_only() {
+            handle_ref.set_last_error(Some(crate::disk::DiskManagerError::ReadOnly.to_string()));
+            return -1;
+        }
+        let cfg = if config.is_null() {
+            crate::disk::AutoGrowConfig::disabled()
+        } else {
+            ffi_auto_grow_config_to_rust(unsafe { &*config })
+        };
+        handle_ref.dm.set_auto_grow(cfg);
+        handle_ref.set_last_error(None);
+        0
+    }));
+    res.unwrap_or_else(|_| {
+        handle_ref.set_last_error(Some("Panic occurred during oifs_set_auto_grow".to_string()));
+        -1
+    })
+}
+
+/// Reads the current Auto-Grow configuration into `*out_config`. Returns `0` or `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_get_auto_grow(
+    handle: *const OIFSHandle,
+    out_config: *mut OIFSAutoGrowConfig,
+) -> i32 {
+    if handle.is_null() || out_config.is_null() {
+        set_thread_last_error(Some("Null argument provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let cfg = handle_ref.dm.auto_grow_config();
+        unsafe {
+            *out_config = OIFSAutoGrowConfig {
+                enabled: u8::from(cfg.enabled),
+                allow_relayout: u8::from(cfg.allow_relayout),
+                _pad: [0; 6],
+                growth_factor: cfg.growth_factor,
+                min_increment_bytes: cfg.min_increment_bytes,
+                max_size_bytes: cfg.max_size_bytes,
+            };
+        }
+        handle_ref.set_last_error(None);
+        0
+    }));
+    res.unwrap_or_else(|_| {
+        handle_ref.set_last_error(Some("Panic occurred during oifs_get_auto_grow".to_string()));
+        -1
+    })
+}
+
+fn ffi_grow_or_resize(
+    handle: *mut OIFSHandle,
+    new_size_bytes: u64,
+    out_stats: *mut OIFSResizeStats,
+    grow_only: bool,
+) -> i32 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let outcome = if grow_only {
+            handle_ref.dm.grow(new_size_bytes)
+        } else {
+            handle_ref.dm.resize(new_size_bytes)
+        };
+        match outcome {
+            Ok(stats) => {
+                write_resize_stats_out(out_stats, stats);
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+    res.unwrap_or_else(|_| {
+        handle_ref.set_last_error(Some(if grow_only {
+            "Panic occurred during oifs_grow".to_string()
+        } else {
+            "Panic occurred during oifs_resize".to_string()
+        }));
+        -1
+    })
+}
+
+/// Explicitly grows the container to at least `new_size_bytes`. Returns `0` or `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_grow(
+    handle: *mut OIFSHandle,
+    new_size_bytes: u64,
+    out_stats: *mut OIFSResizeStats,
+) -> i32 {
+    ffi_grow_or_resize(handle, new_size_bytes, out_stats, true)
+}
+
+/// Resizes (grows or shrinks) the container to `new_size_bytes`. Returns `0` or `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_resize(
+    handle: *mut OIFSHandle,
+    new_size_bytes: u64,
+    out_stats: *mut OIFSResizeStats,
+) -> i32 {
+    ffi_grow_or_resize(handle, new_size_bytes, out_stats, false)
+}
+
+/// Compacts free trailing blocks (and optionally rebalances metadata/inode tables) to shrink
+/// the container on disk (`options == NULL` uses defaults). Returns `0` or `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_vacuum(
+    handle: *mut OIFSHandle,
+    options: *const OIFSVacuumOptions,
+    out_stats: *mut OIFSVacuumStats,
+) -> i32 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let opts = if options.is_null() {
+            crate::disk::VacuumOptions::default()
+        } else {
+            ffi_vacuum_options_to_rust(unsafe { &*options })
+        };
+        match handle_ref.dm.vacuum(opts) {
+            Ok(stats) => {
+                if !out_stats.is_null() {
+                    unsafe {
+                        *out_stats = OIFSVacuumStats {
+                            bytes_before: stats.bytes_before,
+                            bytes_after: stats.bytes_after,
+                            bytes_reclaimed: stats.bytes_reclaimed,
+                            blocks_before: stats.blocks_before,
+                            blocks_after: stats.blocks_after,
+                            blocks_relocated: stats.blocks_relocated,
+                            method: resize_method_to_u8(stats.method),
+                            _pad: [0; 7],
+                        };
+                    }
+                }
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+    res.unwrap_or_else(|_| {
+        handle_ref.set_last_error(Some("Panic occurred during oifs_vacuum".to_string()));
+        -1
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Explicit Multi-Op Write Batch (`OIFSWriteBatch`)
+// ---------------------------------------------------------------------------
+
+enum FfiBatchOp {
+    CreateFileWithData {
+        path: String,
+        data: Vec<u8>,
+        compression_mode: crate::disk::CompressionMode,
+        filter_config: crate::filters::FilterConfig,
+    },
+    Mkdir {
+        path: String,
+    },
+    Delete {
+        path: String,
+    },
+    Rename {
+        old_path: String,
+        new_path: String,
+    },
+}
+
+/// Opaque handle representing a staged multi-operation `WriteBatch`.
+pub struct OIFSWriteBatch {
+    dm: DiskManager,
+    ops: Vec<FfiBatchOp>,
+    committed: bool,
+}
+
+/// Starts a multi-operation write batch against `handle`. Returns `NULL` on null/read-only handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_batch_begin(handle: *mut OIFSHandle) -> *mut OIFSWriteBatch {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return ptr::null_mut();
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle_ref.dm.is_read_only() {
+            handle_ref.set_last_error(Some(crate::disk::DiskManagerError::ReadOnly.to_string()));
+            return ptr::null_mut();
+        }
+        handle_ref.set_last_error(None);
+        Box::into_raw(Box::new(OIFSWriteBatch {
+            dm: handle_ref.dm.clone(),
+            ops: Vec::new(),
+            committed: false,
+        }))
+    }));
+    res.unwrap_or(ptr::null_mut())
+}
+
+/// Frees an `OIFSWriteBatch` (safe to call on `NULL` or after `oifs_batch_commit`).
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_batch_free(batch: *mut OIFSWriteBatch) {
+    if !batch.is_null() {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            let _ = Box::from_raw(batch);
+        }));
+    }
+}
+
+/// Returns the number of queued operations in `batch` (`0` if `NULL`).
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_batch_len(batch: *const OIFSWriteBatch) -> usize {
+    if batch.is_null() {
+        return 0;
+    }
+    let batch_ref = unsafe { &(*batch) };
+    batch_ref.ops.len()
+}
+
+fn push_batch_op(batch: *mut OIFSWriteBatch, op: FfiBatchOp) -> i32 {
+    if batch.is_null() {
+        set_thread_last_error(Some("Null WriteBatch provided".to_string()));
+        return -1;
+    }
+    let batch_ref = unsafe { &mut (*batch) };
+    if batch_ref.committed {
+        set_thread_last_error(Some("WriteBatch has already been committed".to_string()));
+        return -1;
+    }
+    batch_ref.ops.push(op);
+    set_thread_last_error(None);
+    0
+}
+
+/// Queues a `CreateFileWithData` operation into `batch`. Returns `0` or `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_batch_create_file_with_data(
+    batch: *mut OIFSWriteBatch,
+    path: *const c_char,
+    buf: *const u8,
+    buf_size: u64,
+    policy_flags: u32,
+    zstd_level: i32,
+    filter_cfg: *const OIFSFilterConfig,
+) -> i32 {
+    if batch.is_null() || path.is_null() || (buf.is_null() && buf_size > 0) {
+        set_thread_last_error(Some("Null argument provided".to_string()));
+        return -1;
+    }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path_str = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s.to_owned(),
+            Err(msg) => {
+                set_thread_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+        let data = match unsafe { ffi_slice(buf, buf_size) } {
+            Ok(s) => s.to_vec(),
+            Err(msg) => {
+                set_thread_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+        let compression_mode = policy_to_compression_mode(policy_flags, zstd_level);
+        let filter_config = unsafe { ffi_filter_config_to_rust(filter_cfg) };
+        push_batch_op(
+            batch,
+            FfiBatchOp::CreateFileWithData {
+                path: path_str,
+                data,
+                compression_mode,
+                filter_config,
+            },
+        )
+    }));
+    res.unwrap_or(-1)
+}
+
+/// Queues a `Mkdir` operation into `batch`. Returns `0` or `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_batch_mkdir(batch: *mut OIFSWriteBatch, path: *const c_char) -> i32 {
+    if batch.is_null() || path.is_null() {
+        set_thread_last_error(Some("Null argument provided".to_string()));
+        return -1;
+    }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path_str = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s.to_owned(),
+            Err(msg) => {
+                set_thread_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+        push_batch_op(batch, FfiBatchOp::Mkdir { path: path_str })
+    }));
+    res.unwrap_or(-1)
+}
+
+/// Queues a `Delete` operation into `batch`. Returns `0` or `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_batch_delete(batch: *mut OIFSWriteBatch, path: *const c_char) -> i32 {
+    if batch.is_null() || path.is_null() {
+        set_thread_last_error(Some("Null argument provided".to_string()));
+        return -1;
+    }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path_str = match unsafe { cstr_to_str(path) } {
+            Ok(s) => s.to_owned(),
+            Err(msg) => {
+                set_thread_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+        push_batch_op(batch, FfiBatchOp::Delete { path: path_str })
+    }));
+    res.unwrap_or(-1)
+}
+
+/// Queues an atomic `Rename` operation into `batch`. Returns `0` or `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_batch_rename(
+    batch: *mut OIFSWriteBatch,
+    old_path: *const c_char,
+    new_path: *const c_char,
+) -> i32 {
+    if batch.is_null() || old_path.is_null() || new_path.is_null() {
+        set_thread_last_error(Some("Null argument provided".to_string()));
+        return -1;
+    }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let old_str = match unsafe { cstr_to_str(old_path) } {
+            Ok(s) => s.to_owned(),
+            Err(msg) => {
+                set_thread_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+        let new_str = match unsafe { cstr_to_str(new_path) } {
+            Ok(s) => s.to_owned(),
+            Err(msg) => {
+                set_thread_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+        push_batch_op(
+            batch,
+            FfiBatchOp::Rename {
+                old_path: old_str,
+                new_path: new_str,
+            },
+        )
+    }));
+    res.unwrap_or(-1)
+}
+
+/// Commits all queued operations in `batch` atomically. Returns `0` on success or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_batch_commit(
+    batch: *mut OIFSWriteBatch,
+    out_result: *mut OIFSBatchCommitResult,
+    out_created_inodes: *mut u64,
+    out_created_cap: usize,
+) -> i32 {
+    if batch.is_null() {
+        set_thread_last_error(Some("Null WriteBatch provided".to_string()));
+        return -1;
+    }
+    if out_created_inodes.is_null() && out_created_cap > 0 {
+        set_thread_last_error(Some("Null output inode array with non-zero capacity".to_string()));
+        return -1;
+    }
+    if !ffi_slice_bytes_valid(out_created_cap, std::mem::size_of::<u64>()) {
+        set_thread_last_error(Some("Output inode capacity exceeds isize::MAX".to_string()));
+        return -1;
+    }
+
+    let batch_ref = unsafe { &mut (*batch) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if batch_ref.committed {
+            set_thread_last_error(Some("WriteBatch has already been committed".to_string()));
+            return -1;
+        }
+        if batch_ref.dm.is_read_only() {
+            set_thread_last_error(Some(crate::disk::DiskManagerError::ReadOnly.to_string()));
+            return -1;
+        }
+        batch_ref.committed = true;
+        let ops = std::mem::take(&mut batch_ref.ops);
+        let dm = &batch_ref.dm;
+
+        let commit_res = (|| -> Result<crate::disk::BatchCommitResult, crate::disk::DiskManagerError> {
+            let mut wb = dm.begin_write_batch();
+            for op in ops {
+                match op {
+                    FfiBatchOp::CreateFileWithData {
+                        path,
+                        data,
+                        compression_mode,
+                        filter_config,
+                    } => {
+                        let (parent, name) = dm.resolve_parent(&path)?;
+                        wb.create_file_with_data_with_filters(
+                            parent,
+                            name,
+                            data,
+                            compression_mode,
+                            filter_config,
+                        );
+                    }
+                    FfiBatchOp::Mkdir { path } => {
+                        let (parent, name) = dm.resolve_parent(&path)?;
+                        wb.mkdir(parent, name);
+                    }
+                    FfiBatchOp::Delete { path } => {
+                        let (parent, name) = dm.resolve_parent(&path)?;
+                        wb.delete(parent, name);
+                    }
+                    FfiBatchOp::Rename { old_path, new_path } => {
+                        let (old_parent, old_name) = dm.resolve_parent(&old_path)?;
+                        let (new_parent, new_name) = dm.resolve_parent(&new_path)?;
+                        wb.rename(old_parent, old_name, new_parent, new_name);
+                    }
+                }
+            }
+            wb.commit()
+        })();
+
+        match commit_res {
+            Ok(stats) => {
+                if !out_created_inodes.is_null() && out_created_cap > 0 {
+                    let to_copy = stats.created_inodes.len().min(out_created_cap);
+                    if to_copy > 0 {
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                stats.created_inodes.as_ptr(),
+                                out_created_inodes,
+                                to_copy,
+                            );
+                        }
+                    }
+                }
+                if !out_result.is_null() {
+                    unsafe {
+                        *out_result = OIFSBatchCommitResult {
+                            ops_executed: stats.ops_executed as u64,
+                            wal_transactions: stats.wal_transactions as u64,
+                            created_count: stats.created_inodes.len() as u64,
+                        };
+                    }
+                }
+                set_thread_last_error(None);
+                0
+            }
+            Err(e) => {
+                set_thread_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+    res.unwrap_or_else(|_| {
+        set_thread_last_error(Some("Panic occurred during oifs_batch_commit".to_string()));
+        -1
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Custom Zstd Dictionary Management & Training
+// ---------------------------------------------------------------------------
+
+fn copy_dict_bytes_to_out(dict: &[u8], out_buf: *mut u8, out_cap: usize) -> Result<i64, String> {
+    if out_buf.is_null() || out_cap == 0 {
+        return Err("Output dictionary buffer is null or empty".to_string());
+    }
+    let out_slice = unsafe { ffi_slice_mut(out_buf, out_cap as u64) }.map_err(str::to_owned)?;
+    if dict.len() > out_slice.len() {
+        return Err(format!(
+            "Trained dictionary requires {} bytes, output buffer capacity is {}",
+            dict.len(),
+            out_slice.len()
+        ));
+    }
+    out_slice[..dict.len()].copy_from_slice(dict);
+    i64::try_from(dict.len()).map_err(|_| "Dictionary length overflows i64".to_string())
+}
+
+/// Registers a trained Zstd dictionary on `handle` (optionally setting it as the active
+/// default when `set_as_default != 0`). Returns the 32-bit `dict_id` (`> 0`) or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_register_zstd_dict(
+    handle: *mut OIFSHandle,
+    dict_buf: *const u8,
+    dict_len: usize,
+    set_as_default: u8,
+) -> i64 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    if dict_buf.is_null() && dict_len > 0 {
+        handle_ref.set_last_error(Some("Null dictionary buffer provided".to_string()));
+        return -1;
+    }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dict_bytes = match unsafe { ffi_slice(dict_buf, dict_len as u64) } {
+            Ok(s) => s,
+            Err(msg) => {
+                handle_ref.set_last_error(Some(msg.to_string()));
+                return -1;
+            }
+        };
+        let result = if set_as_default != 0 {
+            handle_ref.dm.register_and_use_zstd_dict(dict_bytes)
+        } else {
+            handle_ref.dm.register_zstd_dict(dict_bytes)
+        };
+        match result {
+            Ok(dict_id) => {
+                handle_ref.set_last_error(None);
+                i64::from(dict_id)
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+    res.unwrap_or_else(|_| {
+        handle_ref.set_last_error(Some("Panic occurred during oifs_register_zstd_dict".to_string()));
+        -1
+    })
+}
+
+/// Sets or clears (`dict_id == 0`) the active default Zstd compression dictionary. Returns `0` or `-1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_set_default_zstd_dict(handle: *mut OIFSHandle, dict_id: u32) -> i32 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id = if dict_id == 0 { None } else { Some(dict_id) };
+        match handle_ref.dm.set_default_zstd_dict(id) {
+            Ok(()) => {
+                handle_ref.set_last_error(None);
+                0
+            }
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+    res.unwrap_or_else(|_| {
+        handle_ref.set_last_error(Some(
+            "Panic occurred during oifs_set_default_zstd_dict".to_string(),
+        ));
+        -1
+    })
+}
+
+/// Returns the active default Zstd `dict_id` (`> 0`), `0` if none is active, or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_default_zstd_dict_id(handle: *const OIFSHandle) -> i64 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let val = handle_ref
+            .dm
+            .default_zstd_dict_id()
+            .map_or(0, i64::from);
+        handle_ref.set_last_error(None);
+        val
+    }));
+    res.unwrap_or(-1)
+}
+
+/// Unregisters a Zstd dictionary by `dict_id`. Returns `1` if removed, `0` if absent, or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_unregister_zstd_dict(handle: *mut OIFSHandle, dict_id: u32) -> i32 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let removed = i32::from(handle_ref.dm.unregister_zstd_dict(dict_id));
+        handle_ref.set_last_error(None);
+        removed
+    }));
+    res.unwrap_or(-1)
+}
+
+/// Clears all registered Zstd dictionaries from `handle`. Returns `0` or `-1` on null handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_clear_zstd_dicts(handle: *mut OIFSHandle) -> i32 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle_ref.dm.clear_zstd_dicts();
+        handle_ref.set_last_error(None);
+        0
+    }));
+    res.unwrap_or(-1)
+}
+
+/// Writes up to `cap` sorted registered Zstd `dict_id`s into `out_ids`.
+/// Returns total registered count (`>= 0`) on success, or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_registered_zstd_dict_ids(
+    handle: *const OIFSHandle,
+    out_ids: *mut u32,
+    cap: usize,
+) -> i64 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    if out_ids.is_null() && cap > 0 {
+        handle_ref.set_last_error(Some("Null output dictionary ID array provided".to_string()));
+        return -1;
+    }
+    if !ffi_slice_bytes_valid(cap, std::mem::size_of::<u32>()) {
+        handle_ref.set_last_error(Some("Dictionary ID buffer capacity exceeds isize::MAX".to_string()));
+        return -1;
+    }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ids = handle_ref.dm.registered_zstd_dict_ids();
+        if !out_ids.is_null() && cap > 0 {
+            let to_copy = ids.len().min(cap);
+            if to_copy > 0 {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ids.as_ptr(), out_ids, to_copy);
+                }
+            }
+        }
+        handle_ref.set_last_error(None);
+        i64::try_from(ids.len()).unwrap_or(-1)
+    }));
+    res.unwrap_or(-1)
+}
+
+/// Trains a Zstd dictionary from caller-provided sample buffers into `out_buf[..out_cap]`.
+/// Returns the trained dictionary byte length on success, or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_train_zstd_dict(
+    samples: *const OIFSByteSlice,
+    sample_count: usize,
+    max_dict_bytes: usize,
+    out_buf: *mut u8,
+    out_cap: usize,
+) -> i64 {
+    if (samples.is_null() && sample_count > 0) || out_buf.is_null() || out_cap == 0 {
+        set_thread_last_error(Some("Null or empty argument provided".to_string()));
+        return -1;
+    }
+    if !ffi_slice_bytes_valid(sample_count, std::mem::size_of::<OIFSByteSlice>()) {
+        set_thread_last_error(Some("Sample slice array exceeds isize::MAX".to_string()));
+        return -1;
+    }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slice_arr = if sample_count == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(samples, sample_count) }
+        };
+        let mut refs = Vec::with_capacity(slice_arr.len());
+        for s in slice_arr {
+            match unsafe { ffi_slice(s.data, s.len as u64) } {
+                Ok(bytes) => refs.push(bytes),
+                Err(msg) => {
+                    set_thread_last_error(Some(msg.to_string()));
+                    return -1;
+                }
+            }
+        }
+        match DiskManager::train_zstd_dict(&refs, max_dict_bytes) {
+            Ok(dict) => match copy_dict_bytes_to_out(&dict, out_buf, out_cap) {
+                Ok(len) => {
+                    set_thread_last_error(None);
+                    len
+                }
+                Err(msg) => {
+                    set_thread_last_error(Some(msg));
+                    -1
+                }
+            },
+            Err(e) => {
+                set_thread_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+    res.unwrap_or_else(|_| {
+        set_thread_last_error(Some("Panic occurred during oifs_train_zstd_dict".to_string()));
+        -1
+    })
+}
+
+/// Trains a Zstd dictionary directly from regular files inside `dir_path` in the OIFS image
+/// (`NULL`, `""`, or `"/"` uses root). Returns trained byte length or `-1` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_train_zstd_dict_from_dir(
+    handle: *mut OIFSHandle,
+    dir_path: *const c_char,
+    max_dict_bytes: usize,
+    max_samples: usize,
+    out_buf: *mut u8,
+    out_cap: usize,
+) -> i64 {
+    if handle.is_null() {
+        set_thread_last_error(Some("Null handle provided".to_string()));
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    if out_buf.is_null() || out_cap == 0 {
+        handle_ref.set_last_error(Some("Null or empty output dictionary buffer".to_string()));
+        return -1;
+    }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dir_inode_id = if dir_path.is_null() {
+            handle_ref.dm.superblock().root_inode
+        } else {
+            let path_str = match unsafe { cstr_to_str(dir_path) } {
+                Ok(s) => s,
+                Err(msg) => {
+                    handle_ref.set_last_error(Some(msg.to_string()));
+                    return -1;
+                }
+            };
+            if path_str.is_empty() || path_str == "/" || path_str == "." {
+                handle_ref.dm.superblock().root_inode
+            } else {
+                match handle_ref.dm.resolve_path(path_str) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        handle_ref.set_last_error(Some(e.to_string()));
+                        return -1;
+                    }
+                }
+            }
+        };
+
+        match handle_ref
+            .dm
+            .train_zstd_dict_from_dir(dir_inode_id, max_dict_bytes, max_samples)
+        {
+            Ok(dict) => match copy_dict_bytes_to_out(&dict, out_buf, out_cap) {
+                Ok(len) => {
+                    handle_ref.set_last_error(None);
+                    len
+                }
+                Err(msg) => {
+                    handle_ref.set_last_error(Some(msg));
+                    -1
+                }
+            },
+            Err(e) => {
+                handle_ref.set_last_error(Some(e.to_string()));
+                -1
+            }
+        }
+    }));
+    res.unwrap_or_else(|_| {
+        handle_ref.set_last_error(Some(
+            "Panic occurred during oifs_train_zstd_dict_from_dir".to_string(),
+        ));
+        -1
+    })
+}
+
 #[cfg(kani)]
 mod verification {
     use super::*;
@@ -3289,5 +4260,53 @@ mod verification {
         } else {
             assert_eq!(mode, crate::disk::CompressionMode::Auto);
         }
+    }
+
+    /// Formally prove that `resize_method_to_u8`, `ffi_auto_grow_config_to_rust`, and
+    /// `ffi_vacuum_options_to_rust` are total, panic-free, and preserve safety bounds for all
+    /// symbolic FFI inputs (including non-finite `growth_factor` and `headroom_percent > 100`).
+    #[kani::proof]
+    fn proof_ffi_resize_and_autogrow_conversions_total() {
+        assert_eq!(
+            resize_method_to_u8(crate::disk::ResizeMethod::NoOp),
+            OIFS_RESIZE_METHOD_NO_OP
+        );
+        assert_eq!(
+            resize_method_to_u8(crate::disk::ResizeMethod::InPlace),
+            OIFS_RESIZE_METHOD_IN_PLACE
+        );
+        assert_eq!(
+            resize_method_to_u8(crate::disk::ResizeMethod::AtomicRelayout),
+            OIFS_RESIZE_METHOD_ATOMIC_RELAYOUT
+        );
+
+        let raw_cfg = OIFSAutoGrowConfig {
+            enabled: kani::any(),
+            allow_relayout: kani::any(),
+            _pad: [0; 6],
+            growth_factor: kani::any(),
+            min_increment_bytes: kani::any(),
+            max_size_bytes: kani::any(),
+        };
+        let cfg = ffi_auto_grow_config_to_rust(&raw_cfg);
+        assert!(cfg.growth_factor.is_finite());
+        assert!(cfg.growth_factor >= 1.1 && cfg.growth_factor <= 4.0);
+        assert_eq!(cfg.enabled, raw_cfg.enabled != 0);
+        assert_eq!(cfg.allow_relayout, raw_cfg.allow_relayout != 0);
+        assert_eq!(cfg.min_increment_bytes, raw_cfg.min_increment_bytes);
+        assert_eq!(cfg.max_size_bytes, raw_cfg.max_size_bytes);
+
+        let raw_vac = OIFSVacuumOptions {
+            min_headroom_bytes: kani::any(),
+            min_image_bytes: kani::any(),
+            headroom_percent: kani::any(),
+            allow_relayout: kani::any(),
+            _pad: [0; 6],
+        };
+        let vac = ffi_vacuum_options_to_rust(&raw_vac);
+        assert!(vac.headroom_percent <= 100);
+        assert_eq!(vac.min_headroom_bytes, raw_vac.min_headroom_bytes);
+        assert_eq!(vac.min_image_bytes, raw_vac.min_image_bytes);
+        assert_eq!(vac.allow_relayout, raw_vac.allow_relayout != 0);
     }
 }

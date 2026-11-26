@@ -581,6 +581,131 @@ int32_t oifs_analyze_fragmentation(OIFSHandle *handle, OIFSFragmentationStats *o
 int32_t oifs_defragment(OIFSHandle *handle, OIFSDefragStats *out_stats);
 
 /*
+ * Dynamic Auto-Grow, Online Resize & Vacuum
+ */
+#define OIFS_RESIZE_METHOD_NO_OP            0
+#define OIFS_RESIZE_METHOD_IN_PLACE         1
+#define OIFS_RESIZE_METHOD_ATOMIC_RELAYOUT  2
+
+typedef struct {
+    uint8_t enabled;
+    uint8_t allow_relayout;
+    uint8_t _pad[6];
+    double growth_factor;
+    uint64_t min_increment_bytes;
+    uint64_t max_size_bytes;
+} OIFSAutoGrowConfig;
+
+typedef struct {
+    uint64_t bytes_before;
+    uint64_t bytes_after;
+    uint64_t blocks_before;
+    uint64_t blocks_after;
+    uint64_t inodes_before;
+    uint64_t inodes_after;
+    uint8_t method;
+    uint8_t _pad[7];
+} OIFSResizeStats;
+
+typedef struct {
+    uint64_t min_headroom_bytes;
+    uint64_t min_image_bytes;
+    uint8_t headroom_percent;
+    uint8_t allow_relayout;
+    uint8_t _pad[6];
+} OIFSVacuumOptions;
+
+typedef struct {
+    uint64_t bytes_before;
+    uint64_t bytes_after;
+    uint64_t bytes_reclaimed;
+    uint64_t blocks_before;
+    uint64_t blocks_after;
+    uint64_t blocks_relocated;
+    uint8_t method;
+    uint8_t _pad[7];
+} OIFSVacuumStats;
+
+int64_t oifs_image_size_bytes(const OIFSHandle *handle);
+int32_t oifs_set_auto_grow(OIFSHandle *handle, const OIFSAutoGrowConfig *config);
+int32_t oifs_get_auto_grow(const OIFSHandle *handle, OIFSAutoGrowConfig *out_config);
+int32_t oifs_grow(OIFSHandle *handle, uint64_t new_size_bytes, OIFSResizeStats *out_stats);
+int32_t oifs_resize(OIFSHandle *handle, uint64_t new_size_bytes, OIFSResizeStats *out_stats);
+int32_t oifs_vacuum(
+    OIFSHandle *handle,
+    const OIFSVacuumOptions *options,
+    OIFSVacuumStats *out_stats
+);
+
+/*
+ * Explicit Multi-Op Write Batch
+ */
+typedef struct OIFSWriteBatch OIFSWriteBatch;
+
+typedef struct {
+    uint64_t ops_executed;
+    uint64_t wal_transactions;
+    uint64_t created_count;
+} OIFSBatchCommitResult;
+
+OIFSWriteBatch* oifs_batch_begin(OIFSHandle *handle);
+void oifs_batch_free(OIFSWriteBatch *batch);
+size_t oifs_batch_len(const OIFSWriteBatch *batch);
+int32_t oifs_batch_create_file_with_data(
+    OIFSWriteBatch *batch,
+    const char *path,
+    const uint8_t *buf,
+    uint64_t buf_size,
+    uint32_t policy_flags,
+    int32_t zstd_level,
+    const OIFSFilterConfig *filter_cfg
+);
+int32_t oifs_batch_mkdir(OIFSWriteBatch *batch, const char *path);
+int32_t oifs_batch_delete(OIFSWriteBatch *batch, const char *path);
+int32_t oifs_batch_rename(OIFSWriteBatch *batch, const char *old_path, const char *new_path);
+int32_t oifs_batch_commit(
+    OIFSWriteBatch *batch,
+    OIFSBatchCommitResult *out_result,
+    uint64_t *out_created_inodes,
+    size_t out_created_cap
+);
+
+/*
+ * Custom Zstd Dictionary Management & Training
+ */
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+} OIFSByteSlice;
+
+int64_t oifs_register_zstd_dict(
+    OIFSHandle *handle,
+    const uint8_t *dict_buf,
+    size_t dict_len,
+    uint8_t set_as_default
+);
+int32_t oifs_set_default_zstd_dict(OIFSHandle *handle, uint32_t dict_id);
+int64_t oifs_default_zstd_dict_id(const OIFSHandle *handle);
+int32_t oifs_unregister_zstd_dict(OIFSHandle *handle, uint32_t dict_id);
+int32_t oifs_clear_zstd_dicts(OIFSHandle *handle);
+int64_t oifs_registered_zstd_dict_ids(const OIFSHandle *handle, uint32_t *out_ids, size_t cap);
+int64_t oifs_train_zstd_dict(
+    const OIFSByteSlice *samples,
+    size_t sample_count,
+    size_t max_dict_bytes,
+    uint8_t *out_buf,
+    size_t out_cap
+);
+int64_t oifs_train_zstd_dict_from_dir(
+    OIFSHandle *handle,
+    const char *dir_path,
+    size_t max_dict_bytes,
+    size_t max_samples,
+    uint8_t *out_buf,
+    size_t out_cap
+);
+
+/*
  * Diagnostics and Error Handling
  */
 int32_t oifs_last_error(OIFSHandle *handle, char *buf, uint32_t buf_size);

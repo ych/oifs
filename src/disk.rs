@@ -1004,6 +1004,7 @@ fn plan_write_prepared<'a>(
         existing_decompressed,
         encryption,
         None,
+        false,
     )
 }
 
@@ -1017,6 +1018,7 @@ fn plan_write_prepared_with_dict<'a>(
     existing_decompressed: Option<&[u8]>,
     encryption: EncryptionContext<'_>,
     cdict: Option<&zstd::zstd_safe::CDict<'_>>,
+    truncate_to_write_end: bool,
 ) -> Result<WritePlan<'a>, DiskManagerError> {
     let encryption_key = encryption.key;
     let aad = encryption.aad;
@@ -1026,11 +1028,13 @@ fn plan_write_prepared_with_dict<'a>(
     // rebuilt as a whole; it can never be patched in place.
     let transformed = payload_is_transformed(inode, filter_config, encryption_key);
 
-    // A write at offset 0 only replaces the whole file when it is at least as long
-    // as the current one, or when the payload is transformed and therefore has to
-    // be rewritten as a unit.
-    let is_full_overwrite =
-        file_offset == 0 && (old_size == 0 || data.len() as u64 >= old_size || transformed);
+    // A write at offset 0 replaces the whole file when requested to truncate to the
+    // write end, when extending/matching the current size, when empty, or when transformed.
+    let is_full_overwrite = file_offset == 0
+        && (truncate_to_write_end
+            || old_size == 0
+            || data.len() as u64 >= old_size
+            || transformed);
 
     if is_full_overwrite {
         // The effective filter keeps a file's stored filter pipeline when the
@@ -1046,15 +1050,15 @@ fn plan_write_prepared_with_dict<'a>(
             cdict,
         )?;
         // A compressed payload keeps its logical length in `size`; an uncompressed
-        // one never shrinks, matching the in-place path's `max` behaviour.
+        // one shrinks when truncated/transformed, or keeps `max` otherwise.
         let new_size = if payload.is_compressed {
             data.len() as u64
-        } else if payload.encryption_nonce.is_some() || effective.is_active() {
-            // The stored payload is transformed, so its own length is
-            // authoritative. Keeping the old (larger) size would make the reader
-            // walk past the stored payload: an encrypted file would fail to
-            // authenticate (C) and a filtered file would return raw
-            // filtered bytes.
+        } else if truncate_to_write_end
+            || payload.encryption_nonce.is_some()
+            || effective.is_active()
+        {
+            // The stored payload is truncated or transformed, so its own length
+            // is authoritative.
             payload.buffer.len() as u64
         } else {
             std::cmp::max(old_size, payload.buffer.len() as u64)
@@ -1162,6 +1166,7 @@ fn plan_write_prepared_with_dict<'a>(
 }
 
 /// Helper to plan a write when already holding a disk lock (e.g. for re-planning after a race).
+#[allow(clippy::too_many_arguments)]
 fn plan_write<'a>(
     guard: &DiskManagerInner,
     inode_id: u64,
@@ -1170,10 +1175,14 @@ fn plan_write<'a>(
     data: &'a [u8],
     compression_mode: CompressionMode,
     filter_config: &crate::filters::FilterConfig,
+    truncate_to_write_end: bool,
 ) -> Result<WritePlan<'a>, DiskManagerError> {
     let transformed = payload_is_transformed(inode, filter_config, guard.encryption_key.as_ref());
-    let is_full_overwrite =
-        file_offset == 0 && (inode.size == 0 || data.len() as u64 >= inode.size || transformed);
+    let is_full_overwrite = file_offset == 0
+        && (truncate_to_write_end
+            || inode.size == 0
+            || data.len() as u64 >= inode.size
+            || transformed);
     let fast_append = may_append_zstd_frame(
         inode,
         file_offset,
@@ -1206,6 +1215,7 @@ fn plan_write<'a>(
             aad: &aad_buf[..aad_len],
         },
         cdict.as_deref(),
+        truncate_to_write_end,
     )
 }
 
@@ -1442,6 +1452,25 @@ impl DiskManager {
         password: Option<&str>,
         mode: StorageMode,
     ) -> Result<Self, DiskManagerError> {
+        Self::open_read_only_internal(path, password, None, mode)
+    }
+
+    /// Open an existing (plain or encrypted) OIFS image in strictly read-only mode with an
+    /// already-derived encryption key and explicit [`StorageMode`].
+    pub fn open_read_only_with_key_and_storage_mode<P: AsRef<Path>>(
+        path: P,
+        key: Option<crate::encryption::EncryptionKey>,
+        mode: StorageMode,
+    ) -> Result<Self, DiskManagerError> {
+        Self::open_read_only_internal(path, None, key, mode)
+    }
+
+    fn open_read_only_internal<P: AsRef<Path>>(
+        path: P,
+        password: Option<&str>,
+        existing_key: Option<crate::encryption::EncryptionKey>,
+        mode: StorageMode,
+    ) -> Result<Self, DiskManagerError> {
         let path = path.as_ref();
         let file = OpenOptions::new().read(true).open(path)?;
 
@@ -1463,12 +1492,17 @@ impl DiskManager {
             .map_err(DiskManagerError::CorruptedSuperblock)?;
 
         let (encryption_key, password_verifier) = if superblock.encrypted {
-            let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
-            let key = crate::encryption::derive_key(pwd, &superblock.encryption_salt)?;
-            let verifier = Self::compute_password_verifier(&key, pwd);
-            (Some(key), Some(verifier))
+            if let Some(key) = existing_key {
+                let verifier = password.map(|pwd| Self::compute_password_verifier(&key, pwd));
+                (Some(key), verifier)
+            } else {
+                let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
+                let key = crate::encryption::derive_key(pwd, &superblock.encryption_salt)?;
+                let verifier = Self::compute_password_verifier(&key, pwd);
+                (Some(key), Some(verifier))
+            }
         } else {
-            if password.is_some() {
+            if password.is_some() || existing_key.is_some() {
                 return Err(DiskManagerError::NotEncrypted);
             }
             (None, None)
@@ -6243,6 +6277,25 @@ impl DiskManager {
         compression_mode: CompressionMode,
         filter_config: crate::filters::FilterConfig,
     ) -> Result<(), DiskManagerError> {
+        self.write_data_with_filters_inner(
+            inode_id,
+            file_offset,
+            data,
+            compression_mode,
+            filter_config,
+            false,
+        )
+    }
+
+    fn write_data_with_filters_inner(
+        &self,
+        inode_id: u64,
+        file_offset: u64,
+        data: &[u8],
+        compression_mode: CompressionMode,
+        filter_config: crate::filters::FilterConfig,
+        truncate_to_write_end: bool,
+    ) -> Result<(), DiskManagerError> {
         if self.is_read_only() {
             return Err(DiskManagerError::ReadOnly);
         }
@@ -6259,6 +6312,7 @@ impl DiskManager {
                 data,
                 compression_mode,
                 filter_config,
+                truncate_to_write_end,
             ) {
                 Err(DiskManagerError::Allocator(AllocatorError::NoSpace))
                     if attempt == 0 && self.try_auto_grow_on_nospace(est_blks, 0)? =>
@@ -6278,6 +6332,7 @@ impl DiskManager {
         data: &[u8],
         compression_mode: CompressionMode,
         filter_config: crate::filters::FilterConfig,
+        truncate_to_write_end: bool,
     ) -> Result<(), DiskManagerError> {
         // --- STAGE 1: Single Shared Read-Lock Inspection ---
         // Merges seekable routing + Stage 1 preparation under ONE `inner.read()` lock.
@@ -6351,7 +6406,10 @@ impl DiskManager {
                 let transformed =
                     payload_is_transformed(&inode, &filter_config, guard.encryption_key.as_ref());
                 let is_full_overwrite = file_offset == 0
-                    && (inode.size == 0 || data.len() as u64 >= inode.size || transformed);
+                    && (truncate_to_write_end
+                        || inode.size == 0
+                        || data.len() as u64 >= inode.size
+                        || transformed);
 
                 let fast_append = may_append_zstd_frame(
                     &inode,
@@ -6441,6 +6499,7 @@ impl DiskManager {
                 aad: &aad_buf[..aad_len],
             },
             cdict.as_deref(),
+            truncate_to_write_end,
         )?;
 
         // --- STAGE 3: Exclusive Lock Acquisition & Commit ---
@@ -6461,6 +6520,11 @@ impl DiskManager {
         }
 
         if inode.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0 {
+            if truncate_to_write_end {
+                drop(guard);
+                self.truncate(inode_id, 0)?;
+                return self.write_data(inode_id, file_offset, data, compression_mode);
+            }
             let compress = compression_mode != CompressionMode::Never;
             return Self::write_chunked_64k_internal(
                 &mut guard,
@@ -6499,6 +6563,7 @@ impl DiskManager {
                 data,
                 compression_mode,
                 &filter_config,
+                truncate_to_write_end,
             )?
         };
 
@@ -8485,8 +8550,26 @@ impl DiskManager {
         data: &[u8],
         compression_mode: CompressionMode,
     ) -> Result<(), DiskManagerError> {
-        self.truncate(inode_id, 0)?;
-        self.write_data(inode_id, 0, data, compression_mode)
+        if self.is_read_only() {
+            return Err(DiskManagerError::ReadOnly);
+        }
+        if data.is_empty() {
+            return self.truncate(inode_id, 0);
+        }
+        let is_existing_seekable =
+            self.read_inode(inode_id)?.flags & crate::inode::INODE_FLAG_SEEKABLE_64K != 0;
+        if is_existing_seekable || matches!(compression_mode, CompressionMode::Seekable { .. }) {
+            self.truncate(inode_id, 0)?;
+            return self.write_data(inode_id, 0, data, compression_mode);
+        }
+        self.write_data_with_filters_inner(
+            inode_id,
+            0,
+            data,
+            compression_mode,
+            crate::filters::FilterConfig::none(),
+            true,
+        )
     }
 
     /// Allocates a contiguous run of `count` free data blocks.

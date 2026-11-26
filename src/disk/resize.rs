@@ -888,7 +888,9 @@ impl DiskManager {
 
         // Crash-safety: extend backing file + sync BEFORE persisting larger SuperBlock.
         guard.file.set_len(new_bytes)?;
+        crate::storage::crash_sim::record_set_len(&guard.file, new_bytes);
         crate::retry_eintr(|| guard.file.sync_data())?;
+        crate::storage::crash_sim::record_sync(&guard.file);
         guard.backing.remap_after_grow(&guard.file, new_bytes)?;
 
         // Defensively clear bitmap bits for the newly uncovered tail blocks.

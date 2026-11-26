@@ -774,7 +774,12 @@ impl DiskManager {
             let inode = Self::read_inode_uncached(&guard, inode_id)?;
             if inode.mode == crate::inode::FileType::Directory {
                 dir_inodes.push((inode_id, inode));
-            } else if inode.mode == crate::inode::FileType::File && inode.size > 0 {
+            } else if inode.mode == crate::inode::FileType::File
+                && (inode.size > 0
+                    || inode.compressed_size > 0
+                    || inode.blocks.iter().any(|&b| b != 0)
+                    || inode.triple_indirect != 0)
+            {
                 file_inodes.push((inode_id, inode));
             } else {
                 other_inodes.push((inode_id, inode));
@@ -1293,25 +1298,45 @@ impl DiskManager {
             (rel..end).all(|i| !bm.get(i))
         };
 
-        let find_free_run_high_to_low = |bm_bytes: &[u8], count: u64| -> Option<u64> {
-            let cnt = count as usize;
-            if cnt == 0 || cnt > total_data {
-                return None;
-            }
-            let bm = crate::bitmap::BitmapRef::new(bm_bytes);
-            let mut run = 0usize;
-            for idx in (0..total_data).rev() {
-                if !bm.get(idx) {
-                    run += 1;
-                    if run == cnt {
-                        return Some(db_start + idx as u64);
-                    }
-                } else {
-                    run = 0;
+        let next_target_rel = next_target.saturating_sub(db_start) as usize;
+        let find_free_run_avoiding =
+            |bm_bytes: &[u8], count: u64, avoid_start: u64, avoid_end: u64| -> Option<u64> {
+                let cnt = count as usize;
+                if cnt == 0 || cnt > total_data {
+                    return None;
                 }
-            }
-            None
-        };
+                let bm = crate::bitmap::BitmapRef::new(bm_bytes);
+                let avoid_rel_s = avoid_start.saturating_sub(db_start) as usize;
+                let avoid_rel_e = avoid_end.saturating_sub(db_start) as usize;
+
+                // Pass 1: prefer free runs strictly >= next_target (never blocks any target range).
+                let mut run = 0usize;
+                for idx in (next_target_rel..total_data).rev() {
+                    if !bm.get(idx) {
+                        run += 1;
+                        if run == cnt {
+                            return Some(db_start + idx as u64);
+                        }
+                    } else {
+                        run = 0;
+                    }
+                }
+
+                // Pass 2: any free run disjoint from `[avoid_rel_s, avoid_rel_e)`.
+                run = 0;
+                for idx in (0..total_data).rev() {
+                    let overlaps_avoid = idx >= avoid_rel_s && idx < avoid_rel_e;
+                    if !bm.get(idx) && !overlaps_avoid {
+                        run += 1;
+                        if run == cnt {
+                            return Some(db_start + idx as u64);
+                        }
+                    } else {
+                        run = 0;
+                    }
+                }
+                None
+            };
 
         let ring_bytes = {
             let mut region = guard.backing.journal_region_mut(&sb)?;
@@ -1324,8 +1349,15 @@ impl DiskManager {
         let mut bytes_moved = 0u64;
         let is_range_based = guard.durability_mode().is_range_based();
         let is_strict = guard.durability_mode() == DurabilityMode::Strict;
+        let mut pinned_goal: Option<usize> = None;
 
         while !pending.is_empty() {
+            if let Some(g) = pinned_goal
+                && units[g].curr_start == units[g].target_start
+            {
+                pinned_goal = None;
+            }
+
             // Step A: Select a COW batch whose targets are currently free and whose
             // WAL transaction fits comfortably within half the journal ring.
             let mut round_moves: Vec<(usize, u64)> = Vec::new();
@@ -1368,21 +1400,66 @@ impl DiskManager {
                 round_moves.push((u_idx, u.target_start));
             }
 
-            // Cycle breaker: move one blocking unit to a free scratch run.
+            // Cycle breaker: evacuate a blocker overlapping a pinned goal's target range to scratch
+            // space disjoint from that goal's target so multi-block units always converge.
             if round_moves.is_empty() {
-                let u_idx = pending
+                let mut goal_candidates: Vec<(usize, usize, u64)> = pending
                     .iter()
                     .copied()
-                    .min_by_key(|&idx| units[idx].block_count)
-                    .unwrap();
-                let count = units[u_idx].block_count;
-                let scratch_start =
-                    find_free_run_high_to_low(&alloc_bm_bytes, count).ok_or_else(|| {
-                        DiskManagerError::Io(std::io::Error::other(
-                            "Insufficient contiguous free blocks for WAL-atomic in-place defragmentation",
-                        ))
-                    })?;
-                round_moves.push((u_idx, scratch_start));
+                    .filter(|&g| Some(g) != pinned_goal)
+                    .map(|g| {
+                        let g_t_s = units[g].target_start;
+                        let g_t_e = g_t_s + units[g].block_count;
+                        let blocker_cnt = pending
+                            .iter()
+                            .filter(|&&b| {
+                                let b_c_s = units[b].curr_start;
+                                let b_c_e = b_c_s + units[b].block_count;
+                                b_c_s < g_t_e && g_t_s < b_c_e
+                            })
+                            .count();
+                        (g, blocker_cnt, units[g].block_count)
+                    })
+                    .collect();
+                goal_candidates.sort_by_key(|&(_, cnt, blks)| (cnt, blks));
+
+                let mut ordered_goals: Vec<usize> = Vec::with_capacity(pending.len());
+                if let Some(g) = pinned_goal {
+                    ordered_goals.push(g);
+                }
+                ordered_goals.extend(goal_candidates.into_iter().map(|(g, _, _)| g));
+
+                'goal_search: for g in ordered_goals {
+                    let g_t_s = units[g].target_start;
+                    let g_t_e = g_t_s + units[g].block_count;
+                    let mut blockers: Vec<usize> = pending
+                        .iter()
+                        .copied()
+                        .filter(|&b| {
+                            let b_c_s = units[b].curr_start;
+                            let b_c_e = b_c_s + units[b].block_count;
+                            b_c_s < g_t_e && g_t_s < b_c_e
+                        })
+                        .collect();
+                    blockers.sort_by_key(|&b| units[b].block_count);
+
+                    for b in blockers {
+                        if let Some(scratch_start) = find_free_run_avoiding(
+                            &alloc_bm_bytes,
+                            units[b].block_count,
+                            g_t_s,
+                            g_t_e,
+                        ) {
+                            pinned_goal = Some(g);
+                            round_moves.push((b, scratch_start));
+                            break 'goal_search;
+                        }
+                    }
+                }
+
+                if round_moves.is_empty() {
+                    return Err(DiskManagerError::Allocator(AllocatorError::NoSpace));
+                }
             }
 
             // Step B: Copy payload blocks to free destinations and flush them before WAL commit (Strict mode).
@@ -1563,7 +1640,9 @@ impl DiskManager {
                 }
                 guard.sync_mutation_ranges(&meta_ranges)?;
             }
-            {
+            if is_strict {
+                Self::checkpoint_journal(&mut guard.backing, &sb)?;
+            } else {
                 let mut region = guard.backing.journal_region_mut(&sb)?;
                 region.mark_header_only();
                 let mut ring = crate::journal::JournalRing::open(&mut region, bs)?;
@@ -1795,5 +1874,97 @@ impl DiskManager {
             cross_linked_blocks,
             corrupted_inodes,
         })
+    }
+}
+
+#[cfg(test)]
+mod maintenance_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn repro_journaled_defrag_seekable_self_overlap_no_livelock() {
+        let dir = tempdir().unwrap();
+        let img_path = dir.path().join("defrag_self_overlap.img");
+        let dm = DiskManager::open_journaled(&img_path, 4 * 1024 * 1024).unwrap();
+        dm.set_durability_mode(DurabilityMode::Strict);
+        let root = dm.superblock().root_inode;
+
+        // Allocate leading 1-block files, then a multi-block Seekable 64K file, then tail 1-block files.
+        let lead = dm
+            .create_file_with_data(root, "lead.bin", &[0x11u8; 2048], CompressionMode::Never)
+            .unwrap();
+        let _ = lead;
+        let seek_payload: Vec<u8> = (0..(140 * 1024)).map(|i| (i % 199) as u8).collect();
+        let seek_id = dm
+            .create_file_with_data(
+                root,
+                "seek64k.bin",
+                &seek_payload,
+                CompressionMode::Seekable {
+                    chunk_size: 65536,
+                    level: 1,
+                },
+            )
+            .unwrap();
+        let tail_id = dm
+            .create_file_with_data(root, "tail.bin", &[0x22u8; 2048], CompressionMode::Never)
+            .unwrap();
+
+        // Deleting lead.bin frees block(s) ahead of seek64k.bin so its target overlaps its own
+        // multi-block run while smaller tail_id sits behind it.
+        dm.delete_file(root, "lead.bin").unwrap();
+        let p = dm.backing_path().to_str().unwrap().to_string();
+        dm.defragment(&p, DefragMode::InPlace, None).unwrap();
+
+        assert!(dm.verify_integrity().unwrap().is_clean);
+        assert_eq!(dm.read_data(seek_id).unwrap(), seek_payload);
+        assert_eq!(dm.read_data(tail_id).unwrap(), &[0x22u8; 2048]);
+    }
+
+    #[test]
+    fn repro_inplace_defrag_handles_zero_byte_compressed_file() {
+        let dir = tempdir().unwrap();
+        for (name, journaled) in [("plain.img", false), ("journaled.img", true)] {
+            let img_path = dir.path().join(name);
+            let dm = DiskManager::open_with_options(
+                &img_path,
+                4 * 1024 * 1024,
+                None,
+                journaled,
+                crate::storage::StorageMode::Mmap,
+            )
+            .unwrap();
+            let root = dm.superblock().root_inode;
+
+            let _lead = dm
+                .create_file_with_data(root, "lead.bin", &[0xAAu8; 4096], CompressionMode::Never)
+                .unwrap();
+            let zf = dm
+                .create_file_with_data(
+                    root,
+                    "empty_compressed.bin",
+                    b"compressible payload before truncate",
+                    CompressionMode::Always,
+                )
+                .unwrap();
+            dm.truncate(zf, 0).unwrap();
+            let ino = dm.read_inode(zf).unwrap();
+            assert_eq!(ino.size, 0);
+            assert!(ino.compressed_size > 0);
+            assert_ne!(ino.blocks[0], 0);
+
+            let tail = dm
+                .create_file_with_data(root, "tail.bin", &[0xBBu8; 4096], CompressionMode::Never)
+                .unwrap();
+            dm.delete_file(root, "lead.bin").unwrap();
+
+            let p = dm.backing_path().to_str().unwrap().to_string();
+            dm.defragment(&p, DefragMode::InPlace, None).unwrap();
+
+            assert!(dm.verify_integrity().unwrap().is_clean);
+            assert!(dm.read_data(zf).unwrap().is_empty());
+            assert_eq!(dm.read_data(tail).unwrap(), &[0xBBu8; 4096]);
+        }
     }
 }

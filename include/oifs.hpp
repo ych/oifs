@@ -279,6 +279,150 @@ struct DefragStats {
 };
 
 /**
+ * Strategy used by a resize or vacuum operation.
+ */
+enum class ResizeMethod : uint8_t {
+    NoOp = OIFS_RESIZE_METHOD_NO_OP,
+    InPlace = OIFS_RESIZE_METHOD_IN_PLACE,
+    AtomicRelayout = OIFS_RESIZE_METHOD_ATOMIC_RELAYOUT,
+};
+
+/**
+ * Policy controlling automatic container growth on block or inode exhaustion.
+ */
+struct AutoGrowConfig {
+    bool enabled = false;
+    double growth_factor = 1.5;
+    uint64_t min_increment_bytes = 4ULL * 1024 * 1024;
+    uint64_t max_size_bytes = 0;
+    bool allow_relayout = true;
+
+    static constexpr AutoGrowConfig disabled() noexcept {
+        return AutoGrowConfig{false, 1.5, 4ULL * 1024 * 1024, 0, true};
+    }
+
+    static constexpr AutoGrowConfig create_enabled() noexcept {
+        return AutoGrowConfig{true, 1.5, 4ULL * 1024 * 1024, 0, true};
+    }
+
+    constexpr AutoGrowConfig& with_growth_factor(double factor) noexcept {
+        growth_factor = factor;
+        return *this;
+    }
+
+    constexpr AutoGrowConfig& with_min_increment_bytes(uint64_t bytes) noexcept {
+        min_increment_bytes = bytes;
+        return *this;
+    }
+
+    constexpr AutoGrowConfig& with_max_size_bytes(uint64_t max_bytes) noexcept {
+        max_size_bytes = max_bytes;
+        return *this;
+    }
+
+    constexpr AutoGrowConfig& with_allow_relayout(bool allow) noexcept {
+        allow_relayout = allow;
+        return *this;
+    }
+
+    constexpr OIFSAutoGrowConfig to_c() const noexcept {
+        return OIFSAutoGrowConfig{
+            static_cast<uint8_t>(enabled ? 1 : 0),
+            static_cast<uint8_t>(allow_relayout ? 1 : 0),
+            {0, 0, 0, 0, 0, 0},
+            growth_factor,
+            min_increment_bytes,
+            max_size_bytes,
+        };
+    }
+
+    static constexpr AutoGrowConfig from_c(const OIFSAutoGrowConfig& raw) noexcept {
+        return AutoGrowConfig{
+            raw.enabled != 0,
+            raw.growth_factor,
+            raw.min_increment_bytes,
+            raw.max_size_bytes,
+            raw.allow_relayout != 0,
+        };
+    }
+};
+
+/**
+ * Summary returned by `FileSystem::grow()` and `FileSystem::resize()`.
+ */
+struct ResizeStats {
+    uint64_t bytes_before = 0;
+    uint64_t bytes_after = 0;
+    uint64_t blocks_before = 0;
+    uint64_t blocks_after = 0;
+    uint64_t inodes_before = 0;
+    uint64_t inodes_after = 0;
+    ResizeMethod method = ResizeMethod::NoOp;
+};
+
+/**
+ * Options controlling `FileSystem::vacuum()`.
+ */
+struct VacuumOptions {
+    uint64_t min_headroom_bytes = 1024ULL * 1024;
+    uint8_t headroom_percent = 15;
+    uint64_t min_image_bytes = 0;
+    bool allow_relayout = true;
+
+    constexpr VacuumOptions& with_min_headroom_bytes(uint64_t bytes) noexcept {
+        min_headroom_bytes = bytes;
+        return *this;
+    }
+
+    constexpr VacuumOptions& with_headroom_percent(uint8_t pct) noexcept {
+        headroom_percent = pct > 100 ? static_cast<uint8_t>(100) : pct;
+        return *this;
+    }
+
+    constexpr VacuumOptions& with_min_image_bytes(uint64_t bytes) noexcept {
+        min_image_bytes = bytes;
+        return *this;
+    }
+
+    constexpr VacuumOptions& with_allow_relayout(bool allow) noexcept {
+        allow_relayout = allow;
+        return *this;
+    }
+
+    constexpr OIFSVacuumOptions to_c() const noexcept {
+        return OIFSVacuumOptions{
+            min_headroom_bytes,
+            min_image_bytes,
+            headroom_percent,
+            static_cast<uint8_t>(allow_relayout ? 1 : 0),
+            {0, 0, 0, 0, 0, 0},
+        };
+    }
+};
+
+/**
+ * Summary returned by `FileSystem::vacuum()`.
+ */
+struct VacuumStats {
+    uint64_t bytes_before = 0;
+    uint64_t bytes_after = 0;
+    uint64_t bytes_reclaimed = 0;
+    uint64_t blocks_before = 0;
+    uint64_t blocks_after = 0;
+    uint64_t blocks_relocated = 0;
+    ResizeMethod method = ResizeMethod::NoOp;
+};
+
+/**
+ * Summary returned by `WriteBatch::commit()`.
+ */
+struct BatchCommitResult {
+    std::vector<uint64_t> created_inodes{};
+    uint64_t ops_executed = 0;
+    uint64_t wal_transactions = 0;
+};
+
+/**
  * Options for opening or creating an OIFS filesystem container.
  */
 struct OpenOptions {
@@ -985,13 +1129,170 @@ private:
 };
 
 /**
+ * Move-only RAII builder for explicit multi-operation atomic write batches.
+ */
+class WriteBatch {
+public:
+    WriteBatch() noexcept = default;
+
+    explicit WriteBatch(OIFSWriteBatch* batch, std::weak_ptr<OIFSHandle*> owner_handle = {})
+        : batch_(batch), owner_handle_(std::move(owner_handle)) {
+        if (batch_ == nullptr) {
+            throw Error("Failed to construct WriteBatch from null OIFSWriteBatch");
+        }
+    }
+
+    ~WriteBatch() noexcept { reset(); }
+
+    WriteBatch(const WriteBatch&) = delete;
+    WriteBatch& operator=(const WriteBatch&) = delete;
+
+    WriteBatch(WriteBatch&& other) noexcept
+        : batch_(other.batch_),
+          owner_handle_(std::move(other.owner_handle_)),
+          expected_created_count_(other.expected_created_count_) {
+        other.batch_ = nullptr;
+        other.expected_created_count_ = 0;
+    }
+
+    WriteBatch& operator=(WriteBatch&& other) noexcept {
+        if (this != &other) {
+            reset();
+            batch_ = other.batch_;
+            owner_handle_ = std::move(other.owner_handle_);
+            expected_created_count_ = other.expected_created_count_;
+            other.batch_ = nullptr;
+            other.expected_created_count_ = 0;
+        }
+        return *this;
+    }
+
+    explicit operator bool() const noexcept { return batch_ != nullptr; }
+    OIFSWriteBatch* raw() const noexcept { return batch_; }
+
+    void reset() noexcept {
+        if (batch_ != nullptr) {
+            oifs_batch_free(batch_);
+            batch_ = nullptr;
+        }
+        expected_created_count_ = 0;
+    }
+
+    std::size_t size() const noexcept {
+        return batch_ != nullptr ? oifs_batch_len(batch_) : 0;
+    }
+
+    bool empty() const noexcept { return size() == 0; }
+
+    WriteBatch& create_file_with_data(std::string_view path,
+                                      ByteView data,
+                                      uint32_t policy_flags = OIFS_WRITE_POLICY_DEFAULT,
+                                      int32_t zstd_level = 0,
+                                      FilterConfig filter = FilterConfig::none()) {
+        ensure_open();
+        std::string c_path = detail::to_c_string(path);
+        OIFSFilterConfig raw_filter = filter.to_c();
+        if (oifs_batch_create_file_with_data(batch_,
+                                             c_path.c_str(),
+                                             data.data(),
+                                             data.size(),
+                                             policy_flags,
+                                             zstd_level,
+                                             &raw_filter) != 0) {
+            throw Error(fetch_error("oifs_batch_create_file_with_data failed"));
+        }
+        ++expected_created_count_;
+        return *this;
+    }
+
+    WriteBatch& create_file_with_data(std::string_view path,
+                                      ByteView data,
+                                      WritePolicy policy,
+                                      int32_t zstd_level = 0,
+                                      FilterConfig filter = FilterConfig::none()) {
+        return create_file_with_data(
+            path, data, static_cast<uint32_t>(policy), zstd_level, filter);
+    }
+
+    WriteBatch& mkdir(std::string_view path) {
+        ensure_open();
+        std::string c_path = detail::to_c_string(path);
+        if (oifs_batch_mkdir(batch_, c_path.c_str()) != 0) {
+            throw Error(fetch_error("oifs_batch_mkdir failed"));
+        }
+        ++expected_created_count_;
+        return *this;
+    }
+
+    WriteBatch& delete_file(std::string_view path) {
+        ensure_open();
+        std::string c_path = detail::to_c_string(path);
+        if (oifs_batch_delete(batch_, c_path.c_str()) != 0) {
+            throw Error(fetch_error("oifs_batch_delete failed"));
+        }
+        return *this;
+    }
+
+    WriteBatch& rename(std::string_view old_path, std::string_view new_path) {
+        ensure_open();
+        std::string c_old = detail::to_c_string(old_path);
+        std::string c_new = detail::to_c_string(new_path);
+        if (oifs_batch_rename(batch_, c_old.c_str(), c_new.c_str()) != 0) {
+            throw Error(fetch_error("oifs_batch_rename failed"));
+        }
+        return *this;
+    }
+
+    BatchCommitResult commit() {
+        ensure_open();
+        std::vector<uint64_t> created(expected_created_count_);
+        OIFSBatchCommitResult raw{};
+        if (oifs_batch_commit(batch_,
+                              &raw,
+                              created.empty() ? nullptr : created.data(),
+                              created.size()) != 0) {
+            throw Error(fetch_error("oifs_batch_commit failed"));
+        }
+        created.resize(static_cast<std::size_t>(raw.created_count));
+        BatchCommitResult out;
+        out.created_inodes = std::move(created);
+        out.ops_executed = raw.ops_executed;
+        out.wal_transactions = raw.wal_transactions;
+        return out;
+    }
+
+private:
+    void ensure_open() const {
+        if (batch_ == nullptr) {
+            throw Error("Operation on closed oifs::WriteBatch");
+        }
+    }
+
+    std::string fetch_error(const char* fallback) const {
+        auto sp = owner_handle_.lock();
+        if (sp && *sp != nullptr) {
+            char buf[512] = {0};
+            if (oifs_last_error(*sp, buf, sizeof(buf)) == 0 && buf[0] != '\0') {
+                return std::string(buf);
+            }
+        }
+        return std::string(fallback);
+    }
+
+    OIFSWriteBatch* batch_ = nullptr;
+    std::weak_ptr<OIFSHandle*> owner_handle_{};
+    std::size_t expected_created_count_ = 0;
+};
+
+/**
  * Move-only RAII wrapper around `OIFSHandle*`.
  */
 class FileSystem {
 public:
     FileSystem() noexcept = default;
 
-    explicit FileSystem(OIFSHandle* handle) : handle_(handle) {
+    explicit FileSystem(OIFSHandle* handle)
+        : handle_(handle), handle_token_(std::make_shared<OIFSHandle*>(handle)) {
         if (handle_ == nullptr) {
             throw Error("Failed to open OIFS FileSystem");
         }
@@ -1002,7 +1303,8 @@ public:
     FileSystem(const FileSystem&) = delete;
     FileSystem& operator=(const FileSystem&) = delete;
 
-    FileSystem(FileSystem&& other) noexcept : handle_(other.handle_) {
+    FileSystem(FileSystem&& other) noexcept
+        : handle_(other.handle_), handle_token_(std::move(other.handle_token_)) {
         other.handle_ = nullptr;
     }
 
@@ -1010,6 +1312,7 @@ public:
         if (this != &other) {
             close();
             handle_ = other.handle_;
+            handle_token_ = std::move(other.handle_token_);
             other.handle_ = nullptr;
         }
         return *this;
@@ -1019,6 +1322,10 @@ public:
     OIFSHandle* raw() const noexcept { return handle_; }
 
     void close() noexcept {
+        if (handle_token_) {
+            *handle_token_ = nullptr;
+            handle_token_.reset();
+        }
         if (handle_ != nullptr) {
             oifs_close(handle_);
             handle_ = nullptr;
@@ -1646,6 +1953,207 @@ public:
         return out;
     }
 
+    uint64_t image_size_bytes() const {
+        ensure_open();
+        int64_t sz = oifs_image_size_bytes(handle_);
+        if (sz < 0) {
+            throw Error(last_error());
+        }
+        return static_cast<uint64_t>(sz);
+    }
+
+    void set_auto_grow(const AutoGrowConfig& config) {
+        ensure_open();
+        OIFSAutoGrowConfig raw = config.to_c();
+        if (oifs_set_auto_grow(handle_, &raw) != 0) {
+            throw Error(last_error());
+        }
+    }
+
+    AutoGrowConfig auto_grow_config() const {
+        ensure_open();
+        OIFSAutoGrowConfig raw{};
+        if (oifs_get_auto_grow(handle_, &raw) != 0) {
+            throw Error(last_error());
+        }
+        return AutoGrowConfig::from_c(raw);
+    }
+
+    ResizeStats grow(uint64_t new_size_bytes) {
+        ensure_open();
+        OIFSResizeStats raw{};
+        if (oifs_grow(handle_, new_size_bytes, &raw) != 0) {
+            throw Error(last_error());
+        }
+        return to_resize_stats(raw);
+    }
+
+    ResizeStats resize(uint64_t new_size_bytes) {
+        ensure_open();
+        OIFSResizeStats raw{};
+        if (oifs_resize(handle_, new_size_bytes, &raw) != 0) {
+            throw Error(last_error());
+        }
+        return to_resize_stats(raw);
+    }
+
+    VacuumStats vacuum(const VacuumOptions& options = {}) {
+        ensure_open();
+        OIFSVacuumOptions raw_opts = options.to_c();
+        OIFSVacuumStats raw{};
+        if (oifs_vacuum(handle_, &raw_opts, &raw) != 0) {
+            throw Error(last_error());
+        }
+        VacuumStats out;
+        out.bytes_before = raw.bytes_before;
+        out.bytes_after = raw.bytes_after;
+        out.bytes_reclaimed = raw.bytes_reclaimed;
+        out.blocks_before = raw.blocks_before;
+        out.blocks_after = raw.blocks_after;
+        out.blocks_relocated = raw.blocks_relocated;
+        out.method = static_cast<ResizeMethod>(raw.method);
+        return out;
+    }
+
+    WriteBatch begin_write_batch() {
+        ensure_open();
+        OIFSWriteBatch* wb = oifs_batch_begin(handle_);
+        if (wb == nullptr) {
+            throw Error(last_error());
+        }
+        return WriteBatch(wb, handle_token_);
+    }
+
+    uint32_t register_zstd_dict(ByteView dict_bytes) {
+        ensure_open();
+        int64_t id =
+            oifs_register_zstd_dict(handle_, dict_bytes.data(), dict_bytes.size(), 0);
+        if (id < 0) {
+            throw Error(last_error());
+        }
+        return static_cast<uint32_t>(id);
+    }
+
+    uint32_t register_and_use_zstd_dict(ByteView dict_bytes) {
+        ensure_open();
+        int64_t id =
+            oifs_register_zstd_dict(handle_, dict_bytes.data(), dict_bytes.size(), 1);
+        if (id < 0) {
+            throw Error(last_error());
+        }
+        return static_cast<uint32_t>(id);
+    }
+
+    void set_default_zstd_dict(std::optional<uint32_t> dict_id) {
+        ensure_open();
+        if (dict_id.has_value() && *dict_id == 0) {
+            throw Error("Zstd dict_id must be non-zero");
+        }
+        uint32_t raw_id = dict_id.value_or(0);
+        if (oifs_set_default_zstd_dict(handle_, raw_id) != 0) {
+            throw Error(last_error());
+        }
+    }
+
+    std::optional<uint32_t> default_zstd_dict_id() const {
+        ensure_open();
+        int64_t id = oifs_default_zstd_dict_id(handle_);
+        if (id < 0) {
+            throw Error(last_error());
+        }
+        if (id == 0) {
+            return std::nullopt;
+        }
+        return static_cast<uint32_t>(id);
+    }
+
+    bool unregister_zstd_dict(uint32_t dict_id) {
+        ensure_open();
+        int32_t rc = oifs_unregister_zstd_dict(handle_, dict_id);
+        if (rc < 0) {
+            throw Error(last_error());
+        }
+        return rc != 0;
+    }
+
+    std::vector<uint32_t> registered_zstd_dict_ids() const {
+        ensure_open();
+        int64_t count = oifs_registered_zstd_dict_ids(handle_, nullptr, 0);
+        if (count < 0) {
+            throw Error(last_error());
+        }
+        if (count == 0) {
+            return {};
+        }
+        std::vector<uint32_t> ids(static_cast<std::size_t>(count));
+        for (;;) {
+            int64_t total = oifs_registered_zstd_dict_ids(handle_, ids.data(), ids.size());
+            if (total < 0) {
+                throw Error(last_error());
+            }
+            if (total <= static_cast<int64_t>(ids.size())) {
+                ids.resize(static_cast<std::size_t>(total));
+                return ids;
+            }
+            ids.resize(static_cast<std::size_t>(total));
+        }
+    }
+
+    void clear_zstd_dicts() {
+        ensure_open();
+        if (oifs_clear_zstd_dicts(handle_) != 0) {
+            throw Error(last_error());
+        }
+    }
+
+    static std::vector<uint8_t> train_zstd_dict(const std::vector<ByteView>& samples,
+                                                std::size_t max_dict_bytes) {
+        if (samples.empty() || max_dict_bytes == 0) {
+            throw Error("train_zstd_dict requires non-empty samples and max_dict_bytes");
+        }
+        std::vector<OIFSByteSlice> raw_samples;
+        raw_samples.reserve(samples.size());
+        for (const auto& s : samples) {
+            raw_samples.push_back(OIFSByteSlice{s.data(), s.size()});
+        }
+        std::vector<uint8_t> out(max_dict_bytes);
+        int64_t written = oifs_train_zstd_dict(
+            raw_samples.data(), raw_samples.size(), max_dict_bytes, out.data(), out.size());
+        if (written < 0) {
+            throw Error("oifs_train_zstd_dict failed");
+        }
+        out.resize(static_cast<std::size_t>(written));
+        return out;
+    }
+
+    static std::vector<uint8_t> train_zstd_dict(const std::vector<std::vector<uint8_t>>& samples,
+                                                std::size_t max_dict_bytes) {
+        std::vector<ByteView> views;
+        views.reserve(samples.size());
+        for (const auto& s : samples) {
+            views.emplace_back(s);
+        }
+        return train_zstd_dict(views, max_dict_bytes);
+    }
+
+    std::vector<uint8_t> train_zstd_dict_from_dir(std::string_view dir_path,
+                                                std::size_t max_dict_bytes,
+                                                std::size_t max_samples = 1024) const {
+        ensure_open();
+        if (max_dict_bytes == 0) {
+            throw Error("train_zstd_dict_from_dir requires non-zero max_dict_bytes");
+        }
+        std::string c_dir = detail::to_c_string(dir_path);
+        std::vector<uint8_t> out(max_dict_bytes);
+        int64_t written = oifs_train_zstd_dict_from_dir(
+            handle_, c_dir.c_str(), max_dict_bytes, max_samples, out.data(), out.size());
+        if (written < 0) {
+            throw Error(last_error());
+        }
+        out.resize(static_cast<std::size_t>(written));
+        return out;
+    }
+
     std::size_t read_at(std::string_view path, uint64_t offset, MutableByteSpan dst) const {
         ensure_open();
         std::string c_path = detail::to_c_string(path);
@@ -1897,6 +2405,18 @@ private:
         }
     }
 
+    static ResizeStats to_resize_stats(const OIFSResizeStats& raw) noexcept {
+        ResizeStats out;
+        out.bytes_before = raw.bytes_before;
+        out.bytes_after = raw.bytes_after;
+        out.blocks_before = raw.blocks_before;
+        out.blocks_after = raw.blocks_after;
+        out.inodes_before = raw.inodes_before;
+        out.inodes_after = raw.inodes_after;
+        out.method = static_cast<ResizeMethod>(raw.method);
+        return out;
+    }
+
     void ensure_open() const {
         if (handle_ == nullptr) {
             throw Error("Operation on closed oifs::FileSystem");
@@ -1904,6 +2424,7 @@ private:
     }
 
     OIFSHandle* handle_ = nullptr;
+    std::shared_ptr<OIFSHandle*> handle_token_{};
 };
 
 }  // namespace oifs

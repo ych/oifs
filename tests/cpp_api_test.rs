@@ -2817,6 +2817,158 @@ static void test_clone_transfer_splice_and_get_or_open(const std::string& data_d
     }
 }
 
+static void test_autogrow_resize_vacuum_batch_and_zstd_dict(const std::string& img_path) {
+    oifs::FileSystem fs = oifs::FileSystem::open_with_options(
+        img_path, 4ULL * 1024 * 1024, "", oifs::StorageMode::Mmap, true);
+
+    // 1. Auto-Grow & Grow / Resize / Vacuum
+    OIFS_CHECK(fs.image_size_bytes() == 4ULL * 1024 * 1024);
+    oifs::AutoGrowConfig cfg = oifs::AutoGrowConfig::create_enabled()
+        .with_growth_factor(1.5)
+        .with_min_increment_bytes(2ULL * 1024 * 1024)
+        .with_max_size_bytes(16ULL * 1024 * 1024)
+        .with_allow_relayout(true);
+    fs.set_auto_grow(cfg);
+    oifs::AutoGrowConfig effective = fs.auto_grow_config();
+    OIFS_CHECK(effective.enabled);
+    OIFS_CHECK(effective.max_size_bytes == 16ULL * 1024 * 1024);
+
+    oifs::ResizeStats gstats = fs.grow(8ULL * 1024 * 1024);
+    OIFS_CHECK(gstats.bytes_after == 8ULL * 1024 * 1024);
+    OIFS_CHECK(gstats.method == oifs::ResizeMethod::InPlace);
+    OIFS_CHECK(fs.image_size_bytes() == 8ULL * 1024 * 1024);
+
+    // 2. WriteBatch: mkdir + create + Seekable64K + FilterConfig + rename + delete
+    fs.mkdir("archive");
+    {
+        oifs::WriteBatch wb = fs.begin_write_batch();
+        OIFS_CHECK(wb.empty());
+
+        std::vector<int32_t> nums(256);
+        for (size_t i = 0; i < nums.size(); ++i) {
+            nums[i] = static_cast<int32_t>(i * 7 + 100);
+        }
+
+        std::string note1 = "batch file alpha";
+        std::string note2 = "batch file beta";
+        wb.mkdir("archive/sub")
+            .create_file_with_data("temp.txt", oifs::ByteView(note1), oifs::WritePolicy::Raw, 0)
+            .create_file_with_data("drop.txt", oifs::ByteView(note2), oifs::WritePolicy::Default, 0)
+            .create_file_with_data(
+                "archive/telemetry.bin",
+                oifs::as_bytes(nums),
+                oifs::WritePolicy::Seekable64K,
+                1,
+                oifs::FilterConfig::numeric(4))
+            .rename("temp.txt", "archive/alpha.txt")
+            .delete_file("drop.txt");
+        OIFS_CHECK(wb.size() == 6);
+
+        oifs::BatchCommitResult bres = wb.commit();
+        OIFS_CHECK(bres.ops_executed == 6);
+        OIFS_CHECK(bres.wal_transactions >= 1);
+        OIFS_CHECK(bres.created_inodes.size() == 4);
+        OIFS_CHECK(!fs.exists("temp.txt"));
+        OIFS_CHECK(!fs.exists("drop.txt"));
+        OIFS_CHECK(fs.exists("archive/alpha.txt"));
+
+        std::vector<uint8_t> tel = fs.read_file("archive/telemetry.bin");
+        auto sp = oifs::ByteView(tel).as_span<const int32_t>();
+        OIFS_CHECK(sp.size() == nums.size());
+        OIFS_CHECK(sp[200] == nums[200]);
+
+        // Atomic rollback check
+        oifs::WriteBatch bad = fs.begin_write_batch();
+        std::string untouched = "rollback check";
+        bad.create_file_with_data("never_created.txt", oifs::ByteView(untouched))
+            .delete_file("missing_target.txt");
+        bool caught_bad = false;
+        try {
+            (void)bad.commit();
+        } catch (const oifs::Error&) {
+            caught_bad = true;
+        }
+        OIFS_CHECK(caught_bad);
+        OIFS_CHECK(!fs.exists("never_created.txt"));
+    }
+
+    // 3. Zstd Dictionary training (static + from_dir), registration, small-file compression, RO reopen
+    std::vector<std::vector<uint8_t>> samples;
+    for (int i = 0; i < 16; ++i) {
+        std::string row = "{\"service\":\"oifs-cpp\",\"shard\":" + std::to_string(i) +
+            ",\"region\":\"ap-northeast-1\",\"status\":\"healthy\"}";
+        samples.emplace_back(row.begin(), row.end());
+    }
+    std::vector<uint8_t> dict = oifs::FileSystem::train_zstd_dict(samples, 4096);
+    OIFS_CHECK(!dict.empty());
+
+    uint32_t dict_id = fs.register_and_use_zstd_dict(oifs::ByteView(dict));
+    OIFS_CHECK(dict_id != 0);
+    OIFS_CHECK(fs.default_zstd_dict_id().has_value());
+    OIFS_CHECK(*fs.default_zstd_dict_id() == dict_id);
+    std::vector<uint32_t> reg = fs.registered_zstd_dict_ids();
+    OIFS_CHECK(reg.size() == 1 && reg[0] == dict_id);
+
+    std::string small_json(samples[3].begin(), samples[3].end());
+    (void)fs.create_file_with_data(
+        "small_dict.json", oifs::ByteView(small_json), oifs::WritePolicy::Default, 3);
+    std::vector<uint8_t> read_small = fs.read_file("small_dict.json");
+    OIFS_CHECK(std::string(read_small.begin(), read_small.end()) == small_json);
+
+    // Corpus dir inside image + train_zstd_dict_from_dir
+    fs.mkdir("dict_corpus");
+    {
+        oifs::WriteBatch cwb = fs.begin_write_batch();
+        for (int i = 0; i < 12; ++i) {
+            std::string doc = "{\"metric\":\"latency_us\",\"host\":\"cpp-" +
+                std::to_string(i) + "\",\"ok\":true}";
+            cwb.create_file_with_data(
+                "dict_corpus/m_" + std::to_string(i) + ".json",
+                oifs::ByteView(doc),
+                oifs::WritePolicy::Raw,
+                0);
+        }
+        (void)cwb.commit();
+    }
+    std::vector<uint8_t> dir_dict = fs.train_zstd_dict_from_dir("dict_corpus", 4096, 64);
+    OIFS_CHECK(!dir_dict.empty());
+
+    fs.set_default_zstd_dict(std::nullopt);
+    OIFS_CHECK(!fs.default_zstd_dict_id().has_value());
+    OIFS_CHECK(fs.unregister_zstd_dict(dict_id));
+    OIFS_CHECK(!fs.unregister_zstd_dict(dict_id));
+    fs.clear_zstd_dicts();
+    OIFS_CHECK(fs.registered_zstd_dict_ids().empty());
+
+    // 4. Vacuum + Shrink
+    oifs::VacuumOptions vopts;
+    vopts.with_min_headroom_bytes(512ULL * 1024)
+        .with_headroom_percent(10)
+        .with_min_image_bytes(2ULL * 1024 * 1024)
+        .with_allow_relayout(true);
+    oifs::VacuumStats vstats = fs.vacuum(vopts);
+    OIFS_CHECK(vstats.bytes_after <= 8ULL * 1024 * 1024);
+
+    oifs::ResizeStats sstats = fs.resize(5ULL * 1024 * 1024);
+    OIFS_CHECK(sstats.bytes_after == 5ULL * 1024 * 1024);
+    fs.close();
+
+    // 5. Read-Only validation + dictionary decode
+    oifs::FileSystem ro = oifs::FileSystem::open_read_only(img_path);
+    OIFS_CHECK(ro.is_read_only());
+    OIFS_CHECK(ro.register_zstd_dict(oifs::ByteView(dict)) == dict_id);
+    std::vector<uint8_t> ro_read = ro.read_file("small_dict.json");
+    OIFS_CHECK(std::string(ro_read.begin(), ro_read.end()) == small_json);
+
+    bool ro_rejected = false;
+    try {
+        (void)ro.begin_write_batch();
+    } catch (const oifs::Error&) {
+        ro_rejected = true;
+    }
+    OIFS_CHECK(ro_rejected);
+}
+
 #if defined(OIFS_HAS_CPP20_COROUTINE)
 struct SyncCoroTask {
     struct promise_type {
@@ -3075,6 +3227,7 @@ int main(int argc, char** argv) {
     const std::string bench_img = join_path(data_dir, "cpp_bench.img");
     const std::string fuse_img = join_path(data_dir, "cpp_fuse.img");
     const std::string features_img = join_path(data_dir, "cpp_features.img");
+    const std::string v161_img = join_path(data_dir, "cpp_v161.img");
     const std::string coro_img = join_path(data_dir, "cpp_coro.img");
 
     test_pinnable_slice_zero_copy_and_fallbacks(mmap_img, file_io_img, enc_img);
@@ -3087,6 +3240,7 @@ int main(int argc, char** argv) {
     test_fuse_kernel_frame_dispatch(fuse_img);
     test_rename_stat_exists_subdir_and_filters(features_img);
     test_clone_transfer_splice_and_get_or_open(data_dir);
+    test_autogrow_resize_vacuum_batch_and_zstd_dict(v161_img);
 #if defined(OIFS_HAS_CPP20_COROUTINE)
     test_cpp20_coroutine_co_await(coro_img);
 #else

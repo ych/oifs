@@ -3616,11 +3616,38 @@ impl AllocSim {
         if count == 0 {
             return Ok(());
         }
-        let data_start = self.data_start;
-        let bm = self.ensure_data_bitmap(backing)?;
-        let mut a = SimpleBlockAllocator::new(bm, data_start);
-        a.free_contiguous(start_blk, count)
-            .map_err(DiskManagerError::Allocator)?;
+        let end_blk = start_blk
+            .checked_add(count as u64)
+            .ok_or(DiskManagerError::Journal(JournalError::BlockOutOfRange {
+                block_id: start_blk,
+            }))?;
+        if start_blk < self.data_start || end_blk > self.block_count {
+            return Err(DiskManagerError::Journal(JournalError::BlockOutOfRange {
+                block_id: start_blk,
+            }));
+        }
+        // Only recycle blocks that were freshly allocated inside this still-uncommitted
+        // transaction; pre-existing committed blocks stay pinned (`1`) until after WAL
+        // commit so subsequent allocations in the same transaction never overwrite live
+        // pre-commit data or indirect/chunk blocks.
+        let fresh_to_recycle: Vec<u64> = (start_blk..end_blk)
+            .filter(|blk| {
+                let was_fresh = self.fresh_set.remove(blk);
+                if was_fresh {
+                    self.unzeroed_fresh.remove(blk);
+                }
+                was_fresh
+            })
+            .collect();
+        if !fresh_to_recycle.is_empty() {
+            let data_start = self.data_start;
+            let bm = self.ensure_data_bitmap(backing)?;
+            let mut a = SimpleBlockAllocator::new(bm, data_start);
+            for blk in fresh_to_recycle {
+                a.free_contiguous(blk, 1)
+                    .map_err(DiskManagerError::Allocator)?;
+            }
+        }
         if start_blk < self.free_block_hint {
             self.free_block_hint = start_blk;
         }
@@ -3662,14 +3689,13 @@ impl AllocSim {
         free_inode_hint: u64,
         free_block_hint: u64,
     ) -> Self {
+        let block_count = data_start.saturating_add((data_bitmap.len() * 8) as u64);
         Self {
             inode_bitmap,
             data_bitmap: Some(data_bitmap),
             sb: None,
             data_start,
-            // The test simulator is not bound to an image; the limits are
-            // effectively disabled.
-            block_count: u64::MAX,
+            block_count,
             usable_inodes: u64::MAX,
             free_inode_hint,
             free_block_hint,
@@ -5534,5 +5560,27 @@ mod alloc_sim_and_staging_tests {
         assert!(!is_set(12));
         assert!(is_set(13));
         assert!(is_set(14));
+    }
+
+    #[test]
+    fn test_alloc_sim_free_contiguous_pins_preexisting_blocks_until_commit() {
+        let (_f, backing) = prune_pointer_tests::scratch();
+        // data_start = 10; pre-existing bit 0 (blk 10) is already allocated (`0b0000_0001`).
+        let mut sim = AllocSim::new_for_test(vec![0u8; 8], vec![0x01u8, 0u8], 10, 0, 10);
+
+        // Free pre-existing block 10 inside uncommitted tx -> stays pinned in `data_bitmap`,
+        // though `free_block_hint` lowers to 10 so future post-commit txs can reuse it.
+        sim.free_contiguous(&backing, 10, 1).unwrap();
+        assert_eq!(sim.free_block_hint, 10);
+
+        // Subsequent alloc in the SAME uncommitted tx must NOT reuse pre-existing blk 10!
+        let fresh1 = sim.alloc_block(&backing).unwrap();
+        assert_eq!(fresh1, 11);
+
+        // Freshly allocated block 11 freed inside the SAME tx CAN be recycled cleanly.
+        sim.free_contiguous(&backing, fresh1, 1).unwrap();
+        assert!(!sim.is_fresh(fresh1));
+        let fresh2 = sim.alloc_block(&backing).unwrap();
+        assert_eq!(fresh2, 11);
     }
 }

@@ -14,14 +14,28 @@ use rmcp::{ServerHandler, ServiceExt, tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use oifs::disk::{CompressionMode, DiskManager};
+use oifs::disk::{
+    AutoGrowConfig, CompressionMode, DiskManager, DiskManagerError, ResizeMethod, VacuumOptions,
+};
 use oifs::inode::FileType;
+use oifs::storage::StorageMode;
 
 // ── Default image config ──────────────────────────────────────────────
 const DEFAULT_IMAGE: &str = "agent_memory.img";
 const DEFAULT_SIZE_MB: u64 = 10;
 
-// ── MCP Server struct ─────────────────────────────────────────────────
+// ── MCP Server struct & config ─────────────────────────────────────────
+struct OifsMcpConfig {
+    image_path: PathBuf,
+    size_bytes: u64,
+    password: Option<String>,
+    journal: bool,
+    storage_mode: StorageMode,
+    read_only: bool,
+    auto_grow: AutoGrowConfig,
+    dict_path: Option<PathBuf>,
+}
+
 #[derive(Clone)]
 struct OifsMcpServer {
     dm: DiskManager,
@@ -31,17 +45,41 @@ struct OifsMcpServer {
 }
 
 impl OifsMcpServer {
-    fn new(image_path: PathBuf, size_bytes: u64, password: Option<&str>) -> Result<Self> {
-        // If image doesn't yet exist AND a password was supplied,
-        // bootstrap an encrypted image; otherwise open (auto-create plain).
-        let dm = match (!image_path.exists(), password) {
-            (true, Some(pwd)) => DiskManager::create_encrypted(&image_path, size_bytes, pwd)?,
-            _ => DiskManager::open_with_password(&image_path, size_bytes, password)?,
+    fn new(cfg: OifsMcpConfig) -> Result<Self> {
+        if cfg.read_only && cfg.auto_grow.enabled {
+            return Err("Cannot combine --read-only with --auto-grow".into());
+        }
+        let password = cfg.password.as_deref();
+        let dm = if cfg.read_only {
+            DiskManager::open_read_only_with_storage_mode(
+                &cfg.image_path,
+                password,
+                cfg.storage_mode,
+            )?
+        } else {
+            DiskManager::open_with_options(
+                &cfg.image_path,
+                cfg.size_bytes,
+                password,
+                cfg.journal,
+                cfg.storage_mode,
+            )?
         };
+        if cfg.auto_grow.enabled {
+            dm.set_auto_grow(cfg.auto_grow);
+        }
+        if let Some(dpath) = cfg.dict_path.as_ref() {
+            let dict_bytes = std::fs::read(dpath)?;
+            if cfg.read_only {
+                dm.register_zstd_dict(&dict_bytes)?;
+            } else {
+                dm.register_and_use_zstd_dict(&dict_bytes)?;
+            }
+        }
         Ok(Self {
             dm,
             append_lock: Arc::new(std::sync::Mutex::new(())),
-            image_path,
+            image_path: cfg.image_path,
             tool_router: Self::tool_router(),
         })
     }
@@ -122,6 +160,122 @@ struct AppendFileParams {
     content: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct RenamePathParams {
+    /// Current path inside the OIFS image
+    old_path: String,
+    /// New path inside the OIFS image (parent directory must exist)
+    new_path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct StatPathParams {
+    /// Path inside the OIFS image (e.g. "." or "notes/todo.txt")
+    path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum McpBatchOp {
+    /// Atomically create a new file with UTF-8 content
+    CreateFile {
+        path: String,
+        content: String,
+        /// Optional compression mode: "auto", "never", "always", or "seekable"
+        #[serde(default)]
+        compression: Option<String>,
+    },
+    /// Create a directory (parent must exist)
+    Mkdir { path: String },
+    /// Delete a file or empty directory
+    Delete { path: String },
+    /// Atomically rename or move an entry
+    Rename { old_path: String, new_path: String },
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct WriteBatchParams {
+    /// Ordered list of operations to commit atomically
+    ops: Vec<McpBatchOp>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ResizeImageParams {
+    /// Target container size in bytes (rounded up to 4 KiB blocks)
+    size_bytes: u64,
+    /// If true, only allow growing (fail instead of shrinking)
+    #[serde(default)]
+    grow_only: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct VacuumImageParams {
+    /// Minimum free headroom preserved after shrinking (bytes, default 1 MiB)
+    #[serde(default)]
+    min_headroom_bytes: Option<u64>,
+    /// Percentage of used data blocks preserved as extra headroom (0..=100, default 15)
+    #[serde(default)]
+    headroom_percent: Option<u8>,
+    /// Floor on post-vacuum image byte size (default 0)
+    #[serde(default)]
+    min_image_bytes: Option<u64>,
+    /// Allow cross-boundary atomic re-layout when reclaiming space (default true)
+    #[serde(default)]
+    allow_relayout: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ConfigureAutoGrowParams {
+    /// Enable or disable transparent auto-grow on capacity exhaustion
+    enabled: bool,
+    /// Multiplicative capacity target (1.1..=4.0, default 1.5)
+    #[serde(default)]
+    growth_factor: Option<f64>,
+    /// Minimum byte increment per expansion (default 4 MiB)
+    #[serde(default)]
+    min_increment_bytes: Option<u64>,
+    /// Maximum container size cap in bytes (0 = unlimited)
+    #[serde(default)]
+    max_size_bytes: Option<u64>,
+    /// Allow cross-boundary atomic re-layout (default true)
+    #[serde(default)]
+    allow_relayout: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct TrainZstdDictParams {
+    /// Directory path inside the OIFS image containing sample files
+    dir_path: String,
+    /// Optional path inside the OIFS image to persist the trained raw dictionary
+    #[serde(default)]
+    save_path: Option<String>,
+    /// Target maximum dictionary size in bytes (256..=16 MiB, default 65536)
+    #[serde(default)]
+    max_dict_bytes: Option<usize>,
+    /// Maximum sample files to train from (default 1024)
+    #[serde(default)]
+    max_samples: Option<usize>,
+    /// Also set as default compression dictionary on this mount (default true on RW)
+    #[serde(default)]
+    activate: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct LoadZstdDictParams {
+    /// Path to a trained dictionary file stored inside the OIFS image
+    path: String,
+    /// Set as default compression dictionary (default true on RW)
+    #[serde(default)]
+    activate: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct SetDefaultZstdDictParams {
+    /// Registered dictionary ID, or null/omitted to clear the default dictionary
+    #[serde(default)]
+    dict_id: Option<u32>,
+}
+
 #[derive(Serialize)]
 struct EntryInfo {
     name: String,
@@ -151,6 +305,44 @@ fn json_error(error: &dyn std::fmt::Display) -> String {
         ("ok", serde_json::Value::Bool(false)),
         ("error", serde_json::Value::String(error.to_string())),
     ])
+}
+
+fn resize_method_name(method: ResizeMethod) -> &'static str {
+    match method {
+        ResizeMethod::NoOp => "no_op",
+        ResizeMethod::InPlace => "in_place",
+        ResizeMethod::AtomicRelayout => "atomic_relayout",
+    }
+}
+
+fn parse_compression_str(s: Option<&str>) -> Result<CompressionMode> {
+    match s {
+        None => Ok(CompressionMode::Auto),
+        Some(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "auto" | "default" => Ok(CompressionMode::Auto),
+            "never" | "raw" | "none" => Ok(CompressionMode::Never),
+            "always" | "stream" => Ok(CompressionMode::Always),
+            "seekable" | "seekable_64k" => Ok(CompressionMode::Seekable {
+                chunk_size: 65536,
+                level: 3,
+            }),
+            other => Err(format!("Unsupported compression mode: '{other}'").into()),
+        },
+    }
+}
+
+fn auto_grow_json_fields(cfg: &AutoGrowConfig) -> Vec<(&'static str, serde_json::Value)> {
+    vec![
+        ("ok", serde_json::Value::Bool(true)),
+        ("enabled", serde_json::Value::Bool(cfg.enabled)),
+        ("growth_factor", serde_json::Value::from(cfg.growth_factor)),
+        (
+            "min_increment_bytes",
+            serde_json::Value::from(cfg.min_increment_bytes),
+        ),
+        ("max_size_bytes", serde_json::Value::from(cfg.max_size_bytes)),
+        ("allow_relayout", serde_json::Value::Bool(cfg.allow_relayout)),
+    ]
 }
 
 // ── Tool implementations ──────────────────────────────────────────────
@@ -331,21 +523,427 @@ impl OifsMcpServer {
     }
 
     #[tool(
-        description = "Show filesystem status: image path, total/used/free blocks, and fragmentation ratio."
+        description = "Show filesystem status: image path, byte size, read-only/auto-grow state, Zstd dictionaries, total/used/free blocks, and fragmentation ratio."
     )]
     async fn status(&self) -> String {
         let dm = self.dm.clone();
         let image_display = self.image_path.display().to_string();
         let result = tokio::task::spawn_blocking(move || -> Result<String> {
             let frag = dm.analyze_fragmentation()?;
+            let ag = dm.auto_grow_config();
+            let default_dict = match dm.default_zstd_dict_id() {
+                Some(id) => serde_json::Value::from(id),
+                None => serde_json::Value::Null,
+            };
+            let reg_dicts: Vec<serde_json::Value> = dm
+                .registered_zstd_dict_ids()
+                .into_iter()
+                .map(serde_json::Value::from)
+                .collect();
             Ok(json_object(vec![
                 ("image", serde_json::Value::String(image_display)),
+                ("image_size_bytes", serde_json::Value::from(dm.image_size_bytes())),
+                ("read_only", serde_json::Value::Bool(dm.is_read_only())),
+                ("auto_grow_enabled", serde_json::Value::Bool(ag.enabled)),
+                ("default_zstd_dict_id", default_dict),
+                ("registered_zstd_dicts", serde_json::Value::Array(reg_dicts)),
                 ("total_blocks", serde_json::Value::from(frag.total_blocks)),
                 ("used_blocks", serde_json::Value::from(frag.used_blocks)),
                 ("free_blocks", serde_json::Value::from(frag.free_blocks)),
                 (
                     "fragmentation",
                     serde_json::Value::from(frag.fragmentation_ratio),
+                ),
+            ]))
+        })
+        .await;
+        match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
+            Err(e) => json_error(&e),
+        }
+    }
+
+    #[tool(
+        description = "Atomically rename or move a file or directory inside the OIFS sandbox image (POSIX overwrite semantics)."
+    )]
+    async fn rename_path(&self, Parameters(params): Parameters<RenamePathParams>) -> String {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            let (old_parent, old_name) = dm.resolve_parent(&params.old_path)?;
+            let (new_parent, new_name) = dm.resolve_parent(&params.new_path)?;
+            dm.rename(old_parent, &old_name, new_parent, &new_name)?;
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("old_path", serde_json::Value::String(params.old_path)),
+                ("new_path", serde_json::Value::String(params.new_path)),
+            ]))
+        })
+        .await;
+        match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
+            Err(e) => json_error(&e),
+        }
+    }
+
+    #[tool(description = "Inspect metadata of a file or directory inside the OIFS sandbox image.")]
+    async fn stat_path(&self, Parameters(params): Parameters<StatPathParams>) -> String {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            let inode_id = dm.resolve_path(&params.path)?;
+            let inode = dm.read_inode(inode_id)?;
+            let kind = match inode.mode {
+                FileType::File => "file",
+                FileType::Directory => "dir",
+            };
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("inode", serde_json::Value::from(inode_id)),
+                ("kind", serde_json::Value::String(kind.to_string())),
+                ("size", serde_json::Value::from(inode.size)),
+                (
+                    "compressed_size",
+                    serde_json::Value::from(inode.compressed_size),
+                ),
+                ("created_at", serde_json::Value::from(inode.created_at)),
+                ("modified_at", serde_json::Value::from(inode.modified_at)),
+                ("encrypted", serde_json::Value::Bool(inode.encrypted)),
+                (
+                    "seekable_64k",
+                    serde_json::Value::Bool(
+                        (inode.flags & oifs::inode::INODE_FLAG_SEEKABLE_64K) != 0,
+                    ),
+                ),
+            ]))
+        })
+        .await;
+        match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
+            Err(e) => json_error(&e),
+        }
+    }
+
+    #[tool(
+        description = "Execute multiple create_file, mkdir, delete, and rename operations atomically via WriteBatch."
+    )]
+    async fn write_batch(&self, Parameters(params): Parameters<WriteBatchParams>) -> String {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            let mut wb = dm.begin_write_batch();
+            for op in params.ops {
+                match op {
+                    McpBatchOp::CreateFile {
+                        path,
+                        content,
+                        compression,
+                    } => {
+                        let mode = parse_compression_str(compression.as_deref())?;
+                        let (parent, name) = dm.resolve_parent(&path)?;
+                        wb.create_file_with_data(parent, name, content.into_bytes(), mode);
+                    }
+                    McpBatchOp::Mkdir { path } => {
+                        let (parent, name) = dm.resolve_parent(&path)?;
+                        wb.mkdir(parent, name);
+                    }
+                    McpBatchOp::Delete { path } => {
+                        let (parent, name) = dm.resolve_parent(&path)?;
+                        wb.delete(parent, name);
+                    }
+                    McpBatchOp::Rename { old_path, new_path } => {
+                        let (old_parent, old_name) = dm.resolve_parent(&old_path)?;
+                        let (new_parent, new_name) = dm.resolve_parent(&new_path)?;
+                        wb.rename(old_parent, old_name, new_parent, new_name);
+                    }
+                }
+            }
+            let res = wb.commit()?;
+            let created: Vec<serde_json::Value> = res
+                .created_inodes
+                .into_iter()
+                .map(serde_json::Value::from)
+                .collect();
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("ops_executed", serde_json::Value::from(res.ops_executed)),
+                (
+                    "wal_transactions",
+                    serde_json::Value::from(res.wal_transactions),
+                ),
+                ("created_inodes", serde_json::Value::Array(created)),
+            ]))
+        })
+        .await;
+        match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
+            Err(e) => json_error(&e),
+        }
+    }
+
+    #[tool(
+        description = "Online grow or resize the OIFS container image to `size_bytes` (supports in-place and inode-preserving cross-boundary relayout)."
+    )]
+    async fn resize_image(&self, Parameters(params): Parameters<ResizeImageParams>) -> String {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            let stats = if params.grow_only.unwrap_or(false) {
+                dm.grow(params.size_bytes)?
+            } else {
+                dm.resize(params.size_bytes)?
+            };
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("bytes_before", serde_json::Value::from(stats.bytes_before)),
+                ("bytes_after", serde_json::Value::from(stats.bytes_after)),
+                ("blocks_before", serde_json::Value::from(stats.blocks_before)),
+                ("blocks_after", serde_json::Value::from(stats.blocks_after)),
+                ("inodes_before", serde_json::Value::from(stats.inodes_before)),
+                ("inodes_after", serde_json::Value::from(stats.inodes_after)),
+                (
+                    "method",
+                    serde_json::Value::String(resize_method_name(stats.method).to_string()),
+                ),
+            ]))
+        })
+        .await;
+        match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
+            Err(e) => json_error(&e),
+        }
+    }
+
+    #[tool(
+        description = "Reclaim trailing free blocks and compact sparse space in the OIFS container image."
+    )]
+    async fn vacuum_image(&self, Parameters(params): Parameters<VacuumImageParams>) -> String {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            let mut opts = VacuumOptions::default();
+            if let Some(bytes) = params.min_headroom_bytes {
+                opts = opts.with_min_headroom_bytes(bytes);
+            }
+            if let Some(pct) = params.headroom_percent {
+                opts = opts.with_headroom_percent(pct);
+            }
+            if let Some(floor) = params.min_image_bytes {
+                opts = opts.with_min_image_bytes(floor);
+            }
+            if let Some(relayout) = params.allow_relayout {
+                opts = opts.with_allow_relayout(relayout);
+            }
+            let stats = dm.vacuum(opts)?;
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("bytes_before", serde_json::Value::from(stats.bytes_before)),
+                ("bytes_after", serde_json::Value::from(stats.bytes_after)),
+                (
+                    "bytes_reclaimed",
+                    serde_json::Value::from(stats.bytes_reclaimed),
+                ),
+                ("blocks_before", serde_json::Value::from(stats.blocks_before)),
+                ("blocks_after", serde_json::Value::from(stats.blocks_after)),
+                (
+                    "blocks_relocated",
+                    serde_json::Value::from(stats.blocks_relocated),
+                ),
+                (
+                    "method",
+                    serde_json::Value::String(resize_method_name(stats.method).to_string()),
+                ),
+            ]))
+        })
+        .await;
+        match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
+            Err(e) => json_error(&e),
+        }
+    }
+
+    #[tool(
+        description = "Configure dynamic Auto-Grow policy on the OIFS container (rejected on read-only mounts)."
+    )]
+    async fn configure_auto_grow(
+        &self,
+        Parameters(params): Parameters<ConfigureAutoGrowParams>,
+    ) -> String {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            if dm.is_read_only() {
+                return Err(DiskManagerError::ReadOnly.into());
+            }
+            let mut cfg = if params.enabled {
+                AutoGrowConfig::enabled()
+            } else {
+                AutoGrowConfig::disabled()
+            };
+            if let Some(factor) = params.growth_factor {
+                cfg = cfg.with_growth_factor(factor);
+            }
+            if let Some(min_inc) = params.min_increment_bytes {
+                cfg = cfg.with_min_increment_bytes(min_inc);
+            }
+            if let Some(max_bytes) = params.max_size_bytes {
+                cfg = cfg.with_max_size_bytes(max_bytes);
+            }
+            if let Some(relayout) = params.allow_relayout {
+                cfg = cfg.with_allow_relayout(relayout);
+            }
+            dm.set_auto_grow(cfg);
+            let effective = dm.auto_grow_config();
+            Ok(json_object(auto_grow_json_fields(&effective)))
+        })
+        .await;
+        match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
+            Err(e) => json_error(&e),
+        }
+    }
+
+    #[tool(
+        description = "Train a custom Zstd dictionary from sample files inside a directory in the OIFS image, optionally save it inside the image, and register/activate it."
+    )]
+    async fn train_zstd_dict(&self, Parameters(params): Parameters<TrainZstdDictParams>) -> String {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            if params.save_path.is_some() && dm.is_read_only() {
+                return Err(DiskManagerError::ReadOnly.into());
+            }
+            let dir_inode = dm.resolve_path(&params.dir_path)?;
+            let max_dict = params.max_dict_bytes.unwrap_or(64 * 1024);
+            let max_samples = params.max_samples.unwrap_or(1024);
+            let dict_bytes = dm.train_zstd_dict_from_dir(dir_inode, max_dict, max_samples)?;
+
+            let activate = params.activate.unwrap_or(!dm.is_read_only());
+            let dict_id = if activate {
+                dm.register_and_use_zstd_dict(&dict_bytes)?
+            } else {
+                dm.register_zstd_dict(&dict_bytes)?
+            };
+
+            let saved_path_val = if let Some(save_path) = params.save_path {
+                let (parent, name) = dm.resolve_parent(&save_path)?;
+                match dm.lookup(parent, &name) {
+                    Ok(existing_id) => {
+                        dm.write_data_truncated(existing_id, &dict_bytes, CompressionMode::Never)?;
+                    }
+                    Err(_) => {
+                        dm.create_file_with_data(
+                            parent,
+                            &name,
+                            &dict_bytes,
+                            CompressionMode::Never,
+                        )?;
+                    }
+                }
+                serde_json::Value::String(save_path)
+            } else {
+                serde_json::Value::Null
+            };
+
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("dict_id", serde_json::Value::from(dict_id)),
+                ("dict_bytes", serde_json::Value::from(dict_bytes.len())),
+                ("activated", serde_json::Value::Bool(activate)),
+                ("saved_path", saved_path_val),
+            ]))
+        })
+        .await;
+        match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
+            Err(e) => json_error(&e),
+        }
+    }
+
+    #[tool(
+        description = "Load and register a trained Zstd dictionary stored inside the OIFS image."
+    )]
+    async fn load_zstd_dict(&self, Parameters(params): Parameters<LoadZstdDictParams>) -> String {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            let inode_id = dm.resolve_path(&params.path)?;
+            let dict_bytes = dm.read_data(inode_id)?;
+            let activate = params.activate.unwrap_or(!dm.is_read_only());
+            let dict_id = if activate {
+                dm.register_and_use_zstd_dict(&dict_bytes)?
+            } else {
+                dm.register_zstd_dict(&dict_bytes)?
+            };
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("dict_id", serde_json::Value::from(dict_id)),
+                ("dict_bytes", serde_json::Value::from(dict_bytes.len())),
+                ("activated", serde_json::Value::Bool(activate)),
+            ]))
+        })
+        .await;
+        match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
+            Err(e) => json_error(&e),
+        }
+    }
+
+    #[tool(
+        description = "Set or clear (omit/null) the active default Zstd compression dictionary ID on this mount."
+    )]
+    async fn set_default_zstd_dict(
+        &self,
+        Parameters(params): Parameters<SetDefaultZstdDictParams>,
+    ) -> String {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            dm.set_default_zstd_dict(params.dict_id)?;
+            let effective = match dm.default_zstd_dict_id() {
+                Some(id) => serde_json::Value::from(id),
+                None => serde_json::Value::Null,
+            };
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("default_zstd_dict_id", effective),
+            ]))
+        })
+        .await;
+        match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => json_error(&e),
+            Err(e) => json_error(&e),
+        }
+    }
+
+    #[tool(description = "Run online structural consistency check (fsck) on the OIFS image.")]
+    async fn verify_integrity(&self) -> String {
+        let dm = self.dm.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            let report = dm.verify_integrity()?;
+            Ok(json_object(vec![
+                ("ok", serde_json::Value::Bool(true)),
+                ("is_clean", serde_json::Value::Bool(report.is_clean)),
+                (
+                    "orphan_inodes",
+                    serde_json::Value::from(report.orphan_inodes.len()),
+                ),
+                (
+                    "leaked_blocks",
+                    serde_json::Value::from(report.leaked_blocks.len()),
+                ),
+                (
+                    "missing_blocks",
+                    serde_json::Value::from(report.missing_blocks.len()),
+                ),
+                (
+                    "cross_linked_blocks",
+                    serde_json::Value::from(report.cross_linked_blocks.len()),
+                ),
+                (
+                    "corrupted_inodes",
+                    serde_json::Value::from(report.corrupted_inodes.len()),
                 ),
             ]))
         })
@@ -382,29 +980,59 @@ fn print_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!(
-        "  --size <MB>     Initial size when creating a new image (default: {} MB)",
+        "  --size <MB>          Initial size when creating a new image (default: {} MB)",
         DEFAULT_SIZE_MB
     );
-    eprintln!("  -h, --help      Show this help");
+    eprintln!("  --journal            Enable metadata WAL journaling when creating a new image");
+    eprintln!("  --no-mmap            Use pure positional pread/pwrite I/O (zero mmap)");
+    eprintln!("  --read-only          Open existing image in strict read-only mode (F_RDLCK)");
+    eprintln!(
+        "  --auto-grow[=MAX_MB] Enable transparent auto-grow on capacity exhaustion (optional cap in MB)"
+    );
+    eprintln!("  --dict <PATH>        Load a trained Zstd dictionary file from host at startup");
+    eprintln!("  -h, --help           Show this help");
     eprintln!();
     eprintln!("Environment:");
-    eprintln!("  OIFS_PASSWORD   If set, opens (or creates) the image as encrypted.");
-    eprintln!("                  Required to open an existing encrypted image.");
+    eprintln!("  OIFS_PASSWORD        If set, opens (or creates) the image as encrypted.");
+    eprintln!("                       Required to open an existing encrypted image.");
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut image_path: Option<PathBuf> = None;
     let mut size_mb: u64 = DEFAULT_SIZE_MB;
+    let mut journal = false;
+    let mut storage_mode = StorageMode::Mmap;
+    let mut read_only = false;
+    let mut auto_grow = AutoGrowConfig::disabled();
+    let mut dict_path: Option<PathBuf> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
+        if let Some(cap_str) = arg.strip_prefix("--auto-grow=") {
+            let max_mb: u64 = cap_str
+                .parse()
+                .map_err(|e| format!("--auto-grow cap '{}' invalid: {}", cap_str, e))?;
+            let max_bytes = max_mb
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| format!("--auto-grow cap is too large: {} MB", max_mb))?;
+            auto_grow = AutoGrowConfig::enabled().with_max_size_bytes(max_bytes);
+            continue;
+        }
         match arg.as_str() {
             "--size" => {
                 let v = args.next().ok_or("--size requires a value (MB)")?;
                 size_mb = v
                     .parse()
                     .map_err(|e| format!("--size value '{}' invalid: {}", v, e))?;
+            }
+            "--journal" => journal = true,
+            "--no-mmap" => storage_mode = StorageMode::FileIo,
+            "--read-only" => read_only = true,
+            "--auto-grow" => auto_grow = AutoGrowConfig::enabled(),
+            "--dict" => {
+                let v = args.next().ok_or("--dict requires a dictionary file path")?;
+                dict_path = Some(PathBuf::from(v));
             }
             "-h" | "--help" => {
                 print_usage();
@@ -432,13 +1060,25 @@ async fn main() -> Result<()> {
     let password = std::env::var("OIFS_PASSWORD").ok();
 
     eprintln!(
-        "[oifs-mcp] image={} size={}MB encrypted={}",
+        "[oifs-mcp] image={} size={}MB encrypted={} journal={} read_only={} auto_grow={}",
         image_path.display(),
         size_mb,
-        password.is_some()
+        password.is_some(),
+        journal,
+        read_only,
+        auto_grow.enabled
     );
 
-    let server = OifsMcpServer::new(image_path, size_bytes, password.as_deref())?;
+    let server = OifsMcpServer::new(OifsMcpConfig {
+        image_path,
+        size_bytes,
+        password,
+        journal,
+        storage_mode,
+        read_only,
+        auto_grow,
+        dict_path,
+    })?;
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
 

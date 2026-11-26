@@ -142,6 +142,130 @@ impl StorageMode {
     }
 }
 
+#[doc(hidden)]
+pub mod crash_sim {
+    use std::cell::RefCell;
+    use std::fs::File;
+    use std::io;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FILE_IO_TRACE_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum FileIoTraceEvent {
+        Write { offset: u64, data: Vec<u8> },
+        Sync,
+        SetLen { new_len: u64 },
+    }
+
+    struct FileIoTraceState {
+        target_id: Option<(u64, u64)>,
+        events: Vec<FileIoTraceEvent>,
+    }
+
+    std::thread_local! {
+        static FILE_IO_TRACE: RefCell<Option<FileIoTraceState>> = const { RefCell::new(None) };
+    }
+
+    pub struct FileIoTraceGuard;
+
+    impl Drop for FileIoTraceGuard {
+        fn drop(&mut self) {
+            let had_state = FILE_IO_TRACE.with(|cell| cell.borrow_mut().take().is_some());
+            if had_state {
+                FILE_IO_TRACE_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn file_identity_from_meta(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        Some((meta.dev(), meta.ino()))
+    }
+
+    #[cfg(not(unix))]
+    fn file_identity_from_meta(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+        None
+    }
+
+    pub fn start_file_io_trace(path: &Path) -> io::Result<FileIoTraceGuard> {
+        let target_id = if path.exists() {
+            file_identity_from_meta(&std::fs::metadata(path)?)
+        } else {
+            None
+        };
+        let prev = FILE_IO_TRACE.with(|cell| {
+            cell.borrow_mut().replace(FileIoTraceState {
+                target_id,
+                events: Vec::new(),
+            })
+        });
+        if prev.is_none() {
+            FILE_IO_TRACE_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(FileIoTraceGuard)
+    }
+
+    pub fn take_file_io_trace() -> Vec<FileIoTraceEvent> {
+        FILE_IO_TRACE.with(|cell| {
+            cell.borrow_mut()
+                .as_mut()
+                .map(|st| std::mem::take(&mut st.events))
+                .unwrap_or_default()
+        })
+    }
+
+    fn push_for_file(file: &File, event: FileIoTraceEvent) {
+        FILE_IO_TRACE.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let Some(st) = guard.as_mut() else {
+                return;
+            };
+            if let Some(expected_id) = st.target_id {
+                let Ok(meta) = file.metadata() else {
+                    return;
+                };
+                if file_identity_from_meta(&meta) != Some(expected_id) {
+                    return;
+                }
+            }
+            st.events.push(event);
+        });
+    }
+
+    #[inline]
+    pub(crate) fn record_write(file: &File, offset: u64, data: &[u8]) {
+        if FILE_IO_TRACE_ACTIVE.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        push_for_file(
+            file,
+            FileIoTraceEvent::Write {
+                offset,
+                data: data.to_vec(),
+            },
+        );
+    }
+
+    #[inline]
+    pub(crate) fn record_sync(file: &File) {
+        if FILE_IO_TRACE_ACTIVE.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        push_for_file(file, FileIoTraceEvent::Sync);
+    }
+
+    #[inline]
+    pub(crate) fn record_set_len(file: &File, new_len: u64) {
+        if FILE_IO_TRACE_ACTIVE.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        push_for_file(file, FileIoTraceEvent::SetLen { new_len });
+    }
+}
+
 /// Static zero block used to zero freshly allocated blocks via `pwrite` without heap allocation.
 static ZERO_BLOCK: [u8; BLOCK_SIZE] = [0u8; BLOCK_SIZE];
 
@@ -156,7 +280,9 @@ pub(crate) fn file_read_exact_at(file: &File, offset: u64, buf: &mut [u8]) -> io
 #[inline]
 pub(crate) fn file_write_all_at(file: &File, offset: u64, buf: &[u8]) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
-    file.write_all_at(buf, offset)
+    file.write_all_at(buf, offset)?;
+    crash_sim::record_write(file, offset, buf);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -183,6 +309,8 @@ pub(crate) fn file_read_exact_at(
 #[cfg(windows)]
 pub(crate) fn file_write_all_at(file: &File, mut offset: u64, mut buf: &[u8]) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
+    let orig_offset = offset;
+    let orig_buf = buf;
     while !buf.is_empty() {
         let n = file.seek_write(buf, offset)?;
         if n == 0 {
@@ -194,6 +322,7 @@ pub(crate) fn file_write_all_at(file: &File, mut offset: u64, mut buf: &[u8]) ->
         offset += n as u64;
         buf = &buf[n..];
     }
+    crash_sim::record_write(file, orig_offset, orig_buf);
     Ok(())
 }
 
@@ -2118,7 +2247,11 @@ impl ImageBacking {
         match self {
             Self::Mmap(m) => crate::retry_eintr(|| m.flush()),
             Self::MmapReadOnly(_) => Ok(()),
-            Self::File(f) => crate::retry_eintr(|| f.file.sync_data()),
+            Self::File(f) => {
+                crate::retry_eintr(|| f.file.sync_data())?;
+                crash_sim::record_sync(&f.file);
+                Ok(())
+            }
         }
     }
 
@@ -2197,7 +2330,9 @@ impl ImageBacking {
                 }
                 fb.len = new_usize;
                 file.set_len(new_len)?;
+                crash_sim::record_set_len(file, new_len);
                 file.sync_data()?;
+                crash_sim::record_sync(file);
                 Ok(())
             }
         }
@@ -2214,7 +2349,11 @@ impl ImageBacking {
         match self {
             Self::Mmap(m) => crate::retry_eintr(|| m.flush_range(offset, len)),
             Self::MmapReadOnly(_) => Ok(()),
-            Self::File(f) => crate::retry_eintr(|| f.file.sync_data()),
+            Self::File(f) => {
+                crate::retry_eintr(|| f.file.sync_data())?;
+                crash_sim::record_sync(&f.file);
+                Ok(())
+            }
         }
     }
 

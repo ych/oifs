@@ -1,7 +1,15 @@
 use oifs::ffi::{
-    oifs_check_version, oifs_close, oifs_last_error, oifs_loaded_path, oifs_mkdir,
-    oifs_open_with_password, oifs_read_file, oifs_version_code, oifs_version_major,
-    oifs_version_minor, oifs_version_patch, oifs_version_string, oifs_write_file,
+    OIFS_WRITE_POLICY_DEFAULT, OIFS_WRITE_POLICY_RAW, OIFS_WRITE_POLICY_SEEKABLE_64K,
+    OIFSAutoGrowConfig, OIFSBatchCommitResult, OIFSByteSlice, OIFSFilterConfig, OIFSResizeStats,
+    OIFSVacuumOptions, OIFSVacuumStats, OIFS_RESIZE_METHOD_IN_PLACE, oifs_batch_begin, oifs_batch_commit, oifs_batch_create_file_with_data, oifs_batch_delete,
+    oifs_batch_free, oifs_batch_len, oifs_batch_mkdir, oifs_batch_rename, oifs_check_version,
+    oifs_clear_zstd_dicts, oifs_close, oifs_default_zstd_dict_id, oifs_get_auto_grow, oifs_grow,
+    oifs_image_size_bytes, oifs_last_error, oifs_loaded_path, oifs_mkdir, oifs_open,
+    oifs_open_read_only, oifs_open_with_password, oifs_read_file, oifs_register_zstd_dict,
+    oifs_registered_zstd_dict_ids, oifs_resize, oifs_set_auto_grow, oifs_set_default_zstd_dict,
+    oifs_train_zstd_dict, oifs_train_zstd_dict_from_dir, oifs_unregister_zstd_dict, oifs_vacuum,
+    oifs_version_code, oifs_version_major, oifs_version_minor, oifs_version_patch,
+    oifs_version_string, oifs_write_file,
 };
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -204,4 +212,288 @@ fn test_ffi_version_handshake_compatibility() {
         .unwrap();
     println!("oifs_loaded_path reported: {}", loaded_path);
     assert!(!loaded_path.is_empty(), "Loaded path should not be empty");
+}
+
+#[test]
+fn test_ffi_autogrow_resize_vacuum_batch_and_zstd_dict() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("ffi_v161_features.img");
+    let c_path = CString::new(img_path.to_str().unwrap()).unwrap();
+
+    let handle = oifs_open(c_path.as_ptr(), 4 * 1024 * 1024);
+    assert!(!handle.is_null());
+
+    // 1. Auto-Grow & Resize & Vacuum
+    assert_eq!(oifs_image_size_bytes(handle), 4 * 1024 * 1024);
+    let ag = OIFSAutoGrowConfig {
+        enabled: 1,
+        allow_relayout: 1,
+        _pad: [0; 6],
+        growth_factor: 1.5,
+        min_increment_bytes: 2 * 1024 * 1024,
+        max_size_bytes: 16 * 1024 * 1024,
+    };
+    assert_eq!(oifs_set_auto_grow(handle, &ag), 0);
+
+    let mut ag_out = OIFSAutoGrowConfig::default();
+    assert_eq!(oifs_get_auto_grow(handle, &mut ag_out), 0);
+    assert_eq!(ag_out.enabled, 1);
+    assert_eq!(ag_out.max_size_bytes, 16 * 1024 * 1024);
+
+    let mut resize_stats = OIFSResizeStats::default();
+    assert_eq!(
+        oifs_grow(handle, 8 * 1024 * 1024, &mut resize_stats),
+        0
+    );
+    assert_eq!(resize_stats.bytes_after, 8 * 1024 * 1024);
+    assert_eq!(resize_stats.method, OIFS_RESIZE_METHOD_IN_PLACE);
+    assert_eq!(oifs_image_size_bytes(handle), 8 * 1024 * 1024);
+
+    // 2. WriteBatch (mixed ops + created inode capture + double-commit & null safety)
+    let c_dir = CString::new("logs").unwrap();
+    assert_eq!(oifs_mkdir(handle, c_dir.as_ptr()), 0);
+
+    let batch = oifs_batch_begin(handle);
+    assert!(!batch.is_null());
+    assert_eq!(oifs_batch_len(batch), 0);
+
+    let c_sub = CString::new("logs/sub").unwrap();
+    let c_f1 = CString::new("sample1.json").unwrap();
+    let c_f2 = CString::new("sample2.json").unwrap();
+    let c_f2_renamed = CString::new("logs/sample2.json").unwrap();
+    let c_f3 = CString::new("drop_me.txt").unwrap();
+
+    let s1 = br#"{"service":"oifs","level":"info","msg":"batch-one-payload-0001"}"#;
+    let s2 = br#"{"service":"oifs","level":"warn","msg":"batch-two-payload-0002"}"#;
+    let filter_none = OIFSFilterConfig::default();
+
+    assert_eq!(oifs_batch_mkdir(batch, c_sub.as_ptr()), 0);
+    assert_eq!(
+        oifs_batch_create_file_with_data(
+            batch,
+            c_f1.as_ptr(),
+            s1.as_ptr(),
+            s1.len() as u64,
+            OIFS_WRITE_POLICY_RAW,
+            0,
+            std::ptr::null(),
+        ),
+        0
+    );
+    assert_eq!(
+        oifs_batch_create_file_with_data(
+            batch,
+            c_f2.as_ptr(),
+            s2.as_ptr(),
+            s2.len() as u64,
+            OIFS_WRITE_POLICY_SEEKABLE_64K,
+            1,
+            &filter_none,
+        ),
+        0
+    );
+    assert_eq!(
+        oifs_batch_create_file_with_data(
+            batch,
+            c_f3.as_ptr(),
+            b"bye".as_ptr(),
+            3,
+            OIFS_WRITE_POLICY_DEFAULT,
+            0,
+            std::ptr::null(),
+        ),
+        0
+    );
+    assert_eq!(
+        oifs_batch_rename(batch, c_f2.as_ptr(), c_f2_renamed.as_ptr()),
+        0
+    );
+    assert_eq!(oifs_batch_delete(batch, c_f3.as_ptr()), 0);
+    assert_eq!(oifs_batch_len(batch), 6);
+
+    let mut commit_res = OIFSBatchCommitResult::default();
+    let mut created_inodes = [0u64; 8];
+    assert_eq!(
+        oifs_batch_commit(
+            batch,
+            &mut commit_res,
+            created_inodes.as_mut_ptr(),
+            created_inodes.len(),
+        ),
+        0
+    );
+    assert_eq!(commit_res.ops_executed, 6);
+    assert_eq!(commit_res.created_count, 4);
+    assert!(created_inodes[..4].iter().all(|&id| id > 0));
+
+    // Re-committing an already committed batch must fail cleanly
+    assert_eq!(
+        oifs_batch_commit(batch, std::ptr::null_mut(), std::ptr::null_mut(), 0),
+        -1
+    );
+    oifs_batch_free(batch);
+
+    // Atomic rollback check: one invalid delete prevents all other ops in batch
+    let bad_batch = oifs_batch_begin(handle);
+    let c_should_not_exist = CString::new("should_not_exist.txt").unwrap();
+    let c_missing = CString::new("does_not_exist_anywhere.txt").unwrap();
+    assert_eq!(
+        oifs_batch_create_file_with_data(
+            bad_batch,
+            c_should_not_exist.as_ptr(),
+            b"abc".as_ptr(),
+            3,
+            OIFS_WRITE_POLICY_DEFAULT,
+            0,
+            std::ptr::null(),
+        ),
+        0
+    );
+    assert_eq!(oifs_batch_delete(bad_batch, c_missing.as_ptr()), 0);
+    assert_eq!(
+        oifs_batch_commit(bad_batch, std::ptr::null_mut(), std::ptr::null_mut(), 0),
+        -1
+    );
+    oifs_batch_free(bad_batch);
+    let mut tmp_read = [0u8; 8];
+    assert_eq!(
+        oifs_read_file(
+            handle,
+            c_should_not_exist.as_ptr(),
+            tmp_read.as_mut_ptr(),
+            tmp_read.len() as u64,
+        ),
+        -1
+    );
+
+    // 3. Zstd dictionary train (from samples + from dir), register, default, ids, unregister, clear
+    let mut raw_samples = Vec::new();
+    for i in 0..16u32 {
+        raw_samples.push(
+            format!("{{\"event\":\"heartbeat\",\"worker\":{i},\"region\":\"ap-east-1\",\"ok\":true}}")
+                .into_bytes(),
+        );
+    }
+    let slice_vec: Vec<OIFSByteSlice> = raw_samples
+        .iter()
+        .map(|v| OIFSByteSlice {
+            data: v.as_ptr(),
+            len: v.len(),
+        })
+        .collect();
+    let mut dict_buf = vec![0u8; 4096];
+    let trained_len = oifs_train_zstd_dict(
+        slice_vec.as_ptr(),
+        slice_vec.len(),
+        4096,
+        dict_buf.as_mut_ptr(),
+        dict_buf.len(),
+    );
+    assert!(trained_len > 0);
+    let dict_bytes = &dict_buf[..trained_len as usize];
+
+    let dict_id = oifs_register_zstd_dict(handle, dict_bytes.as_ptr(), dict_bytes.len(), 1);
+    assert!(dict_id > 0);
+    assert_eq!(oifs_default_zstd_dict_id(handle), dict_id);
+
+    let mut ids = [0u32; 8];
+    let n_ids = oifs_registered_zstd_dict_ids(handle, ids.as_mut_ptr(), ids.len());
+    assert_eq!(n_ids, 1);
+    assert_eq!(ids[0], dict_id as u32);
+
+    // Write small dict-compressed file and verify roundtrip
+    let c_dict_file = CString::new("dict_small.json").unwrap();
+    let payload = &raw_samples[5];
+    assert_eq!(
+        oifs_write_file(handle, c_dict_file.as_ptr(), payload.as_ptr(), payload.len() as u64),
+        0
+    );
+    let mut back = vec![0u8; payload.len()];
+    let got = oifs_read_file(
+        handle,
+        c_dict_file.as_ptr(),
+        back.as_mut_ptr(),
+        back.len() as u64,
+    );
+    assert_eq!(got, payload.len() as i64);
+    assert_eq!(&back, payload);
+
+    // Train another dictionary directly from the root directory in the image
+    let c_dir_samples = CString::new("corpus").unwrap();
+    assert_eq!(oifs_mkdir(handle, c_dir_samples.as_ptr()), 0);
+    let dir_batch = oifs_batch_begin(handle);
+    for i in 0..10u32 {
+        let cname = CString::new(format!("corpus/r_{i}.json")).unwrap();
+        let data = format!(
+            "{{\"kind\":\"telemetry\",\"node\":\"host-{i:02}\",\"status\":\"healthy\",\"zone\":\"tw\"}}"
+        );
+        assert_eq!(
+            oifs_batch_create_file_with_data(
+                dir_batch,
+                cname.as_ptr(),
+                data.as_ptr(),
+                data.len() as u64,
+                OIFS_WRITE_POLICY_RAW,
+                0,
+                std::ptr::null(),
+            ),
+            0
+        );
+    }
+    assert_eq!(
+        oifs_batch_commit(dir_batch, std::ptr::null_mut(), std::ptr::null_mut(), 0),
+        0
+    );
+    oifs_batch_free(dir_batch);
+
+    let mut dir_dict_buf = vec![0u8; 4096];
+    let dir_dict_len = oifs_train_zstd_dict_from_dir(
+        handle,
+        c_dir_samples.as_ptr(),
+        4096,
+        32,
+        dir_dict_buf.as_mut_ptr(),
+        dir_dict_buf.len(),
+    );
+    assert!(dir_dict_len > 0);
+
+    // Clear default, unregister, clear all
+    assert_eq!(oifs_set_default_zstd_dict(handle, 0), 0);
+    assert_eq!(oifs_default_zstd_dict_id(handle), 0);
+    assert_eq!(oifs_unregister_zstd_dict(handle, dict_id as u32), 1);
+    assert_eq!(oifs_unregister_zstd_dict(handle, dict_id as u32), 0);
+    assert_eq!(oifs_clear_zstd_dicts(handle), 0);
+    assert_eq!(oifs_registered_zstd_dict_ids(handle, std::ptr::null_mut(), 0), 0);
+
+    // Vacuum + resize down
+    let vac_opts = OIFSVacuumOptions {
+        min_headroom_bytes: 512 * 1024,
+        min_image_bytes: 2 * 1024 * 1024,
+        headroom_percent: 10,
+        allow_relayout: 1,
+        _pad: [0; 6],
+    };
+    let mut vac_stats = OIFSVacuumStats::default();
+    assert_eq!(oifs_vacuum(handle, &vac_opts, &mut vac_stats), 0);
+    assert!(vac_stats.bytes_after <= 8 * 1024 * 1024);
+    let mut shrink_check = OIFSResizeStats::default();
+    assert_eq!(oifs_resize(handle, 5 * 1024 * 1024, &mut shrink_check), 0);
+    assert_eq!(oifs_image_size_bytes(handle), 5 * 1024 * 1024);
+
+    // Re-register dict on read-only mount to verify read-only gate & dictionary decoding
+    oifs_close(handle);
+    let ro = oifs_open_read_only(c_path.as_ptr(), std::ptr::null(), 0);
+    assert!(!ro.is_null());
+    assert_eq!(oifs_set_auto_grow(ro, &ag), -1);
+    assert!(oifs_batch_begin(ro).is_null());
+    assert_eq!(oifs_grow(ro, 10 * 1024 * 1024, std::ptr::null_mut()), -1);
+    assert_eq!(oifs_vacuum(ro, std::ptr::null(), std::ptr::null_mut()), -1);
+    assert!(oifs_register_zstd_dict(ro, dict_bytes.as_ptr(), dict_bytes.len(), 0) == dict_id);
+    let mut ro_back = vec![0u8; payload.len()];
+    assert_eq!(
+        oifs_read_file(ro, c_dict_file.as_ptr(), ro_back.as_mut_ptr(), ro_back.len() as u64),
+        payload.len() as i64
+    );
+    assert_eq!(&ro_back, payload);
+    oifs_close(ro);
 }

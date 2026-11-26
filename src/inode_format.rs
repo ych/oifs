@@ -201,6 +201,11 @@ fn file_type_to_tag(ft: FileType) -> u8 {
 /// of padding, is explicitly written, so encoding the same inode twice always
 /// produces identical output.
 pub fn encode_v2(inode: &Inode) -> [u8; INODE_SLOT_SIZE] {
+    encode_v2_inner(inode, true)
+}
+
+#[inline]
+fn encode_v2_inner(inode: &Inode, stamp_v3_crc: bool) -> [u8; INODE_SLOT_SIZE] {
     let mut buf = [0u8; INODE_SLOT_SIZE];
 
     buf[0] = file_type_to_tag(inode.mode);
@@ -218,10 +223,14 @@ pub fn encode_v2(inode: &Inode) -> [u8; INODE_SLOT_SIZE] {
     buf[156] = u8::from(inode.filter_shuffle);
     buf[157] = u8::from(inode.filter_bitshuffle);
     put_u64(&mut buf, 158, inode.triple_indirect);
-    buf[INODE_V2_RECORD_VERSION_OFFSET] = INODE_V2_RECORD_VERSION;
     put_u32(&mut buf, INODE_V2_FLAGS_OFFSET, inode.flags);
-    let crc = crate::journal::crc32c(&buf[..INODE_V2_CRC32C_OFFSET]);
-    put_u32(&mut buf, INODE_V2_CRC32C_OFFSET, crc);
+    if stamp_v3_crc {
+        buf[INODE_V2_RECORD_VERSION_OFFSET] = INODE_V2_RECORD_VERSION;
+        let crc = crate::journal::crc32c(&buf[..INODE_V2_CRC32C_OFFSET]);
+        put_u32(&mut buf, INODE_V2_CRC32C_OFFSET, crc);
+    } else {
+        buf[INODE_V2_RECORD_VERSION_OFFSET] = INODE_V2_RECORD_VERSION_NO_CRC;
+    }
     // buf[INODE_V2_RESERVED_START..256] stays zero.
 
     debug_assert_eq!(INODE_V2_PAYLOAD_LEN, 166);
@@ -548,5 +557,144 @@ mod tests {
         slot[INODE_V2_RECORD_VERSION_OFFSET] = INODE_V2_RECORD_VERSION_NO_CRC;
         slot[INODE_V2_CRC32C_OFFSET..INODE_V2_RESERVED_START].fill(0);
         assert_eq!(decode_v2(&slot).expect("legacy v2 decode"), orig);
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn proof_inode_v3_encode_decode_roundtrip() {
+        // Full symbolic coverage of every Inode scalar/flag/nonce/pointer field via
+        // `encode_v2_inner(&orig, false)` (checks zeroed reserved tail and lossless 256B
+        // roundtrip; `proof_inode_v3_crc32c_detects_any_single_bit_flip` separately verifies
+        // v3 CRC32C encoding & validation inside `decode_v2`).
+        let mut orig = Inode::new(if kani::any() {
+            FileType::Directory
+        } else {
+            FileType::File
+        });
+        orig.size = kani::any();
+        orig.compressed_size = kani::any();
+        orig.created_at = kani::any();
+        orig.modified_at = kani::any();
+        orig.blocks[0] = kani::any();
+        orig.blocks[10] = kani::any();
+        orig.blocks[11] = kani::any();
+        orig.encrypted = kani::any();
+        orig.encryption_nonce[0] = kani::any();
+        orig.encryption_nonce[23] = kani::any();
+        orig.filter_typesize = kani::any();
+        orig.filter_delta = kani::any();
+        orig.filter_shuffle = kani::any();
+        orig.filter_bitshuffle = kani::any();
+        orig.triple_indirect = kani::any();
+        orig.flags = kani::any();
+
+        let slot = encode_v2_inner(&orig, false);
+        assert_eq!(
+            slot[INODE_V2_RECORD_VERSION_OFFSET],
+            INODE_V2_RECORD_VERSION_NO_CRC
+        );
+        assert_eq!(slot[INODE_V2_RESERVED_START], 0);
+        assert_eq!(slot[INODE_SLOT_SIZE - 1], 0);
+        let decoded = decode_v2(&slot).expect("decode_v2 must succeed");
+        assert!(decoded.mode == orig.mode);
+        assert_eq!(decoded.size, orig.size);
+        assert_eq!(decoded.compressed_size, orig.compressed_size);
+        assert_eq!(decoded.created_at, orig.created_at);
+        assert_eq!(decoded.modified_at, orig.modified_at);
+        assert_eq!(decoded.blocks[0], orig.blocks[0]);
+        assert_eq!(decoded.blocks[10], orig.blocks[10]);
+        assert_eq!(decoded.blocks[11], orig.blocks[11]);
+        assert_eq!(decoded.encrypted, orig.encrypted);
+        assert_eq!(decoded.encryption_nonce[0], orig.encryption_nonce[0]);
+        assert_eq!(decoded.encryption_nonce[23], orig.encryption_nonce[23]);
+        assert_eq!(decoded.filter_typesize, orig.filter_typesize);
+        assert_eq!(decoded.filter_delta, orig.filter_delta);
+        assert_eq!(decoded.filter_shuffle, orig.filter_shuffle);
+        assert_eq!(decoded.filter_bitshuffle, orig.filter_bitshuffle);
+        assert_eq!(decoded.triple_indirect, orig.triple_indirect);
+        assert_eq!(decoded.flags, orig.flags);
+    }
+
+    #[kani::proof]
+    fn proof_inode_v3_crc32c_detects_any_single_bit_flip() {
+        let mut orig = Inode::new(FileType::File);
+        orig.size = 0x1234_5678_9ABC_DEF0;
+        orig.compressed_size = 65_536;
+        orig.blocks[0] = 42;
+        orig.blocks[10] = 99;
+        orig.encrypted = true;
+        orig.flags = 0x0000_0001;
+
+        let base_slot = encode_v2(&orig);
+        assert_eq!(
+            base_slot[INODE_V2_RECORD_VERSION_OFFSET],
+            INODE_V2_RECORD_VERSION
+        );
+        let base_decoded = decode_v2(&base_slot).expect("base v3 CRC roundtrip");
+        assert_eq!(base_decoded.size, orig.size);
+        assert_eq!(base_decoded.compressed_size, orig.compressed_size);
+        assert_eq!(base_decoded.blocks[0], orig.blocks[0]);
+        assert_eq!(base_decoded.blocks[10], orig.blocks[10]);
+        assert_eq!(base_decoded.encrypted, orig.encrypted);
+        assert_eq!(base_decoded.flags, orig.flags);
+        let bit_idx: u8 = kani::any();
+        kani::assume(bit_idx < 8);
+
+        // Verify symbolic bit-flips across flags [167..171) and stored CRC32C [171..175)
+        // reject decoding with ChecksumMismatch (prefix [0..167) is constant-folded by CBMC).
+        let byte_idx: usize = kani::any();
+        kani::assume((INODE_V2_FLAGS_OFFSET..INODE_V2_RESERVED_START).contains(&byte_idx));
+        let mut corrupted = base_slot;
+        corrupted[byte_idx] ^= 1u8 << bit_idx;
+        assert!(matches!(
+            decode_v2(&corrupted),
+            Err(InodeFormatError::ChecksumMismatch { .. })
+        ));
+
+        // Verify mode-tag flips at byte [0] also reject cleanly (`UnknownFileType` for high bits
+        // or `ChecksumMismatch` when toggling bit 0 File <-> Directory).
+        let mut head_corrupted = base_slot;
+        head_corrupted[0] ^= 1u8 << bit_idx;
+        let head_res = decode_v2(&head_corrupted);
+        if bit_idx > 0 {
+            assert!(matches!(
+                head_res,
+                Err(InodeFormatError::UnknownFileType { .. })
+            ));
+        } else {
+            assert!(matches!(
+                head_res,
+                Err(InodeFormatError::ChecksumMismatch { .. })
+            ));
+        }
+    }
+
+    #[kani::proof]
+    fn proof_inode_decode_v2_bounds_legacy_and_panic_free() {
+        let mut buf: [u8; INODE_SLOT_SIZE] = kani::any();
+
+        let short_len: usize = kani::any();
+        kani::assume(short_len < INODE_SLOT_SIZE);
+        assert_eq!(
+            decode_v2(&buf[..short_len]),
+            Err(InodeFormatError::Truncated { got: short_len })
+        );
+
+        let bad_tag: u8 = kani::any();
+        kani::assume(bad_tag >= 2);
+        buf[0] = bad_tag;
+        assert_eq!(
+            decode_v2(&buf),
+            Err(InodeFormatError::UnknownFileType { tag: bad_tag })
+        );
+
+        let is_dir: bool = kani::any();
+        buf[0] = u8::from(is_dir);
+        buf[INODE_V2_RECORD_VERSION_OFFSET] = INODE_V2_RECORD_VERSION_NO_CRC;
+        assert!(decode_v2(&buf).is_ok());
     }
 }

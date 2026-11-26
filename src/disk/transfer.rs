@@ -314,6 +314,15 @@ pub fn can_splice_fast_path(
     None
 }
 
+#[inline]
+pub const fn dicts_compatible_for_raw_copy_flags(
+    src_is_compressed: bool,
+    src_has_dicts: bool,
+    is_subset: bool,
+) -> bool {
+    !src_is_compressed || !src_has_dicts || is_subset
+}
+
 /// Returns `true` when raw block/chunk transfer between `src` and `dst` will produce
 /// blocks readable by `dst` under its currently registered Zstd dictionaries.
 ///
@@ -326,7 +335,13 @@ pub fn dicts_compatible_for_raw_copy(
     src_dicts: &crate::zstd_pool::ZstdDictRegistry,
     dst_dicts: &crate::zstd_pool::ZstdDictRegistry,
 ) -> bool {
-    !src_is_compressed || !src_dicts.has_any() || src_dicts.is_subset_of(dst_dicts)
+    let src_has_dicts = src_is_compressed && src_dicts.has_any();
+    let is_subset = if src_has_dicts {
+        src_dicts.is_subset_of(dst_dicts)
+    } else {
+        true
+    };
+    dicts_compatible_for_raw_copy_flags(src_is_compressed, src_has_dicts, is_subset)
 }
 
 /// Plans a Sandwich (`Head / Body / Tail`) partition for splicing `len` bytes from
@@ -4499,6 +4514,98 @@ mod kani_proofs {
             assert_eq!(unit, Some(BLOCK_SIZE as u64));
         } else {
             assert_eq!(unit, None);
+        }
+    }
+
+    #[kani::proof]
+    fn proof_can_splice_fast_path_soundness() {
+        let src_dir: bool = kani::any();
+        let dst_dir: bool = kani::any();
+        let mut src = Inode::new(if src_dir {
+            crate::inode::FileType::Directory
+        } else {
+            crate::inode::FileType::File
+        });
+        let mut dst = Inode::new(if dst_dir {
+            crate::inode::FileType::Directory
+        } else {
+            crate::inode::FileType::File
+        });
+        let src_enc: bool = kani::any();
+        let dst_enc: bool = kani::any();
+        src.encrypted = kani::any();
+        dst.encrypted = kani::any();
+        let src_seek: bool = kani::any();
+        let dst_seek: bool = kani::any();
+        src.flags = if src_seek {
+            crate::inode::INODE_FLAG_SEEKABLE_64K
+        } else {
+            0
+        };
+        dst.flags = if dst_seek {
+            crate::inode::INODE_FLAG_SEEKABLE_64K
+        } else {
+            0
+        };
+        src.compressed_size = kani::any();
+        dst.compressed_size = kani::any();
+        src.filter_typesize = kani::any();
+        dst.filter_typesize = kani::any();
+        src.filter_delta = kani::any();
+        dst.filter_delta = kani::any();
+        src.filter_shuffle = kani::any();
+        dst.filter_shuffle = kani::any();
+        src.filter_bitshuffle = kani::any();
+        dst.filter_bitshuffle = kani::any();
+
+        let res = can_splice_fast_path(&src, &dst, src_enc, dst_enc);
+        if src_dir || dst_dir || src_enc || dst_enc || src.encrypted || dst.encrypted {
+            assert_eq!(res, None);
+        } else if src_seek && dst_seek {
+            let same_filters = src.filter_typesize == dst.filter_typesize
+                && src.filter_delta == dst.filter_delta
+                && src.filter_shuffle == dst.filter_shuffle
+                && src.filter_bitshuffle == dst.filter_bitshuffle;
+            assert_eq!(
+                res,
+                if same_filters {
+                    Some(crate::inode::CHUNK_SIZE_64K as u64)
+                } else {
+                    None
+                }
+            );
+        } else if !src_seek
+            && !dst_seek
+            && src.compressed_size == 0
+            && dst.compressed_size == 0
+            && !src.filter_delta
+            && !src.filter_shuffle
+            && !src.filter_bitshuffle
+            && !dst.filter_delta
+            && !dst.filter_shuffle
+            && !dst.filter_bitshuffle
+        {
+            assert_eq!(res, Some(BLOCK_SIZE as u64));
+        } else {
+            assert_eq!(res, None);
+        }
+    }
+
+    #[kani::proof]
+    fn proof_dicts_compatible_gate_soundness() {
+        let src_is_compressed: bool = kani::any();
+        let src_has_dicts: bool = kani::any();
+        let is_subset: bool = kani::any();
+
+        let allow =
+            dicts_compatible_for_raw_copy_flags(src_is_compressed, src_has_dicts, is_subset);
+        if src_is_compressed && src_has_dicts && !is_subset {
+            assert!(
+                !allow,
+                "Must fall back to logical reencode when dict missing"
+            );
+        } else {
+            assert!(allow);
         }
     }
 }

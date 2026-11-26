@@ -524,28 +524,51 @@ impl DiskManagerInner {
         mmap_len: usize,
         max_gap: usize,
     ) -> Vec<(usize, usize)> {
+        #[inline]
+        fn normalize(off: usize, len: usize, mmap_len: usize) -> Option<(usize, usize)> {
+            if len == 0 || off >= mmap_len {
+                return None;
+            }
+            let page_start = (off / BLOCK_SIZE) * BLOCK_SIZE;
+            let raw_end = off.saturating_add(len);
+            let page_end = ((raw_end.saturating_add(BLOCK_SIZE - 1)) / BLOCK_SIZE)
+                .saturating_mul(BLOCK_SIZE)
+                .min(mmap_len);
+            (page_start < page_end).then_some((page_start, page_end))
+        }
+
         if ranges.is_empty() || mmap_len == 0 {
             return Vec::new();
         }
+        if ranges.len() == 1 {
+            return match normalize(ranges[0].0, ranges[0].1, mmap_len) {
+                Some((s, e)) => vec![(s, e - s)],
+                None => Vec::new(),
+            };
+        }
+        if ranges.len() == 2 {
+            let a = normalize(ranges[0].0, ranges[0].1, mmap_len);
+            let b = normalize(ranges[1].0, ranges[1].1, mmap_len);
+            return match (a, b) {
+                (None, None) => Vec::new(),
+                (Some((s, e)), None) | (None, Some((s, e))) => vec![(s, e - s)],
+                (Some(p), Some(q)) => {
+                    let ((s0, e0), (s1, e1)) = if p <= q { (p, q) } else { (q, p) };
+                    if s1 <= e0.saturating_add(max_gap) {
+                        vec![(s0, e0.max(e1) - s0)]
+                    } else {
+                        vec![(s0, e0 - s0), (s1, e1 - s1)]
+                    }
+                }
+            };
+        }
 
-        let mut intervals: Vec<(usize, usize)> = ranges
-            .iter()
-            .filter_map(|&(off, len)| {
-                if len == 0 || off >= mmap_len {
-                    return None;
-                }
-                let page_start = (off / BLOCK_SIZE) * BLOCK_SIZE;
-                let raw_end = off.saturating_add(len);
-                let page_end = ((raw_end.saturating_add(BLOCK_SIZE - 1)) / BLOCK_SIZE)
-                    .saturating_mul(BLOCK_SIZE)
-                    .min(mmap_len);
-                if page_start < page_end {
-                    Some((page_start, page_end))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut intervals: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+        for &(off, len) in ranges {
+            if let Some(iv) = normalize(off, len, mmap_len) {
+                intervals.push(iv);
+            }
+        }
 
         if intervals.is_empty() {
             return Vec::new();
@@ -6064,6 +6087,21 @@ impl DiskManager {
         )
     }
 
+    #[inline]
+    pub(crate) const fn should_compress_payload(
+        mode: CompressionMode,
+        working_len: usize,
+        has_dict: bool,
+    ) -> bool {
+        match mode {
+            CompressionMode::Always
+            | CompressionMode::Stream { .. }
+            | CompressionMode::Seekable { .. } => true,
+            CompressionMode::Never => false,
+            CompressionMode::Auto => (has_dict && working_len > 0) || working_len >= 8192,
+        }
+    }
+
     pub(crate) fn build_full_overwrite_buffer_pure_with_dict<'a>(
         data: &'a [u8],
         compression_mode: CompressionMode,
@@ -6075,15 +6113,8 @@ impl DiskManager {
         let filtered = crate::filters::apply_filters_cow(data, filter_config);
         let working: &[u8] = &filtered;
 
-        let should_compress = match compression_mode {
-            CompressionMode::Always
-            | CompressionMode::Stream { .. }
-            | CompressionMode::Seekable { .. } => true,
-            CompressionMode::Never => false,
-            CompressionMode::Auto => {
-                (cdict.is_some() && !working.is_empty()) || working.len() >= 8192
-            }
-        };
+        let should_compress =
+            Self::should_compress_payload(compression_mode, working.len(), cdict.is_some());
 
         let level = match compression_mode {
             CompressionMode::Stream { level } | CompressionMode::Seekable { level, .. } => {
@@ -10768,6 +10799,91 @@ mod verification {
             mode == OpenMode::CreateOrOpen && !entry_exists && needs_write,
             "CreateOrOpen on missing entry requires write"
         );
+    }
+
+    #[kani::proof]
+    fn proof_should_compress_payload_dict_and_threshold() {
+        let variant: u8 = kani::any();
+        kani::assume(variant < 5);
+        let level: i32 = kani::any();
+        let chunk_size: u32 = kani::any();
+        let mode = match variant {
+            0 => CompressionMode::Auto,
+            1 => CompressionMode::Always,
+            2 => CompressionMode::Never,
+            3 => CompressionMode::Stream { level },
+            _ => CompressionMode::Seekable { level, chunk_size },
+        };
+        let working_len: usize = kani::any();
+        let has_dict: bool = kani::any();
+
+        let compress = DiskManager::should_compress_payload(mode, working_len, has_dict);
+        match mode {
+            CompressionMode::Never => {
+                assert!(!compress);
+            }
+            CompressionMode::Always
+            | CompressionMode::Stream { .. }
+            | CompressionMode::Seekable { .. } => {
+                assert!(compress);
+            }
+            CompressionMode::Auto => {
+                if working_len == 0 {
+                    assert!(!compress, "Empty payload under Auto must not invoke Zstd");
+                } else if has_dict || working_len >= 8192 {
+                    assert!(compress);
+                } else {
+                    assert!(!compress);
+                }
+            }
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn proof_coalesce_ranges_with_gap_invariants() {
+        let mut o0: usize = kani::any();
+        let mut l0: usize = kani::any();
+        let o1: usize = kani::any();
+        let l1: usize = kani::any();
+        let test_extreme: bool = kani::any();
+        let mmap_len: usize = kani::any();
+        let max_gap: usize = kani::any();
+        kani::assume(mmap_len <= 8 * BLOCK_SIZE);
+        kani::assume(max_gap <= 2 * BLOCK_SIZE);
+        kani::assume(o1 <= 10 * BLOCK_SIZE && l1 <= 4 * BLOCK_SIZE);
+        if test_extreme {
+            o0 = usize::MAX - 10;
+            l0 = usize::MAX;
+        } else {
+            kani::assume(o0 <= 10 * BLOCK_SIZE && l0 <= 4 * BLOCK_SIZE);
+        }
+
+        let inputs = [(o0, l0), (o1, l1)];
+        let out = DiskManagerInner::coalesce_ranges_with_gap(&inputs, mmap_len, max_gap);
+
+        for (i, &(s, len)) in out.iter().enumerate() {
+            assert!(len > 0);
+            assert_eq!(s % BLOCK_SIZE, 0);
+            let end = s.checked_add(len).expect("no overflow");
+            assert!(end <= mmap_len);
+            assert!(end % BLOCK_SIZE == 0 || end == mmap_len);
+            if i > 0 {
+                let prev_end = out[i - 1].0 + out[i - 1].1;
+                assert!(s > prev_end.saturating_add(max_gap));
+            }
+        }
+
+        // Every valid non-empty clamped input range is completely covered by some output interval.
+        for &(off, len) in &inputs {
+            if len > 0 && off < mmap_len {
+                let want_end = off.saturating_add(len).min(mmap_len);
+                let covered = out
+                    .iter()
+                    .any(|&(s, l)| s <= off && s.saturating_add(l) >= want_end);
+                assert!(covered);
+            }
+        }
     }
 }
 

@@ -1,10 +1,10 @@
 # OIFS (O's Inode File System)
 
 [![CI](https://github.com/ych/oifs/actions/workflows/rust.yml/badge.svg)](https://github.com/ych/oifs/actions/workflows/rust.yml)
-[![Release](https://img.shields.io/badge/release-v1.5.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.5.0)
+[![Release](https://img.shields.io/badge/release-v1.6.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.6.0)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
-[![Kani Verified](https://img.shields.io/badge/Kani%20Verified-109%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
+[![Kani Verified](https://img.shields.io/badge/Kani%20Verified-131%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
 
 [English](README.md) | [繁體中文](README_zh.md) | [📖 Online Documentation](https://ych.github.io/oifs/)
 
@@ -76,7 +76,7 @@ flowchart TB
 
 ```bash
 # Option 1: One-line install directly from GitHub Release tag (no git clone needed)
-cargo install --git https://github.com/ych/oifs --tag 1.5.0
+cargo install --git https://github.com/ych/oifs --tag 1.6.0
 
 # Option 2: Download prebuilt binaries (Linux x86_64/arm64 & macOS Intel/Apple Silicon)
 #   https://github.com/ych/oifs/releases
@@ -113,10 +113,15 @@ oifs clone dataset.img sandbox_fork.img
 oifs -i dataset.img transfer --to train.img telemetry.bin --dest /train/telemetry.bin
 oifs -i dataset.img transfer --to shard.img telemetry.bin --offset 0 --len 65536 --trim-mode punch-hole
 
-# 6. Integrity check (FSCK), online defrag & legacy v1 -> v2 inode format migration
+# 6. Integrity check (FSCK), dynamic capacity (Auto-Grow / Resize / Vacuum), Zstd dicts & migration
 oifs -i dataset.img fsck --json
 oifs -i dataset.img defrag
-oifs -i legacy_v1.img migrate    # Upgrades legacy v1 bincode inodes in place to fixed 256B v2 records
+oifs -i dataset.img --auto-grow=256 put huge.bin /huge.bin
+oifs -i dataset.img resize --size 128
+oifs -i dataset.img vacuum --json
+oifs -i dataset.img dict train --dir /logs -o logs.dict
+oifs -i dataset.img --dict logs.dict put ./log1.json /logs/log1.json
+oifs -i legacy_v1.img migrate    # Upgrades legacy v1 bincode inodes in place to fixed 256B v2/v3 records
 ```
 
 > **Format v2 vs. v3 Note**: Newly created images use **Format v3** (dynamic multi-block bitmaps scaling well beyond 128 MiB + fixed 256-byte **v2 inode records**). Legacy v1 images remain 100% readable/writable and can upgrade their inode table in place via `oifs migrate`.
@@ -236,10 +241,12 @@ int main() {
 *   **Atomic POSIX `rename` & 3-Tier Cross-Image Transfer / Sub-Range Splice**:
     *   Single-WAL-transaction `DiskManager::rename` with SIV filename re-encryption and cycle prevention.
     *   `clone_image` (APFS `clonefile` / Linux `FICLONE`), `transfer_file_to`, and `splice_range_to` (`FICLONERANGE` → `copy_file_range` → raw compressed block copy) with encryption/AAD fast-path gating, `(src_dev, dst_dev)` negative reflink cache, WAL ordered-mode `fdatasync`, Seekable 64K `ChunkEntry` rebasing, sparse zero-subtree skipping, `Head/Body/Tail` sandwich partitioning, and `SpliceTrimMode::{Keep, PunchHole, CollapseRange}`.
-*   **Transactional Metadata WAL & Configurable Durability**: Opt-in 33-block (1 header + 128 KiB ring) CRC32C WAL with `Lazy`, `RangeAsync`, and `Strict` modes, single-transaction `create_file_with_data` (inline data-journaling payloads `<= 8 KiB`), and async Group-Commit writes.
-*   **32-Shard Concurrency & Out-of-Lock Pipeline**: 32-shard Fibonacci-hashed `BoundedInodeCache` & `ShardedDirCache`, out-of-lock SIMD filter / Zstd / AEAD execution, and non-blocking `flush()`.
+*   **Dynamic Auto-Grow, Online Resize & Vacuum**: Opt-in transparent expansion on block or inode exhaustion (`AutoGrowConfig`, `--auto-grow[=MAX_MB]`), O(1) in-place grow/tail-shrink within bitmap bounds, inode-preserving streaming atomic re-layout (`AtomicRelayout`) across the 128 MiB bitmap boundary or inode table expansion, and one-command compaction + space reclaim (`oifs vacuum`).
+*   **Custom Zstd Dictionaries & Explicit `WriteBatch`**: Pooled thread-safe `ZstdDictRegistry` (`CDict`/`DDict`, CLI `--dict` & `oifs dict train`) with small-file `Auto` threshold bypass, plus `DiskManager::begin_write_batch()` coalescing mixed creates, directories, deletes, and renames into chunked 96 KiB WAL commits.
+*   **Transactional Metadata WAL, Inode v3 CRC32C & Configurable Durability**: Opt-in 33-block (1 header + 128 KiB ring) CRC32C WAL (`Lazy`, `RangeAsync`, `Strict`), backward-compatible Inode `record_version == 3` CRC32C checksums verified by `fsck`, single-transaction `create_file_with_data` (inline data-journaling payloads `<= 8 KiB`), and async Group-Commit writes.
+*   **128B Cache-Line Isolation & 32-Shard Concurrency**: 32-shard Fibonacci-hashed `BoundedInodeCache` & `ShardedDirCache`, 16/64-shard caches and `zstd_pool` workers isolated with 128-byte `CachePadded` alignment against cross-core false sharing, out-of-lock SIMD filter / Zstd / AEAD execution, and non-blocking `flush()`.
 *   **Hardened Cryptography & Defense-in-Depth**: OWASP/RFC 9106 Argon2id (`64 MiB`, `t=3`, `p=4`), BLAKE2b-512 domain-separated subkeys, context-bound XChaCha20-Poly1305 AEAD (`inode_id` + `chunk_idx` + `flags` in AAD; AArch64 NEON / x86_64 AVX2 payloads + 1-block scalar short-filename fast path), 192-bit SIV filenames, zeroed block reuse, owner-only `0600` files, bounded OOM/bomb protections, and loopback-only default TCP IPC (`--allow-remote-ipc` opt-in).
-*   **Formal Verification & Quality Assurance**: **109 AWS Kani (CBMC) formal proofs**, Bolero property/fuzz testing, Shuttle DPOR concurrency testing, and **73 integration test suites**.
+*   **Formal Verification & Quality Assurance**: **131 AWS Kani (CBMC) formal proofs**, Bolero property/fuzz testing, Shuttle DPOR concurrency testing, and **83 integration test suites**.
 
 ---
 
@@ -284,7 +291,7 @@ Measured on **Apple M5 Pro, 64 GiB RAM, macOS (`aarch64`, `--release`)**, operat
 ## Build, Test & Formal Verification
 
 ```bash
-# Run all 73 integration suites + unit tests (77 total targets)
+# Run all 83 integration suites + unit tests (87 total targets)
 cargo test --release
 
 # Run key suites under pure pread/pwrite StorageMode::FileIo (zero mmap)
@@ -293,8 +300,8 @@ OIFS_STORAGE_MODE=pread cargo test --release --test transfer_test --test rename_
 # Run live kernel FUSE mount E2E tests & APFS benchmark (requires macFUSE or /dev/fuse)
 cargo test --release --test fuse_live_mount_test -- --ignored --nocapture --test-threads=1
 
-# Run all 109 Kani formal verification proofs in parallel
-cargo kani -j 8 --output-format=terse
+# Run all 131 Kani formal verification proofs in parallel
+cargo kani --lib -j 8 --output-format=terse
 
 # One-click pre-release verification (fmt, clippy, build, test, shuttle, kani, coverage)
 ./scripts/release_check.sh --quick

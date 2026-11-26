@@ -1168,14 +1168,31 @@ impl JournalBatchOverlay {
     }
 }
 
+#[inline]
+pub(crate) const fn should_flush_wal_chunk(cur_est: usize, next_est: usize) -> bool {
+    cur_est > 0 && cur_est.saturating_add(next_est) > BATCH_WAL_BUDGET
+}
+
+#[inline]
+pub(crate) const fn estimate_standard_create_wal_bytes(payload_len: usize) -> usize {
+    let blks = payload_len.div_ceil(BLOCK_SIZE);
+    360usize.saturating_add(blks.saturating_div(512).saturating_mul(32))
+}
+
+#[inline]
+pub(crate) const fn estimate_seekable_create_wal_bytes(num_chunks: usize) -> usize {
+    360usize.saturating_add(num_chunks.saturating_mul(48))
+}
+
 fn estimate_op_wal_bytes(op: &PreparedBatchOp) -> usize {
     match op {
         PreparedBatchOp::CreateFileWithData { payload, .. } => match payload {
             PreparedPayload::Standard { bytes, .. } => {
-                let blks = bytes.len().div_ceil(BLOCK_SIZE);
-                360 + blks.saturating_div(512) * 32
+                estimate_standard_create_wal_bytes(bytes.len())
             }
-            PreparedPayload::Seekable { chunks, .. } => 360 + chunks.len() * 48,
+            PreparedPayload::Seekable { chunks, .. } => {
+                estimate_seekable_create_wal_bytes(chunks.len())
+            }
         },
         PreparedBatchOp::Mkdir { .. } => 4600,
         PreparedBatchOp::Delete { .. } => 4500,
@@ -1196,8 +1213,7 @@ fn execute_batch_journaled(
 
     for op in ops {
         let est = estimate_op_wal_bytes(&op);
-        if overlay.est_wal_bytes > 0 && overlay.est_wal_bytes.saturating_add(est) > BATCH_WAL_BUDGET
-        {
+        if should_flush_wal_chunk(overlay.est_wal_bytes, est) {
             overlay.flush_chunk(guard)?;
         }
 
@@ -2199,4 +2215,69 @@ fn insert_dir_entry_in_place(
         }
     }
     Ok(())
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn proof_batch_wal_chunking_bounds_and_conservation() {
+        let n: usize = kani::any();
+        kani::assume((1..=6).contains(&n));
+
+        let mut ops_committed = 0usize;
+        let mut chunks_flushed = 0usize;
+        let mut cur_est = 0usize;
+        let mut cur_ops = 0usize;
+
+        for _ in 0..n {
+            // Every real WAL batch op estimates at least 360 bytes (see `estimate_op_wal_bytes`).
+            let next_est: usize = kani::any();
+            kani::assume((360..=BATCH_WAL_BUDGET * 2).contains(&next_est));
+            if should_flush_wal_chunk(cur_est, next_est) {
+                assert!(cur_ops > 0);
+                if cur_ops > 1 {
+                    assert!(cur_est <= BATCH_WAL_BUDGET);
+                }
+                ops_committed += cur_ops;
+                chunks_flushed += 1;
+                cur_est = 0;
+                cur_ops = 0;
+            }
+            cur_est = cur_est.saturating_add(next_est);
+            cur_ops += 1;
+        }
+
+        if cur_ops > 0 {
+            if cur_ops > 1 {
+                assert!(cur_est <= BATCH_WAL_BUDGET);
+            }
+            ops_committed += cur_ops;
+            chunks_flushed += 1;
+        }
+
+        assert_eq!(ops_committed, n);
+        assert!(chunks_flushed >= 1 && chunks_flushed <= n);
+    }
+
+    #[kani::proof]
+    fn proof_batch_wal_byte_estimate_monotone_and_no_overflow() {
+        let a: usize = kani::any();
+        let b: usize = kani::any();
+        kani::assume(a <= b);
+        let ea = estimate_standard_create_wal_bytes(a);
+        let eb = estimate_standard_create_wal_bytes(b);
+        assert!(ea >= 360);
+        assert!(ea <= eb);
+
+        let c: usize = kani::any();
+        let d: usize = kani::any();
+        kani::assume(c <= d);
+        let ec = estimate_seekable_create_wal_bytes(c);
+        let ed = estimate_seekable_create_wal_bytes(d);
+        assert!(ec >= 360);
+        assert!(ec <= ed);
+    }
 }

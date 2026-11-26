@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-26
+
+### Added
+- **Dynamic Auto-Grow, Online Resize & Vacuum (`src/disk/resize.rs`)**:
+  - Added `DiskManager::grow`, `DiskManager::resize`, `DiskManager::vacuum`, `DiskManager::set_auto_grow`, `DiskManager::auto_grow_config`, and `DiskManager::image_size_bytes` (with matching `OifsSession` and CLI `--auto-grow[=MAX_MB]`, `oifs resize --size|--bytes`, and `oifs vacuum` commands).
+  - Supports zero-relocation O(1) in-place grow/tail shrink within bitmap boundaries (`SuperBlock::in_place_block_count_range`) and inode-preserving streaming atomic re-layout (`AtomicRelayout`, using `0600` temp files, exclusive file lock transfer, and atomic `rename`) across the 128 MiB bitmap boundary and inode-table expansions (`SuperBlock::new_v3_with_min_inodes`), preserving plain, encrypted, Seekable 64K, and custom Zstd-dictionary files.
+  - Wired transparent Auto-Grow (`ensure_capacity_for` + bounded `NoSpace` retry, disabled by default) across `create_entry_internal`, `create_file_with_data_with_filters`, `write_data_with_filters`, `rename`, `write_chunked_64k`, `WriteBatch::commit`, `transfer_file_to`, and `splice_range_to`, with `tests/resize_vacuum_autogrow_test.rs`.
+- **Custom Zstd Dictionary Support (`src/zstd_pool.rs`, `src/disk.rs`, `src/disk/chunked.rs`, `src/disk/transfer.rs`)**:
+  - Added `ZstdDictRegistry` (16 MiB per-dict / 64-dict cache bounds) with lock-free shared `Arc<CDict>`/`Arc<DDict>` contexts pooled per thread (`compress_frame_with_cdict` / `decompress_frame_with_ddict`), automatic small-file compression bypass in `CompressionMode::Auto` (with anti-inflation fallback), Seekable 64K / Stream / Encrypted / `FileIo` coverage, `transfer_file_to`/`splice_range_to` dictionary compatibility fallback, `train_zstd_dict` / `train_zstd_dict_from_dir`, and CLI `--dict` + `oifs dict train`.
+- **Explicit Multi-Op Write Batch API (`src/disk/batch.rs`)**:
+  - Added `DiskManager::begin_write_batch()` (`WriteBatch`, `BatchOp`, `BatchCommitResult`) coalescing mixed `CreateFileWithData`, `Mkdir`, `Delete`, and `Rename` operations into chunked WAL transactions (96 KiB per-chunk budget for the 128 KiB circular WAL ring) and single write-lock / coalesced range-sync commits.
+- **Inode v3 Hardware-Accelerated CRC32C Checksums (`src/inode_format.rs`)**:
+  - Added 256-byte Inode `record_version == 3` CRC32C checksums covering `[0..171)` while maintaining full read compatibility with legacy v2 and v1 images, integrated with `DiskManager::verify_integrity()` (`FsckReport::corrupted_inodes`) and `tests/inode_crc_dict_batch_test.rs`.
+- **Kani Formal Verification Suite Expanded to 131 Harnesses (+18 since v1.5.0)**:
+  - Added 2 proofs in `src/superblock.rs`, 5 proofs in `src/disk/resize.rs`, 3 proofs in `src/inode_format.rs`, 2 proofs in `src/disk/batch.rs`, 1 proof in `src/disk/caches.rs`, 2 proofs in `src/disk.rs`, 2 proofs in `src/disk/transfer.rs`, and 1 proof in `src/encryption.rs`.
+
+### Security & Reliability
+- Fixed `Strict` WAL ring wrap padding persistence, WAL crash-recovery header reset ordering prior to flush, C++20 coroutine `Awaiter` lifetime UAF hazards, Stage-1→Stage-2 concurrent source-mutation TOCTOU in `transfer_file_to`, destination layout/deletion TOCTOU races in `splice_range_to`, and non-journaled Seekable 64K `ENOSPC` dangling block-pointer cleanup.
+
+### Performance
+- **128-Byte Cache-Line False-Sharing Isolation (`CachePadded<T>`)**: Promoted `#[repr(align(128))]` `CachePadded<T>` to `src/lib.rs` (covering both Apple Silicon 128B and x86_64 64B cache lines), isolated all shard locks and atomic counters across `ChunkReadCache`, `DecodedBlobCache`, `ShardedDirCache`, `BoundedInodeCache`, `MetadataBlockCache`, `DataPageCache`, and `zstd_pool::SharedTask`, and added a cache-line-isolated lock-free `DiskManager::auto_grow_enabled` fast bypass for steady-state mutations.
+- Added a zero-sort stack fast path for 1–2 intervals in `DiskManagerInner::coalesce_ranges_with_gap`.
+
+### Documentation
+- Updated `README.md`, `README_zh.md`, `docs/index.html`, `docs/formal_verification/README.md`, and `AGENTS.md` for `v1.6.0` and 131 Kani formal verification proofs.
+
 ## [1.5.0] - 2026-11-25
 
 ### Added

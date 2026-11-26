@@ -314,6 +314,118 @@ fn quiesce_and_checkpoint_wal(guard: &mut DiskManagerInner) -> Result<(), DiskMa
     Ok(())
 }
 
+/// Computes `(desired_data_blocks, target_blocks)` for [`DiskManager::vacuum`] given
+/// live `used_blocks` and [`VacuumOptions`].
+#[inline]
+pub(crate) fn compute_vacuum_target_blocks(
+    sb: &SuperBlock,
+    used_blocks: u64,
+    options: &VacuumOptions,
+) -> (u64, u64) {
+    let headroom_bytes_blks = options.min_headroom_bytes.div_ceil(BLOCK_SIZE as u64);
+    let headroom_pct_blks =
+        (used_blocks as u128 * options.headroom_percent.min(100) as u128).div_ceil(100) as u64;
+    let desired_data_blocks = used_blocks
+        .saturating_add(headroom_bytes_blks.max(headroom_pct_blks))
+        .max(1);
+    let floor_blocks = options.min_image_bytes.div_ceil(BLOCK_SIZE as u64);
+    let target_blocks = sb
+        .data_block_start
+        .saturating_add(desired_data_blocks)
+        .max(floor_blocks);
+    (desired_data_blocks, target_blocks)
+}
+
+/// Computes `(new_min_tbl_blocks, required_blocks)` when `auto_grow` must cover
+/// `(lack_data, lack_inodes)` beyond current free capacity.
+/// Returns `None` if `lack_inodes` exceeds `SuperBlock::MAX_TRACKED_INODES`.
+#[inline]
+pub(crate) fn compute_auto_grow_expansion_targets(
+    sb: &SuperBlock,
+    lack_data: u64,
+    lack_inodes: u64,
+) -> Option<(u64, u64)> {
+    let cur_tbl_blocks = sb.data_block_start.saturating_sub(sb.inode_table_block);
+    let max_tbl_blocks = SuperBlock::MAX_TRACKED_INODES / SuperBlock::INODE_SLOTS_PER_BLOCK;
+
+    let new_min_tbl = if lack_inodes > 0 {
+        let need_total_inodes = sb.usable_inode_count().saturating_add(lack_inodes);
+        let min_needed_tbl = need_total_inodes.div_ceil(SuperBlock::INODE_SLOTS_PER_BLOCK);
+        if min_needed_tbl > max_tbl_blocks {
+            return None;
+        }
+        (cur_tbl_blocks.saturating_mul(2))
+            .max(min_needed_tbl)
+            .min(max_tbl_blocks)
+    } else {
+        cur_tbl_blocks
+    };
+
+    let extra_tbl_blocks = new_min_tbl.saturating_sub(cur_tbl_blocks);
+    let required_blocks = sb
+        .block_count
+        .saturating_add(lack_data.max(if lack_inodes > 0 { 16 } else { 1 }))
+        .saturating_add(extra_tbl_blocks)
+        .saturating_add(4);
+    Some((new_min_tbl, required_blocks))
+}
+
+#[inline]
+pub(crate) fn can_merge_relayout_run(
+    last: &(u64, u64, u64),
+    old_start: u64,
+    new_start: u64,
+) -> bool {
+    last.0.saturating_add(last.2) == old_start && last.1.saturating_add(last.2) == new_start
+}
+
+/// Pushes `(old_start, new_start, cnt)` into a fixed-capacity slice buffer + logical length,
+/// coalescing adjacent spans where both `old_start` and `new_start` advance monotonically.
+#[cfg(kani)]
+#[inline]
+pub(crate) fn push_relayout_copy_run_into(
+    buf: &mut [(u64, u64, u64)],
+    len: &mut usize,
+    old_start: u64,
+    new_start: u64,
+    cnt: u64,
+) {
+    if cnt == 0 {
+        return;
+    }
+    if *len > 0 {
+        let last = &mut buf[*len - 1];
+        if can_merge_relayout_run(last, old_start, new_start) {
+            last.2 = last.2.saturating_add(cnt);
+            return;
+        }
+    }
+    if *len < buf.len() {
+        buf[*len] = (old_start, new_start, cnt);
+        *len += 1;
+    }
+}
+
+/// Coalesces contiguous `(old_start, new_start, cnt)` copy spans during relayout.
+#[inline]
+pub(crate) fn push_relayout_copy_run(
+    copy_runs: &mut Vec<(u64, u64, u64)>,
+    old_start: u64,
+    new_start: u64,
+    cnt: u64,
+) {
+    if cnt == 0 {
+        return;
+    }
+    if let Some(last) = copy_runs.last_mut()
+        && can_merge_relayout_run(last, old_start, new_start)
+    {
+        last.2 = last.2.saturating_add(cnt);
+    } else {
+        copy_runs.push((old_start, new_start, cnt));
+    }
+}
+
 impl DiskManager {
     /// Returns the total byte size of the OIFS container according to its superblock.
     pub fn image_size_bytes(&self) -> u64 {
@@ -509,24 +621,16 @@ impl DiskManager {
         let (used_blocks, highest_rel) = count_used_data_blocks(&guard);
         let (_, max_alloc_inode) = count_inode_usage(&guard);
 
-        let headroom_bytes_blks = options.min_headroom_bytes.div_ceil(BLOCK_SIZE as u64);
-        let headroom_pct_blks =
-            (used_blocks as u128 * options.headroom_percent.min(100) as u128).div_ceil(100) as u64;
-        let desired_data_blocks = used_blocks
-            .saturating_add(headroom_bytes_blks.max(headroom_pct_blks))
-            .max(1);
+        let headroom_bytes_blks = 0; // computed cleanly via `compute_vacuum_target_blocks`
+        let _ = headroom_bytes_blks;
+        let (desired_data_blocks, mut target_blocks) =
+            compute_vacuum_target_blocks(&sb, used_blocks, &options);
         let floor_blocks = options.min_image_bytes.div_ceil(BLOCK_SIZE as u64);
         let (min_in_place, _max_in_place) = sb.in_place_block_count_range();
 
         let min_tbl = (max_alloc_inode + 1)
             .div_ceil(SuperBlock::INODE_SLOTS_PER_BLOCK)
             .max(1);
-
-        // Compute smallest valid target block count covering desired_data_blocks.
-        let mut target_blocks = sb
-            .data_block_start
-            .saturating_add(desired_data_blocks)
-            .max(floor_blocks);
 
         // Check whether crossing down into fewer data bitmap blocks or slimmer layout is warranted.
         if options.allow_relayout && target_blocks < min_in_place {
@@ -735,27 +839,12 @@ impl DiskManager {
 
         let sb = guard.superblock;
         let cur_tbl_blocks = sb.data_block_start.saturating_sub(sb.inode_table_block);
-        let max_tbl_blocks = SuperBlock::MAX_TRACKED_INODES / SuperBlock::INODE_SLOTS_PER_BLOCK;
-
-        let new_min_tbl = if lack_inodes > 0 {
-            let need_total_inodes = sb.usable_inode_count().saturating_add(lack_inodes);
-            let min_needed_tbl = need_total_inodes.div_ceil(SuperBlock::INODE_SLOTS_PER_BLOCK);
-            if min_needed_tbl > max_tbl_blocks {
-                return Err(DiskManagerError::Allocator(AllocatorError::NoSpace));
-            }
-            (cur_tbl_blocks.saturating_mul(2))
-                .max(min_needed_tbl)
-                .min(max_tbl_blocks)
-        } else {
-            cur_tbl_blocks
+        let Some((new_min_tbl, required_blocks)) =
+            compute_auto_grow_expansion_targets(&sb, lack_data, lack_inodes)
+        else {
+            return Err(DiskManagerError::Allocator(AllocatorError::NoSpace));
         };
-
-        let extra_tbl_blocks = new_min_tbl.saturating_sub(cur_tbl_blocks);
-        let required_blocks = sb
-            .block_count
-            .saturating_add(lack_data.max(if lack_inodes > 0 { 16 } else { 1 }))
-            .saturating_add(extra_tbl_blocks)
-            .saturating_add(4);
+        let _ = cur_tbl_blocks;
 
         let Some(mut target_blocks) =
             compute_auto_grow_target_blocks(sb.block_count, required_blocks, &guard.auto_grow)
@@ -942,14 +1031,7 @@ impl DiskManager {
                     let new_start = self.next_target;
                     self.next_target += cnt;
                     self.blocks_relocated += cnt;
-                    if let Some(last) = self.copy_runs.last_mut()
-                        && last.0 + last.2 == old_start
-                        && last.1 + last.2 == new_start
-                    {
-                        last.2 += cnt;
-                    } else {
-                        self.copy_runs.push((old_start, new_start, cnt));
-                    }
+                    push_relayout_copy_run(&mut self.copy_runs, old_start, new_start, cnt);
                     ChunkEntry::new(
                         new_start as u32,
                         ce.block_count(),
@@ -962,14 +1044,7 @@ impl DiskManager {
                         return 0;
                     }
                     let new_blk = self.alloc_block();
-                    if let Some(last) = self.copy_runs.last_mut()
-                        && last.0 + last.2 == raw
-                        && last.1 + last.2 == new_blk
-                    {
-                        last.2 += 1;
-                    } else {
-                        self.copy_runs.push((raw, new_blk, 1));
-                    }
+                    push_relayout_copy_run(&mut self.copy_runs, raw, new_blk, 1);
                     new_blk
                 }
             }
@@ -1247,6 +1322,130 @@ mod kani_proofs {
         } else if max_bytes > 0 {
             let max_blocks = max_bytes / 4096;
             assert!(req > max_blocks || cur >= max_blocks);
+        }
+    }
+
+    #[kani::proof]
+    fn proof_vacuum_target_blocks_sound_and_no_overflow() {
+        let total_blocks: u64 = kani::any();
+        let journaled: bool = kani::any();
+        kani::assume((128..=500_000).contains(&total_blocks));
+        let sb = SuperBlock::new_v3(total_blocks, journaled);
+
+        let total_data = sb.block_count.saturating_sub(sb.data_block_start);
+        let used_blocks: u64 = kani::any();
+        kani::assume(used_blocks <= total_data);
+
+        let min_headroom_bytes: u64 = kani::any();
+        let headroom_percent: u8 = kani::any();
+        let min_image_bytes: u64 = kani::any();
+        let options = VacuumOptions::default()
+            .with_min_headroom_bytes(min_headroom_bytes)
+            .with_headroom_percent(headroom_percent)
+            .with_min_image_bytes(min_image_bytes);
+
+        let (desired_data, target) = compute_vacuum_target_blocks(&sb, used_blocks, &options);
+        assert!(desired_data >= used_blocks.max(1));
+        assert!(target >= sb.data_block_start.saturating_add(used_blocks.max(1)));
+        assert!(target >= options.min_image_bytes.div_ceil(BLOCK_SIZE as u64));
+    }
+
+    #[kani::proof]
+    fn proof_auto_grow_expansion_targets_sound() {
+        let total_blocks: u64 = kani::any();
+        let journaled: bool = kani::any();
+        kani::assume((128..=500_000).contains(&total_blocks));
+        let sb = SuperBlock::new_v3(total_blocks, journaled);
+
+        let lack_data: u64 = kani::any();
+        let lack_inodes: u64 = kani::any();
+        kani::assume(lack_data <= 100_000);
+        kani::assume(lack_inodes <= 40_000);
+        kani::assume(lack_data > 0 || lack_inodes > 0);
+
+        let need_inodes = sb.usable_inode_count().saturating_add(lack_inodes);
+        let cur_tbl_blocks = sb.data_block_start.saturating_sub(sb.inode_table_block);
+        let max_tbl_blocks = SuperBlock::MAX_TRACKED_INODES / SuperBlock::INODE_SLOTS_PER_BLOCK;
+
+        match compute_auto_grow_expansion_targets(&sb, lack_data, lack_inodes) {
+            None => {
+                assert!(lack_inodes > 0);
+                assert!(need_inodes.div_ceil(SuperBlock::INODE_SLOTS_PER_BLOCK) > max_tbl_blocks);
+            }
+            Some((new_min_tbl, required_blocks)) => {
+                assert!(new_min_tbl >= cur_tbl_blocks);
+                assert!(new_min_tbl <= max_tbl_blocks);
+                if lack_inodes > 0 {
+                    assert!(
+                        new_min_tbl.saturating_mul(SuperBlock::INODE_SLOTS_PER_BLOCK)
+                            >= need_inodes
+                    );
+                }
+                assert!(required_blocks > sb.block_count);
+            }
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn proof_relayout_copy_run_coalescing_conservation() {
+        let mut runs_buf = [(0u64, 0u64, 0u64); 3];
+        let mut run_len = 0usize;
+        let mut next_target = 64u64;
+        let mut total_in = 0u64;
+
+        for _ in 0..3 {
+            let old_start = (kani::any::<u16>() as u64) & 0xFF;
+            let cnt = ((kani::any::<u8>() as u64) % 16) + 1;
+            push_relayout_copy_run_into(&mut runs_buf, &mut run_len, old_start, next_target, cnt);
+            next_target += cnt;
+            total_in += cnt;
+        }
+
+        let runs = &runs_buf[..run_len];
+        assert!(!runs.is_empty() && runs.len() <= 3);
+        let mut total_out = 0u64;
+        for (idx, r) in runs.iter().enumerate() {
+            assert!(r.2 > 0);
+            total_out += r.2;
+            if idx > 0 {
+                let prev = runs[idx - 1];
+                assert_eq!(prev.1 + prev.2, r.1);
+                assert_ne!(prev.0 + prev.2, r.0);
+            }
+        }
+        assert_eq!(total_in, total_out);
+        assert_eq!(next_target, 64 + total_out);
+    }
+
+    #[kani::proof]
+    fn proof_auto_grow_arbitrary_float_and_disabled_safe() {
+        let cur: u64 = kani::any();
+        let req: u64 = kani::any();
+        let factor: f64 = kani::any();
+        let min_inc: u64 = kani::any();
+        let max_bytes: u64 = kani::any();
+        let enabled: bool = kani::any();
+        kani::assume((100..=100_000).contains(&cur));
+        kani::assume(req >= cur && req <= 200_000);
+        kani::assume(min_inc <= 64 * 1024 * 1024);
+        kani::assume(max_bytes <= 200_000 * 4096);
+
+        let mut cfg = AutoGrowConfig::enabled()
+            .with_growth_factor(factor)
+            .with_min_increment_bytes(min_inc)
+            .with_max_size_bytes(max_bytes);
+        cfg.enabled = enabled;
+
+        let res = compute_auto_grow_target_blocks(cur, req, &cfg);
+        if !enabled {
+            assert_eq!(res, None);
+        } else if let Some(target) = res {
+            assert!(target >= req);
+            assert!(target > cur);
+            if max_bytes > 0 {
+                assert!(target <= max_bytes / 4096);
+            }
         }
     }
 }

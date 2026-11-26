@@ -609,9 +609,9 @@ int32_t oifs_get_io_backend(OIFSHandle *handle);
  * runtime version provided by the loaded liboifs dynamic library.
  */
 #define OIFS_VERSION_MAJOR 1
-#define OIFS_VERSION_MINOR 5
+#define OIFS_VERSION_MINOR 6
 #define OIFS_VERSION_PATCH 0
-#define OIFS_VERSION_STRING "1.5.0"
+#define OIFS_VERSION_STRING "1.6.0"
 #define OIFS_VERSION_CODE (((uint64_t)OIFS_VERSION_MAJOR << 32) | ((uint64_t)OIFS_VERSION_MINOR << 16) | (uint64_t)OIFS_VERSION_PATCH)
 
 /*

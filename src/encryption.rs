@@ -1237,4 +1237,16 @@ mod verification {
         // Filename AAD is injective in parent_inode
         assert_eq!(fn_aad_a == fn_aad_b, id_a == id_b);
     }
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn proof_ct_eq_slice_equivalence_and_bounds() {
+        let a: [u8; 8] = kani::any();
+        let b: [u8; 8] = kani::any();
+        let la: usize = kani::any();
+        let lb: usize = kani::any();
+        kani::assume(la <= 8 && lb <= 8);
+
+        assert_eq!(ct_eq_slice(&a[..la], &b[..lb]), a[..la] == b[..lb]);
+    }
 }

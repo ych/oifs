@@ -1,10 +1,10 @@
 # OIFS (O's Inode File System)
 
 [![CI](https://github.com/ych/oifs/actions/workflows/rust.yml/badge.svg)](https://github.com/ych/oifs/actions/workflows/rust.yml)
-[![Release](https://img.shields.io/badge/release-v1.5.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.5.0)
+[![Release](https://img.shields.io/badge/release-v1.6.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.6.0)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
-[![Kani Verified](https://img.shields.io/badge/Kani%20Verified-109%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
+[![Kani Verified](https://img.shields.io/badge/Kani%20Verified-131%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
 
 [English](README.md) | [繁體中文](README_zh.md) | [📖 線上官方文件](https://ych.github.io/oifs/)
 
@@ -76,7 +76,7 @@ flowchart TB
 
 ```bash
 # 方式一：一行免 Clone 直接從 GitHub Release Tag 安裝
-cargo install --git https://github.com/ych/oifs --tag 1.5.0
+cargo install --git https://github.com/ych/oifs --tag 1.6.0
 
 # 方式二：直接下載預編譯執行檔（Linux x86_64/arm64 與 macOS Intel/Apple Silicon）
 #   https://github.com/ych/oifs/releases
@@ -113,10 +113,15 @@ oifs clone dataset.img sandbox_fork.img
 oifs -i dataset.img transfer --to train.img telemetry.bin --dest /train/telemetry.bin
 oifs -i dataset.img transfer --to shard.img telemetry.bin --offset 0 --len 65536 --trim-mode punch-hole
 
-# 6. 結構檢查 (FSCK)、線上磁碟重組與舊版 v1 遷移
+# 6. 結構檢查 (FSCK)、動態擴縮 (Auto-Grow / Resize / Vacuum)、Zstd 字典與 v1 遷移
 oifs -i dataset.img fsck --json
 oifs -i dataset.img defrag
-oifs -i legacy_v1.img migrate    # 將舊版 v1 bincode Inode 原地升級為固定 256B v2 記錄
+oifs -i dataset.img --auto-grow=256 put huge.bin /huge.bin
+oifs -i dataset.img resize --size 128
+oifs -i dataset.img vacuum --json
+oifs -i dataset.img dict train --dir /logs -o logs.dict
+oifs -i dataset.img --dict logs.dict put ./log1.json /logs/log1.json
+oifs -i legacy_v1.img migrate    # 將舊版 v1 bincode Inode 原地升級為固定 256B v2/v3 記錄
 ```
 
 > **Format v2 與 v3 說明**：新建映像檔一律採用 **Format v3**（可突破 128 MiB 的動態多區塊 Bitmap＋固定 256-byte **v2 Inode 記錄**）；舊版 v1 映像檔維持 100% 相容並可透過 `oifs migrate` 原地升級 Inode 記錄格式。
@@ -236,9 +241,12 @@ int main() {
 *   **POSIX 原子 `rename` 與跨 `.img` 三層降級搬移／子區段剪接**：
     *   `DiskManager::rename` 以單筆 WAL 交易完成純 metadata 搬移、SIV 檔名重算與目錄循環防護。
     *   `clone_image`（APFS `clonefile` / Linux `FICLONE`）、`transfer_file_to` 與 `splice_range_to`（`FICLONERANGE` → `copy_file_range` → Raw Compressed Block Copy），具備加密／AAD 閘門、`(src_dev, dst_dev)` 負向 Reflink 快取、Ordered-mode `fdatasync`、Seekable 64K `ChunkEntry` Rebase、稀疏跳洞、三明治 `Head/Body/Tail` 切分與 `SpliceTrimMode::{Keep, PunchHole, CollapseRange}`。
-*   **交易式 Metadata WAL 與 Group-Commit 非同步引擎**：33 區塊（1 Header + 128 KiB Ring）CRC32C WAL，支援 `Lazy` / `RangeAsync` / `Strict` 模式、單交易 `create_file_with_data`（`<= 8 KiB` WAL inline data-journaling）與並發 `Strict` 寫入 Group-Commit。
-*   **32 分片並行與密碼學縱深防禦**：OWASP Argon2id（`64 MiB`, `t=3`, `p=4`）、BLAKE2b-512 子金鑰隔離、Context-Bound XChaCha20-Poly1305 AEAD（NEON/AVX2＋短檔名 1-block scalar fast path）、192-bit SIV 檔名加密、新區塊清零、OOM/解壓炸彈邊界防護與預設僅綁 loopback 的 TCP IPC（`--allow-remote-ipc`）。
-*   **形式化驗證與測試覆蓋**：**109 項 AWS Kani (CBMC) 數學證明**、Bolero 模糊測試、Shuttle 並行排程驗證與 **73 組整合測試套件**。
+*   **動態擴容與收縮（Auto-Grow / Resize / Vacuum）**：提供預設關閉、可選上限的透明自動擴容（`AutoGrowConfig`、`--auto-grow[=MAX_MB]`），支援同邊界 O(1) 原地伸縮與跨 128 MiB Bitmap／Inode 表擴張的保留 `inode_id` 串流原子重排（`AtomicRelayout`），以及一鍵壓實空間回收（`oifs vacuum`）。
+*   **自帶 Zstd 字典與明確 `WriteBatch`**：支援執行緒安全池化的 `ZstdDictRegistry`（`CDict`/`DDict`、CLI `--dict` 與 `oifs dict train`）及 `Auto` 模式小檔自動字典壓縮；`DiskManager::begin_write_batch()` 可將混合建檔、目錄、刪除與更名合併為 96 KiB 分塊 WAL 交易提交。
+*   **交易式 Metadata WAL、Inode v3 CRC32C 與 Group-Commit**：33 區塊（1 Header + 128 KiB Ring）CRC32C WAL，Inode `record_version == 3` 內建硬體加速 CRC32C 校驗並由 `fsck` 主動偵測位元翻轉（完全向後相容 v2/v1），支援 `Lazy` / `RangeAsync` / `Strict` 模式與單交易 `create_file_with_data`。
+*   **128B 快取線隔離與 32 分片並行**：32 分片費氏雜湊 `BoundedInodeCache` / `ShardedDirCache`、16/64 分片底層快取、`zstd_pool` 工作竊取計數與 `auto_grow_enabled` 旁路旗標皆以 128-byte `CachePadded` 隔離消除跨核心 False Sharing，搭配鎖外 SIMD 濾鏡／壓縮／加密與非阻塞 `flush()`。
+*   **密碼學縱深防禦**：OWASP Argon2id（`64 MiB`, `t=3`, `p=4`）、BLAKE2b-512 子金鑰隔離、Context-Bound XChaCha20-Poly1305 AEAD（NEON/AVX2＋短檔名 1-block scalar fast path）、192-bit SIV 檔名加密、新區塊清零、OOM/解壓炸彈邊界防護與預設僅綁 loopback 的 TCP IPC（`--allow-remote-ipc`）。
+*   **形式化驗證與測試覆蓋**：**131 項 AWS Kani (CBMC) 數學證明**、Bolero 模糊測試、Shuttle 並行排程驗證與 **83 組整合測試套件**。
 
 ---
 
@@ -283,7 +291,7 @@ int main() {
 ## 建置、測試與形式化驗證
 
 ```bash
-# 執行全部 73 組整合測試與單元測試（共 77 targets）
+# 執行全部 83 組整合測試與單元測試（共 87 targets）
 cargo test --release
 
 # 於純 pread/pwrite（零 mmap）模式執行核心套件
@@ -292,8 +300,8 @@ OIFS_STORAGE_MODE=pread cargo test --release --test transfer_test --test rename_
 # 執行真實核心 FUSE 掛載端對端測試與 APFS 對照 benchmark（需 macFUSE 或 /dev/fuse）
 cargo test --release --test fuse_live_mount_test -- --ignored --nocapture --test-threads=1
 
-# 平行執行全部 109 項 Kani 數學形式化證明
-cargo kani -j 8 --output-format=terse
+# 平行執行全部 131 項 Kani 數學形式化證明
+cargo kani --lib -j 8 --output-format=terse
 
 # 一鍵發布前檢查（fmt、clippy、build、test、shuttle、kani、coverage）
 ./scripts/release_check.sh --quick

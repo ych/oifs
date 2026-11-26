@@ -897,3 +897,26 @@ mod range_coalesce_tests {
         assert!(std::mem::size_of::<DecodedBlobShard>() >= 128);
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn proof_cache_padded_and_shard_indices_in_bounds() {
+        let inode_id: u64 = kani::any();
+        let chunk_idx: usize = kani::any();
+
+        assert!(ChunkReadCache::shard_idx(inode_id, chunk_idx) < NUM_PAYLOAD_CACHE_SHARDS);
+        assert!(DecodedBlobCache::shard_idx(inode_id) < NUM_PAYLOAD_CACHE_SHARDS);
+
+        let inode_shard =
+            (inode_id.wrapping_mul(0x517cc1b727220a95) as usize) & (NUM_INODE_CACHE_SHARDS - 1);
+        assert!(inode_shard < NUM_INODE_CACHE_SHARDS);
+
+        assert_eq!(std::mem::align_of::<crate::CachePadded<AtomicUsize>>(), 128);
+        assert!(std::mem::size_of::<crate::CachePadded<AtomicUsize>>() >= 128);
+        assert_eq!(std::mem::align_of::<ChunkCacheShard>(), 128);
+        assert_eq!(std::mem::align_of::<DirCacheShard>(), 128);
+    }
+}

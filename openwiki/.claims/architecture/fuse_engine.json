@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:405b2e71f38699f08f8ac19c8a31d0ca83cc77b0ce6eb5e5da8a994a8a238665",
+  "pageVersion": "sha256:937e5d20d47b9a776fc5206d2375896d50502d0f7601063986d1310db134e054",
   "claims": [
     {
       "id": "claim_37ac175985ba4adba3a529d7b515969e",
@@ -49,7 +49,7 @@
       "statement": "Read-only enforcement returns -EROFS on all mutating operations when either DiskManager::is_read_only() or FuseMountOptions::read_only is true, with zero disk writes.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L1455-L1465",
+          "resource": "repo://src/disk.rs#L1532-L1542",
           "version": "repo-lines-v1:sha256:3f1ea49d217f30b9d0b086ee567290d77944800ae9e517d00f37deb6d9c08d7f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkYzA4ODc1MTFkMjY3ZGQwNmVkODcwYTIzOTkyYWJlZGUyZTRlOGJlZDRlNjkxMjIzYmY5MmQxOTg2NGZmOTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0MjRiODA5NDJiOGY5MWRhYTJmZThkMzAzZmZhNDQ0NmExMjRiOWQ1MmJmYzAxMjM1MjczODg4Nzc0MjgyMzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3NDc3NmE2YTQ4YjEzNWQ4MmQ4ZmMwMzdmYmMxMzg0ZTRiZmQ1OGU1OWFmMjBiNWFkNGU1ZDQ1Mjc0YWQ1YWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjYTUzYjg2ODQzZDQ1YTBkMjQ4YzY1NzhjMTQyYTIxYWZmOTc4ZmM0Yzc2NDIyNDhhNmYyMmU1ZTczYmZmYzMifQ"
         },
         {
@@ -161,6 +161,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-24T19:09:23.676Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

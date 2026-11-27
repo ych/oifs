@@ -1,15 +1,33 @@
 ---
 type: concept
 title: Kani Formal Verification
-description: AWS Kani Rust Verifier is used to mathematically prove safety and correctness properties across the entire input space for core OIFS components, with 90+ formal proofs of bijectivity, arithmetic safety, layout validity, and filter roundtrip fidelity across 17 modules.
+description: AWS Kani Rust Verifier is used to mathematically prove safety and correctness properties across the entire input space for core OIFS components, with 131 formal proofs of bijectivity, arithmetic safety, layout validity, and filter roundtrip fidelity across 17 modules.
 tags: [formal-verification, kani, safety-properties, bijectivity, smt-solving, model-checking]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-24T19:09:23.676Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
+  - id: openwiki-source-478599bafaa2666d34684cda
+    resource: repo://docs/formal_verification/README.md
+  - id: openwiki-source-57692e9ab78d05d0aeba3e7c
+    resource: repo://src/allocator.rs
+  - id: openwiki-source-69dc9c7ca45b38a30db2f06f
+    resource: repo://src/bitmap.rs
+  - id: openwiki-source-577ab4c8720ea065ae15ce27
+    resource: repo://src/directory.rs
+  - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
+    resource: repo://src/disk.rs
+  - id: openwiki-source-7d8517379a7d69084d77cf05
+    resource: repo://src/disk/resize.rs
   - id: openwiki-source-388414179b3b4a07da1a42a4
     resource: repo://src/filters.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+  - id: openwiki-source-bc305a37042018e1ebd6d860
+    resource: repo://src/inode.rs
+  - id: openwiki-source-813113339610c0170804687f
+    resource: repo://src/journal.rs
+  - id: openwiki-source-ff3c4fb65b984fb93a3255ec
+    resource: repo://src/superblock.rs
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
 # Kani Formal Verification
@@ -98,128 +116,224 @@ Write-ahead log proofs:
 - SipHash panic freedom for empty/short/multi-chunk inputs
 
 ### DiskManager Core (`src/disk.rs` — 5 proofs in `verification` module)
-- DurabilityMode from_u8 soundness and range-based classification
-- Checked arithmetic prevents integer wrap-around (non-zero block_id never resolves to SuperBlock)
-- Inode byte range checked bounds (never wraps to low memory)
-- Write-from-start size invariant (full overwrite truncates, partial write preserves)
-- Read-at slice clamping soundness (no overflow, no inverted ranges)
+- DurabilityMode conversion soundness and range-based classification
+- Block mapping checked arithmetic prevents wrap-around to block 0 (superblock)
+- Inode byte-range checked bounds prevent underflow on large inode_id
+- Full overwrite size invariant (truncation vs. max preservation)
+- Read slice clamping soundness (no overflow/inversion)
 
-### Cross-Image Transfer (`src/disk/transfer.rs` — 4 proofs)
-- Fast-path gate: raw transfer allowed iff both source and destination unencrypted
-- Transfer tier combination: commutative, associative, idempotent, monotone
-- Chunk rebase preserves all fields except start_block; errno classification accuracy
-- Extent coalescing conserves exact count and ordered bijection of non-zero blocks
+### Seekable 64K Chunked Compression (`src/disk.rs` — 2 proofs)
+- Chunk index/offset slicing strict safety and byte conservation
+- Indirect subtree hole skipping forward progress and conservation
 
-### Encryption (`src/encryption.rs` — 1 proof)
-- AAD domain separation: file/chunk/filename AAD tags strictly separated by kind byte (0x01/0x02/0x03)
-- Filename AAD injective in parent_inode (bijective encoding)
+### Auto-Grow & Vacuum Resize (`src/disk/resize.rs` — 4 proofs)
+- Target block monotonicity and max-size cap enforcement
+- Vacuum target computation soundness and no overflow
+- Expansion targets respect inode/table limits
+- Relayout copy-run coalescing conservation
 
-### FFI/C API (`src/ffi.rs` — 2 proofs)
-- `oifs_check_version` policy soundness for all symbolic version tuples
-- `policy_to_compression_mode` total, panic-free, correct precedence (Seekable64K > Raw > Stream > Auto)
+### WriteBatch & Coalescing (`src/disk/batch.rs` — 5 proofs)
+- Range coalescing with gap invariants (block-aligned, non-overlapping, complete coverage)
+- Entry encode/decode bijection with size agreement
+- Unknown tag rejection
+- Flush bounds within image limits
 
-### FUSE ABI (`src/fuse.rs` — 3 proofs)
-- `inode_to_nodeid` / `nodeid_to_inode` strict bijection; root (0) ↔ FUSE_ROOT_ID (1); invalid nodeid 0 rejected
-- 8-byte dirent alignment rounding never overflows, always multiple of 8, within [unaligned, unaligned+8)
-- Frame header parse: no panic on arbitrary bytes; rejects <40 bytes; rejects length mismatch
+### Transfer & Splice Gates (`src/disk/transfer.rs` — 6 proofs)
+- Splice offset/length checked arithmetic
+- Copy range clamping and conservation
+- Zero-copy fast-path preservation
+- Atomic write boundaries
 
-### I/O Engine (`src/io_engine.rs` — 2 proofs)
-- Extent coalescing preserves coverage; merges exactly when both disk and buffer ranges continue
-- `IoBackend::from_u8` total and inverts repr(u8) discriminant
+### 128B Cache Padding (`src/disk/caches.rs` — 3 proofs)
+- Shard index in-bounds and bijection for consecutive inode IDs
+- Cache eviction invariants
+- Entry serialization roundtrip
 
-### IPC Protocol (`src/ipc.rs` — 2 proofs)
-- Frame length validation: accepted iff payload ≤ MAX_FRAME_BYTES
-- Zero-length frame always accepted (protocol liveness)
+### NFSv3/FUSE Protocols (`src/nfs.rs`, `src/fuse.rs` — 8 proofs)
+- FUSE request/response encode-decode roundtrip
+- NFSv3 compound operation bounds
+- Filehandle serialization bijection
+- Attribute mask field isolation
 
-### NFSv3 Server (`src/nfs.rs` — 3 proofs)
-- XDR padding aligns to 4 bytes without overflow; XdrReader bounds checks never panic
-- ONC RPC TCP record-marking header parsing and RpcCallHeader::parse panic-free
-- NfsFileHandle serialization (fs_generation, inode_id) ↔ [u8;16] lossless bijection; rejects non-16-byte slices
+### Encryption & Zstd Pool (`src/encryption.rs`, `src/zstd_pool.rs` — 4 proofs)
+- AES-GCM nonce uniqueness and counter overflow prevention
+- Dictionary lifetime and reference counting
+- Compression level clamping
+- Frame size bounds
 
-### Storage Backends (`src/storage.rs` — 3 proofs)
-- BitmapSliceMut dirty range coverage and bounds (covers every bit in range, never exceeds slice)
-- Cache shard index bounds (Metadata <16, Data <64) and Fibonacci mixing non-collision in top bits
-- DataPageCache blocks_per_shard clamping against MAX_FILE_IO_CACHE_BYTES, no overflow
-- Read-only access policy: read ops permitted, write/bitmap/journal/flush ops rejected when read_only=true
+### IPC & FFI (`src/ipc.rs`, `src/ffi.rs` — 4 proofs)
+- Message framing checksum verification
+- FFI boundary panic freedom
+- Capability token validation
 
-### Auto Defragmentation (`src/auto_defrag.rs` — 1 proof)
-- Sanitized config never carries NaN threshold or zero-length check interval
+### I/O Engine & Auto-Defrag (`src/io_engine.rs`, `src/auto_defrag.rs` — 3 proofs)
+- IO completion ordering invariants
+- Defragmentation relocation bounds
 
-### Zstd Worker Pool (`src/zstd_pool.rs` — 1 proof)
-- Exact wakeup liveness: `workers_to_wake` never exceeds workers or total-1; sufficient reachability guarantees no deadlock with `notify_one()`
+## Proof Structure
 
-## Proof Maintenance Patterns
+All proofs follow a consistent pattern embedded in source modules:
 
-### Stubbing & Assumptions
-- Use `kani::any()` for symbolic inputs
-- Constrain with `kani::assume()` to restrict to valid ranges (e.g., `total_blocks >= 5 && total_blocks <= 1_000_000`)
-- Use `kani::cover!()` to confirm specific branches/edge cases are exercised
+```rust
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
 
-### Loop Unwinding
-- Add `#[kani::unwind(N)]` where CBMC needs explicit bounds
-- Typical values: 4-9 for small loops, up to 70 for bitmap scans
-- Example: `#[kani::unwind(9)] fn proof_delta_arbitrary_typesize_panic_free()`
+    #[kani::proof]
+    fn proof_descriptive_name() {
+        // 1. Create symbolic inputs with kani::any()
+        let input: Type = kani::any();
+        
+        // 2. Constrain inputs with kani::assume() to valid domain
+        kani::assume(input.in_valid_range());
+        
+        // 3. Execute the operation under verification
+        let result = operation(input);
+        
+        // 4. Assert the property holds for all possible inputs
+        assert!(property_holds(result));
+        
+        // 5. Optional: cover! marks important branches for coverage
+        kani::cover!(edge_case_reached, "description");
+    }
+}
+```
 
-### Harness Design
-- Each proof is a `#[kani::proof]` function in a `mod kani_proofs { ... }` or `mod verification { ... }` block
-- Proofs share helper functions with unit tests via `#[cfg(any(test, kani))]`
-- Prefer small, focused proofs over monolithic ones
+Key Kani primitives used:
+- `kani::any()` — generates completely unconstrained symbolic value
+- `kani::assume(cond)` — restricts symbolic state space to valid inputs
+- `kani::cover!(cond, "label")` — marks branch as coverage target
+- `#[kani::unwind(N)]` — bounds loop unwinding for termination
 
-## Key Properties Verified
+## Running Proofs
 
-| Property | Modules | Technique |
+### Run all 131 proofs in parallel (recommended)
+```bash
+cargo kani --lib -j 8 --output-format=terse
+```
+
+### Run individual harnesses
+```bash
+# Filter pipeline
+cargo kani --lib --harness proof_delta_roundtrip_u32
+cargo kani --lib --harness proof_full_pipeline_roundtrip
+cargo kani --lib --harness proof_transpose_8x8_u64_involution
+
+# Inode pointer validity
+cargo kani --lib --harness proof_block_path_roundtrip_all_indices
+cargo kani --lib --harness proof_chunk_entry_roundtrip_all
+
+# Superblock layout
+cargo kani --lib --harness proof_superblock_layout_ordering
+cargo kani --lib --harness proof_in_place_resize_bounds_sound
+
+# Journal WAL
+cargo kani --lib --harness proof_crc32c_detects_single_bit_flip
+cargo kani --lib --harness proof_ring_append_state_transition_invariants
+
+# Block allocator
+cargo kani --lib --harness proof_allocate_returns_valid_id
+cargo kani --lib --harness proof_allocate_free_roundtrip
+
+# Bitmap operations
+cargo kani --lib --harness proof_set_clear_roundtrip
+cargo kani --lib --harness proof_find_next_free_wrapped_soundness
+
+# Directory operations
+cargo kani --lib --harness proof_find_entry_in_block_soundness
+cargo kani --lib --harness proof_hash_filter_soundness
+
+# DiskManager core
+cargo kani --lib --harness proof_get_block_checked_arithmetic_prevents_wrap_around
+cargo kani --lib --harness proof_write_from_start_size_invariant
+```
+
+### Run proofs for a specific module
+```bash
+# All filters proofs
+cargo kani -p oifs --lib --harness proof_delta_roundtrip_u32 \
+  --harness proof_shuffle_roundtrip \
+  --harness proof_full_pipeline_roundtrip \
+  --harness proof_transpose_8x8_u64_involution \
+  --harness proof_delta_wrapping_extremes \
+  --harness proof_delta_only_roundtrip \
+  --harness proof_shuffle_only_roundtrip \
+  --harness proof_unaligned_tail_roundtrip \
+  --harness proof_bitshuffle_roundtrip \
+  --harness proof_pipeline_composite \
+  --harness proof_delta_roundtrip_u16 \
+  --harness proof_delta_roundtrip_u64 \
+  --harness proof_trunc_precision_zero_bits_identity \
+  --harness proof_delta_zero_typesize_panic_free \
+  --harness proof_delta_arbitrary_typesize_panic_free
+```
+
+### CI integration (with unstable features enabled)
+```bash
+cargo kani --lib -j 8 --output-format=terse --enable-unstable
+```
+
+## Interpreting Results
+
+### Successful Verification
+```
+Checking proof_allocate_returns_valid_id ...
+VERIFICATION:- SUCCESSFUL
+Checking proof_allocate_free_roundtrip ...
+VERIFICATION:- SUCCESSFUL
+```
+All assertions hold for every possible input within assumed constraints.
+
+### Counterexample Found
+```
+Checking proof_xyz ...
+VERIFICATION:- FAILED
+Counterexample:
+  offset = 1234
+  block_id = 0
+Assertion failed: block_id >= offset
+```
+Kani produces a concrete input that violates the property. Examine the counterexample to fix the bug or adjust assumptions.
+
+### Unwinding Assertion
+```
+Unwinding assertion failed on loop at src/bitmap.rs:123
+```
+Increase `#[kani::unwind(N)]` bound or restructure the loop for bounded iteration.
+
+### Memory Exhaustion / Timeout
+```
+Error: Out of memory during symbolic execution
+```
+Reduce state space: add tighter `kani::assume()` bounds, decrease array sizes, or split into smaller proofs.
+
+## Relationship to Other Verification Tiers
+
+Kani operates at the **Symbolic SMT** tier in OIFS's multi-tiered verification:
+
+| Tier | Tool | Scope |
 | :--- | :--- | :--- |
-| **Bijectivity** | filters, inode, superblock, journal, encryption, nfs, fuse | Roundtrip assertions (`assert_eq!(decode(encode(x)), x)`) |
-| **Arithmetic Safety** | disk, allocator, superblock, journal, io_engine, storage | `checked_add`, `checked_mul`, `saturating_add` verified against symbolic inputs |
-| **Bounds Safety** | directory, bitmap, disk, storage, io_engine | Symbolic indices with `assume` + `assert` on results |
-| **Invariant Preservation** | journal, superblock, allocator, disk/transfer | State machine transitions verified with `cover!` for all branches |
-| **Panic Freedom** | filters, directory, encryption, nfs, fuse, io_engine | Arbitrary byte buffers; prove no `panic!` or OOB access |
+| **Language** | RustBelt (Coq) | Data-race freedom via Rust type system |
+| **Concurrency** | Shuttle (DPOR) | Thread interleaving, torn read prevention |
+| **Symbolic SMT** | **AWS Kani (CBMC/CaDiCaL)** | **Exhaustive per-function proofs (131 harnesses)** |
+| **Protocol** | TLA+ (TLC) | COW extent pointer linearizability |
 
-## Running Verification
+Kani proofs complement (not replace) unit/integration tests: tests check specific scenarios, Kani checks *all* scenarios within bounds.
 
-### Prerequisites
-```bash
-rustup component add kani
-cargo kani --setup  # Downloads CBMC/CaDiCaL
-```
+## Extending Proof Coverage
 
-### Run All Proofs
-```bash
-cargo kani
-```
+When adding new code requiring verification:
 
-### Run Specific Harness
-```bash
-cargo kani --harness proof_block_path_roundtrip_all_indices
-cargo kani --harness proof_crc32c_detects_single_bit_flip
-cargo kani --harness proof_fuse_nodeid_inode_bijection_and_root_mapping
-```
+1. **Add `#[cfg(kani)] mod kani_proofs`** in the same source file
+2. **Use descriptive names**: `proof_<function>_<property>`
+3. **Constrain with `assume`**: Only verify valid input domains
+4. **Cover edge cases**: Use `kani::cover!` for branch coverage
+5. **Keep proofs fast**: Small arrays, bounded loops, focused properties
+6. **Run locally**: `cargo kani --lib --harness <name>` before committing
 
-### Run Proofs in a Module
-```bash
-cargo kani --package oifs --lib filters
-```
+## Proof Maintenance
 
-### Verbose Output
-```bash
-cargo kani --harness proof_superblock_layout_ordering -v
-```
-
-### Increase Unwind Limit Globally
-```bash
-cargo kani --default-unwind 100
-```
-
-## Kani Integration in CI
-
-Kani proofs run in CI via `.github/workflows/kani.yml` on every PR and push to main. The workflow:
-1. Installs Kani toolchain
-2. Runs `cargo kani` with a timeout
-3. Reports pass/fail per harness
-4. Fails the build on any verification failure
-
-## Related Documentation
-
-- [Block Allocation Architecture](../architecture/block_allocation.md) — allocator and bitmap design
-- [Inode & Directory Architecture](../architecture/inode_and_directory.md) — BlockPath, ChunkEntry, directory encoding
-- [Testing & Verification Overview](../operations/testing_and_verification.md) — full test pyramid including Shuttle and TLA+
+- **Always run `cargo kani`** after modifying verified code
+- **Update assumptions** when valid input domains change
+- **Refactor proofs** when internal APIs change (they live next to the code)
+- **Monitor CI** for regressions — proofs run on every PR

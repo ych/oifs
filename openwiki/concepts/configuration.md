@@ -1,11 +1,11 @@
 ---
 type: "Reference"
 title: "Configuration"
-description: "Documents all configuration knobs: CLI flags, environment variables, session modes, compression modes, durability modes, auto-defrag, storage modes, and their interactions."
+description: "Documents all configuration knobs: Cargo features, CLI flags, environment variables, session modes, compression modes, durability modes, auto-defrag, storage modes, and their interactions."
 tags: ["configuration", "cli", "environment", "runtime", "storage", "compression", "durability", "defragmentation", "session", "ipc"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
@@ -15,7 +15,7 @@ sources:
     resource: repo://src/disk.rs
   - id: openwiki-source-ea9e30b0c99ad48bf309d4ab
     resource: repo://src/io_engine.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
 OIFS provides multiple configuration mechanisms to tailor functionality for different use cases, from embedded systems to high-performance clusters. Configuration occurs at build time via Cargo features, at runtime via CLI flags and environment variables, and through persistent filesystem properties stored in the superblock.
@@ -26,12 +26,13 @@ Optional functionality is controlled through Cargo features in `Cargo.toml`:
 
 | Feature | Description | Default |
 |---------|-------------|---------|
-| `default` | Enables `mcp` and `io_uring` features | Yes |
-| `mcp` | Adds MCP (Model Context Protocol) server capabilities; required for `--network` mode | Yes (via default) |
+| `default` | Enables `cli` and `io_uring` features | Yes |
+| `cli` | Builds the `oifs` CLI binary (requires `clap`) | Yes (via default) |
+| `mcp` | Adds MCP (Model Context Protocol) server capabilities via the `oifs_mcp` binary; required for the `--network` / `-n` CLI flag | No |
 | `io_uring` | Enables Linux io_uring backend for accelerated I/O (Linux-only, requires kernel ≥ 5.15 or RHEL 9.3+ backport) | Yes (via default, Linux-only) |
 | `blosc2` | Enables native C-Blosc2 interop wrappers (`filters::blosc2_compress`/`blosc2_decompress`) | No |
-| Encryption deps | `chacha20poly1305`, `argon2`, `rand`, `zeroize`, `blake2`, `base64ct` | Always linked |
-| Compression deps | `zstd`, `blosc2` (optional), `rayon` | Always linked |
+
+**Encryption dependencies** (`chacha20poly1305`, `argon2`, `rand`, `zeroize`, `blake2`, `base64ct`) and **compression dependencies** (`zstd`, `rayon`) are always linked; they are not behind feature flags.
 
 The `io_uring` feature is conditional: it only links the `io-uring` dependency on Linux targets (`cfg(target_os = "linux")`). On other platforms or when disabled, the io_uring backend compiles to nothing and falls back to `pread`.
 
@@ -69,7 +70,7 @@ The storage mode selection follows this precedence:
 
 ### CLI Flags
 
-Global flags affecting all commands:
+Global flags affecting all commands (defined in `src/bin/oifs.rs`):
 
 | Flag | Description |
 |------|-------------|
@@ -84,6 +85,8 @@ Global flags affecting all commands:
 | `--defrag-interval <seconds>` | Interval in seconds between background fragmentation checks; defaults to 300 (minimum 10 ms enforced internally) |
 | `--no-mmap` | Use pure positional `pread`/`pwrite` file I/O instead of mmap (eliminates `SIGBUS` and mmap hazards); sets `StorageMode::FileIo` |
 | `--read-only` | Open the image in read-only mode (shared `F_RDLCK` lock, zero writes, works on 0444 images) |
+| `--dict <path>` | Custom Zstd dictionary file(s) to register (first is also set as default compressor) |
+| `--auto-grow[=MAX_MB]` | Automatically expand image capacity on block or inode exhaustion (optional hard cap in MiB, e.g. `--auto-grow` or `--auto-grow=64`) |
 
 Command-specific configuration:
 
@@ -98,142 +101,113 @@ The session mode determines how processes coordinate access to the same image. I
 | Mode | CLI Flag | API Method | Transport | Use Case |
 |------|----------|------------|-----------|----------|
 | `Standalone` | (none) | `get_or_open` | None (direct `mmap`) | Single process, zero overhead |
-| `Local` | `--ipc` | `get_or_open_local` | Unix Domain Socket (`/tmp`) | Multi-process on same machine |
-| `Network` | `--network` / `-n` (optionally `--bind`) | `get_or_open_network` | TCP + rendezvous file (`.image.master`) | NFS, Lustre, multi-node clusters |
+| `Local` | `--ipc` | `open_local` | Unix Domain Socket in `/tmp` | Multi-process on one machine |
+| `Network` | `--network` / `-n` | `open_network` | TCP + rendezvous file (`.image.master`) | NFS, Lustre, multi-node clusters |
 
-In `Network` mode, a rendezvous file `.image.master` is created in the image directory containing the master's bind address, PID, and an authentication token. The transport is plain TCP without TLS; non-loopback binds require `--allow-remote-ipc` and should only be used over encrypted tunnels.
+**Network mode requires the `mcp` feature** (it pulls in `tokio` and `rmcp`). The `oifs_mcp` binary also requires the `mcp` feature.
 
-### Storage Mode Selection
+### Password Resolution
 
-OIFS supports two image storage backends over the exact same on-disk format:
+Encrypted filesystems require a password. Resolution precedence:
 
-| Mode | Description | Trade-offs |
-|------|-------------|------------|
-| `Mmap` (default) | Maps the entire `.img` container with `memmap2::MmapMut` for zero-copy memory access (40–58 GB/s on resident pages) | Risk of `SIGBUS` on storage I/O errors; uses `unsafe` mmap |
-| `FileIo` | 100% `mmap`-free positional `pread(2)`/`pwrite(2)` I/O backed by in-memory write-through bitmaps, an in-memory WAL mirror (when journaled), and a bounded 16-shard 4 KiB metadata block cache | Eliminates `SIGBUS` crashes and `unsafe` memory-mapping hazards; all I/O strictly in Safe Rust |
+1. `--password` CLI flag
+2. `OIFS_PASSWORD` environment variable
+3. Interactive prompt (suppressed in `--json` mode to keep stdout pure for JSON pipelines)
 
-The `FileIo` mode also includes a 64-shard bounded Second-Chance Clock user-space 4 KiB data page cache (default 32 MiB, max 4 GiB, configurable via `OIFS_FILE_IO_CACHE_MB`). Large streaming extents > 64 KiB bypass the cache to preserve sequential throughput and prevent scan pollution.
+The password is stored in a `Zeroizing<String>` buffer and wiped on drop.
 
-## Filesystem Properties (Superblock-Persistent)
+## Persistent Filesystem Properties (Superblock)
 
-Properties stored in the superblock and configurable via CLI or API (`DiskManager` methods).
+The superblock (block 0) stores immutable and mutable filesystem properties that persist across mounts. Key feature flags and fields:
 
-### Compression Mode (`CompressionMode`)
+| Field | Type | Description |
+|-------|------|-------------|
+| `encrypted` | `bool` | Whether the filesystem uses encryption |
+| `encryption_version` | `u8` | Encryption scheme: `1` = legacy (XChaCha20-Poly1305 without AAD), `2` = context-bound (AAD binds ciphertext to inode/chunk) |
+| `format_version` | `u32` | On-disk format: `1` = legacy bincode inodes, `2` = fixed 256-byte inodes (`INODE_FORMAT_V2`), `3` = v3 layout with multi-block bitmaps |
+| `migration_cursor` | `u64` | In-place format migration progress cursor (0 = no migration) |
+| Journal layout | Derived | Detected via `has_journal_layout()`: true when inode table starts after data bitmap + `JOURNAL_RESERVED_BLOCKS` (33 blocks: 1 header + 128 KB ring) |
 
-Controls when files are compressed using Zstandard:
+**No `case_insensitive` or `chunked` flags exist in the superblock.** Case sensitivity is not a filesystem-level setting. Chunked compression is a per-write `CompressionMode::Seekable` choice, not a persistent property.
 
-| Variant | Description |
-|---------|-------------|
-| `Always` | Compress all files regardless of size (full-file stream) |
-| `Never` | Disable compression entirely |
-| `Auto` (default) | Compress files ≥ 8KB |
-| `Stream { level: i32 }` | Full-file stream compression with explicit Zstd compression level (1–19, 0 = default level 3) |
-| `Seekable { chunk_size: u32, level: i32 }` | Seekable chunked compression with independent chunks (default chunk 64KB, level 1 recommended) |
+### Encryption Schemes
 
-Set via `DiskManager::set_compression_mode()` or CLI `put` flags (`--compress`, `--no-compress`, `--chunked`).
+- **Legacy (`ENCRYPTION_SCHEME_LEGACY = 1`)**: XChaCha20-Poly1305 without associated data. Files can be swapped or rolled back without detection.
+- **Context-bound (`ENCRYPTION_SCHEME_CONTEXT_BOUND = 2`)**: AEAD with associated data binding ciphertext to inode ID (and for chunks, to chunk index + flags). Prevents ciphertext relocation, reordering, and rollback attacks. New images use this scheme.
 
-### Defragmentation Mode (`DefragMode`)
+### Format Versions
 
-Determines how defragmentation operations are performed:
+- **v1 (Legacy)**: Packed `bincode` inode records. Read-only; existing images stay usable but keep writing v1 records until migrated.
+- **v2 (Fixed Inode)**: 256-byte fixed-width inode records with explicit little-endian fields (`INODE_FORMAT_V2`).
+- **v3 (Layout)**: Multi-block bitmaps that scale with image size (removes the 128 MiB / 32,768 block cap of v1/v2). `FORMAT_VERSION_V3_LAYOUT = 3`.
 
-| Variant | Description |
-|---------|-------------|
-| `Safe` (default) | Create new image and replace original after success |
-| `InPlace` | Directly modify original image (faster but risks corruption on failure) |
+### Journaling
 
-Set via `DiskManager::defragment()` or CLI `defrag --mode`.
+When `--journal` is passed to `create`, the superblock reserves 33 blocks (1 header + 128 KB ring) between the data bitmap and the inode table. Uncommitted transactions are replayed automatically on the next mount, making `fsck` unnecessary after power loss. The presence of the journal is detected by layout geometry, not a dedicated boolean flag.
 
-### Durability Mode (`DurabilityMode`)
+## Compression Modes
 
-Balances power-loss resilience against write throughput. The default is `Lazy`.
+`CompressionMode` (from `src/disk.rs`) controls when and how files are compressed:
 
-| Mode | Value | Behavior | Throughput (Bulk Writes) |
-|------|-------|----------|--------------------------|
-| `Lazy` (default) | 0 | Updates mmap/page cache without per-mutation `msync`. Survives process crashes; requires explicit `flush()` for power-loss safety. | Baseline (~45× faster than `Strict`) |
-| `RangeAsync` | 1 | Asynchronously flushes only modified byte ranges via `msync(MS_ASYNC)` on each mutation, avoiding full VM scans. | Near-`Lazy` for small writes; overhead grows with block count |
-| `Strict` | 2 | Synchronously flushes modified byte ranges via `msync(MS_SYNC)` on every mutation. Guarantees physical persistence before return. | Slowest (~45× slower than `Lazy`) |
-| `LegacyWholeMmapAsync` | 3 | Asynchronously flushes entire virtual memory map after every mutation (pre-P3.3 behavior). | Deprecated |
+| Mode | Behavior |
+|------|----------|
+| `Always` | Always compress, regardless of file size (stream mode) |
+| `Never` | Never compress |
+| `Auto` (default) | Compress files ≥ 8 KB |
+| `Stream { level }` | Full-file stream compression with explicit Zstd level (1–19, 0 = default 3) |
+| `Seekable { chunk_size, level }` | Seekable chunked compression with independent chunks (default 64 KB chunks, level 1 recommended) |
 
-Set via `DiskManager::set_durability_mode()`; current mode readable via `durability_mode()`.
+The `--chunked` CLI flag selects `Seekable { chunk_size: 64KB, level: 3 }`.
 
-**Benchmark context:** The ~45× throughput difference between `Lazy` and `Strict` is measured in `tests/journal_bench.rs` (ignored bench `bench_durability_mode_cost`) using 500 files × 512 B on a journaled image. `RangeAsync` scales with the number of dirty blocks per mutation; deferred coalescing batches up to 64 ops or 4 MiB before issuing `msync(MS_ASYNC)`.
+### Pre-compression Filters
 
-**Coalescing details:**
-- `RangeAsync` bridges gaps up to 1 MiB between dirty ranges, collapsing metadata and nearby data blocks into a single `msync(MS_ASYNC)`.
-- `Strict` bridges gaps up to 256 KiB, collapsing separate bitmap and inode `msync(MS_SYNC)` calls across the 132 KiB journal region.
+Applied before Zstd to improve compression ratio on structured data:
 
-### Filter Configuration (`FilterConfig`)
+| Filter | CLI `--filter` Value | Description |
+|--------|---------------------|-------------|
+| None | `none` | No filter |
+| Delta | `delta` | First-order delta encoding (good for time-series, monotonic data) |
+| Byte Shuffle | `shuffle` | Groups identical significance bytes (good for AoS structs) |
+| Bit Shuffle | `bitshuffle` | Bit-level transpose (good for sparse bits, boolean masks) |
+| Numeric (Delta + Shuffle) | `both` or `numeric` | Delta then byte shuffle |
+| Auto | `auto` | Analyzes file content and selects best filter |
 
-Pre-compression filters applied to file data before Zstandard compression:
+Element size (`--typesize`) controls filter granularity: 1, 2, 4, or 8 bytes (default 4).
 
-| Filter | Description | Typesize |
-|--------|-------------|----------|
-| `none` | No filter | N/A |
-| `delta` | First-order delta encoding | 1, 2, 4, 8 bytes |
-| `shuffle` | Byte shuffle (groups identical significance bytes) | 1, 2, 4, 8 bytes |
-| `bitshuffle` | Bit-level shuffle (aggregates identical bits) | 1, 2, 4, 8 bytes |
-| `both` / `numeric` | Delta + byte shuffle | 1, 2, 4, 8 bytes |
-| `auto` | Analyze content and pick best filter | Auto |
+## Durability Modes
 
-Set via CLI `put --filter --typesize` or API `write_data_with_filters`.
+`DurabilityMode` (from `src/disk.rs`) controls `msync` behavior:
 
-### Auto-Defragmentation Configuration (`AutoDefragConfig`)
+| Mode | Value | Behavior |
+|------|-------|----------|
+| `Lazy` (default) | `0` | Mutations update shared mmap + OS page cache without per-mutation `msync`. Visible to all processes immediately; survives process crashes. Persistence across power loss guaranteed on explicit `flush()`, `Drop`, or kernel writeback. ~45x faster bulk writes. |
+| `Full` | `1` | Each mutation issues `msync(MS_SYNC)`. Maximum power-loss resilience; slower. |
 
-Controls the background automatic defragmentation coordinator:
+## Auto-Defragmentation
 
-| Parameter | Description | Default | Sanitization |
-|-----------|-------------|---------|--------------|
-| `enabled` | Whether the coordinator runs | `false` | — |
-| `fragmentation_threshold` | Ratio `(free_runs - 1) / (free_blocks - 1)` above which a pass triggers | 0.25 | `NaN` → 0.25; clamped to `[0.0, 1.0]` |
-| `check_interval` | Time between fragmentation measurements | 300 s | Raised to 10 ms minimum (`MIN_CHECK_INTERVAL`) |
-| `min_free_blocks` | Minimum free data blocks required before a pass | 0 | — |
-| `allow_journaled` | Allow defrag on WAL-enabled images | `true` | — |
+Background coordination configured via `--auto-defrag[=THRESHOLD]` and `--defrag-interval`:
 
-The `AutoDefragConfig::sanitized()` method normalizes the configuration: it replaces `NaN` thresholds with the default (since comparisons against `NaN` are always false, which would cause defrag on every tick), clamps the threshold to `[0.0, 1.0]`, and raises sub-10 ms intervals to 10 ms to prevent a hot loop.
+- **Threshold** (default 0.25): Fragmentation ratio `(free_runs - 1) / (free_blocks - 1)`. 0.0 = fully contiguous, 1.0 = every free block isolated.
+- **Interval** (default 300 s): Time between fragmentation checks (min 10 ms).
+- Runs only on the IPC master (Standalone or master in Local/Network mode). Disabled in `--read-only` mode and on proxy (client) sessions.
 
-The coordinator runs on a daemon thread that exits when the `DiskManager` is dropped. Every pass takes the inner **write** lock, so it serializes against metadata mutations exactly like any other writer; no two defrag passes can overlap. On WAL-enabled images, background defragmentation is fully journaled and atomic: payload moves are ordered before metadata commits, and metadata updates are recorded in the WAL with batched checkpointing.
+## Storage Modes
 
-## Superblock Geometry Constraints
+`StorageMode` (from `src/storage.rs`) controls the file access strategy:
 
-The on-disk superblock layout imposes the following constraints (defined in `src/superblock.rs`):
+| Mode | Description |
+|------|-------------|
+| `Mmap` (default) | Memory-mapped I/O |
+| `Pread` | Positional `pread`/`pwrite` |
+| `FileIo` | User-space cached `pread`/`pwrite` with `OIFS_FILE_IO_CACHE_MB` budget |
+| `NoMmap` | Alias for `FileIo` (set by `--no-mmap`) |
 
-- **Block size**: Fixed at 4096 bytes (`BLOCK_SIZE`).
-- **Inode size**: Fixed at 256 bytes per inode.
-- **Superblock**: Single block at offset 0 (block 0).
-- **Inode bitmap**: Starts at block 1; number of blocks = `ceil(total_inodes / (8 * BLOCK_SIZE))`.
-- **Data bitmap**: Follows inode bitmap; number of blocks = `ceil(total_data_blocks / (8 * BLOCK_SIZE))`.
-- **Journal (optional)**: If enabled, reserves 33 blocks (1 header + 128 KiB ring) between the data bitmap and inode table.
-- **Inode table**: Starts after bitmaps (and journal if present); 32 blocks by default (8192 inodes).
-- **Data area**: All remaining blocks.
+## Configuration Interactions
 
-Total image size must accommodate all regions. Minimum recommended size is ~10 MB for a usable filesystem with journaling.
-
-## Feature Interaction Notes
-
+- `--no-mmap` overrides `OIFS_STORAGE_MODE` and sets `StorageMode::FileIo`.
+- `--network` requires the `mcp` feature (build-time).
+- `io_uring` backend requires Linux + `io_uring` feature + kernel ≥ 5.15 (or `OIFS_ALLOW_PRE_5_15`).
+- `--auto-defrag` only takes effect on the master process; proxy sessions warn and ignore it.
+- `--read-only` disables auto-defrag, auto-grow, and writes; opens with shared `F_RDLCK`.
 - Encryption and compression are independent: encrypted files may still be compressed (compression runs before encryption).
-- Network mode (`--network`) requires the `mcp` feature flag (enabled by default).
-- io_uring backend provides greatest benefit with `RangeAsync` or `Strict` durability modes where asynchronous `msync` can overlap with I/O submissions.
-- In `--json` mode, interactive password prompts are disabled; encryption requires `--password` or `OIFS_PASSWORD`.
-- The `blosc2` feature is optional and only needed for the C-Blosc2 interop wrappers; OIFS ships its own pure-Rust filter pipeline.
-- `StorageMode::FileIo` is fully compatible with journaling (WAL), encryption, and all compression modes.
-- Auto-defragmentation only runs on the Master session (Direct mode); client sessions cannot start the coordinator.
-
-## Configuration Source Mapping
-
-| Configuration Axis | Environment Variable | CLI Flag | API Method | Superblock (Persistent) |
-|--------------------|---------------------|----------|------------|-------------------------|
-| I/O Backend | `OIFS_IO_BACKEND` | — | `DiskManager::set_io_backend()` | No |
-| Password | `OIFS_PASSWORD` | `--password` | `open_with_mode(password)` / `open_with_password()` | No (derived at mount) |
-| Kernel override | `OIFS_ALLOW_PRE_5_15` | — | — | No |
-| Session mode | — | `--ipc`, `--network`, `--bind` | `OifsSession::get_or_open_*()` | No |
-| JSON output | — | `--json` | — | No |
-| Auto-defrag enable/threshold | — | `--auto-defrag[=THRESHOLD]` | `session.set_auto_defrag(config)` | No |
-| Defrag interval | — | `--defrag-interval` | `AutoDefragConfig::with_check_interval()` | No |
-| Storage mode | `OIFS_STORAGE_MODE` | `--no-mmap` | `open_with_storage_mode()` / `set_default_storage_mode()` | No |
-| FileIo cache budget | `OIFS_FILE_IO_CACHE_MB` | — | `DataPageCache::set_capacity_bytes()` | No |
-| Compression mode | — | `put --compress/--no-compress/--chunked` | `DiskManager::set_compression_mode()` | No (per-write) |
-| Defrag mode | — | `defrag --mode` | `DiskManager::defragment(mode)` | No (per-operation) |
-| Durability mode | — | — | `DiskManager::set_durability_mode()` | No (runtime) |
-| Filter config | — | `put --filter --typesize` | `write_data_with_filters()` | No (per-write) |
-| Journal enable | — | `create --journal` | `open_journaled()` / `create_encrypted_journaled()` | Yes (superblock flag) |
-| Encryption | — | `create --encrypt` | `create_encrypted()` | Yes (superblock flag) |
+- Password is required for `create --encrypt`, and for opening any encrypted image.

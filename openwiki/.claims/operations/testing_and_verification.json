@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:215b4d1c474f4fdd82609c347ff0457f29ac242ef89117ad2da30238a4f1cfbf",
+  "pageVersion": "sha256:bf6e1d7279f0fcf4bd8041cfe90c8a1c7e4069957a4d429b7b158f7c18f44454",
   "claims": [
     {
       "id": "claim_24ccddb574a5445b9214d61443534bd2",
@@ -17,7 +17,7 @@
       "statement": "Kani formal proofs in src/filters.rs prove roundtrip bijectivity for the Delta, ByteShuffle, and BitShuffle pre-compression filters across element sizes, ensuring apply/unapply reverses exactly.",
       "evidence": [
         {
-          "resource": "repo://src/filters.rs#L1088-L1213",
+          "resource": "repo://src/filters.rs#L1108-L1233",
           "version": "repo-lines-v1:sha256:5b8ff5e1a55b9a5d68778aa9ecff5ebbaa273e527de55776b6ecde2828e80c0b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxOWExOTIxMGQyODZiNGI5N2QwZDNkODU4NmNjMzNmYjJjYTc2YmI1NTBiOTU3ODk0ODUyOGNlNmEzYzE5NzIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyODZiNDI2MTk1MWU2YWExZmQ3NmU4NmU3NGNlMzY5MDkyYTY0OTE0NjljZGI5NzE5MGUwYWMxZGMxZGEyNzU5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YTU5NGYwM2ZjZTdiYmQxNjAwZjdhNTE4MWVlNTZhMDllNDgwMzQ0YmQzZDMwMzViNDI4OTBjZTY3MTE3MWVhIn0"
         }
       ]
@@ -27,7 +27,7 @@
       "statement": "Kani formal verification in src/bitmap.rs proves set-clear idempotency, bit-modification isolation, and out-of-bounds access safety of the bit operations used for block and inode allocation.",
       "evidence": [
         {
-          "resource": "repo://src/bitmap.rs#L526-L611",
+          "resource": "repo://src/bitmap.rs#L581-L666",
           "version": "repo-lines-v1:sha256:7b84c462293ba60aa868e38c1e1d3257f7694d58f65ae96410fd33122704e480:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4NmI0MjYxOTUxZTZhYTFmZDc2ZTg2ZTc0Y2UzNjkwOTJhNjQ5MTQ2OWNkYjk3MTkwZTBhYzFkYzFkYTI3NTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0YTQ4NTQwZTM4YTQ4OGUxMDA5NzVlZDRhODQyZjQ0NGRkYjY4MWY2ZTg1ZTlmYzExMDVhODk2Zjg0ZWFlMDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkzM2U2NTcwNDZmYTljMzRlNDljMGEwMzQxYjIyMTRhOWZlN2RhZDM1ZWEyZDAxZWQzMmYyOGMxZDBmM2Y4MWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmOTQ3ZTk0MzNhNjk4NjNjOWYxZTc0ZmViY2U0OWE3MjA4ODYwNDcxZjRlMmU3Mjc5OGI4Y2Q5NThlYWVkNjEifQ"
         }
       ]
@@ -37,22 +37,8 @@
       "statement": "Kani formal verification in src/superblock.rs proves that SuperBlock layout calculation preserves strictly ordered, non-overlapping regions and that the data region never overruns the image.",
       "evidence": [
         {
-          "resource": "repo://src/superblock.rs#L491-L521",
+          "resource": "repo://src/superblock.rs#L600-L630",
           "version": "repo-lines-v1:sha256:a9419f833497fc4cf3f387925c70f1ff190bedee598878807bd5e7ef34654ee8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZTZkMTBjMTFkNmJiM2M4NGY1YzRiMjVmZjcxNTI5ODk4NzA2ZDk1MWEzZWMzMzFmNjdhMDMzZjBlN2E4NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3NjI4Y2FhZDg0OWZjYmE0MDAzNTkwZDhhM2MyYjYwNzg4ZjVmOGUyMzgwZDc1MjY5ZDg1ZmUxNjMyMGVmMDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzMjU4NmExYmQzYWU3YzVjZTU0NjBiMjMxNjk3NTRjY2ZmY2Q4MDgxODQyMmEwYjg1YmQwMzM1NGFhZjA0NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4NTI0NTBjODYxMjQwZTQ0M2ExOTQ2YTMwMGU3OTdmNTMyNmY0ZWE2NjVkN2NhZWE2NWI5YzU5YWFmZTBmNzIifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_973a6ce0b54f4927907c347c9cd0ddb5",
-      "statement": "The test suite comprises roughly 30 integration, CLI, FFI, encryption, fsck, defragmentation, and concurrency test modules under tests/ that complement the probabilistic Shuttle runs and exhaustive Kano proofs.",
-      "evidence": [
-        {
-          "resource": "repo://tests/ffi_test.rs#L2-L2",
-          "version": "repo-lines-v1:sha256:29ecc10f0977aefe915429722932115098139629af8ef0a786317a0c2c301d16:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjllY2MxMGYwOTc3YWVmZTkxNTQyOTcyMjkzMjExNTA5ODEzOTYyOWFmOGVmMGE3ODYzMTdhMGMyYzMwMWQxNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjllY2MxMGYwOTc3YWVmZTkxNTQyOTcyMjkzMjExNTA5ODEzOTYyOWFmOGVmMGE3ODYzMTdhMGMyYzMwMWQxNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzRlZjUxOTg0MTRjNDgyODI3ZjczNmQxMTRjMTU4MTc2ZDcwMTdmYjBiZDE4MDI0MGEwMzE3NjVlYjZjNTMzZCJ9"
-        },
-        {
-          "resource": "repo://tests/integration_test.rs#L1-L1",
-          "version": "repo-lines-v1:sha256:6263fac754b15a09bf216440aa4ceaa888893ab4a25a76ffcffc1f1729b11c58:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjI2M2ZhYzc1NGIxNWEwOWJmMjE2NDQwYWE0Y2VhYTg4ODg5M2FiNGEyNWE3NmZmY2ZmYzFmMTcyOWIxMWM1OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjI2M2ZhYzc1NGIxNWEwOWJmMjE2NDQwYWE0Y2VhYTg4ODg5M2FiNGEyNWE3NmZmY2ZmYzFmMTcyOWIxMWM1OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTRhOGYzMzI0MDI5OTQzYTkwZjU5N2FiNTY3OTg1OTliOTE4NjZkYzVmZjM3MWFlMmZmNjMxYTZlN2RjYzhlMyJ9"
         }
       ]
     },
@@ -91,6 +77,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-23T20:55:55.458Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

@@ -1,11 +1,11 @@
 ---
 type: architecture
 title: Filesystem Integrity Checking (fsck)
-description: How the OIFS fsck structural consistency scanner performs set-theoretic verification between bitmap allocation states and directory reachability to detect orphan inodes, leaked blocks, missing blocks, and cross-linked blocks, plus read-only journal cleanliness verification. Covers chunk reference validation, deduplication detection, repair strategies, and verification flow.
-tags: [fsck, integrity, consistency, bitmaps, verification, orphan-inodes, leaked-blocks, cross-linked-blocks, journal, read-only, chunk-validation, deduplication, repair]
+description: How the OIFS fsck structural consistency scanner performs set-theoretic verification between bitmap allocation states and directory reachability to detect orphan inodes, leaked blocks, missing blocks, cross-linked blocks, and corrupted inodes, plus read-only journal cleanliness verification. Covers chunk reference validation, deduplication detection, repair strategies, and verification flow.
+tags: [fsck, integrity, consistency, bitmaps, verification, orphan-inodes, leaked-blocks, cross-linked-blocks, journal, read-only, chunk-validation, deduplication, repair, corrupted-inodes]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
@@ -15,7 +15,7 @@ sources:
     resource: repo://src/disk/maintenance.rs
   - id: openwiki-source-62eef0b8799186dd9e2faae9
     resource: repo://src/storage.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
 ## Responsibility and ownership
@@ -24,7 +24,7 @@ Filesystem structural consistency verification is owned by [`DiskManager::verify
 
 It serves as the OIFS equivalent of `fsck` (filesystem consistency check). Unlike continuous runtime operations that trust filesystem invariants, `verify_integrity` treats the raw on-disk state as untrusted, scanning block bitmaps, the inode table, and directory pointer trees to diagnose storage corruption, crash remnants, or software bugs.
 
-Results are encapsulated within [`FsckReport`](repo://src/disk.rs#L254-L265), which is exposed directly to the CLI command `oifs fsck` ([`src/bin/oifs.rs`](repo://src/bin/oifs.rs#L1557-L1600)) and over the IPC layer via `IpcRequest::VerifyIntegrity` → `IpcResponseData::Fsck` ([`src/session.rs#L1232-L1252`](repo://src/session.rs#L1232-L1252)).
+Results are encapsulated within [`FsckReport`](repo://src/disk.rs#L254-L265), which is exposed directly to the CLI command `oifs fsck` ([`src/bin/oifs.rs`](repo://src/bin/oifs.rs#L1711-L1770)) and over the IPC layer via `IpcRequest::VerifyIntegrity` → `IpcResponseData::Fsck` ([`src/session.rs#L1335-L1352`](repo://src/session.rs#L1335-L1352)).
 
 ## The consistency model: allocation vs reachability
 
@@ -54,9 +54,9 @@ Corruption occurs whenever there is a divergence between what the bitmaps declar
                         (Block mapped by > 1 Inode)
 ```
 
-## The 4 structural corruption categories
+## The 5 structural corruption categories
 
-The integrity scanner partitions discrepancies into four formal failure modes:
+The integrity scanner partitions discrepancies into five formal failure modes:
 
 | Defect Category | Field in `FsckReport` | Mathematical Definition | Severity / Impact |
 | :--- | :--- | :--- | :--- |
@@ -64,6 +64,7 @@ The integrity scanner partitions discrepancies into four formal failure modes:
 | **Leaked Blocks** | `leaked_blocks` | $\text{AllocatedBlocks} \setminus \text{ReferencedBlocks}$ | Low: Physical storage capacity is wasted because free blocks are marked in-use. |
 | **Missing Blocks** | `missing_blocks` | $\text{ReferencedBlocks} \setminus \text{AllocatedBlocks}$ | **Critical**: Active files reference blocks that the block allocator considers free; future writes will overwrite and corrupt active file data. |
 | **Cross-Linked Blocks**| `cross_linked_blocks` | $\{b \mid \text{Count}(\text{References}(b)) > 1\}$ | **Critical**: Multiple distinct inodes point to the exact same physical block; modifying one file silently corrupts another. |
+| **Corrupted Inodes** | `corrupted_inodes` | Allocated inodes that fail format decoding or CRC32C integrity verification | **Critical**: Inode metadata is unreadable; any data reachable through them is inaccessible. |
 
 ## FsckReport structure and remediation guidance
 
@@ -81,6 +82,8 @@ pub struct FsckReport {
     pub missing_blocks: Vec<u64>,
     /// List of data blocks referenced by multiple inodes
     pub cross_linked_blocks: Vec<u64>,
+    /// List of inodes that failed format decoding or CRC32C integrity verification
+    pub corrupted_inodes: Vec<u64>,
 }
 ```
 
@@ -92,12 +95,13 @@ pub struct FsckReport {
 | `leaked_blocks` | Safe to clear the corresponding data bitmap bits. These blocks contain no live file data. |
 | `missing_blocks` | **Requires manual investigation**. The listed blocks hold file data but are marked free. Marking them allocated in the bitmap (`Bitmap::set(idx)`) restores accounting but does not guarantee file contents are intact if the blocks were subsequently reused. |
 | `cross_linked_blocks` | **Requires manual investigation**. Multiple inodes share the same physical block. The only safe fix is to copy the block data to a fresh block for all but one inode and update that inode's pointer, then clear the cross-link from the report. |
+| `corrupted_inodes` | **Requires manual investigation**. Inode metadata is damaged (format decode failure or CRC32C mismatch). Data reachable through these inodes is inaccessible. Consider clearing the inode bitmap bit and treating any referenced blocks as leaked. |
 
-The `is_clean` flag is true only when all four vectors are empty. The CLI prints a human-readable summary and exits with a non-zero code if `!is_clean`.
+The `is_clean` flag is true only when all five vectors are empty. The CLI prints a human-readable summary and exits with a non-zero code if `!is_clean`.
 
 ## Verification algorithm
 
-[`DiskManager::verify_integrity_on`](repo://src/disk/maintenance.rs#L1597-L1767) operates under a shared read lock (`inner.read().unwrap()`), allowing concurrent inspections without halting read workloads. It uses compact 64-bit word bitsets for reachability tracking and zero-copy bitmap word scanning.
+[`DiskManager::verify_integrity_on`](repo://src/disk/maintenance.rs#L1597-L1795) operates under a shared read lock (`inner.read().unwrap()`), allowing concurrent inspections without halting read workloads. It uses compact 64-bit word bitsets for reachability tracking and zero-copy bitmap word scanning.
 
 ### Step 1: Bitmap ground-truth harvesting
 
@@ -109,11 +113,18 @@ Starting from `superblock.root_inode` (always inode 0), the verifier performs a 
 
 ```rust
 let mut dir_queue: Vec<Inode> = Vec::new();
+let mut corrupted_inodes: Vec<u64> = Vec::new();
 mark_inode_referenced(sb.root_inode);
-let root_inode = Self::read_inode_uncached(&guard, sb.root_inode)?;
-record_inode_blocks(&root_inode);
-if root_inode.mode == crate::inode::FileType::Directory {
-    dir_queue.push(root_inode);
+match Self::read_inode_uncached(&guard, sb.root_inode) {
+    Ok(root_inode) => {
+        record_inode_blocks(&root_inode);
+        if root_inode.mode == crate::inode::FileType::Directory {
+            dir_queue.push(root_inode);
+        }
+    }
+    Err(_) => {
+        corrupted_inodes.push(sb.root_inode);
+    }
 }
 
 while let Some(dir_inode) = dir_queue.pop() {
@@ -123,12 +134,17 @@ while let Some(dir_inode) = dir_queue.pop() {
         if phys_blk == 0 { continue; }
         let _ = guard.backing.with_block(phys_blk, |block_data| {
             crate::directory::for_each_valid_inode_in_block(block_data, |child_id| {
-                if mark_inode_referenced(child_id)
-                    && let Ok(child_inode) = Self::read_inode_uncached(&guard, child_id)
-                {
-                    record_inode_blocks(&child_inode);
-                    if child_inode.mode == crate::inode::FileType::Directory {
-                        dir_queue.push(child_inode);
+                if mark_inode_referenced(child_id) {
+                    match Self::read_inode_uncached(&guard, child_id) {
+                        Ok(child_inode) => {
+                            record_inode_blocks(&child_inode);
+                            if child_inode.mode == crate::inode::FileType::Directory {
+                                dir_queue.push(child_inode);
+                            }
+                        }
+                        Err(_) => {
+                            corrupted_inodes.push(child_id);
+                        }
                     }
                 }
             });
@@ -142,17 +158,18 @@ Key implementation details:
 - **`read_inode_uncached`** ([`src/disk.rs#L6094-L6120`](repo://src/disk.rs#L6094-L6120)): Reads inodes directly from disk slots without polluting the inode cache, using the correct record version (v1 or v2) per slot based on the migration cursor.
 - **`for_each_valid_inode_in_block`** ([`src/directory.rs#L378-L405`](repo://src/directory.rs#L378-L405)): Zero-allocation directory entry scanner that validates filename UTF-8 and length bounds before yielding inode IDs.
 - **`dir_num_blocks`** ([`src/disk.rs#L2065-L2070`](repo://src/disk.rs#L2065-L2070)): Computes physical directory block count, handling legacy single-block directories where `size == 0 && blocks[0] != 0`.
+- **Corrupted inode detection during traversal**: If `read_inode_uncached` fails for any child inode (format decode error or CRC32C mismatch), the inode ID is recorded in `corrupted_inodes` immediately.
 
 ### Step 3: Chunk reference validation and deduplication detection
 
-For each reachable inode, **`for_each_inode_block`** ([`src/disk.rs#L2619-L2747`](repo://src/disk.rs#L2619-L2747)) walks the full pointer tree:
+For each reachable inode, **`for_each_inode_block`** ([`src/disk.rs#L3012-L3140`](repo://src/disk.rs#L3012-L3140)) walks the full pointer tree:
 
 | Pointer Tier | Traversal Logic |
 | :--- | :--- |
 | **Direct (0..10)** | Visits each block pointer; if `INODE_FLAG_SEEKABLE_64K` is set, interprets the pointer as a `ChunkEntry` and expands to its contiguous block run (`start_block` .. `start_block + block_count`). |
-| **Single Indirect (10)** | Reads the indirect block (512 `u64` pointers); visits each non-zero pointer with the same chunk-expansion logic. |
-| **Double Indirect (11)** | Reads the double-indirect block (up to 512 single-indirect blocks); for each non-zero single-indirect, reads that block and visits its pointers with chunk expansion. |
-| **Triple Indirect** | Same pattern, one level deeper (handled via `triple_indirect` field). |
+| **Single Indirect (10)** | Reads the indirect block (512 `u64` pointers); visits each non-zero pointer with the same chunk-expansion logic. The indirect block itself is also visited. |
+| **Double Indirect (11)** | Reads the double-indirect block (up to 512 single-indirect blocks); for each non-zero single-indirect, reads that block and visits its pointers with chunk expansion. The double-indirect block and each single-indirect block are also visited. |
+| **Triple Indirect** | Same pattern, one level deeper (handled via `triple_indirect` field). The triple-indirect, double-indirect, and single-indirect blocks are all visited. |
 
 The visitor records every physical data block ID in `seen_data` (a bitset). When a block is encountered a second time, it is recorded in `cross_linked_data`. Blocks outside the valid data range (`db_start .. db_start + max_data_blocks`) are tracked in `out_of_range_seen_blocks` and `out_of_range_cross_linked`.
 
@@ -213,7 +230,21 @@ for w_idx in 0..data_words {
 
 **Bitmap word reading** ([`src/disk/maintenance.rs#L1696-L1720`](repo://src/disk/maintenance.rs#L1696-L1720)) handles partial final words correctly by masking off bits beyond `max_inodes` / `max_data_blocks`.
 
-### Step 5: Out-of-range reference handling
+### Step 5: Orphan inode integrity verification
+
+After computing the `orphan_inodes` list, the scanner performs an additional verification pass: it attempts to read each orphan inode using `read_inode_uncached`. Any orphan inode that fails to decode (format error or CRC32C mismatch) is added to the `corrupted_inodes` list. This catches silent corruption in orphaned inodes that would otherwise go unnoticed.
+
+```rust
+for &oid in &orphan_inodes {
+    if Self::read_inode_uncached(&guard, oid).is_err() {
+        corrupted_inodes.push(oid);
+    }
+}
+corrupted_inodes.sort_unstable();
+corrupted_inodes.dedup();
+```
+
+### Step 6: Out-of-range reference handling
 
 Blocks referenced by inodes that fall outside the valid data region (`blk < db_start` or `blk >= db_start + max_data_blocks`) cannot be checked against the data bitmap. They are collected in `out_of_range_seen_blocks` and `out_of_range_cross_linked`, then appended to `missing_blocks` and `cross_linked_blocks` respectively, since they represent references to blocks the allocator cannot track.
 
@@ -258,9 +289,10 @@ flowchart TD
     AF --> AG[Compute missing blocks]
     AG --> AH[Compute cross-linked blocks]
     AH --> AI[Handle out-of-range refs]
-    AI --> AJ[Build FsckReport]
-    AJ --> AK[is_clean = all vectors empty]
-    AK --> AL[Return report]
+    AI --> AJ[Verify orphan inode integrity]
+    AJ --> AK[Build FsckReport]
+    AK --> AL[is_clean = all vectors empty]
+    AL --> AM[Return report]
 ```
 
 ## Orphan inode detection and recovery
@@ -274,6 +306,8 @@ flowchart TD
 
 **Recovery**: Since orphan inodes have no directory references, no user data is reachable through them. The inode bitmap bits can be safely cleared (`Bitmap::clear(idx)`) without data loss. Any payload blocks they reference will appear as `leaked_blocks` and can be cleared independently.
 
+**Integrity verification**: The scanner also reads each orphan inode to detect metadata corruption. Orphans that fail CRC32C or format decoding are reported in `corrupted_inodes` and require manual investigation.
+
 ## Leaked, missing, and cross-linked block semantics
 
 | Category | Bitmap State | Reachability State | Cause |
@@ -282,7 +316,7 @@ flowchart TD
 | **Missing** | Free (`0`) | Referenced (`1`) | Crash after inode pointer update but before bitmap allocation; or bitmap corruption. |
 | **Cross-linked** | Allocated (`1`) | Referenced `>1` times | Bug in block allocation (returning same block twice); intentional deduplication without refcount. |
 
-**Critical distinction**: `missing_blocks` and `cross_linked_blocks` are **critical severity** because they represent active file data at risk. `leaked_blocks` and `orphan_inodes` are lower severity — they waste space but do not corrupt live data.
+**Critical distinction**: `missing_blocks` and `cross_linked_blocks` are **critical severity** because they represent active file data at risk. `leaked_blocks` and `orphan_inodes` are lower severity — they waste space but do not corrupt live data. `corrupted_inodes` are critical because they represent inaccessible metadata.
 
 ## Repair modes and safety guarantees
 
@@ -290,7 +324,7 @@ flowchart TD
 
 1. **No silent data loss**: Automatic repair of `missing_blocks` (marking blocks allocated) could preserve references to already-overwritten data.
 2. **No silent corruption**: Automatic repair of `cross_linked_blocks` (duplicating blocks) requires allocating new blocks and copying data, which itself can fail mid-operation.
-3. **Journaling handles runtime recovery**: On mount, `recover_journal` ([`src/disk.rs#L1832-L1875`](repo://src/disk.rs#L1832-L1875)) replays committed WAL transactions, bringing the filesystem to a consistent state *before* `fsck` would ever be needed.
+3. **Journaling handles runtime recovery**: On mount, `recover_journal` ([`src/disk.rs#L2179-L2250`](repo://src/disk.rs#L2179-L2250)) replays committed WAL transactions, bringing the filesystem to a consistent state *before* `fsck` would ever be needed.
 
 **Manual repair procedures**:
 
@@ -300,6 +334,7 @@ flowchart TD
 | Leaked Blocks | `Bitmap::clear(data_bitmap, block_id)` for each ID in `leaked_blocks`. |
 | Missing Blocks | 1. Verify block contents are intact (read block data). 2. `Bitmap::set(data_bitmap, block_id)` for each ID. 3. Re-run fsck to confirm. |
 | Cross-Linked Blocks | 1. For each cross-linked block, read its data. 2. Allocate a fresh block (`allocate_block`). 3. Copy data to fresh block. 4. Update one inode's pointer to the fresh block (requires inode rewrite + journal). 5. Re-run fsck. |
+| Corrupted Inodes | 1. Attempt data recovery via block pointers if inode is partially readable. 2. `Bitmap::clear(inode_bitmap, inode_id)`. 3. Referenced blocks become `leaked_blocks` — clear their bitmap bits. |
 
 **Safety guarantees**:
 - Read-only execution: `verify_integrity` acquires only a shared read lock; it never modifies on-disk state.
@@ -308,7 +343,7 @@ flowchart TD
 
 ## Journal cleanliness verification (read-only)
 
-In addition to structural bitmap/directory verification, OIFS provides **`ImageBacking::is_journal_clean_read_only`** ([`src/storage.rs#L1783-L1808`](repo://src/storage.rs#L1783-L1808)):
+In addition to structural bitmap/directory verification, OIFS provides **`ImageBacking::is_journal_clean_read_only`** ([`src/storage.rs#L1798-L1823`](repo://src/storage.rs#L1798-L1823)):
 
 - Copies the journal region into a memory buffer (no mmap dependency).
 - Deserializes the journal header and scans `pending_transactions()`.
@@ -321,10 +356,10 @@ This is used by read-only mounts to reject images with unrecovered journal trans
 
 | Layer | Entry Point |
 | :--- | :--- |
-| **CLI** | `oifs fsck --image <path> [--json] [--password]` ([`src/bin/oifs.rs#L1557`](repo://src/bin/oifs.rs#L1557)) |
+| **CLI** | `oifs fsck --image <path> [--json] [--password]` ([`src/bin/oifs.rs#L1711`](repo://src/bin/oifs.rs#L1711)) |
 | **Rust API** | `DiskManager::verify_integrity() -> Result<FsckReport>` ([`src/disk.rs#L1590`](repo://src/disk.rs#L1590)) |
-| **Session/IPC** | `OifsSession::verify_integrity() -> Result<FsckReport>` ([`src/session.rs#L1236`](repo://src/session.rs#L1236)) |
-| **C FFI** | `oifs_verify_integrity(handle, out_report) -> i32` ([`src/ffi.rs#L2969`](repo://src/ffi.rs#L2969)) |
+| **Session/IPC** | `OifsSession::verify_integrity() -> Result<FsckReport>` ([`src/session.rs#L1335`](repo://src/session.rs#L1335)) |
+| **C FFI** | `oifs_verify_integrity(handle, out_report) -> i32` ([`src/ffi.rs#L3073`](repo://src/ffi.rs#L3073)) |
 
 All paths converge on `DiskManager::verify_integrity_on`, which executes the algorithm described above under a shared read lock.
 

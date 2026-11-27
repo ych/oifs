@@ -1,11 +1,11 @@
 ---
 type: "Reference"
 title: "Integration Testing"
-description: "Documents end-to-end integration tests for OIFS: FUSE mount/unmount, NFS server, CLI workflows, FFI/C++ API, multi-process IPC, async/FFI, and cross-image operations."
+description: "Documents end-to-end integration tests for OIFS: FUSE live mount, NFS live mount, FFI C/C++ interop, multi-process IPC security, async/FFI, and cross-image operations."
 tags: ["integration-testing", "fuse", "nfs", "ffi", "ipc", "async", "testing"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-23T20:55:55.458Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-e0c73e47d42a2fa215e6ce2a
     resource: repo://tests/backward_compatibility_test.rs
@@ -21,7 +21,7 @@ sources:
     resource: repo://tests/mcp_server_test.rs
   - id: openwiki-source-cb9a877a2a968da6a562a2e9
     resource: repo://tests/network_single_file_sync_test.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
 # Integration Testing
@@ -32,11 +32,12 @@ This guide describes the end-to-end integration tests that validate the OIFS fil
 
 | Test File | Category | Focus Area |
 |-----------|----------|------------|
-| `tests/cli_concurrent_process_test.rs` | Multi-Process CLI | Concurrent `oifs` CLI processes using Local IPC (Unix Domain Sockets) |
 | `tests/ffi_c_cpp_test.rs` | FFI/C++ Interop | Native C (C11) and C++ (C++17/20) compiler integration against `liboifs` |
-| `tests/async_and_ffi_test.rs` | Async & FFI | Zero-copy mmap slices, async read fast/slow paths, group commit, C FFI session lifecycle, UAF safety |
 | `tests/fuse_live_mount_test.rs` | FUSE Live Mount | Real kernel FUSE mount (macFUSE/Linux) with full POSIX lifecycle, read-only immutability, encryption, benchmarks |
 | `tests/nfs_live_mount_test.rs` | NFS Live Mount | OS `mount_nfs` against pure-Rust NFSv3 server (zero kext/third-party drivers) |
+| `tests/ipc_security_test.rs` | IPC Security | Challenge-response authentication, socket/secret permissions, bounds on unauthenticated peers |
+| `tests/async_and_ffi_test.rs` | Async & FFI | Zero-copy mmap slices, async read fast/slow paths, group commit, C FFI session lifecycle, UAF safety |
+| `tests/cli_concurrent_process_test.rs` | Multi-Process CLI | Concurrent `oifs` CLI processes using Local IPC (Unix Domain Sockets) |
 | `tests/nfs_test.rs` | NFS Protocol | ONC RPC v2, XDR, MOUNT v3, all 18 NFSv3 procedures, pagination, fuzzing |
 | `tests/session_edge_cases_test.rs` | Session Edge Cases | IPC boundary conditions, corrupted rendezvous self-healing, high concurrency, remote fsck/defrag, mode interleaving |
 | `tests/mcp_server_test.rs` | MCP Server | JSON-RPC over stdio, tool schemas, initialize/tools_list, hostile name escaping |
@@ -47,142 +48,64 @@ This guide describes the end-to-end integration tests that validate the OIFS fil
 
 ---
 
-## Multi-Process CLI Concurrency
-
-**File**: `tests/cli_concurrent_process_test.rs`
-
-**Purpose**: Validates that multiple independent `oifs` CLI processes can concurrently write to and read from the same image using Local IPC mode (Unix Domain Sockets).
-
-### Test: `test_cli_concurrent_processes`
-
-**Setup**:
-- Creates a temporary 10 MB image via `oifs create --size 10`.
-- Prepares 4 payload files with distinct content.
-
-**Concurrency**:
-- Spawns 4 threads, each executing `oifs --ipc --image <path> put <payload> <remote_name>`.
-- All 4 processes target the **same image** concurrently.
-- The `--ipc` flag forces Local mode; master election uses a deterministic UDS socket path derived from the canonical image path and a companion `.tok` file for authentication.
-
-**Verification**:
-- After all puts complete, runs `oifs --ipc --image <path> ls` and asserts all 4 remote files appear.
-- Spawns 4 threads to concurrently `get` each file back.
-- Verifies downloaded content matches original payloads.
-
-**Key Invariants**:
-- Master election is deterministic and single-winner.
-- Session registry deduplicates by canonical path (symlinks resolved).
-- IPC framing (length-prefixed Bincode) + challenge-response authentication works under concurrent load.
-- File metadata and data survive concurrent mutations.
-
----
-
 ## FFI C/C++ Interop
 
 **File**: `tests/ffi_c_cpp_test.rs`
 
 **Purpose**: Validates that `include/oifs.h` compiles cleanly under strict warnings (`-Wall -Wextra -Wpedantic -Werror`) in both C11 and C++17, and that the full lifecycle works end-to-end through the dynamic library. Also tests C++20 modern features.
 
+### Compilation & Test Harness
+
+The test dynamically locates `liboifs.{so,dylib,dll}` in `target/debug` or `target/release`, builds it with `cargo build --lib` if missing, and selects `clang`/`gcc` or `clang++`/`g++` from PATH. Compiler detection falls back gracefully (test is skipped if no compiler found).
+
+Platform-specific library load paths are set at execution time:
+- macOS: `DYLD_LIBRARY_PATH`
+- Linux/others: `LD_LIBRARY_PATH`
+- Windows: `PATH`
+
 ### Test: `test_native_c_e2e` (C11)
 
-**Compilation**: Dynamically locates `liboifs.{so,dylib,dll}` (debug or release), compiles with `clang` or `gcc`.
-
 **C Workflow Verified**:
-1. **Version handshake**: `OIFS_CHECK_VERSION()` macro and `oifs_version_*` functions.
-2. **Loaded library path**: `oifs_loaded_path()` returns non-empty path.
+
+1. **Version handshake**: `OIFS_CHECK_VERSION()` macro and `oifs_version_*` functions (major=1, minor=6, patch=1, string="1.6.1").
+2. **Loaded library path**: `oifs_loaded_path()` returns non-empty absolute path to the dynamic library.
 3. **I/O backend API**: `oifs_get_io_backend`, `oifs_set_io_backend` roundtrip (Mmap ↔ Pread).
 4. **Directory & file CRUD**: `oifs_mkdir`, `oifs_create_file`, `oifs_write_file`, `oifs_read_file`.
-5. **Offset reads**: `oifs_read_at` for chunked access.
-6. **Directory listing callback**: `oifs_ls` with user context struct.
+5. **Offset reads**: `oifs_read_at` for chunked access (e.g., offset 5, read 4 bytes).
+6. **Directory listing callback**: `oifs_ls` with user context struct (`struct ListContext { int file_count; uint64_t total_bytes; }`).
 7. **File deletion & error diagnostics**: `oifs_delete_file`, `oifs_last_error`.
-8. **Encrypted image workflow**: `oifs_open_with_password`, read with good/bad passwords.
+8. **Encrypted image workflow**: `oifs_open_with_password`, read with good/bad passwords (wrong password causes read to return -1).
 9. **Session handle reuse**: `oifs_get_or_open` shares underlying `DiskManager`.
 
 ### Test: `test_native_cpp_e2e` (C++17)
 
-**Compilation**: Uses `clang++` or `g++` with `-std=c++17` and same strict flags.
+**Modern C++ Features Verified**:
 
-**C++ Workflow Verified**:
-1. **Version handshake**: `OIFS_CHECK_VERSION()` and `oifs_version_string()`.
-2. **Modern RAII**: `std::unique_ptr<OIFSHandle, OIFSDeleter>` for automatic `oifs_close`.
-3. **Directory & file CRUD**: `oifs_create_file`, `oifs_write_file`, `oifs_read_file` with `std::vector<uint8_t>`.
-4. **Offset reads**: `oifs_read_at` into `std::vector<uint8_t>`.
-5. **C++ Lambda Callback**: Captured `std::vector<DirEntry>` in `oifs_ls` callback.
-6. **Multi-threaded Concurrency**: 8 worker threads (`std::thread`) concurrently reading/writing through a **shared handle** (10 files each = 80 files total).
-7. **Final verification**: `oifs_ls` confirms all 80 worker files + original exist.
+1. **RAII smart pointer**: `std::unique_ptr<OIFSHandle, OIFSDeleter>` with custom deleter calling `oifs_close`.
+2. **`std::vector<uint8_t>` I/O buffer integration**: Write and read-back into vectors.
+3. **Lambda callback capture**: `oifs_ls` with C++ lambda capturing `std::vector<DirEntry>` by reference.
+4. **Multi-threaded concurrency**: 8 `std::thread` workers, each performing 10 write+read cycles (80 files total), all sharing the same `OIFSHandle*`. Verifies final `oifs_ls` returns ≥81 entries.
 
 ### Test: `test_native_cpp20_e2e` (C++20)
 
-**Compilation**: Uses `-std=c++20` when compiler supports it.
+**Additional C++20 Features Verified** (compiled with `-std=c++20` when supported):
 
-**C++20 Features Exercised**:
-1. **Concepts**: `ContiguousByteRange` concept verifying `std::span<const uint8_t>` convertibility.
-2. **Designated Initializers**: `Stats{.count = 0, .total_bytes = 0}` in callback context.
-3. **std::span**: Write/read via `std::span<const uint8_t>` and `std::span<uint8_t>`.
-4. **std::jthread**: RAII threads with automatic join (when `__cpp_lib_jthread` available).
-5. **Version handshake**: Same as C++17 plus modern API usage.
+1. **`std::span<const uint8_t>` / `std::span<uint8_t>`** for zero-copy buffer views; compile-time `ContiguousByteRange` concept validates compatibility.
+2. **Designated initializers**: `Stats stats{.count = 0, .total_bytes = 0}` in callback context.
+3. **`std::jthread`** (when `__cpp_lib_jthread` available): Automatic RAII join on scope exit for 6 worker threads.
+4. Same concurrency model as C++17 test.
 
----
+### Version Compatibility Policy
 
-## Async & FFI Deep Integration
+The `OIFS_CHECK_VERSION()` macro and `oifs_check_version()` implement a **"block older, allow newer"** policy:
 
-**File**: `tests/async_and_ffi_test.rs`
+| Return Code | Constant | Meaning |
+|-------------|----------|---------|
+| 0 | `OIFS_VERSION_COMPAT_OK` | Exact version match (clean) |
+| 1 | `OIFS_VERSION_COMPAT_WARN` | Newer runtime version loaded (warning, proceed) |
+| -1 | `OIFS_VERSION_COMPAT_ERR` | Older runtime version loaded (error, abort) |
 
-**Purpose**: Exercises the async read path (inline fast-path vs. background pool), zero-copy mmap slices across storage modes, group commit durability, and the complete C FFI session lifecycle including out-of-order drops and UAF safety barriers.
-
-### Test: `test_file_read_handle_mmap_slice_zero_copy_and_fallbacks`
-
-Validates `mmap_slice` behavior across storage modes and file types:
-
-| Storage Mode | File Type | Expected Result |
-|--------------|-----------|-----------------|
-| `Mmap` | Single-block raw contiguous | `Some(&[u8])` zero-copy |
-| `Mmap` | Multi-block (1 MiB) raw contiguous | `Some(&[u8])` zero-copy |
-| `Mmap` | Stream-compressed | `None` (fallback to read) |
-| `Mmap` | Seekable 64K chunked | `None` |
-| `Mmap` | Sparse with holes | `None` |
-| `FileIo` | Raw contiguous | `None` (uses `DataPageCache`) |
-| `Mmap` + Encrypted | Raw | `None` (never exposes ciphertext) |
-
-**Key Assertions**:
-- Sub-slice and clamping past EOF work correctly on raw Mmap files.
-- Fallback reads (`read_at`) return correct data when `mmap_slice` returns `None`.
-
-### Test: `test_async_read_inline_fast_path_and_background_slow_path`
-
-Verifies the async read state machine transitions:
-
-1. **Mmap Raw File**: `read_at_async`/`read_data_async` → `is_ready() == true` immediately (Inline Fast-Path).
-2. **Seekable 64K**: Cold read via background pool → warms `ChunkReadCache` → subsequent sub-chunk read is inline-ready.
-3. **Stream-Compressed**: Cold read via background pool → warms `DecodedBlobCache` → subsequent reads inline-ready.
-4. **FileIo**: Cold read (background) → warms `DataPageCache` → warm reads inline-ready.
-
-**Mechanism**: `OifsAsyncTask<T>::is_ready()` exposes whether completion happened synchronously on the fast path.
-
-### Test: `test_group_commit_strict_durability_mmap_and_file_io_wal`
-
-Stress-tests group commit under `DurabilityMode::Strict`:
-
-- 40 concurrent threads each call `create_file_with_data_async` (2 KiB payload, `CompressionMode::Never`).
-- Synchronized start via `Barrier` to maximize contention.
-- All 40 tasks awaited via `block_on`.
-- **Verification**: `verify_integrity()` passes, reopen confirms all 40 files with exact payloads.
-- Runs for both `StorageMode::Mmap` and `StorageMode::FileIo` (WAL enabled).
-
-### Test: `test_c_ffi_session_zero_copy_out_of_order_drop_and_async_uaf_safety`
-
-Comprehensive C FFI API test covering:
-
-1. **Open with options**: `oifs_open_with_options` (Mmap + WAL), durability config, cache sizing.
-2. **File CRUD**: `oifs_create_file_with_data`, `oifs_resolve_path`, `oifs_read_at_inode`.
-3. **Batch Read**: `oifs_read_at_batch` across raw + stream-compressed files in single call.
-4. **Session API**: `oifs_begin_read`, `oifs_session_open_file`, `oifs_session_open_inode`.
-5. **Zero-Copy mmap_slice**: `oifs_file_mmap_slice` on raw file returns direct pointer; on compressed returns fallback code (1).
-6. **Out-of-Order Drop Safety**: `oifs_end_read` called **before** `oifs_file_close` — handles remain valid because `OIFSFileHandle` holds its own `Arc<FfiSharedSession>`.
-7. **Async FFI Fast-Path**: `oifs_read_at_async` on Mmap raw → `oifs_async_poll` returns 1 (ready) → `oifs_async_wait` returns bytes → `oifs_async_free`.
-8. **UAF Drop Barrier**: 16× large (128 KiB) stream-compressed files; `oifs_read_at_async` dispatches to background pool → **immediately** `oifs_async_free` without `oifs_async_wait` → buffer mutated/dropped. `wait_on_drop` blocks background thread until write completes.
-9. **Async Write Path**: `oifs_create_file_with_data_async`, `oifs_write_file_async`, `oifs_flush_async`.
-10. **Callback APIs**: `oifs_create_file_with_data_async_cb` and `oifs_read_at_async_cb` with `Mutex`+`Condvar` synchronization.
+This allows applications compiled against an older header to run safely on a newer `liboifs`, while blocking known-incompatible older libraries.
 
 ---
 
@@ -192,45 +115,72 @@ Comprehensive C FFI API test covering:
 
 **Purpose**: Mounts real OIFS `.img` files onto temporary mountpoints through the host OS kernel FUSE stack (`macFUSE` on macOS, `fusermount3`/FUSE on Linux) and exercises genuine POSIX syscalls via `std::fs`.
 
-**Execution**: Marked `#[ignore]`; run explicitly on FUSE-capable host:
+Tests are marked `#[ignore]` so headless CI environments without FUSE installed remain green. Run explicitly on a FUSE-capable host:
+
 ```bash
 cargo test --release --test fuse_live_mount_test -- --ignored --nocapture --test-threads=1
 ```
 
-### Test: `test_live_fuse_mount_full_posix_lifecycle`
+### Test Infrastructure: `LiveMountGuard`
 
-**Mount Configuration**: `FuseMountOptions` with configurable `max_write` (128 KiB / 1 MiB), `read_only`, `volname`.
+RAII guard that:
+- Mounts `OifsFuseFs` on a background thread
+- Polls `st_dev` (device ID) until it differs from parent directory (confirms kernel mount active)
+- Guarantees unmount + thread join on `Drop` even if test panics
+- Provides `force_unmount()` fallback using `diskutil unmount force` (macOS) or `fusermount3 -uz` (Linux)
 
-**Operations Exercised**:
-1. **File lifecycle**: Create, write, read, append (`O_APPEND` + `fsync`), truncate shorter, extend with zero-fill.
-2. **Large file**: 1.5 MiB write + readback (multi-packet FUSE_WRITE/FUSE_READ).
-3. **Directory pagination**: Nested directories with **210 files** (exceeds single READDIR reply, exercises kernel pagination).
-4. **Atomic POSIX rename**: Same-dir, cross-dir, and overwrite semantics via live kernel FUSE.
-5. **UTF-8 filenames**: NFC creation + NFD lookup on macOS (NFC/NFD normalization).
-6. **macOS metadata rejection**: `.DS_Store` lookups return `ENOENT`, never pollute `.img`.
+### Test: `test_live_fuse_mount_rw_lifecycle_large_file_dirs_and_macos_unicode`
 
-**Persistence Verification**: After unmount, reopen image via `DiskManager` and verify all content + `fsck` clean.
+**Full POSIX Lifecycle**:
+
+1. **Create, read, overwrite, append, truncate, extend**: `std::fs::write`, `OpenOptions::append`, `set_len`.
+2. **Large file (1.5 MiB)**: Exercises multi-packet `FUSE_WRITE` / `FUSE_READ`; pattern-verified readback.
+3. **Nested directories + 210 files**: Exercises kernel `READDIR` pagination; verifies all entries present.
+4. **Atomic POSIX rename**: Same-dir, cross-dir, and overwrite rename scenarios via live kernel FUSE.
+5. **UTF-8 Unicode filenames**: NFC creation (`café_測試.txt`) + NFD lookup on macOS (NFD normalization by macFUSE).
+6. **macOS Finder noise rejection**: `.DS_Store` lookup returns `ENOENT`; never pollutes `.img`.
+
+**Persistence Verification**:
+- Clean unmount via `guard.unmount_now()`
+- Reopen image directly via `DiskManager::open`
+- Verify all file contents byte-for-byte identical
+- Run `verify_integrity()` (fsck) and assert `report.is_clean`
 
 ### Test: `test_live_fuse_mount_read_only_immutability`
 
-- Opens image `read_only` via `DiskManager::open_read_only`.
-- Mounts with `FuseMountOptions { read_only: true, ... }`.
-- All reads succeed; **every mutating operation fails** (create, write, mkdir, unlink).
-- **Byte-for-byte identity**: Snapshots image before/after mount; asserts exact match.
+**Read-Only Mount Guarantees**:
+
+- Seeds image, snapshots exact bytes before mount
+- Opens via `DiskManager::open_read_only` + `FuseMountOptions { read_only: true }`
+- **Reads succeed**: `fs::read`, directory traversal
+- **All mutations fail**: `write`, `open O_WRONLY`, `create_dir`, `remove_file` → all return errors
+- Post-unmount byte-for-byte comparison: `bytes_before == bytes_after` (100% identical)
 
 ### Test: `test_live_fuse_mount_encrypted_file_io`
 
-- Creates encrypted image with `DiskManager::open_with_options` (password, `StorageMode::FileIo`).
-- Mounts via FUSE; writes/reads secret payload.
-- Unmount, reopen with password, verify content + `fsck` clean.
+**Encrypted Filesystem via FUSE**:
 
-### Test: `bench_live_fuse_mount_performance`
+- Creates encrypted image with `DiskManager::open_with_options(..., Some(password), true, StorageMode::FileIo)`
+- Mounts via FUSE, writes/reads secret data
+- Verifies ciphertext never exposed: reopens encrypted image directly, confirms plaintext via `read_data`
+- Runs `verify_integrity()` on encrypted image post-mount
 
-**Benchmarks** (run with `--nocapture`):
-- **Baseline**: Native host filesystem (APFS on macOS) — 3 rounds.
-- **OIFS FUSE A/B**: `Mmap+WAL` vs `FileIo+WAL` × `max_write=128K` vs `1M`.
-- **Workloads**: 500×4 KiB write/read/delete, 16 MiB sequential write/read, 2,000 random 4 KiB reads.
-- Outputs: ops/sec and MB/sec for each configuration.
+### Benchmark: `bench_live_fuse_mount_performance`
+
+**Comparative Performance** (run with `--nocapture --test-threads=1`):
+
+| Configuration | Storage Mode | `max_write` | Notes |
+|---------------|--------------|-------------|-------|
+| APFS (native) | — | — | Host filesystem baseline (3 rounds) |
+| Mmap+WAL | `StorageMode::Mmap` | 128 KiB / 1 MiB | FUSE `max_write` tuning |
+| FileIo+WAL | `StorageMode::FileIo` | 128 KiB / 1 MiB | Pure pread/pwrite path |
+
+**Workload**:
+- 500 × 4 KiB small file write/read/delete (ops/sec)
+- 16 MiB sequential write + read (MB/s)
+- 2,000 random 4 KiB reads (ops/sec)
+
+Outputs formatted table with checksum verification (`[chk=sum]`) to ensure data integrity.
 
 ---
 
@@ -238,153 +188,179 @@ cargo test --release --test fuse_live_mount_test -- --ignored --nocapture --test
 
 **File**: `tests/nfs_live_mount_test.rs`
 
-**Purpose**: End-to-end OS `mount_nfs` against the pure-Rust NFSv3 server (`OifsNfsServer`). Zero third-party drivers, zero kext, zero reboot required on macOS.
+**Purpose**: OS `mount_nfs` against OIFS's pure-Rust NFSv3 server (`OifsNfsServer`). Zero third-party drivers, zero kext, zero reboot required on macOS.
 
-**Execution**: Marked `#[ignore]`; requires mount privileges:
+Tests are marked `#[ignore]`; run directly via:
 ```bash
 cargo test --test nfs_live_mount_test -- --ignored --nocapture
 ```
 
+### Test Infrastructure: `LiveNfsMountGuard`
+
+RAII guard that:
+- Binds `OifsNfsServer` on ephemeral port via `OifsNfsServer::bind`
+- Calls `mount_os_nfs(server.port(), mountpoint, read_only)` (platform `mount_nfs` wrapper)
+- Verifies `is_mounted(mountpoint)` via `mount`/`findmnt` output parsing
+- On `Drop`: unmounts + stops server
+
 ### Test: `test_live_nfs_mount_full_posix_lifecycle_and_fsck`
 
-**Server Setup**: `OifsNfsServer::bind` with `NfsMountOptions`, `mount_os_nfs` helper.
+**Full POSIX Lifecycle via NFSv3**:
 
-**Operations**:
-1. **File lifecycle**: Create, write, read, append, seek-write, truncate.
-2. **Large file**: 2 MiB write + random read at 1 MiB offset.
-3. **Nested directories**: Multi-level creation, atomic cross-directory rename, Unicode NFC/NFD.
-4. **Readdir**: Lists root entries including created files/dirs.
-5. **Cleanup**: Delete files, remove empty directories.
-6. **Post-unmount fsck**: `verify_integrity()` must be clean.
+1. **Create, write, read, append, seek-write, truncate**: Standard `std::fs` operations.
+2. **Large 2 MiB file**: Pattern-verified write + random 4 KiB read at offset 1 MiB.
+3. **Nested directories**: `alpha/beta`, `gamma`; Unicode NFC/NFD filename (`café.txt`) with cross-directory atomic rename.
+4. **`readdir`**: Verifies directory entries including unicode names.
+5. **Delete + rmdir**: File and empty directory removal.
+
+**Post-Unmount Verification**:
+- `dm.flush()` + `dm.verify_integrity()` → `report.is_clean`
 
 ### Test: `test_live_nfs_read_only_mount_immutability`
 
-- Seeds image, snapshots bytes.
-- Opens `read_only`, mounts with `read_only=true`.
-- Reads succeed; writes fail.
-- Post-unmount byte-for-byte identity asserted.
+**Read-Only NFS Mount Guarantees**:
+
+- Seeds image, snapshots bytes before mount
+- Opens via `DiskManager::open_read_only`, mounts with `read_only: true`
+- Reads succeed; `fs::write` fails
+- Post-unmount byte-for-byte comparison: `before == after`
+
+### NFS Server Architecture Notes
+
+`OifsNfsServer` implements:
+- **ONC RPC v2** + **XDR** encoding/decoding
+- **MOUNT v3** (MOUNTPROC3_MNT, MNT3ERR_* errors)
+- **All 18 NFSv3 procedures**: NULL, GETATTR, SETATTR, LOOKUP, ACCESS, READLINK, READ, WRITE, CREATE, MKDIR, SYMLINK, MKNOD, REMOVE, RMDIR, RENAME, LINK, READDIR, READDIRPLUS, FSSTAT, FSINFO, PATHCONF, COMMIT
+- **Attribute caching**: `OIFS_ATTR_TIMEOUT` (default 1s) controls kernel attribute cache TTL; `setattr` invalidates cache
+- **Pure Rust**: No external NFS libraries; runs in-process as TCP server on loopback
 
 ---
 
-## NFS Protocol Tests
+## IPC Security & Multi-Process Session Tests
 
-**File**: `tests/nfs_test.rs`
+**File**: `tests/ipc_security_test.rs`
 
-**Purpose**: Unit-level protocol integration for the pure-Rust NFSv3 server (`src/nfs.rs`). Exercises ONC RPC v2, XDR, MOUNT v3, all 18 NFSv3 procedures directly over TCP without kernel mount.
+**Purpose**: Validates the IPC transport hardening: challenge-response authentication, socket/secret permissions, and bounds on unauthenticated peers.
 
-### Coverage
+### Test: `test_socket_and_token_are_owner_only`
 
-| Area | Details |
-|------|---------|
-| **ONC RPC v2** | TCP record marking (4-byte length prefix), XDR encoding/decoding |
-| **MOUNT v3** | `MNTPROC3_MNT`, `MNTPROC3_UMNT`, `MNTPROC3_UMNTALL`, `MNTPROC3_EXPORT`, `MNTPROC3_DUMP`, `MNTPROC3_NULL` |
-| **NFSv3 Procedures** (18) | `NULL`, `GETATTR`, `SETATTR`, `LOOKUP`, `ACCESS`, `READLINK`, `READ`, `WRITE`, `CREATE`, `MKDIR`, `SYMLINK`, `MKNOD`, `REMOVE`, `RMDIR`, `RENAME`, `LINK`, `READDIR`, `READDIRPLUS`, `FSSTAT`, `FSINFO`, `PATHCONF`, `COMMIT` |
-| **Pagination** | Multi-page `READDIR`/`READDIRPLUS` with >200 entries (cookie-based) |
-| **Read-Only Mode** | `NFS3ERR_ROFS` on mutating ops; byte-for-byte image immutability |
-| **Storage Parity** | `Mmap`/`FileIo`/Journaled/Encrypted all produce identical NFS behavior |
-| **Fuzzing** | Malformed RPC frames, truncated records, invalid XDR, oversized frames |
+- Opens IPC master session (`OifsSession::open_ipc`)
+- Verifies UDS socket file permissions: `0o600` (owner read/write only)
+- Verifies session token file permissions: `0o600`
+- Verifies socket parent directory permissions: `0o700` (private, not world-writable `/tmp`)
 
-### Test Infrastructure
+### Test: `test_rendezvous_file_is_owner_only`
 
-- `build_rpc_call` / `rpc_roundtrip`: Constructs and parses ONC RPC calls over `TcpStream`.
-- `XdrWriter` / `XdrReader`: XDR (de)serialization helpers.
-- `NfsFileHandle`: Opaque 64-byte handle encoding inode + generation.
+- Opens network master session (`OifsSession::open_network`)
+- Verifies rendezvous file (`.oifs_master_<hash>.json`) permissions: `0o600`
+- Verifies content is `MasterInfo` JSON with 64-char `auth_token` (not bare address)
 
----
+### Test: `test_client_rejects_a_master_that_cannot_prove_its_key`
 
-## Session Edge Cases & IPC Stress
+- Spawns fake master on UDS that answers challenge with wrong MAC
+- Client attempts authentication → fails with "failed to prove" error
 
-**File**: `tests/session_edge_cases_test.rs`
+### Test: `test_unauthenticated_peer_cannot_read_data`
 
-**Purpose**: Validates `OifsSession` behavior across IPC boundaries (Local and Network modes) under error conditions, concurrency, and lifecycle transitions.
+- Master creates file with secret data
+- Rogue peer connects directly to UDS, sends `ReadData` without handshake
+- Server responds with `Error("Password required")`; no data leaked
 
-### Test Matrix
+### Test: `test_client_authenticates_with_the_published_secret`
 
-| Test | Scenario | Key Assertion |
-|------|----------|---------------|
-| `test_empty_zero_byte_files_across_ipc` | 0-byte create/read/write/list | Empty `Vec` returned, metadata consistent |
-| `test_deep_nested_directory_tree_and_path_resolution_across_ipc` | 5-level nested dirs + file | `resolve_parent`/`resolve_path` work across IPC |
-| `test_invalid_lookups_and_nonexistent_operations_across_ipc` | Missing files, bad inodes, bad parents, bad paths | All return `Error` cleanly; subsequent valid ops succeed |
-| `test_file_deletion_lifecycle_and_reuse_across_ipc` | Create → delete → recreate same name | New inode, new content; `fsck` clean |
-| `test_large_multi_block_boundary_payloads_across_ipc` | 40 KiB (10 blocks) with Auto/Always/Never | All compression modes work; master verifies |
-| `test_corrupted_rendezvous_file_self_healing` | Corrupt `.image.master` JSON | Client detects, removes, becomes Master; healthy ops |
-| `test_high_concurrency_burst_operations_across_ipc` | 6 threads × 15 ops (dir+file+write+read+lookup) | All 90 files present; `fsck` clean |
-| `test_remote_defragmentation_and_fsck_across_ipc` | Client triggers `analyze_fragmentation`, `defragment`, `verify_integrity` | Remote ops succeed; mismatched path defrag fails |
-| `test_interleaved_local_and_network_modes_on_different_images` | Local session on image A + Network session on image B | Independent operation; no cross-contamination |
-| `test_standalone_session_mode_default` | `OifsSession::open` (no mode flag) | `SessionMode::Standalone`, `is_direct()`, `peer_count=0` |
-| `test_remote_create_or_open_file_existing` | Two `create_or_open_file` calls same name | Returns same inode |
-| `test_master_drop_with_idle_remote_client_fails_over_cleanly` | Drop master while client idle | Client RPC fails over seamlessly; read succeeds |
+- Second session opens as client (`OifsSession::open_ipc` with size 0)
+- Client successfully authenticates using token file secret
+- Client can resolve root inode (0)
 
----
+### Test: `test_master_and_client_agree_on_the_session_secret`
 
-## MCP Server Protocol Compliance
+- Client reads token file directly (32 bytes)
+- Connects via `bind_or_connect` as `MasterOrClient::Client`
+- Authenticates with `AuthCredential::Secret(secret)` → succeeds
 
-**File**: `tests/mcp_server_test.rs`
+### Test: `test_non_loopback_bind_requires_an_explicit_opt_in`
 
-**Purpose**: Validates the `oifs_mcp` server implements MCP (Model Context Protocol) over stdio correctly.
+- `is_loopback_bind()` validates: `127.0.0.1`, `[::1]` → true; `0.0.0.0`, `192.168.x.x`, `:` → false
+- CLI `--network --bind 0.0.0.0:19050` refused without `--allow-remote-ipc`
+- Error message mentions `--allow-remote-ipc` opt-in flag
 
-### Tests
+### Test: `test_session_event_channel_is_bounded`
 
-| Test | Coverage |
-|------|----------|
-| `test_mcp_cli_help_and_arguments` | `--help` output, invalid `--size` rejection |
-| `test_mcp_stdio_initialize_and_tools_list` | `initialize` request/response, `notifications/initialized`, `tools/list` response with tool schemas |
-| `test_mcp_tools_call_hostile_names` | Tool calls with Unicode, path traversal attempts, null bytes — all safely escaped/rejected |
+- Master + client; client generates `MAX_PENDING_SESSION_EVENTS + 200` read operations without draining
+- Master's event receiver buffers at most `MAX_PENDING_SESSION_EVENTS` events (bounded channel)
+- Excess events dropped, not unbounded memory growth
 
 ---
 
-## Network Mode Multi-Node Sync
+## Async & FFI Deep Integration Tests
 
-**File**: `tests/network_single_file_sync_test.rs`
+**File**: `tests/async_and_ffi_test.rs`
 
-**Purpose**: Validates concurrent multi-node access to a single file via `OifsSession::open_network` (TCP).
+**Purpose**: Validates zero-copy mmap slices, async read fast/slow paths, group commit, C FFI session lifecycle, and UAF (use-after-free) safety.
 
-### Test: `test_network_multi_node_concurrent_slice_writes_to_single_file`
+### Test: `test_file_read_handle_mmap_slice_zero_copy_and_fallbacks`
 
-- **Master (Node 0)**: Creates image, creates `shared_matrix.dat`.
-- **8 Client Nodes**: Each opens via `open_network`, writes unique 4 KiB slice at designated offset (`node_idx * 4096`).
-- **Verification**: New client reads full 32 KiB file; each 4 KiB region matches expected node pattern.
+**Zero-Copy `mmap_slice` Conditions** (returns `Some(&[u8])`):
+- `StorageMode::Mmap`
+- Uncompressed raw file (contiguous blocks)
+- Not encrypted
 
----
+**Fallback to `None` (caller must use `read_at`)**:
+- `StorageMode::FileIo` (even for raw files)
+- Stream-compressed files
+- Seekable 64K chunked compression
+- Sparse files with unallocated holes
+- Encrypted files (never exposes ciphertext)
 
-## Backward Compatibility & Format Migration
+**Verified Scenarios**:
+- Single-block file (3 KiB)
+- Multi-block 1 MiB file (direct + single-indirect blocks)
+- Sub-slice clamping past EOF → empty slice
+- Encrypted filesystem on Mmap → `None`, fallback `read_all` works
 
-### Backward Compatibility
-**File**: `tests/backward_compatibility_test.rs`
+### Test: `test_async_read_inline_fast_path_and_background_slow_path`
 
-**Test: `test_v1_image_compatibility`**
-- Synthesizes a v1 image: superblock without `format_version`, inodes as packed `bincode` records.
-- Opens with current `DiskManager::open` — must succeed.
-- Verifies superblock fields, root inode, basic read/write.
+**Inline Fast-Path** (`is_ready() == true` immediately):
+- `StorageMode::Mmap` raw file: `read_at_async`, `read_data_async`
+- Warm `ChunkReadCache` (seekable 64K): second read in same chunk
+- Warm `DecodedBlobCache` (stream-compressed): subsequent reads
+- Warm `DataPageCache` (FileIo): after cold read populates cache
 
-### Format Migration
-**File**: `tests/format_migration_test.rs`
+**Background Slow-Path** (dispatched to persistent pool):
+- Cold seekable 64K read (first chunk)
+- Cold stream-compressed read (first decode)
+- Cold FileIo read (first page load)
 
-**Test: `test_v1_to_v2_migration_and_fsck`**
-1. Creates fresh v2 image, writes data.
-2. `downgrade_to_v1()` rewrites superblock (drops `format_version`) and converts all allocated inode slots from v2 fixed layout → packed `bincode` + stale tail.
-3. Opens downgraded image — `DiskManager` detects v1, migrates in-place to v2.
-4. All data accessible; `verify_integrity()` clean.
+**Cache Warming Verification**: Each storage mode demonstrates cold → warm transition with `is_ready()` flipping from false to true.
 
-**Test: `test_v1_encrypted_migration`**
-- Same flow with encrypted image (password-protected).
-- Migration preserves encryption; reopen with password works.
+### Test: `test_group_commit_strict_durability_mmap_and_file_io_wal`
 
----
+**Group Commit Under `DurabilityMode::Strict`**:
 
-## Large Image & Multi-Block Bitmap Tests
+- 40 concurrent `create_file_with_data_async` tasks synchronized via `Barrier`
+- All writes share **single physical sync barrier** per batch (group commit)
+- Runs for both `StorageMode::Mmap` and `StorageMode::FileIo` (WAL)
+- Post-commit: `verify_integrity()` → clean
+- Reopen image: all 40 files present with exact payloads
 
-**File**: `tests/large_image_bitmap_test.rs`
+### Test: `test_c_ffi_session_zero_copy_out_of_order_drop_and_async_uaf_safety`
 
-**Purpose**: Validates the v3 layout where data bitmap spans multiple blocks, enabling images beyond 128 MiB (32,768 blocks × 4 KiB).
+**C FFI Full Lifecycle**:
 
-### Tests
-
-| Test | Assertion |
-|------|-----------|
-| `test_large_image_gets_a_multi_block_data_bitmap` | 200 MiB image → `data_bitmap_blocks() > 1`; region layout contiguous (inode_bitmap → data_bitmap → inode_table → data_blocks) |
-| `test_small_image_keeps_a_single_bitmap_block` | 10 MiB image → single bitmap blocks; classic layout |
-| `test_multi_block_image_stays_consistent` | 200 MiB sparse image: create 8×32 KiB files, write/read, `fsck` clean |
+1. **Open with options**: `oifs_open_with_options` (Mmap + WAL), `oifs_set_durability_mode`, `oifs_set_file_io_cache_bytes`
+2. **Direct inode I/O**: `oifs_create_file_with_data`, `oifs_resolve_path`, `oifs_read_at_inode`
+3. **Batch read**: `oifs_read_at_batch` across two files (raw + compressed)
+4. **Shared read session + zero-copy**:
+   - `oifs_begin_read` → `OIFSReadSession*`
+   - `oifs_session_open_file` / `oifs_session_open_inode` → `OIFSFileHandle*`
+   - **Out-of-order drop**: `oifs_end_read(session)` **before** `oifs_file_close(fh1/fh2)` — must not UAF (file handles hold `Arc<FfiSharedSession>`)
+   - `oifs_file_mmap_slice` on raw file → returns 0, valid pointer+len, zero-copy verified
+   - `oifs_file_mmap_slice` on compressed file → returns 1 (fallback), `oifs_file_read_at` works
+5. **Async FFI UAF Safety**:
+   - Hot mmap read: `oifs_read_at_async` → `oifs_async_poll` = 1 (inline) → `oifs_async_wait` → `oifs_async_free`
+   - **Cold compressed read + immediate drop**: 16 rounds of 128 KiB stream-compressed files; `oifs_read_at_async` dispatches to background; **immediately** `oifs_async_free(fut)` **without** `oifs_async_wait`; buffer poisoned (`fill(0xAA)`) and dropped right after → `oifs_async_free` waits for background write to complete before returning (wait-on-drop barrier)
+6. **Async create/write/flush**: `oifs_create_file_with_data_async`, `oifs_write_file_async`, `oifs_flush_async`
+7. **Callback APIs**: `oifs_create_file_with_data_async_cb` + `oifs_read_at_async_cb` with C-compatible callbacks (`extern "C" fn`), synchronized via `Mutex<CbState>` + `Condvar`
 
 ---
 
@@ -392,21 +368,65 @@ cargo test --test nfs_live_mount_test -- --ignored --nocapture
 
 The test suite handles platform differences explicitly:
 
-| Concern | Handling |
-|---------|----------|
-| **Dynamic library naming** | `liboifs.so` (Linux), `liboifs.dylib` (macOS), `oifs.dll` (Windows) |
-| **Library load path** | `LD_LIBRARY_PATH` (Linux), `DYLD_LIBRARY_PATH` (macOS), `PATH` (Windows) |
-| **Compiler detection** | `clang`/`clang++` preferred; falls back to `gcc`/`g++` |
-| **Temp directories** | `tempfile::tempdir()` (OS-appropriate) |
-| **Path encoding** | UTF-8 assumed; NFC/NFD normalization tested on macOS |
-| **Network binding** | Loopback-only (`127.0.0.1:0`) for TCP tests |
-| **Unix Domain Sockets** | Local IPC only; `0600` socket, `0700` directory permissions |
-| **On-disk format** | Little-endian fixed layout; no platform-dependent padding |
+| Aspect | macOS | Linux | Windows |
+|--------|-------|-------|---------|
+| Dynamic library name | `liboifs.dylib` | `liboifs.so` | `oifs.dll` |
+| Library load path env | `DYLD_LIBRARY_PATH` | `LD_LIBRARY_PATH` | `PATH` |
+| Compiler detection | `clang`/`gcc` | `clang`/`gcc` | `clang`/`gcc` (MSVC not tested) |
+| Temp directories | `tempfile` crate | `tempfile` crate | `tempfile` crate |
+| Path encoding | UTF-8 assumption | UTF-8 assumption | UTF-8 assumption |
+| TCP bind | Loopback only | Loopback only | Loopback only |
+| Unix Domain Sockets | Yes (0600/0700 perms) | Yes (0600/0700 perms) | No (skipped) |
+| On-disk endianness | Little-endian | Little-endian | Little-endian |
+| FUSE helper | macFUSE / osxfuse | `/dev/fuse` + `fusermount3` | N/A |
+| NFS mount | `mount_nfs` (built-in) | `mount.nfs` (nfs-common) | N/A |
+
+**Key Invariants**:
+- Little-endian on-disk format enforced via `OIFS_LITTLE_ENDIAN` macros in `include/oifs.h`
+- IPC socket + token directory permissions: `0700` dir, `0600` files (owner-only)
+- Network mode binds loopback only unless `--allow-remote-ipc` explicitly passed
+- All C/C++ compilation uses `-std=c11` / `-std=c++17` / `-std=c++20` with `-Wall -Wextra -Wpedantic -Werror`
+
+---
+
+## Running Integration Tests
+
+### Prerequisites
+
+| Test Category | Requirements |
+|---------------|--------------|
+| FFI C/C++ | `clang`/`gcc` and `clang++`/`g++` in PATH |
+| FUSE Live Mount | macFUSE (macOS) or `/dev/fuse` + `fusermount3` (Linux) |
+| NFS Live Mount | `mount_nfs` (macOS) or `mount.nfs` from `nfs-common` (Linux); root/sudo for privileged ports if needed |
+| All Tests | `cargo build --release --lib` to produce `liboifs` |
+
+### Commands
+
+```bash
+# FFI C/C++ (runs by default in CI if compilers present)
+cargo test --test ffi_c_cpp_test --release
+
+# FUSE Live Mount (explicit opt-in)
+cargo test --test fuse_live_mount_test --release -- --ignored --nocapture --test-threads=1
+
+# NFS Live Mount (explicit opt-in)
+cargo test --test nfs_live_mount_test --release -- --ignored --nocapture
+
+# IPC Security
+cargo test --test ipc_security_test --release
+
+# Async & FFI
+cargo test --test async_and_ffi_test --release
+
+# Full suite (excluding ignored)
+cargo test --release
+```
 
 ---
 
 ## Related Pages
 
-- [Testing and Verification](../operations/testing_and_verification.md) — Overall testing strategy, CI gates, property-based testing
-- [Crash Safety Testing](./crash_safety_testing.md) — Power-loss simulation, journal replay, fsck validation
-- [TSan Testing](./tsan_testing.md) — ThreadSanitizer integration, data race detection in CI
+- [FUSE Engine](../architecture/fuse_engine.md) — FUSE kernel protocol implementation
+- [NFS Server](../architecture/nfs_server.md) — Pure-Rust NFSv3 server architecture
+- [Testing & Verification](../operations/testing_and_verification.md) — Test strategy, CI integration, property testing
+- [Crash Safety Testing](./crash_safety_testing.md) — Power-loss simulation, journal replay, fsck verification

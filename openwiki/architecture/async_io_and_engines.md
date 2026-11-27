@@ -1,11 +1,11 @@
 ---
 type: "Reference"
-title: "Async I/O Engine and Group Commit"
-description: "Covers the pluggable I/O backend system (Mmap, Pread, IoUring), ExtentList coalescing, io_uring capability gating, async read engine with inline fast-path, and async write engine with group commit for DurabilityMode::Strict."
-tags: ["architecture", "io", "async", "io-uring", "group-commit"]
+title: "Async I/O & Pluggable Engines"
+description: "Covers the pluggable I/O engine abstraction (Mmap, Pread, IoUring), extent coalescing, io_uring capability gating, async read engine with inline fast-path (Mmap, DataPageCache, ChunkReadCache, DecodedBlobCache), OifsAsyncTask, group-commit write pipeline, and ReadSession/FileReadHandle for concurrent reads."
+tags: ["architecture", "io", "async", "io-uring", "group-commit", "read-session", "file-read-handle"]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-24T19:09:23.676Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-f9183fa58bb2f10bacc5bd4c
     resource: repo://src/disk.rs
@@ -13,10 +13,12 @@ sources:
     resource: repo://src/ffi.rs
   - id: openwiki-source-ea9e30b0c99ad48bf309d4ab
     resource: repo://src/io_engine.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+  - id: openwiki-source-62eef0b8799186dd9e2faae9
+    resource: repo://src/storage.rs
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
-# Async I/O Engine and Group Commit
+# Async I/O & Pluggable Engines
 
 OIFS separates metadata operations from payload data reading. Filesystem metadata (superblocks, bitmaps, inodes, indirect pointer blocks, and directory indices) resides on the shared `MAP_SHARED` memory map for zero-copy, low-overhead access. File payloads can be large, cold, and scattered across physical blocks—reading them through the mmap means every uncached page is a synchronous page fault, one fault at a time.
 
@@ -110,6 +112,14 @@ pub fn push(&mut self, disk_offset: u64, buf_offset: usize, len: usize) {
 
 A file whose blocks were allocated contiguously therefore collapses into a single extent, i.e. a single `pread` / single SQE regardless of its size in blocks. This applies uniformly to all three backends.
 
+### Coalescing in Read Paths
+
+The read path builds extents via `read_at_with_inode` ([src/disk.rs#L5451-L5650](repo://src/disk.rs#L5451-L5650)) which uses a `ReadAtSink` helper. When `extents = None` (Mmap path), contiguous runs are coalesced in a local `pending_mmap_run` and copied via a single `memcpy`. When `extents = Some`, each `emit_block` appends to the shared `ExtentList`, which merges on `push`. Sparse holes are zero-filled directly into the output buffer without creating extents.
+
+### Coalescing in Write Paths
+
+Write paths similarly benefit: contiguous fresh-file allocations use a single bitmap allocation and one `write_all_at` ([src/disk.rs#L5652-L5850](repo://src/disk.rs#L5652-L5850)). General writes traverse the block tree and issue one `write_at` per extent; indirect pointer blocks are written once after all their children are written.
+
 ---
 
 ## 3. IoUring Capability Gating
@@ -151,7 +161,7 @@ This invariant prevents use-after-free of the caller's buffers.
 
 ## 5. Read Path: read_at / read_at_batch
 
-`DiskManager::read_at_batch` processes multiple `ReadRequest` items under a single read lock, planning extents for each, then submitting the batch to the I/O engine ([src/disk.rs#L4737-L4790](repo://src/disk.rs#L4737-L4790)):
+`DiskManager::read_at_batch` processes multiple `ReadRequest` items under a single read lock, planning extents for each, then submitting the batch to the I/O engine ([src/disk.rs#L5254-L5350](repo://src/disk.rs#L5254-L5350)):
 
 ```mermaid
 sequenceDiagram
@@ -183,15 +193,58 @@ sequenceDiagram
 
 ---
 
-## 6. Async Read Engine: Inline Fast-Path
+## 6. ReadSession and FileReadHandle: Lock-Free Concurrent Reads
 
-`DiskManager::read_at_async` and `read_data_async` return an `OifsAsyncTask<T>` ([src/disk.rs#L9015-L9170](repo://src/disk.rs#L9015-L9170)). The task first probes the **Inline Fast-Path** on the calling thread:
+For workloads that issue many reads against the same `DiskManager`, per-call `inner.read()` acquisition and `BoundedInodeCache` lookups create contention. `ReadSession` and `FileReadHandle` eliminate both.
 
-1. Acquire `inner.try_read()` (non-blocking).
+### ReadSession
+
+Created via `DiskManager::begin_read()` ([src/disk.rs#L5088-L5092](repo://src/disk.rs#L5088-L5092)), a `ReadSession<'a>` holds the filesystem's shared `RwLockReadGuard<'a, DiskManagerInner>` for its entire lifetime. While held:
+
+- All lookup, stat, directory listing, and positional read methods operate **without re-acquiring the outer lock**.
+- Concurrent writers wait until all active `ReadSession`s are dropped.
+- Sessions should be scoped to bounded read batches to avoid starving writers.
+
+```rust
+let session = dm.begin_read();
+let root = session.root_inode();
+let inode = session.read_inode(42)?;
+let data = session.read_at(42, 0, &mut buf)?;
+let entries = session.list_dir(root)?;
+```
+
+### FileReadHandle
+
+Created via `ReadSession::open_file(inode_id)` ([src/disk.rs#L9227-L9258](repo://src/disk.rs#L9227-L9258)), a `FileReadHandle<'s, 'a>` pins a validated regular file inode, eliminating:
+
+1. Outer `RwLock` acquisition per read.
+2. `BoundedInodeCache` lookups per read.
+
+It additionally detects **raw fast-path** eligibility: uncompressed, unencrypted, non-seekable, no active filters, and either Mmap-backed or FileIo with no mmap slice. When eligible:
+
+- `FileReadHandle::read_at()` uses a single-block fast path: resolves the physical block, then copies from mmap or `DataPageCache` without any lock or cache lookup ([src/disk.rs#L9395-L9450](repo://src/disk.rs#L9395-L9450)).
+- `FileReadHandle::mmap_slice()` returns a zero-copy `&'s [u8]` into the mmap when the range is physically contiguous ([src/disk.rs#L9335-L9380](repo://src/disk.rs#L9335-L9380)).
+
+```rust
+let session = dm.begin_read();
+let handle = session.open_file(file_inode)?;
+let slice = handle.mmap_slice(0, 1_000_000)?; // Option<&[u8]>, zero-copy if contiguous
+handle.read_at(4096, &mut buf)?;               // single-block fast path
+```
+
+Both types are exposed through FFI as `OIFSReadSession` and `OIFSFileHandle` with `Arc`-pinned lifetimes to prevent use-after-free from out-of-order destruction ([src/ffi.rs#L1461-L1510](repo://src/ffi.rs#L1461-L1510)).
+
+---
+
+## 7. Async Read Engine: Inline Fast-Path
+
+`DiskManager::read_at_async` and `read_data_async` return an `OifsAsyncTask<T>` ([src/disk.rs#L10134-L10330](repo://src/disk.rs#L10134-L10330)). The task first probes the **Inline Fast-Path** on the calling thread:
+
+1. Acquire `inner.try_read()` (non-blocking). If a writer holds or waits for the lock, fall back immediately.
 2. Look up inode (cache or mmap decode).
 3. If `Seekable64K` chunked: check `ChunkReadCache`.
-4. If compressed/encrypted: check `DecodedBlobCache`.
-5. If raw file: try `DataPageCache` (FileIo mode) or mmap.
+4. If compressed/encrypted/filtered: check `DecodedBlobCache`.
+5. If raw file: try `DataPageCache` (FileIo mode) via `try_read_data_cached_only` ([src/storage.rs#L1178-L1225](repo://src/storage.rs#L1178-L1225)) or mmap via `try_read_at_inline_vec` ([src/disk.rs#L10019-L10160](repo://src/disk.rs#L10019-L10160)).
 
 If **all** needed bytes are resident, `OifsAsyncTask::ready(Ok(buf))` is returned instantly (~50 ns, zero heap allocation, no thread hop). Only on cache miss, lock contention, or cold decode is `OifsAsyncTask::spawn()` used to dispatch to the background async pool (2–8 worker threads, `oifs-async-N` naming).
 
@@ -205,13 +258,57 @@ flowchart TD
     F --> G["Complete via AsyncTaskState"]
 ```
 
-The `OifsAsyncTask` implements `Future`, `is_ready()`, `try_take()`, `wait()`, and `wait_for_completion()` for maximum integration flexibility.
+### Cache Probing Detail
+
+| File Type | Inline Probe Sequence |
+| :--- | :--- |
+| **Seekable 64K** | `ChunkReadCache.copy_slice_to_vec_if_hit()` for the single affected chunk |
+| **Compressed / Encrypted / Filtered** | `DecodedBlobCache.get()` for fully decoded blob (≤ 16 MiB) |
+| **Raw (FileIo)** | `ImageBacking::try_read_data_cached_only()` on first block; if resident, allocate output vec and fill block-by-block from cache |
+| **Raw (Mmap)** | Direct mmap copy via `try_read_at_inline_vec` (no cache involved) |
 
 ---
 
-## 7. Async Write Engine: Group Commit
+## 8. OifsAsyncTask: Fast-Path, Future, and Completion
 
-`DiskManager` exposes async write operations that route through a **dedicated group-commit worker thread** ([src/disk.rs#L8538-L8905](repo://src/disk.rs#L8538-L8905)):
+`OifsAsyncTask<T>` ([src/disk.rs#L9495-L9700](repo://src/disk.rs#L9495-L9700)) is the unified handle for all async operations.
+
+### Construction
+
+```rust
+// Inline completion (zero allocation)
+OifsAsyncTask::ready(value) -> OifsAsyncTask<T>
+
+// Background dispatch
+OifsAsyncTask::spawn(work) -> OifsAsyncTask<T>
+OifsAsyncTask::spawn_with_drop_policy(work, wait_on_drop) -> OifsAsyncTask<T>
+```
+
+### Interface
+
+| Method | Behavior |
+| :--- | :--- |
+| `is_ready()` | `true` if inline or background state `done == true` |
+| `try_take()` | Returns `Some(T)` if complete (inline or background), else `None` |
+| `wait_for_completion()` | Blocks without consuming result |
+| `wait(self)` | Blocks and returns `T` (consumes task) |
+| `Future::poll()` | Returns `Poll::Ready(T)` when complete; registers waker otherwise |
+
+### Fields
+
+- `inline_ready: Option<T>` — populated by `ready()`, indicates inline completion.
+- `state: Option<Arc<AsyncTaskState<T>>>` — background coordination (slot + condvar + atomic).
+- `wait_on_drop: bool` — when `true`, `Drop` blocks on `wait_for_completion()`. Used by FFI read tasks to prevent use-after-free on caller buffers.
+
+### FFI Drop Barrier
+
+The C FFI `oifs_read_at_async` creates a task with `wait_on_drop = true` ([src/ffi.rs#L1735-L1760](repo://src/ffi.rs#L1735-L1760)). If the caller destroys the future before completion, `OIFSAsyncFuture::drop` → `OifsAsyncTask::drop` → `wait_for_completion()` blocks until the background write into the caller's buffer finishes.
+
+---
+
+## 9. Async Write Engine: Group Commit
+
+`DiskManager` exposes async write operations that route through a **dedicated group-commit worker thread** ([src/disk.rs#L9701-L9850](repo://src/disk.rs#L9701-L9850)):
 
 - `create_file_with_data_async`
 - `write_data_async`
@@ -219,7 +316,7 @@ The `OifsAsyncTask` implements `Future`, `is_ready()`, `try_take()`, `wait()`, a
 
 ### Group-Commit Protocol
 
-1. Each async write submits a `GroupWriteOp` containing `(DiskManager, run_fn, complete_fn)` to a lock-free MPSC queue (`oifs-group-commit` thread).
+1. Each async write submits a `GroupWriteOp` containing `(DiskManager, run_fn, complete_fn)` to an MPSC queue (`oifs-group-commit` thread).
 2. Worker wakes, drains up to 128 ops into a local `batch` vec.
 3. Enters `DeferStrictSyncGuard::enter()` (thread-local flag).
 4. Executes each `run_fn(&dm)` **without** individual `flush()` calls.
@@ -252,7 +349,7 @@ sequenceDiagram
 
 ---
 
-## 8. FFI Async API Surface
+## 10. FFI Async API Surface
 
 The C FFI exposes both **polling** and **callback-based** async interfaces ([src/ffi.rs#L1583-L1880](repo://src/ffi.rs#L1583-L1880)):
 
@@ -268,19 +365,19 @@ The `OIFSAsyncFuture` wrapper around `OifsAsyncTask` sets `wait_on_drop = true` 
 
 ---
 
-## 9. Configuration Summary
+## 11. Configuration Summary
 
 | Setting | Mechanism | Scope |
 | :--- | :--- | :--- |
 | Backend selection | `OIFS_IO_BACKEND` env var / `DiskManager::set_io_backend` | Process / Instance |
 | Kernel override | `OIFS_ALLOW_PRE_5_15=1` | Process (testing) |
-| Async pool size | `available_parallelism().clamp(2, 8)` | Process (auto) |
+| Async read pool size | `available_parallelism().clamp(2, 8)` | Process (auto) |
 | Group-commit batch cap | 128 ops | Per worker wake |
 | Ring pool idle cap | 16 rings | Per IoEngine |
 
 ---
 
-## 10. Key Invariants
+## 12. Key Invariants
 
 - **Metadata never uses pluggable backends**: Superblock, bitmaps, inodes, indirect blocks, directories always use the shared mmap.
 - **All backends are cache-coherent**: No `O_DIRECT`; dirty pages from `Lazy` writes visible to `Pread`/`IoUring` immediately.
@@ -288,3 +385,5 @@ The `OIFSAsyncFuture` wrapper around `OifsAsyncTask` sets `wait_on_drop = true` 
 - **IoUring never leaks in-flight SQEs**: The read loop aborts the process on hard `io_uring_enter` failure with pending SQEs.
 - **Inline Fast-Path is zero-allocation**: `OifsAsyncTask::ready` uses stack-only `inline_ready` field.
 - **Group commit deduplicates by DiskManager identity**: `Arc::as_ptr(&dm.inner)` used as key; one `flush()` per distinct image.
+- **ReadSession / FileReadHandle lifetime safety**: FFI wrappers use `Arc<FfiSharedReadLock>` to prevent out-of-order destruction UAF.
+- **Async read drop barrier**: `wait_on_drop = true` ensures background writes to caller buffers complete before future destruction.

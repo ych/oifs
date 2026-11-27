@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:14f4bbfebd681f0a447bafbb50a73b791a60747d74faf503b116de3205441b3b",
+  "pageVersion": "sha256:3cce399cc2d7f913d7599e45ca12e421448da1e6365d730bd761748847f8915b",
   "claims": [
     {
       "id": "claim_3d28a4981936448fa050abdae37f6df1",
@@ -17,8 +17,8 @@
       "statement": "Safe defragmentation is initiated via the `defrag` subcommand of the `oifs` CLI or via the `DiskManager::defragment` method with `DefragMode::Safe`.",
       "evidence": [
         {
-          "resource": "repo://src/bin/oifs.rs#L1469-L1520",
-          "version": "repo-lines-v1:sha256:23acb7e44eaeb1af133ef7721523e18afeb59224582b0975b70f884d1f7f600f:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1MzQ1ODUxYTFjMWMwMDA3NjcxZmVkYTg0OTA4YWJiZjU1YmIzZTAyYmVmZGNjNTc3Y2I4NWNkZjNlNDJjMTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkZDY3OGVkODhlN2Y4NGU0MWVkNjNiMGVlMzdiMGQ5MTYzNTQ3NmYwNDRkMDQxMWIwNDkzZmNkYjA3ZmU5NzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmMTAwZTM4NjQyN2NjZWVmYWJjM2M2YzdlYjkyM2Y1ZGU2NTQ3YWNkZDg1N2I3YmNiMjljYWY3MGNmZjQyMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAzZDgxODZhODM1N2NmOGUzOWJjYWE3YTUzOWQyZjZmYTMxN2ZjYjUxMDEwOGNjOWRlYzhlZWE3NzRiOWQzNmMifQ"
+          "resource": "repo://src/bin/oifs.rs#L1560-L1620",
+          "version": "repo-lines-v1:sha256:e4f90d846336fe80b9494abd66e35f267d4210be9a15de700965ee04beb4c793:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwYWE0NjBhM2MxNTZmN2NlZjQ5ZjcwZDMxMTI5NDUxNTUzNjllOTAyMTUxNWQ4NzFhNTIyOGUwNDQ0MmQwNTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1NmNlZDgwOGFiNTQxZWRjZWViYTU5MTcwZjFmNzdlMjYxZWQ4OTU2YTczN2Y4YTI3NjJhNjEzODQxYjg5NmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwOWQzOGVjZWU1NzY4MzhiYWZhNmQ2NGI4OTE1YjNmZWFlMTc2YWVjMjU4MmYxMTY2YWNkNTM5YzY4NzExOTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5MmQ2OGMxMTdkZGVjNjMzZjNkZWQ2ZjRmMDg1Y2E5MTlhY2NhNjFiZjYzNzFkZGI0NThjZTczZDRmMjIzYjEifQ"
         },
         {
           "resource": "repo://src/disk/maintenance.rs#L460-L480",
@@ -83,6 +83,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-24T19:09:23.676Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

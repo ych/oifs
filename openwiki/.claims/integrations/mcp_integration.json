@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:269b31380ed05a058048433eae4e4c8876364415a079499e8666ea1cc83f49da",
+  "pageVersion": "sha256:c0b5af6d23698d964c5c70c88d17f4c36510cfffb7eb72978bbfe4239fda42c4",
   "claims": [
     {
       "id": "claim_011f825e360c48ffbd53105f456445f1",
@@ -115,10 +115,178 @@
           "version": "repo-lines-v1:sha256:f1ce010cf6657653f5b6debdecbfae35a3e9d79698ec434cc085f6e0a5c0c05c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkODgxZTdhNjk1ZWIyMTVmNjRlZDE0MTAyNDk2OTExNDk2ZDI2YTBhZjVmYzRjZTA3MzVjZDE4MThjOGIzZjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM3NDkzZWE4ODcxZDI4MzFjZmU1NzdmMDdlYzQ0MzkwYTZkYTQ1OWNiMWI3ZDAyMTU5ZjRlNTNkMTVhNzI0ZGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwNDU1YWI4NmMyNTY4MzU1ODI4OTQ1NTQ4YWQ3ZjJmNjRiMmRlZTM2YzBiMDdhZWZmZGJkNTA5ZmVkZDU4YTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_0185403a90984ea3a479b0fe9f3dbeb7",
+      "statement": "The oifs_mcp binary is an MCP server that communicates over stdio transport using JSON-RPC 2.0, making it compatible with any MCP client.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L1-L6",
+          "version": "repo-lines-v1:sha256:da9c326c8cd27d6c9559c8b0a0b01dd7485a7ac31b8ee4874b21bb0e894b313d:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGY0MmM0ZGQ3YmFlNWQ0ZmExMTVkYjQyNDhiZGY0ZWYxZmVkMGVmNDQ0NGVjNGUwNzJjOWVlMTFiYTNlY2YxYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDBmZDkxOGEwYmRkZTFlZWVjZjBlNWVkM2RiNjc3MDI0YzY3NDkwMmI5NGE4OWY2NmMzZWU4MDIwNDkwN2Y0ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTU2MzgwZDY1OWJlNWQwMTM4OWU1MzhhMjRhNmQyZDdmMWI3OTI1ZmNhOWYxMGNlMDNjNmFjZjhjMmFiZTg2ZSJ9"
+        },
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L442-L444",
+          "version": "repo-lines-v1:sha256:38245dc52d082b900c289816814aa1e6205a507e77558cb883d4f5d0b3b813bb:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTRjMDc1MWNkNzcxNWMwYzFiN2U2YzRlMDFjOTYxMjU3NjcxNGQyNmYxNjE2ZTY0MGVkZTA3YjlmMTBhMTZjMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjZjMDZkZGU1MGQ2NzE5N2NjMTJkODQ0ODQ5ODI2NzIzMDQ2NTFjZTEyYjU2NjgxZjYxYWJiNWVjZWQ1NTQ3YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjIsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWNlMDc0NDljMzY1Y2Q2ZDk0Yzk2Y2ZlYzVlY2NmZWNlMGUzMzMwY2Q3NjQ5NmZiYWFkNzgwNWNkYTIxMTcyOCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_ef783be2eda94e34b7f5936b890b3448",
+      "statement": "The server registers exactly eight tools via rmcp's tool_router macro: write_file, read_file, list_dir, mkdir, delete_file, truncate_file, append_file, and status.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L123-L355",
+          "version": "repo-lines-v1:sha256:127db50b5c4c9a9bfd82690d52a8070cab7578beb5ee12890d1df968edec2926:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1YmZmYTcyNTI0MjMxNzUyNmZmMjE4YTM2ZjgzOWNjMTc5ZGI2ZDYxMTlhOWVjMjc5N2ZiMTI5MzJmOTBjNTE1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3N2EzOTQwYzY3OTA0YjYwNWRmNjZjZjVhYjVjZDUwMDkxN2UxYzgwZTJhNDRkNTk5YjM2YWYwY2ViYzQxYzhiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxYzZkYTMxZWU4YzY2ZDU0NGE3YjIwZGY5OGYyMDVmZGMyZTQwZmIzYTdmYzAzMTMxNTk2Yzk2MDY1MmMzMGFlIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_e75d97d7736a4f748986df4e279a8358",
+      "statement": "Each oifs_mcp server instance operates on exactly one disk image specified at startup, creating a strong sandbox isolation boundary where all file operations are confined to that single .img file.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L410-L418",
+          "version": "repo-lines-v1:sha256:6acb52a51cf2aa78350e7cd194997cb0eac08116a4d1d5783b96d70699f45b7a:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODQzMzVlNjUwM2FkYzViN2FhNWQ1ODEzNzYwYzk2NjUwZDE2N2QzMjkyNzczNzUzNGJiMTBmNjkzZDQzMTgxMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTUyMmM0MmNkMTljNmQwM2Q4MDhjNDUyNzIwNTUyODI1YjdlYTFjNWI0OTFiMjE4NTExY2FjNzQxNWNmOWQ5YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTMzMWFhYTM4MDQ3ZTkwY2Q1MDdiMjIwYmUwNGNmYTA1NjQyZTkyZGI0MWQwODdlYWZhMTEyYWFkMmFkMzdhZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiN2Q1M2M0NDQxNDc3ZTMzMGQ3YzVmNDU4OTQ5YThiOTlhZTZiYjU5N2VkNGRlNmU4NjIwMjk4MjQwMDAxZDhiYiJ9"
+        },
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L432-L440",
+          "version": "repo-lines-v1:sha256:5ba3c015dd02e28cfa8a992f8e77a1e31d078cf365a624ad6865bd7a3f22dbe9:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2FlYzlmNGM4YWQ0NzkxZGZiNzNiMGRjMTMxMzZmNTY1NTUyZmZmMzNkNmIzNmIwMmI0YTlmYTEzODBkODQxOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGE3NWJhY2YxMTA1OTRhNjdlOTFlYjZjNmYxNjU3ZDE5NDEyZDAwZjY2NjVhYTVkMzcyNjZlZTkyOGVlNjEzZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWIxZmMzZDRiNjliYjEyZDY2Y2RkMmU2YjBmMzY0MzgyZmQ3MjI1MjcyNDU1ZGVhYWZhMjc3NTcyMDgxNDFjYyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_9fbe0736bb574616a409c6d119a7cb88",
+      "statement": "The server supports encrypted images via the OIFS_PASSWORD environment variable; when set at startup, the entire image is encrypted with AES-256-XTS (Argon2id key derivation), and the same password must be supplied on every subsequent launch.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L432-L440",
+          "version": "repo-lines-v1:sha256:5ba3c015dd02e28cfa8a992f8e77a1e31d078cf365a624ad6865bd7a3f22dbe9:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2FlYzlmNGM4YWQ0NzkxZGZiNzNiMGRjMTMxMzZmNTY1NTUyZmZmMzNkNmIzNmIwMmI0YTlmYTEzODBkODQxOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGE3NWJhY2YxMTA1OTRhNjdlOTFlYjZjNmYxNjU3ZDE5NDEyZDAwZjY2NjVhYTVkMzcyNjZlZTkyOGVlNjEzZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWIxZmMzZDRiNjliYjEyZDY2Y2RkMmU2YjBmMzY0MzgyZmQ3MjI1MjcyNDU1ZGVhYWZhMjc3NTcyMDgxNDFjYyJ9"
+        },
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L50-L61",
+          "version": "repo-lines-v1:sha256:154ca51ccd6996c0b6d78f12a5941efdf7553fd2c6f6bf5dd21600c254d60fb6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3ODI5ZDNhYTM2OWUwYzhjMTU4YTQyYjI1ZWJkODlkZTBkNWMzY2RmMDQ4YmJmMjY4YTA5NDczNTQxN2MyMWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNmN2FkMzEyMWRmM2VjZDAzYWJmZjVkOWRmY2M3MjQ4NDBmNjNlNDkwNTg5MWEzYmE0MjUxZGQyNGJhZDI3MTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMzMTUxMDhmYzc1N2ZlZjQ4MWI0MWQ3NDAzMTE3NjIwZDJhMjIxMzU4OGI1ZTA4M2VjMWJlM2JiODY4YmRkNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5ZjUwNGQyZmE4Zjg3ZjMxYWY2MmU0Njk2MWQ3YzlkN2E0M2Y1ZTJiZTUzYjllMGQ2YWM0YjJiNzBhNjBkNWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_24cc9caab3f8441090653dc2b5bbac55",
+      "statement": "The MCP server does not expose MCP resources (resources/list, resources/read handlers are not implemented); all filesystem access is mediated exclusively through the registered tools.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L365-L386",
+          "version": "repo-lines-v1:sha256:6198f41fc2f52e10a0218c51b4d12ba63680708847e9e3377748b40fc1fe36cf:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViNWZlMjE4ZDVlZmY3OTlmODE0ZGM5ZTBmMTc4NWU3ZjNhYTIxMzI1NWY1MWZhMTI4ZGZhNGRjYjdkZDA3NjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3MjBmZWU5YTIzMmE0NGRjNGJlYzc5YzIxZDk2MGEwMDRkNTQxNzZhMDYyN2JmN2MzZjNhMzYzYTk4NWM0MzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM0YWY3YWUwNDcxNDAxN2Y1OWUxM2Y2NWQ2Yjk5ZWU3MmVmZjgyNTQzOTljMmYzZGRkNDM0NDliYzE1YTVlYTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYTBkODhjZWRlNDNmOWQ0NWRjZWU5MjlhMGM3NGI0MDI3NWIzMzBmYWFiMmMxZmQyMWNlNzg1MjU2OGRmMTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0da5590296dc4e7e9d1b1454cdeb0591",
+      "statement": "Tool responses follow a strict convention: success returns {\"ok\": true, ...} with tool-specific fields, failure returns {\"ok\": false, \"error\": \"...\"}; all JSON is built with serde_json to guarantee correct escaping.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L123-L355",
+          "version": "repo-lines-v1:sha256:127db50b5c4c9a9bfd82690d52a8070cab7578beb5ee12890d1df968edec2926:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1YmZmYTcyNTI0MjMxNzUyNmZmMjE4YTM2ZjgzOWNjMTc5ZGI2ZDYxMTlhOWVjMjc5N2ZiMTI5MzJmOTBjNTE1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3N2EzOTQwYzY3OTA0YjYwNWRmNjZjZjVhYjVjZDUwMDkxN2UxYzgwZTJhNDRkNTk5YjM2YWYwY2ViYzQxYzhiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxYzZkYTMxZWU4YzY2ZDU0NGE3YjIwZGY5OGYyMDVmZGMyZTQwZmIzYTdmYzAzMTMxNTk2Yzk2MDY1MmMzMGFlIn0"
+        },
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L94-L114",
+          "version": "repo-lines-v1:sha256:7473f2244359ee85d1ac3d17b45e7f00f29812f7e4514503157e188f40cf9a20:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMWFiZmE1NDdiOTIxMmQ5NDI3YWM5Nzg5MGQwNjY1OTNhZTUzY2Y3ZjhmYTI1OTdjOTAzMjExMmRmYWRiMTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4OWY3MTdjODNiNTE4ZDdlNTU4N2YwNjMxYTg0OWQ1NDVmMzA3MmM4YjcxZjY4NzQ2MmIwODEyYjEwOTMxY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1ODAyMzE2MjVhOWRlZWZhMDMyNzFkZWRiYzdjZjIyZmNkNzE4ZjQzMzU2ODkxZmZkMzA5YmE1MTg5ZTUwMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA2YWE3MWFjNjAwMzNkNzIzOTg2MmUwMjAxNjA0MWI0MzQ5MjljYTAxNDQ5ODZhZDVkYjIwOWNiZWIzY2VkZmQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_11f85e2d51be448580830987de95d0a1",
+      "statement": "All paths are relative to the image root (inode 1); there is no working-directory concept, and write_file, mkdir, append_file do not auto-create intermediate directories (no mkdir -p semantics).",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L136-L146",
+          "version": "repo-lines-v1:sha256:955703d57b93ecc4501736587bf99e519570e0a264d3306412afd13ae8133e62:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhNWZjNjAxNjY2OTU3ZTZkMzI1MzdlOTA5MDE5ODZhODRkOWNkY2Q5NmIwODU3MjU5YzE5NzIxOTJlZThiMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ4MTJlZWNiNDkxZmJjN2ZmODQ3NDY3ZTUxYWFkM2I5ZmYzOTA3ODI3NmQzYzg4NDE0ZmRiNmM2YjRkNjY5MjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlYzNiYTU0NGI1OTgwMzhiYmViNDQyYjc4YzU5Y2NiNWJjMDliYWVkMGJhZDIwNTNlNzYzZjJlNGMzZTE5NTgifQ"
+        },
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L182-L195",
+          "version": "repo-lines-v1:sha256:679d78f2e49dcc910ad66bc8d2879f720ec996cf728e768ab8a2a07661ffe938:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5ZDZiZGFkYzcwNGRmZDk1ZDJhMGM2YWY1NWUwYjMwMGNlMGJjZDg2ZTYyZGQyMjFhNDNkYTZhNjRiZmJiMWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5YjE5ODJlOGRkNzQ4MTE4MTQ2YjM5YTJkMDA2MmY0MDgxZTM0Nzc5Yjg2NzVjMjM0YzRmYjEyNGRjMzkzOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjZTY1NzAwMTM3MDg4OTRlNGFiMmVmMTBhOWQwMjEwN2Q5NmNhNzRhYWUwYmY3NzVhMjg4ZDJjNTU4ZmFhODMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU5MTRjOTNkN2Q0Yzg3NDhjNGRhMDZjYmRjODdlYzgwMDAzYzBjYWI1MzVkZDhlMDY1Zjg0MGVkYzc0MmU3MTUifQ"
+        },
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L293-L312",
+          "version": "repo-lines-v1:sha256:76df81957c4de8c1bf913e156f5025c462bb82380f45af800fab10a8f18fa79e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5ZGM5YTlhMjZjNTljMTU4MWM5YmNkYzJhMmRhZjUxNzg1M2UzMmZhZWIzMDQ2MDhiNzkxMmFjMmFjMmM3YTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxZTQ2YjYxZjBiMDEyZDgwMmQ1ZTkzYmQ1ZGI1ZjQ5MGRiMjM3ZDQ4ODJlNWZlYmE0YjExZjUxN2VhMTNjNzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM2ZGFiNjRjZTY0ODA2YmZmYzkzNmQwMzdjN2VlNDUxYWI4YjU3ZTNhZDMwYWE2ZmUzZWU5NDVkYTQ5M2NhNGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVhOWMxOGJkZDcyMTMzNjRjNzMwOWQ4ODc1Y2QxM2RhYzQ0Y2ExMWExNDU0NDg5MmY3MzdkNWUzZmFiZjI1ZjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a1535a46e72c436286da2d01f4a73048",
+      "statement": "The list_dir tool returns JSON Lines (JSONL) format — one JSON object per line — rather than a JSON array, enabling streaming processing of large directories.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L160-L180",
+          "version": "repo-lines-v1:sha256:1c8ed57797d86aa1c45a5b11885b02dbf928ebd569cf8ae2d88033962244785c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiMmIwYjA5YTk2MzVkZTNlN2NlZDkyYmYxNzdlNWJlMzM3MzRiMTgyNGZmMDkxN2Y0MTc0YjY4Y2UxYzg1YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyOGRjODg1ZjdiZWM3YWNhMDYxNjU4MjkyZTQ4ODBkYTFjOTExNzFlYjk2MmViZTE2OWE0NjZlN2UzZjg2NDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2YWI0OTIxYzdiODEyMTgwMjRhMzgzZDUwYTMyNzU0ZDc2MTlhZGJiY2E0NWI5OWI2MDJkMGVhYTM5MjllYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5N2JlNGNmZjViOTM0NDAyNjExMDgzMjUyZTlhZmM0YTQwZTMzNGM5MDM3MmU1N2Y3ZmE1ODFmMTdkN2UxYjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_53f34938fdde44dd8cfc4f304d17dfb8",
+      "statement": "Client configuration for Claude Desktop and Cursor uses mcp.json or claude_desktop_config.json with command, args (image path and optional --size), and env (OIFS_PASSWORD for encryption).",
+      "evidence": [
+        {
+          "resource": "repo://README.md#L135-L148",
+          "version": "repo-lines-v1:sha256:f6a3b387fef41f08d25f7e2bfe55daa75dd19aa740894c394376c01ee62a2f25:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM3M2EzNjdjYmYzNzU4NjhlNzI1ZmQxOWEzMmRkMzkxMWM1ZWNkODBkNzhhYzhhNTgxZTI3ZTFiOGJhOWUzNmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEwNTNlMWVlNTZjZTQ3NGU2ZDYyNGU1NmIyMjM3ZTM3ZjE4M2NjMzJhYzA2ZjE5ZGIzMTUwNzRjZjg4MmU3ZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlZGZiYzZlOTlmOTdhMTBkZjg1ZjdkNTAxMjkzZWExMGE4MWYwMzFiN2MxZmExZTlmMjEwNDNlMzU0MDQzMWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_37539d0500334407925aec404c444cf7",
+      "statement": "The server operates in Standalone mode (direct mmap access, zero IPC overhead) using DiskManager directly rather than the OifsSession abstraction; each process gets its own independent DiskManager handle.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L50-L61",
+          "version": "repo-lines-v1:sha256:154ca51ccd6996c0b6d78f12a5941efdf7553fd2c6f6bf5dd21600c254d60fb6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3ODI5ZDNhYTM2OWUwYzhjMTU4YTQyYjI1ZWJkODlkZTBkNWMzY2RmMDQ4YmJmMjY4YTA5NDczNTQxN2MyMWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNmN2FkMzEyMWRmM2VjZDAzYWJmZjVkOWRmY2M3MjQ4NDBmNjNlNDkwNTg5MWEzYmE0MjUxZGQyNGJhZDI3MTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMzMTUxMDhmYzc1N2ZlZjQ4MWI0MWQ3NDAzMTE3NjIwZDJhMjIxMzU4OGI1ZTA4M2VjMWJlM2JiODY4YmRkNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5ZjUwNGQyZmE4Zjg3ZjMxYWY2MmU0Njk2MWQ3YzlkN2E0M2Y1ZTJiZTUzYjllMGQ2YWM0YjJiNzBhNjBkNWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_328254d70ee44c648a287c035991deb6",
+      "statement": "Each tool handler bridges async rmcp to sync DiskManager I/O via tokio::task::spawn_blocking, cloning the DiskManager for each blocking task.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L123-L146",
+          "version": "repo-lines-v1:sha256:26934c06441ffce1aa0a80b0be0f38be2400d2f9922df0c284ff03f15f2713f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3YTM5NDBjNjc5MDRiNjA1ZGY2NmNmNWFiNWNkNTAwOTE3ZTFjODBlMmE0NGQ1OTliMzZhZjBjZWJjNDFjOGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlYzNiYTU0NGI1OTgwMzhiYmViNDQyYjc4YzU5Y2NiNWJjMDliYWVkMGJhZDIwNTNlNzYzZjJlNGMzZTE5NTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d725846054954075b04198dffd1a398a",
+      "statement": "An append_lock mutex serializes concurrent append_file calls so that multiple agents appending to the same log file interleave cleanly line-by-line.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L293-L330",
+          "version": "repo-lines-v1:sha256:6ea63187e10fe69dfd1dc35b9fa2ab42c0b93f6e0cafe10734eadf27d3f5acff:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5ZGM5YTlhMjZjNTljMTU4MWM5YmNkYzJhMmRhZjUxNzg1M2UzMmZhZWIzMDQ2MDhiNzkxMmFjMmFjMmM3YTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM2ZGFiNjRjZTY0ODA2YmZmYzkzNmQwMzdjN2VlNDUxYWI4YjU3ZTNhZDMwYWE2ZmUzZWU5NDVkYTQ5M2NhNGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM2ZGFiNjRjZTY0ODA2YmZmYzkzNmQwMzdjN2VlNDUxYWI4YjU3ZTNhZDMwYWE2ZmUzZWU5NDVkYTQ5M2NhNGQifQ"
+        },
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L42-L43",
+          "version": "repo-lines-v1:sha256:0d0b7ba7d989a3b93d1fdcbc1c1d40a840726e441764391b52625eeff5be559e:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDVhZTgyNjU0ZTNhZTc5N2I1MDc4NjkzYjM4ODYxZjUzMTQ5ZGU2NDljYjBhZTkzMWE2NDE1YTJkZjc5YzA3YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzY2N2Q3OGQxNTExNTY0MmI4NGQ0OTM3OTdiZDE0ZjJmMDE1ZmM3MDE4ZDBiOTg1YzE1Mjk2MWI2ODM5MzlhYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjM3MGI0ZmI5YTM2YWIxZjM5NTZjYTYzMGI3MTAxNWQwODY5NTY1NWExZTZlYjZhZWUzZjgxNzc3MDkxNzhkOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjc1OTdmZTQxODNiZTQwZDllNDdmODUxNDYzMDU3ZjVmOWVjYzFmNDg5MGU2NzMxNDU1NTNiYzc2MzgzMThhNiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_23da2074c08f4d50a2c5f1799cb80640",
+      "statement": "On startup the server logs to stderr the image path, size in MB, and encryption status (e.g., [oifs-mcp] image=agent_memory.img size=10MB encrypted=false).",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L432-L440",
+          "version": "repo-lines-v1:sha256:5ba3c015dd02e28cfa8a992f8e77a1e31d078cf365a624ad6865bd7a3f22dbe9:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2FlYzlmNGM4YWQ0NzkxZGZiNzNiMGRjMTMxMzZmNTY1NTUyZmZmMzNkNmIzNmIwMmI0YTlmYTEzODBkODQxOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGE3NWJhY2YxMTA1OTRhNjdlOTFlYjZjNmYxNjU3ZDE5NDEyZDAwZjY2NjVhYTVkMzcyNjZlZTkyOGVlNjEzZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWIxZmMzZDRiNjliYjEyZDY2Y2RkMmU2YjBmMzY0MzgyZmQ3MjI1MjcyNDU1ZGVhYWZhMjc3NTcyMDgxNDFjYyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_06213da667af4c629d0698fcfcb13c02",
+      "statement": "The --size value (megabytes) is multiplied by 1024*1024 with checked arithmetic to prevent silent overflow when creating a new image.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs_mcp.rs#L420-L428",
+          "version": "repo-lines-v1:sha256:7253aec5d89f00ecb93f47f5911096b1b21927b8c79cf744d614368a34fad80b:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDVlNjZjYmY0MDQzMjdkOWI0MjVkYzBmY2I5NWQyYzUwMTNmMTQyNjI5YzgzNTdmNGQyZGExMWJkOTkzOGJkMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWQ4NzVlYjAyMTUyOGJmZjIwOTQ5ZWFlMDE4ZjE4NWJmMTAxMmQ2NmUyNWI5NDYwYjEwZTA4MmU3ZDM5ZDA0NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjgyZjgxN2MxNjdlY2EwYjFiYzU5ZTZhN2YyZjc1MGVmMGNlN2Y5NDMwNGVhMDkxOTYzNzM3MTRkOTdmMDQ5ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGE3NWJhY2YxMTA1OTRhNjdlOTFlYjZjNmYxNjU3ZDE5NDEyZDAwZjY2NjVhYTVkMzcyNjZlZTkyOGVlNjEzZCJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-24T19:09:23.676Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

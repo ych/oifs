@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:8909dbcddecad43202675809e663697cdfd6b21bdb2e3071730d47252ec237e4",
+  "pageVersion": "sha256:4475e9bb3a88343da4af5efbef2f516502a655aa7afc0e2ed766167f46d081da",
   "claims": [
     {
       "id": "claim_4240674eefe249339b66289673b2e37b",
@@ -41,16 +41,16 @@
       "statement": "DiskManager::rename performs the entire rename under the inner write lock and commits a single atomic WAL transaction on journaled images containing SetInodeBitmap/SetDataBitmapRange for overwritten destination, WriteBlockSlice for modified directory blocks, and WriteInode for both parent directories.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L7547-L7575",
-          "version": "repo-lines-v1:sha256:c597e2134c6c18fddac4458dfc99bf633d49e0224cc940e178b95478af607529:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljYjFmYzBmZTk1NDQzMjMwMThkNzVhN2IxM2RmYzQwN2RiZjlkNTRmYWQxZGJjYTdmZWM1YmEyNWQyMDVkMjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4MDVhZGJlNzBiMzhhY2M5YmFiNTc2M2YxYzA4OGZmYzk3OWE4N2UwNjA4OTE1N2EwYTA5YzI3NWQwMjYwMzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdkYWZjNjRkYmZjZmM4OGM1ZGI0MjQyYWYxOGU1YjUzZDYzNDI1MWM2OWI5MThlMmE2MGM1MTA0OTE3NWE1ZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlNzFjZTgxY2MyYzcxNjJkZWVjZjRlYjhiM2MwNjNiNmRjMjU5MTgwMTEyM2Y3NDE1MDZlNjhhMjhiMjNmNGQifQ"
+          "resource": "repo://src/disk.rs#L8012-L8075",
+          "version": "repo-lines-v1:sha256:8e760dd40493ab733f9998df17db93cd6cbb960fee5f25a0515ebf9fc0385cd0:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkNmY3Mzk0YjlkMzg0MTIxODgxYTM0NDZiNzQ0Yjc1NWRiYzIyMmU0M2I0YmNmY2ZlNzljNjY1Yjg3MjdlYzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlYTgwZjM2YmVlYjA3YWUxMGQ5OGRiY2Q1MGM4ZDQ0ODNiZWRiMWY3NGRjMjJlYzlhZWY2MWYyMTM3YWJkMmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAxMjhhOWQ5YzlkMDhiMDJjYjlmMjAzYzE4ZTRlOGFmN2E1MmU4ODhjNGVjMGNlMjlmNGY3OThhZDBmNTdkMjUifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L7577-L7853",
-          "version": "repo-lines-v1:sha256:aa5898888ca731d314d84b5fbf5cd5c08526b761ccd2559321585e68c715c809:eyJzZWxlY3RlZExpbmVDb3VudCI6Mjc3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ZWUyNzk2ZjVjYWI2YzkyYTM2NTNiODM3NTBjNGE5ZGFjYThjMzJmMGRkMzZhZDRiODkwYzkyOTk4NTg0NTA4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NmY2MDllNWMxYjlkZGVkYTgzNGRhNjQ5MzE5MTE0OTJjMTZjNmJhMGE5ZTAwNjFhYzlkYzMzNDg4MTM5MDYxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjYzQyNWNiODAzMDQ3NDc3MmE4NDY2N2ExNTI4OGI3NDIwNzZhMGM0YjczNjA4ZDQ3YmZmZDRhYzAzODAzOTNjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzMzEzZDcxNWQxY2U2ODcyMzA0NTQwM2M3M2VkNzM3NWIzOGMwMzBkMTRkYzdmYzg5MzU0N2EzNWYxM2Q1Y2JhIn0"
+          "resource": "repo://src/disk.rs#L8117-L8285",
+          "version": "repo-lines-v1:sha256:1af2f7ffb3233aede2f14dc9fa700caf32daf46c4cc659fd30788e45df1fbcae:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlNDE1NzkwYzFkODZjZTI4YjA4Y2M2OTVhZGJkMGU5ZTAwZDc5OTZiMzEyYjMzMGFkMGQyZmRlNGRlMTZhNjI4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkMTY0NGZhZjQ4NWFmMWEzNzU2MDZlMDFjZGM5ODE3ZDBmYjU4ZDE1ZmRlZTgzMzdiNjdmOTc1MjZlZDQwMDQzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3OGMyMTJkYzY4ZTM1MzNkNDI1ZTE1ODFhMDUwNGExNDUxYWM2ZGYxZmFiZWZkZWM4MTVlMWNlZTBiZWFhOTkxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiNjVkYzk5YjRiNjE5MzQ0N2Y1MTc2ODk0YWI4NDE0MzljN2I2MjJiNjBkMmI4OWE4NGU4YmQ4Yzg5ZWRmNDEzIn0"
         },
         {
-          "resource": "repo://src/disk.rs#L7850-L7950",
-          "version": "repo-lines-v1:sha256:cd3510ee31c4881971eaa8960634939aa3d65c5459c4b7e42c67f46f390e8022:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyYzNiNDNhZmEzNTIyYTgxYTM0NDk5NGU4YjU3OTQ3MWQ4NmY2ZDkwYjNkZjcwMTNlMTVhZTFjZjgzOGRhZWY0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTIyYzQyY2QxOWM2ZDAzZDgwOGM0NTI3MjA1NTI4MjViN2VhMWM1YjQ5MWIyMTg1MTFjYWM3NDE1Y2Y5ZDliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjNTAxNGYzYjBlY2M5MjU4Yjg5N2I5N2VkYWYxOTU3YmM5NzhiNzcwNTJkMzFkYjJjYWUxOWZhYmE2ZjhiODlkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMmExMWRkMWM5M2QxMGYwNTZjM2NlYTI5ZDg5MTgwMjg2YTkzYjM5NDU4MDgzOWM3ZmRkMTIzNDA3NWI3MGE1In0"
+          "resource": "repo://src/disk.rs#L8285-L8360",
+          "version": "repo-lines-v1:sha256:4a85e26bd79c6a32595d961783bc6093cd3fa6a7538a72ff0ea36a546cf120de:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNjQ0ZmFmNDg1YWYxYTM3NTYwNmUwMWNkYzk4MTdkMGZiNThkMTVmZGVlODMzN2I2N2Y5NzUyNmVkNDAwNDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyZWU2NGRlMWRmMmM1NzI5YmE0ZjY1NDI1MDIzNjBmN2RkZGM3MTI3YjM3YTU0MzNlM2JiNzcwYjY0ZDViNGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlYjE0YmNmYTc2YTUyYTllNDAxYzExNjZhYmJhNmQwYWMwZGUzZTAwYTZmZjM1N2JkZWYxOWQzOWJkYTI1ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0OGQxYTIyMzllNWYwNzA1MGIxNTBhMjE4N2I4ZDE2MDc0ODA0NzAzOTc3ZGJiZjRlNzJlNjkxZWE5MWRmZTIifQ"
         }
       ]
     },
@@ -59,15 +59,15 @@
       "statement": "On encrypted filesystems, cross-directory moves require SIV filename re-encryption because the SIV nonce binds parent_inode_id; stored_filename() recomputes the ciphertext for the new parent directory while payload blocks remain unchanged (bound to inode_id).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L2279-L2295",
+          "resource": "repo://src/disk.rs#L2478-L2494",
           "version": "repo-lines-v1:sha256:ef930f901aa5bb23fc805d49ff853728eb1526b16fb50ca68cef6e626719ae31:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2MDFkMGQwNzA4YjQ5MGMzZmFiMGZkNDllMGMyYmU1NmE4MTA3MmNkNzE2MDIxNWQ3ZjYxYzg1NWIyMzc4NzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0YTIyYjRiZWVhZTBiNzFmNjU2YzQzNjM1M2FkNTJjNDNhY2M0YjY0YTc4NGJmMzkxZmQ0MjNmYmI4MzY5ZmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczNWQ4ZjY1MDY2MTk5N2NmOGRjZjYxOWM2OWI5NjVlZDdlNTVlYjQyZGZmYjMyNTBjM2FjYjAwM2Y4ZTY3MzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0ZDhiM2E0MWM3NjNhMTkyNWI2NWI5ZTRiMDllZGVmNWIyYWI3MWY1NDFiOWIyMzcyZmIzMTVmNWQwOWUxYzUifQ"
         },
         {
-          "resource": "repo://src/disk.rs#L7580-L7581",
+          "resource": "repo://src/disk.rs#L8468-L8469",
           "version": "repo-lines-v1:sha256:e256541ca1ff6e03f8967c6ed9c88d7885701cfe02221378df06fe3a59cbc53b:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTZiMDQ0OTE0Njk3MjJlODM2M2E5NGU0MDQ0NTM4ZTAxM2EyYTIxN2UzNmIxZTU2OGJhNjBhY2I3YjRjOGYyZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWY2Yjc1YzNkOTA1OTM2ZTUwODc0OGFlMmIxMDMyNTc2YTYzMDhiMTkxZmQyNDRhNzI2NTBiMGExMTFkYWU4YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDc4NGE3MjIwMDc1NjVjZjBhZTFjZjljZmNmZDllZGQ1MTI4Yzk3NTE5OTc2NTI0MDQxZDMzNGNhYzIyMmI2OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDYxZTJjOWIwYzU3NDIyZDhlNmEwMzFlYTFjYWRiZTU3NTcxYzI0MGRiNDhlYTBhNTRlNjcxNzYxNDE5YTU1OCJ9"
         },
         {
-          "resource": "repo://src/encryption.rs#L651-L720",
+          "resource": "repo://src/encryption.rs#L669-L738",
           "version": "repo-lines-v1:sha256:e5a791a999d24cebe7058a7e460577bf15a5adaf564f0399efc428a1bb714c52:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2ZjVlYzdhNmNiZTc2ZGFhOTQyOTIyOTlmZDE2MmZkMWMyNjI2MDc4N2U5YzhhZjRlMWMyYjIzYmE2MDZkMDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3MzFhN2QxMmNlMmU1M2Y2NGFmNjdmNWZlMmVhN2NhOWMzMTZlYjhkNGY3MDc2ZWIwMmUyMDQwNzllMjQ0OTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3MjMyNjA4MWY5NzY2YzY4NGEyMGFkNDRhNmIwMjgyZTA1ZTgxNWI4YjhiNjI4YmZiMzkzZmQyNWUyNzZjZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlNmUyMjJjMDRiZTE5ZDVhMzc5NmM2MTJmYTdlMmYyNjNjYmUyMDgwZWNlYTUxYmMyYWQ1NDQwMTY4OTA0NGIifQ"
         }
       ]
@@ -77,14 +77,78 @@
       "statement": "create_file_with_data is a single WAL transaction under DurabilityMode::Strict, staging SetInodeBitmap, payload blocks (inlined as WriteBlockSlice for <=8 KiB), directory entry WriteBlockSlice, and WriteInode for new inode and parent directory, all committed with one fsync barrier.",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L3754-L3932",
+          "resource": "repo://src/disk.rs#L4042-L4220",
           "version": "repo-lines-v1:sha256:fede00223ccc1412cfa23591ba046261826b620ac562698e4986ec9e20e13ff3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTc5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNGU0NWY3MGQ1NTNiYjk3Y2Q3NjRjZTJjN2U5YTk3OGUwYWVlMTI0NDIyYjZjODJlMjdjMTRmNDgyNjJjOGU2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjNWNkZWY4MDg1YWU3NGFiNjM2ZDY0NTlmNWM2ZDVmYmZiMGRiMjY0ZjFiMGQ3NWJhYzUxOWM5YjNmNjcxN2FjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NjczMjNjZDBjMzczZDhiZGZkNWY5N2FlOWNiY2IyNGQ1ODYyYWUzNzg1Y2VhNjU5NzYyZjc3MmNiNmQxMTc3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkMjhiZWU2MTJlZDdhMWFmNjk1NTNiYzNhZGQxZTlmNGZmNzk3NzlhYzI3MjFhYTVlZDJhN2Q3YjVhYjU2YjA5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_1b6c3bcc280b4d94b4ff7627fd73952f",
+      "statement": "FUSE_RENAME2 supports RENAME_NOREPLACE flag (bit 0) which fails with EEXIST if destination exists; RENAME_EXCHANGE is not supported.",
+      "evidence": [
+        {
+          "resource": "repo://src/fuse.rs#L183-L183",
+          "version": "repo-lines-v1:sha256:e657002e03099e4b7c8af14d7ea7ad91684ee0cf064fb6d579f2e46941de4a4e:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTY1NzAwMmUwMzA5OWU0YjdjOGFmMTRkN2VhN2FkOTE2ODRlZTBjZjA2NGZiNmQ1NzlmMmU0Njk0MWRlNGE0ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTY1NzAwMmUwMzA5OWU0YjdjOGFmMTRkN2VhN2FkOTE2ODRlZTBjZjA2NGZiNmQ1NzlmMmU0Njk0MWRlNGE0ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTllYTkwYTY2ZjdiMGUxYTk1MDJmN2NmMDlkZmIyYTc3OTJhMzFiYTE3YmYxNDZiYjg3ZjdkM2Y0MzUzNmM4NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjhiNTgwMGNkZDRmYTIwOGI1NDIwZGZkMTdlMjBjYTU4YzNiYmEyM2Q1NDliOTNjN2JkN2I0YzFmZWFkODlhMCJ9"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L2674-L2690",
+          "version": "repo-lines-v1:sha256:92210858dbd8ca3b3b71eb28bdb9077c2adb6fa06830d44a36806a60f161cbfb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1ZGM1NTI2YmM0MGRkZmMwODRmYjU1NmE4MDQ1M2YwOTg5ZWZhMTk4ZTVkNzU0ZTdlNjVlMTRkOWNhNTM5MTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlMGY0NGQ1OTM1ZmJkNWRjNmMyOTZmODkxNDAyMGExNjE0MzEyNDU4MmViNWJlYWY2Yjk1NWViYjc0Njg3OGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFjYWQxMGNkZTIwZjJkNmM0YjU4Njc3YzU4NGUyMWZjNTVlMmU2ZmQ5NDUwZmRhMTk3NzdlZGVjMWFkYmU4YjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmM2UzN2Y2NzljZDY2NzAyYjcxZjNmOThkN2IyYjYyZTAwMGEzM2FkYjQ4OTE1NDdjNjZhOTJkNDEyNGIxNzkifQ"
+        },
+        {
+          "resource": "repo://src/fuse.rs#L3092-L3101",
+          "version": "repo-lines-v1:sha256:1e8aa089556ac142ccf94cbfb2942cdfc4e2c02e6876ac247f3affc9768b964d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmYWNiOGNjYzk0NmNiYjY4YWE5ODU0NWViMGJjNGUyNWM1YzM2YjkxY2U1YzQ3Y2VlNTViYTEyZDdjYjJjOTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiMTUxYWJmNDk5N2Q3YjIzY2Q5MDllZDA4Mzc4ZGNkMDc0ZmM3MTQ0NWFkMWYxMGE1NDVlNWI1YzRmMmM5ZmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjExMDA2ZWVlMTRlYjRkOTQ0Yjg2ZjNkYjYyNWMwOTczNzcyNDYzNjk2OTdjOTFiNzk0NzQ5YmRjZGUyMWU3NTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjExOGJiZWI4Y2U5NjQwNGI5YTE3ZDQ3NGE4YjUzM2UzMTkzNGMxYzEyYmU5ZGI2YTBkNzg4M2YzNDUxZWQzMjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a0f35a440ca14109b2811c4b7674edae",
+      "statement": "On encrypted filesystems, cross-directory rename recomputes the SIV-encrypted filename using the new parent inode ID as AAD while payload blocks remain untouched because AEAD is bound to stable inode_id.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L2478-L2495",
+          "version": "repo-lines-v1:sha256:0a6a642d4ca4211f3d30b82ab511ae9ca5c70d5bf8c958821d0e310f652a6f43:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2MDFkMGQwNzA4YjQ5MGMzZmFiMGZkNDllMGMyYmU1NmE4MTA3MmNkNzE2MDIxNWQ3ZjYxYzg1NWIyMzc4NzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0ZDBiNThjNWFlNDIxODUxMzllNTIyMzcwOTVmN2RjMmE2ZTc1MTZlNDMyZDEwNDc1ZDEyMTRmMDExNDhjZjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczNWQ4ZjY1MDY2MTk5N2NmOGRjZjYxOWM2OWI5NjVlZDdlNTVlYjQyZGZmYjMyNTBjM2FjYjAwM2Y4ZTY3MzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRmMjU3NzNiNTJlNzYwOTcwNjk0ZWJkMzk0YmZkZGIxMGZlNDljMjE0M2Y4NDZkZmZhZTEwMWIwNzYyYmQzOWEifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L8040-L8041",
+          "version": "repo-lines-v1:sha256:7fca33641663d9dc1b6c72b4380866355fff6e2158cc87c814cd606b60b6f38b:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzQ0YWE4OGRlNjY3Y2Y4NDYzMDM5N2MyN2YyYjNjZGZiNzA5N2MyZDk5NjMyNWQxN2QzMzFjNTQ4Y2RlYWU5OSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjE5ZmRlZGFlZjhjODA2NTQyOGM3YmI5MDQzYWI0ZGM5MmVkNDAxM2ZhODUzMjY2YTEzYzUxNDE3MTc2OGIyNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDlhNGVjNjBkODgxZGIwZGU3NWM4Nzg5Y2E0NmQyMjg3ZTQ2MWE1ODU5MGM3N2JlZDcwNzY4Nzc2MTVlYmEwMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDQ3ODkwMzk4MzFiYjQ1ZGE2YmY4YThlYmE2ZmJmMWY5MDc4NDQ3MDQ5OGI0MDVjZTlmNTI0MjY5NTQwN2JjYyJ9"
+        },
+        {
+          "resource": "repo://src/encryption.rs#L665-L710",
+          "version": "repo-lines-v1:sha256:97e3b5f0860e9507c864e88fe744acf26bdb3e9ff2837e8c1a5f3b84df4df562:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NzZlZDg1YTBlZGFlZjI4NGIzN2UwOTcwY2Q1OWU3OWVkNDljYjU3NDI4Yzc5MTExZjdhNjBjMzM5NDcyOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyNjY1OTE0YmY3MGFiYWZiYjNhNjBlMzU3MWU0MmUwMWVkMzllODYyZTYyMmMxOTk0YzAwMWI5MmZiMTIxZGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMGU0MzI4MTlhOTNlMGViYmJlODJlNjdjMDQwZmJiNmU1ODdiMWM0MDNhMzVkM2JkNjJmYjA0OGE0YTVlZGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5MDc2YTA1YjY3ZmYyOGY1NGNkMTYxMGUzM2YxMjdmMDEyNGE0ODUzNTc4Yjg2MGU5OTRjNjNmNjU4YmNlNTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d16dfb9f72424de3886d183924a43a33",
+      "statement": "The rename WAL transaction follows canonical phase order: SetInodeBitmap for victim inode, SetDataBitmapRange for victim blocks, WriteBlockSlice for all modified directory blocks, WriteInode for parent directories.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L8232-L8280",
+          "version": "repo-lines-v1:sha256:7492391a466c71a8330efde50c2e2d502240929426113f74a23f49cf7e15714f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhYzJiYzc1YjdhMWI4N2QwZjFlMjJjMGMyNDVmYmM5MzZiNmVkYzAyYzI2NjQ4OWMxMzliYWMxNjJhMjIwNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0YWZmN2M2ZDAwOWZiOWY1OTY2MGFjNWI2ZjNkOWZhMzhjNTViZGEwYWEwYWI2MzViNzZjMGI1ODE2YTY3MmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmNDU2Y2M0ZWY0MzE3ZjY5YzM1NWVhZWI2ZjRjNjY2YTJlNTk2ZDVhZWQ0MDhlOGM5MDRmYzkzNTU1ZTY0ZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM2OWQ3MDE2MGVhNmFmNzg2Y2FkMjg3NjM2OGUzNmQ1Y2Y4MmQ4ZWUzZWJhZDhlNTQ3MDgyZTIwZTYzMDU0ZGUifQ"
+        },
+        {
+          "resource": "repo://src/journal.rs#L521-L580",
+          "version": "repo-lines-v1:sha256:fe9bb2f72827a08488b402dced035b2deef1a6ca26d088c597e6b807ec9578af:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3Y2JiNzU3NjM3NDYzZTBhZTJiMzIyOTdkODY0OTJjMTVjMTE0ZGFiMDcwZTllMjU1YTFlYjM1YjI0NGQ1NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwM2EyZWJiZGMwYmZlNDEwMGE2YzFjNWM5MjU1MjQ5NDIwOGU1MWY1MDUyNzJmNTJkNzM2ZmE1Y2M5NzY5NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3OWU5ZDI0MGViOWNmZGI2ZjNmNjIwYjMyMTE0N2RlNjQyNTY5MWYzNGZlZGMwZDRiOTQ4MWE3ODgxNjYwNGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVhMDE3MWFjYjA4ZWRlMjA0MzEwODA5Y2Y4OWIwYzkyZGMwNDZmMTY1ZTE4ZGQ2ZmY0YTBiOTc1NzdjNjFjZWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8053085e923d437ea3f4ed81679ecc74",
+      "statement": "rename_internal validates POSIX overwrite semantics: file→file atomic replace, directory→empty directory replace, directory→non-empty directory rejected, type mismatches rejected, and cycle prevention via BFS ancestor check.",
+      "evidence": [
+        {
+          "resource": "repo://src/disk.rs#L8055-L8075",
+          "version": "repo-lines-v1:sha256:dc7cdb86db6075229a3fcb095bbdd554ca0676c6fe86c3bba2997e79941289f8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwYzUyMGI1ZWJiZjkwY2ZhMDdlY2Q2OTI4ZWY4NzczNDc0YmIzZDU1MGQ2Y2ZkYjMzZDk0YmRiMTdlYWE3YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkNmY3Mzk0YjlkMzg0MTIxODgxYTM0NDZiNzQ0Yjc1NWRiYzIyMmU0M2I0YmNmY2ZlNzljNjY1Yjg3MjdlYzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRjMTI0NzkyNWMwMDMyMTkyNGY1YjMzOWVlMTE0NThlYzhlYWQ1MGYxODBjOGE1ZmJiYjMxZmYwZjkzNjhlNjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAxMjhhOWQ5YzlkMDhiMDJjYjlmMjAzYzE4ZTRlOGFmN2E1MmU4ODhjNGVjMGNlMjlmNGY3OThhZDBmNTdkMjUifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L8077-L8115",
+          "version": "repo-lines-v1:sha256:ef2bded1e9935ad231bce3853c0b377984f466d0e77946fdaca58aee2b19b052:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlZmJmNGY4Yjk3MzdmMTdkNDgyNzgxYWY2NzBkMjE1YTk0OThkZjU2YjRmZDk5OTNhOWQ2MDQzZGI1NTAzMTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhN2U0NWJhZDg1ZDk3ZjllMTQ5MDNkMDkwNGNlY2FkNDBiMTIyYTFlZTYwMWUyNzEyNmFiOWIwZWZkYTI1NzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhZjc0M2IwMDczZmVjZDhlN2I2MjA2NDAyMjY1MmE2ZjM2YjJjZWRjNDMwODNiNDJiM2Y3YWM3MjhmNmJjN2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzZTQ0MDNiMWJiNDE3Y2ZkOGM4NTVhZWMzY2NlNmVlZDU5ZTc1YTRiMTdkNjIwODk5NWIxMzhmZThlMWFiZTMifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-24T19:09:23.676Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

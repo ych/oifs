@@ -5,7 +5,7 @@ description: Step-by-step guide for creating, opening, and using encrypted OIFS 
 tags: [encryption, workflow, cli, security, key-derivation, aead, siv]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-24T19:09:23.676Z
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
@@ -21,7 +21,7 @@ sources:
     resource: repo://src/session.rs
   - id: openwiki-source-ff3c4fb65b984fb93a3255ec
     resource: repo://src/superblock.rs
-generated: { by: "openwiki/0.9.0", at: "2026-11-24T19:09:23.676Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
 
 # Encrypted Filesystem Workflows
@@ -120,6 +120,27 @@ When running in **Local** or **Network** session mode (not Standalone), the clie
 - **Mutual authentication**: Client verifies it talks to the genuine master; master verifies client knows the credential
 - **No password exposure**: Only MACs transit; the password stays client-side
 - **Encrypted vs plain images**: Master rejects password for unencrypted images, rejects session secret for encrypted images
+
+---
+
+## Read-Only Encrypted Mounts
+
+OIFS supports opening encrypted images in strictly read-only mode with zero disk writes, using shared advisory file locks (`F_RDLCK`):
+
+```bash
+# Read-only mount with password prompt
+oifs -i secure.img --read-only ls
+
+# Read-only with environment variable password
+OIFS_PASSWORD=mysecret oifs -i secure.img --read-only cat file.txt
+```
+
+**Properties**:
+- Opens the image file with `O_RDONLY` — works on `0444` permission files
+- Acquires a shared file lock (`F_RDLCK`), allowing **multiple concurrent read-only processes** while rejecting concurrent read-write mounts (`F_WRLCK`)
+- Under `StorageMode::Mmap`, maps the image `PROT_READ` with full zero-copy slice support
+- On journaled images, verifies with zero disk writes that `0` unrecovered transactions remain pending in the WAL ring
+- Available via `--read-only` CLI flag or `DiskManager::open_read_only_with_password()` / `open_read_only_with_storage_mode()`
 
 ---
 
@@ -420,6 +441,18 @@ oifs -i secure.img fsck
 
 # Migrate legacy inode format (if warned)
 oifs -i secure.img migrate
+```
+
+### Read-Only Mount
+
+```bash
+# Multiple processes can open read-only simultaneously
+oifs -i secure.img --read-only ls
+oifs -i secure.img --read-only cat file.txt
+
+# Works on 0444 read-only image files
+chmod 444 secure.img
+oifs -i secure.img --read-only ls
 ```
 
 ### Automated Backup Script

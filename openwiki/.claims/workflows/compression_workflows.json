@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:3734f751070ec0076d5aba54e72ebcc5fa93c7c0ceb9b93fd7e7e7b472577645",
+  "pageVersion": "sha256:ff884585b2d6bca71be8c22fd1a1b26113eb322064f68426dbcc4c0f26aefe50",
   "claims": [
     {
       "id": "claim_269cf6c26a6f4bf59d8a091af2ac4c4c",
       "statement": "OIFS supports five compression modes: Always (compress all data regardless of size), Never (store data uncompressed with compressed_size = 0), Auto (default: compress when data size >= 8KB and only if compression reduces size), Stream (full-file stream compression with explicit Zstd compression level), and Seekable (seekable chunked compression with 64KB independent chunks and explicit Zstd level).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L125-L144",
+          "resource": "repo://src/disk.rs#L136-L155",
           "version": "repo-lines-v1:sha256:37d238f80248c74a1d3e75f5573cc3e2617215d653068336962b725654d33c4a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyOTYxNjVmMTdkODUyNzhkNzI3ODYwMDRiZDQ5MjlhMGI2ZTRlMjQxNGJmZjI3ODBmMWM5ZDQ4OTYwZWUxMzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMGNkYjk3MmE3YmZiN2VkMjQ2ZjlmZjY3MjM4NWU1NWY0OTY4ZmMxMTA0M2RjNWI2ODRkNTFkZmEzMWRiY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ0ZThhYjg1YzJjYmQ5NjRiMmY1Y2ZkMjVjOTY5YTBiZTFlYWY1OTViOTA5ZmM2NmYwNzk2MzBiYTAzNDdkNTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMxZDYxZjhlZmQyNTNmMGVjNTk3ZjY4MjQxODM2N2QzNzk5NjZhOTU0N2FkMzU5OWQ1M2ZhNzI1MjMzZTk1MWEifQ"
         },
         {
@@ -23,10 +23,104 @@
           "version": "repo-lines-v1:sha256:8e5e7584f3ac12261a8d641b46c8819bf86770160ef8ac98ceda1419f5c1339d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQyY2Q0ZGI0OGEzNTBlOGYwYjQ3OTQ0YzQ2ZTNmZmRiYmExMzJkMjI5MGE5MWQ3MDEyYjU2ZWI0NmM4YWI0ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MTI4MWNjMzZhZWNhZjJlYjc5NTlkZTc4NjlmMWZiZGExYmNkZjMzNTM4ZWI0NjYyNzdhODMyNDY2NmZkOGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5NDdhYWMxNTAyYTNlYWU3MzRiYzhhODlhMWI4YWE1NDBkOTU5ZThjM2FlYjE5OTM2NjM1NjQzMjlmYmUwNGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI1NzNiNmU4NzU2N2E4NWNlN2RjNjc0MDJjOTdkNDk4Y2FkZWEwYTRkZjlmMDgxMmVjMjQ4NzA1NWJmYzkzY2MifQ"
         }
       ]
+    },
+    {
+      "id": "claim_f434bc95ed2c4f3db8bd14cf1b58ecdc",
+      "statement": "The `filter-analyze` command analyzes a host file and recommends optimal Blosc2-style compression filters by simulating 13 candidate pipelines using multi-window sampling and parallel Zstd compression on the persistent worker pool.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs.rs#L264-L272",
+          "version": "repo-lines-v1:sha256:764ef16c0fce20265ff84d29a1c2419f24b02dfda4a07a9fdd0a48b1fa799f57:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmE0ODE4NDI0YjMyOTM2MDc4ZjRiZWQ2ZTRlNzY5ZGY4OTMxZmNmZTZkNDRkZjNiZjExM2IzNmYxNTNiZDljMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTcyYjczMDVjMzM5YzAzZWJjNDlkZTVkODJkMDU3YzFlYjQzM2U2NjhhNDEyY2FjNWQ3OGM1ZjMxZGQ5OTZhNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjAwZjBhOTQ5YWY0NjNlNmNmMmU4YjgzNGVmMDhiNWI0MWNkZWY5OGU0MzY1ZDJjNDJhYjhmNzc2ZGI4NjdiYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmJjMjY3NTc2ZDk1ZmI4ZWZiMDVhYzUxNmUzN2E3YmM2M2IzODA4MThiNWUxYzdjYTMxZTI5YTBjNjliYjlmNyJ9"
+        },
+        {
+          "resource": "repo://src/bin/oifs.rs#L681-L755",
+          "version": "repo-lines-v1:sha256:62327d7b925881959c97e5fd1f9b205c83a6cdc6f50d5d2606698516c6c097f0:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJiODVkNWRmNWVmYWRhMzZhMGZmNTkyOGRhZmRjZjRhMTk2NTQxYjVmNDZiNjQ3MDBkZDliOGZhYTA0MTY4NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyYTRjNGY3OWMwM2IwYjJjOGRiZjhmMzc4OTI2YTM1ZWRlODY3ZTU3YzUwMDkwODcwNGUxODRmYmI0ZjZkNjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJiMzBlMWZjZDYyZDA0ZjYxNzg1NDc0YTJkN2IwMjZjMTI1OTA3OWYxZWQxMDA2Yzk1NTgwZGVjMzEwYzhkZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkZDdmMWUzYTQ4MWFlNjg3ZmM4YmEwODIzZmQ0MGYzN2Y3YmQ5Mjg4MjhhMDVmMGY1ZDYwZWYyMjZjYTI3ZmYifQ"
+        },
+        {
+          "resource": "repo://src/filters.rs#L897-L1098",
+          "version": "repo-lines-v1:sha256:e55b059a73adb44df22d75ff0cc1d8186b9d30d9035f40e92d57f8370a8599cf:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2YjcxMDlhNmM3MWRkZmM3NDg1Mzk0ZTIxOWUxZTc0YTI4MmJhNjc3MzY3ZjBiODA3ZWE1YTI0YmI4MWUzNDg0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwZGIzYWY2YTBlY2Y3MWIxOWQ2OTEwMDhmZmRmN2RmNzcyMTRhZGQwY2Y5OTI0YWU1OWEyZTU0MGQ5MGExYzUwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4YzM1MTEzNDk0MzhlYjI0NzYyOTYyOTNiODlhMjM1MzJmNzE0OGNkMGNjZTIxNzIzMzZkYmE3NWQwNmM5ZWJmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxYjkyMDNjZTc5Y2VjYzQ5ZTgwNTMzODI2MzE0MzRhMmMyNGYyNWJiYWJkMmE2MWVkMmRmNGUzNTZiNzkwMzUwIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_e46bc2d3e17f485682a900e277e3f8eb",
+      "statement": "Seekable 64K chunked mode (`--chunked` / `--seekable` / `--chunked-64k`) writes files as independent 64 KiB chunks, each compressed and encrypted separately with COW extent swap on partial overwrites, enabling O(1) random read/write and parallel (de)compression via the scoped worker pool.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs.rs#L254-L256",
+          "version": "repo-lines-v1:sha256:827484982ff8ebcfb4a912716d859ab2f8d4d637d00c7ae4ee742fec87b69fea:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjc5YWIwYjExNjM5YTgyYzJkZWRjNWE3NDA1MTU2MDEzY2FmMDM5MDAwMmE2ZTE0ODRiMDA5MzEwOThlMDM0ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWI3ZjRhOGMyYTk2ZTUwNzY5OTk4NmIxODgyM2VmNGJkMDAwODNkNGUwNzYwMTExNDI1ZjM3YzdmMzA0NDJlNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWRlMmQ0MDE2OGUwZDc3NDcxNWQ2NGJmZGNkYTBiNGQ0M2IxMGM3YjNkY2JlMzUxYWU5NDUxYjNhNjFkMTU4MSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWU4MTBjYzVlMWJjNTY5OTZkMGYxNjMxNzYzNjgwMzYyNWNiNmFkYWZiMmEyZjU5YWE5YmJkNmViYjRjYTA1YyJ9"
+        },
+        {
+          "resource": "repo://src/disk/chunked.rs#L1-L50",
+          "version": "repo-lines-v1:sha256:986ad6dca9e48684a03a4cabcb9b51965c8214bbd8400d900ca9bf04cfb4d57a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiYjAwOWUzNDE5NjFkNDNiMjY1NTg4NDllMWE3NWFiMWZlZjUyNTFlNDRhYmYwY2U4NGQzMDU3NjhkYzkwNjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzYjY1ZTM1Y2M0MDlhMmUwZmFmODBhYTBkMWQ3ODk3Nzc0ZjFmMzM5ZDViMTBlZTZhYTQzMTljZjRiOWU3NDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0MThkZjY0ZmMyNWMxYjJiMmZjOGMxNmJhNTJkYTRkZmQ1NzgwNjgwNjJhOGRlZjZiOTQ5ZDdmZWZkYjNjZDYifQ"
+        },
+        {
+          "resource": "repo://src/disk/chunked.rs#L944-L1140",
+          "version": "repo-lines-v1:sha256:6b1c4f32ec05a5f5cd233b811265aa2eb8952af67b1384d565022f67bcf5f92f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwZGEzZjEwY2RiZjkyYmM5NjdmNzkwNjViMWZkNzA1YjI4MTY4Nzk5ZTQ4ODliYmEwZTY2OTFmOWY2ZDk3ZjkyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzOThjMGFiMDM5NWI5MDIwMWEwZWI2NWY5YWFmN2M1MzU1MmE2YzVhY2RkMjU2YTlhMzE3NTcwNzg3OWViM2NkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyZDY2N2Y5OTlhNmQzZTE4M2Q3ZWIwMDMwZDk0ODkwOTM3MzljNjIyY2ZkMzNmYzQzYzIyOGU3ZDA3MGM3OTU5In0"
+        },
+        {
+          "resource": "repo://tests/seekable_chunked_test.rs#L16-L100",
+          "version": "repo-lines-v1:sha256:1bcdd5a12106a1f72fd23246e89ef6bcebe572a1d9c064ae0f1167c9fee7f899:eyJzZWxlY3RlZExpbmVDb3VudCI6ODUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwNmZlYzg4YTkwZmVhMWY2NjU5MTU3M2QxMWZhYmE3YzdlZTAxNjUyNjFhNmFjZjQ5YTMxMzY0OTM3ZmE2YzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmMmI1NTIwZDk0ODJjZGVmMzcxYjIyNGY1NDg5NzQ2YzY4ODRiNmQ5MWNmYmZkYTZiNTc1YTE3MmY2NzEzYWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmOWFkNDYzYmU3MWM1ZjQyMDk0NmFmYmYwN2QwZmU5ZjVmMTFkYTgyZjFlOTQ5MDNjYzMzOTVkOGMxYTBiMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3YWUzOWVlZjJjYTVlYjlmNDIzZDgzNTY3NmJmZGI1NzZkNzBlNDY1OGViMWFkOWUyZTcwMWE2MzA5MDE3NTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_446ea960f4e54e61801e033f3d348093",
+      "statement": "Five compression modes are supported: Auto (default, compresses when filtered data ≥ 8 KiB and result is smaller), Always (`--compress`, forces compression), Never (`--no-compress`, stores raw with filters), Stream (API only, explicit Zstd level 1-22), and Seekable (`--chunked`, 64 KiB chunks with explicit level).",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/oifs.rs#L924-L935",
+          "version": "repo-lines-v1:sha256:e4537c8f234e64b8ce41f8a467ec8e1056e50d1ebbb891690a65ad0052d5ce28:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1MjQwODE3Nzk1MDY1ZDNiNmFhYmEzZDQxYzFhODFhZWIxMTlmZmNlNmQxNTY3MTgyMTFmZjNhZmM3OTU2ODMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhYzJiYzc1YjdhMWI4N2QwZjFlMjJjMGMyNDVmYmM5MzZiNmVkYzAyYzI2NjQ4OWMxMzliYWMxNjJhMjIwNzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEyNGMwYzc0NmMzYTZmYjRjMTY5ZDQ4NjczZTBiNDdiMGZjYzgwYjBhNGYyYTA1MTEwNGVmMGIwZjI0ODdkODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwMjQwODFiYmMzNTJmODU2ZTU4ODk2OWQ1YWRiM2UwMTYwN2NiZGZmZGVkMGE4NDBhNmVmOGZlNTVhMTJmYjQifQ"
+        },
+        {
+          "resource": "repo://src/disk.rs#L136-L144",
+          "version": "repo-lines-v1:sha256:6c396ba560a453838ae62670186a157ae98b2ee068ab21c480473ba80689e385:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzI5NjE2NWYxN2Q4NTI3OGQ3Mjc4NjAwNGJkNDkyOWEwYjZlNGUyNDE0YmZmMjc4MGYxYzlkNDg5NjBlZTEzNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODgxZDhlYzZiZTI2Yjk0MjZhODg2OTUzNmE2ODFkMDExZGE4YjcxMmZhMjI4MDJjNzkwYzBkYzdiNGUwY2UzZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDRlOGFiODVjMmNiZDk2NGIyZjVjZmQyNWM5NjlhMGJlMWVhZjU5NWI5MDlmYzY2ZjA3OTYzMGJhMDM0N2Q1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDhlYzE4YWJlNjkxNzMwYTUzNjQzZDFmNWQ1N2U0MzVjM2NiZWEyNmRlODVmZjc2NDJkZTNiYmJiMzMxMjIxZSJ9"
+        },
+        {
+          "resource": "repo://tests/compression_modes_test.rs#L27-L115",
+          "version": "repo-lines-v1:sha256:2fffa65973d6cc9432653cdf1904895b36f856c999b8db57d61b3f69a84670ac:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQyY2Q0ZGI0OGEzNTBlOGYwYjQ3OTQ0YzQ2ZTNmZmRiYmExMzJkMjI5MGE5MWQ3MDEyYjU2ZWI0NmM4YWI0ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MTI4MWNjMzZhZWNhZjJlYjc5NTlkZTc4NjlmMWZiZGExYmNkZjMzNTM4ZWI0NjYyNzdhODMyNDY2NmZkOGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI1NzNiNmU4NzU2N2E4NWNlN2RjNjc0MDJjOTdkNDk4Y2FkZWEwYTRkZjlmMDgxMmVjMjQ4NzA1NWJmYzkzY2MifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_026597240e0043e294ffaf0b6c7874f4",
+      "statement": "Pre-compression filter pipeline supports Delta (first-order difference), ByteShuffle (byte transpose across elements), BitShuffle (8×8 bit-matrix transposition), and TruncPrecision (lossy floating-point mantissa truncation), applied in sequence with `typesize` ∈ {1,2,4,8}.",
+      "evidence": [
+        {
+          "resource": "repo://src/filters.rs#L1-L80",
+          "version": "repo-lines-v1:sha256:eda0a966bcc7a35c5de9ff9d39f575e67ca7036e97f4edf1bbd1add9b45a2a21:eyJzZWxlY3RlZExpbmVDb3VudCI6ODAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2M2NhYzIyNmZhN2FjOTE1MGUwMTZlODZiODM2YTViMjg5Y2MxNjU4YzNmYTA3YjI1YTdhY2Q5NDMxNTY5YTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxMDk5MGIwZjQ2YWRmZDgxZTg4OTIxOTMxMGYwYzU0ZmNiNmIwZGJkYzljNzZjZTFjYmQ3MmNkYjkyZDc1NjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwY2MwNWQ3ODFhMzYwYjZjY2JhNGI4OGNiODVhMDY4Njk2OWY5YWY3ODkwNzE2MjE3ZmQ2ZjhkZDBkMDM3MGYifQ"
+        },
+        {
+          "resource": "repo://src/filters.rs#L100-L180",
+          "version": "repo-lines-v1:sha256:e23736110e0827b011997a74e5d1b07537a3cff67141a8c1c5637ae6eb3c587a:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1YzlkZDAxMGYwYTVjNTIwODNkMGY4Yjc1NTdmMGFjYTE2ZTFmNmJjM2U5N2VjM2RmMWEyN2FiZWMyNGQ5NmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkODQ2YWY2OWEwZGFlZTVkZmQ5MWEzZmMxNjc4MDZiZTM3MmEzYzBmNGE2MDM0OWJlNWE3YmE2ZmY5ZDUzZTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE1YmUxYzRkN2Q5NTViMmVhMjZmNTQ2ZjU5MzY3NmQ1YTZjY2ZkOWFjYTI2N2JiYjc2N2YwYjYwOTUxMmNiNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdmY2FmYzcyYWM5M2ZjYmJiMWVkYTAwNzc3YWUzNzUyNzY5YmVlZWJkZDhhNTgzYTRkYmZhYTAwZTM1MWRmYzkifQ"
+        },
+        {
+          "resource": "repo://src/filters.rs#L300-L400",
+          "version": "repo-lines-v1:sha256:672354a28b162d5e9ce6362a9541f77082177c2b2191ebba8efaead254db3af5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkOTFmMmQ1OGUwMmViZmE1ZTcxM2NlOWE4NjgwNmYzYzkyZWVmMmVjNjYwODlmZTUyMzVmMWQ1MWVhMzM0OWI4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2NTY3MjI2NzFiYTQ3MTFhODM3OWQzZjJhNWM5NGQ2MWU1N2ZkZTZlNDI1MzQwMzEwOTMxNTcwOWFjMTIzYmUzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0OWFmNTkyZGQ0NDBmY2E4NTMzMTdmNzlhYjI0MGE2NjEyYWRkNjJkYzZkYWRlZWY5MGQwYmNkZDM5MDkyYzIxIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_ff3460958fa24fa4b7e0f5e732bec08a",
+      "statement": "The persistent scoped worker pool (`zstd_pool::par_for_index`) provides thread-local Zstd context pooling (one compressor per level + one decompressor per thread) and global context reuse (up to 32 compressors per level, 32 decompressors), with the calling thread always participating inline to avoid thundering-herd wakeups on small workloads.",
+      "evidence": [
+        {
+          "resource": "repo://src/filters.rs#L1044-L1080",
+          "version": "repo-lines-v1:sha256:9ee6209821a25505105324a87d6a5535af84f8b4774ae3ae4aee61d93f940042:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4NTY3YzMxMWIwY2ExYzNkNDU3N2ZjMzg1ZWQ1OWRmZGJiMWFmMGIyYzViMTVlMGFlNDY3OTJlYzY0NmE2NTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3MDJiYTAyY2JmMDYzNmNiYzVkZTRhZmNkZTczMWI0ZTVjZDgwODVkMjJiM2RjZjc5ZTUyNjQwMjM3MzE3M2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIxYjRlMWFkZTFiNWFlYWVlZDA3YjQ2NTk1NjY1NzI2YzM2NTBlYzc4ZjA2YjQwMDA4NzQ3NzZiZjY5MTFiYTQifQ"
+        },
+        {
+          "resource": "repo://src/zstd_pool.rs#L301-L420",
+          "version": "repo-lines-v1:sha256:c3be40854f2870d6fd2dc7898164e76763f2b4dfc8e1812b1ff91d2a11d0d7b2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkZTEwYmM3ZGQzNjcwZDk4NTAxYWMyODA4ZmEzYzk3NzhkZWZhNTU0YTBhNmRiZmVkNTA4Zjc5YzM5NDFlYzBmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMzVjMmNhNmM0YzA0Nzc3M2NkZTlkNTE1NWE5ODJlZjc2OWIwMWZmNjIxNzBiODJjMzVjNzlkODk1MmU5OTNkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyZTE2MzQ4ZjVmMjBhNTg5ODMyYzQ1YzFiOWEyMTk1NmUxNzU3YmMyZjBjNGIyMjc2NTZlYjBlN2U4MTgwMTE0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0ZTZmMDhhMzNjNDQ4ZGU3MjNmYTgyMTI1NmNjN2FjNmRjNzA4YjhlODc4MjI4ZTg5ZWFmZTkzNzkzYWFjNGJkIn0"
+        },
+        {
+          "resource": "repo://src/zstd_pool.rs#L420-L520",
+          "version": "repo-lines-v1:sha256:d0404eed64f143d8672bda005883c0a15324a0e72dcabd143d0f939fb6e1b5cf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzMzVjMmNhNmM0YzA0Nzc3M2NkZTlkNTE1NWE5ODJlZjc2OWIwMWZmNjIxNzBiODJjMzVjNzlkODk1MmU5OTNkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4OGE1MWY4YmExOTlmOWViODU4MzcxNWE0OTg3OGMxMjZiYmY0MWNjYzdmZjdjMmI1NGRmNTRmMzY0M2U0MTg4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5ZmFiZjIwYmM1MDMxNzUwNjBmOGVlMWQ3ZmE2MDhmNDc5YTMzN2Q3NGMxNTIxZmU5NzEwNTZlMjhkN2UwYzY0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0NWNjNjFkYzlmYjJiZDc1MGI4NmRmNTU0ZjE3MjdjMDA4MTk3NTcyNDc1YjdjNGU1NjJiMDhlMDIyZWM0NDI5In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-23T20:55:55.458Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

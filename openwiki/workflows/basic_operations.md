@@ -1,16 +1,16 @@
 ---
-type: workflow
-title: Basic File/Directory Operations
-description: End-to-end flows for create/read/update/delete files, directory management, metadata inspection, and truncate/extend. Covers Direct (DiskManager) and Remote (IPC) paths, image creation options, read-only mounts, and JSON output mode.
-tags: [filesystem, cli, tutorial, basic-operations, architecture]
+type: "Reference"
+title: "Basic File/Directory Operations"
+openwiki_generated: true
+verified:
+  - by: openwiki/0.9.0
+    at: 2026-11-26T17:56:01.542Z
 sources:
   - id: openwiki-source-c4c0d1a8305275c15968c047
     resource: repo://src/bin/oifs.rs
-verified:
-  - by: openwiki/0.9.0
-    at: 2026-11-24T19:09:23.676Z
-generated: { by: "openwiki/0.9.0", at: "2026-11-23T20:55:55.458Z" }
+generated: { by: "openwiki/0.9.0", at: "2026-11-26T17:56:01.542Z" }
 ---
+
 
 # Basic File/Directory Operations
 
@@ -98,389 +98,398 @@ OIFS_PASSWORD=secret oifs -i encrypted.img --read-only --json cat /file.txt
 ```
 
 ```rust
-// Programmatic
-let session = OifsSession::open_with_mode(
-    "disk.img",
-    0,                    // total_size ignored for read-only
-    SessionMode::Standalone,
-    Some("password"),     // if encrypted
-    false,
-)?;
-// Or use the dedicated read-only opener:
-let dm = DiskManager::open_read_only_with_storage_mode(
-    "disk.img",
-    Some("password"),     // None for unencrypted
-    StorageMode::default(),
-)?;
-let session = OifsSession::Direct { dm: Arc::new(dm), server: None, event_rx: Arc::new(Mutex::new(None)), mode: SessionMode::Standalone };
+use oifs::{OifsSession, DiskManager};
+
+// Via DiskManager
+let dm = DiskManager::open_read_only("disk.img")?;
+let data = dm.read_data(inode_id)?;
+
+// Via OifsSession (read-only via global --read-only flag at CLI layer)
+let session = OifsSession::open_with_mode("disk.img", 0, SessionMode::Standalone, None, false)?;
 ```
 
-**Constraints:** All mutating operations (`put`, `mkdir`, `rm`, `append`, `truncate`, `write`, `create_file`, etc.) return `DiskManagerError::ReadOnly`. Background auto-defrag is disabled in read-only mode.
-
 ---
 
-## Core Operations
+## Core Operations Walkthrough
 
-All operations are available via both the **CLI** (`oifs` subcommands) and the **Session API** (`OifsSession`). The Session API works identically in Direct and Remote modes.
+This section walks through the complete lifecycle: **create → put → list → stat → get → rename → remove**.
 
-### Path Resolution
-
-Paths use `/` as separator. No `..` traversal is supported (explicitly rejected). Path components are validated via `directory::validate_filename` — empty names, `.`, `..`, `/`, `\`, and null bytes are rejected; max length 255 bytes.
-
-| API | Purpose |
-|-----|---------|
-| `resolve_path(path: &str) -> Result<u64>` | Resolves full path (e.g., `"docs/file.txt"`) to inode ID. Splits on `/`, filters empty and `.` components, walks from root. |
-| `resolve_parent(path: &str) -> Result<(u64, String)>` | Returns `(parent_inode_id, filename)` for creating/looking up entries. `resolve_parent("a/b/c") → (inode_of_b, "c")`. Root parent is root inode. |
-
-Both APIs exist on `OifsSession` and `DiskManager`. In Remote mode they are IPC requests (`IpcRequest::ResolvePath`, `IpcRequest::ResolveParent`).
-
----
-
-### `put` — Import a Host File into OIFS
+### 1. Create Image
 
 ```bash
-# CLI: import file.txt to /file.txt (auto-detects dest name)
-oifs -i disk.img put ./file.txt
-
-# Import to specific name
-oifs -i disk.img put ./file.txt /data/myfile.txt
-
-# Compression control
-oifs -i disk.img put ./file.txt --compress        # force Zstd
-oifs -i disk.img put ./file.txt --no-compress     # store raw
-oifs -i disk.img put ./file.txt --chunked         # seekable 64 KiB chunks
-
-# Pre-compression filters (for structured/columnar data)
-oifs -i disk.img put ./data.bin --filter delta --typesize 8
-oifs -i disk.img put ./data.bin --filter shuffle --typesize 4
-oifs -i disk.img put ./data.bin --filter both --typesize 4
-oifs -i disk.img put ./data.bin --filter auto     # analyze & pick best
-
-# JSON output
-oifs -i disk.img --json put ./file.txt
-# {"ok": true, "inode": 123, "bytes": 4096}
+oifs -i demo.img create --size 20 --journal
 ```
 
 ```rust
-// Session API
-let (parent, name) = session.resolve_parent("/data/myfile.txt")?;
-let inode_id = session.create_file(parent, &name)?;
-let data = std::fs::read("./file.txt")?;
-session.write_data_with_filters(
-    inode_id,
-    0,
-    &data,
-    CompressionMode::Auto,              // or Always, Never, Seekable { chunk_size, level }
-    FilterConfig::none(),               // or FilterConfig::delta(8), .shuffle(4), .numeric(4), .auto()
-)?;
-session.flush()?;
+let session = OifsSession::open_journaled_with_mode("demo.img", 20 * 1024 * 1024, SessionMode::Standalone, None, false)?;
 ```
 
-**Details:**
-
-- Creates the file atomically via `create_file_with_data_with_filters` (journaled images: single WAL transaction; small payloads ≤ 8 KiB are data-journaled).
-- Compression modes: `Auto` (heuristic), `Always`, `Never`, `Seekable { chunk_size: 64 KiB, level }`, `Stream { level }`.
-- Filter pipeline runs **before** compression: delta → shuffle/bitshuffle → Zstd.
-- `--filter auto` runs `filters::recommend_filters` on the input bytes and selects the best config (delta, shuffle, both/bitshuffle, or none).
-
----
-
-### `get` — Export a File from OIFS to Host
+### 2. Import Files (`put`)
 
 ```bash
-# CLI
-oifs -i disk.img get /file.txt                    # writes ./file.txt
-oifs -i disk.img get /file.txt ./out.txt          # explicit destination
-oifs -i disk.img get /dir/file.txt ./outdir/      # destination is directory
-oifs -i disk.img --json get /file.txt
-# {"ok": true, "bytes": 4096, "dest": "file.txt"}
+# Basic import (auto-compresses files ≥ 8 KB)
+oifs -i demo.img put ./local.txt
+
+# Force compression regardless of size
+oifs -i demo.img put ./small.txt --compress
+
+# Never compress
+oifs -i demo.img put ./data.bin --no-compress
+
+# Seekable 64 KB chunked compression (random reads, partial updates)
+oifs -i demo.img put ./large.log --chunked
+
+# With pre-compression filter (delta for time-series, shuffle for struct arrays)
+oifs -i demo.img put ./metrics.bin --filter delta --typesize 8
+
+# Multiple files (batch loop)
+for f in *.log; do oifs -i demo.img put "$f"; done
 ```
 
 ```rust
-// Session API
-let inode_id = session.resolve_path("/file.txt")?;
-let data = session.read_data(inode_id)?;
-std::fs::write("./out.txt", data)?;
-```
+// Single file
+let inode = session.put("local.txt", None, CompressionMode::Auto, FilterConfig::none())?;
 
-**Details:** Automatically decompresses, decrypts, and un-applies filters. Validates the remote filename component (rejects path separators, null bytes, etc.).
-
----
-
-### `cat` — Print File Contents to Stdout
-
-```bash
-# CLI (raw bytes to stdout, no newline added)
-oifs -i disk.img cat /file.txt
-
-# JSON mode wraps in object with UTF-8 lossy content
-oifs -i disk.img --json cat /file.txt
-# {"ok": true, "path": "/file.txt", "bytes": 123, "content": "hello world"}
-```
-
-```rust
-let inode_id = session.resolve_path("/file.txt")?;
-let data = session.read_data(inode_id)?;
-std::io::stdout().lock().write_all(&data)?;
-```
-
----
-
-### `append` — Append Text to a File
-
-```bash
-# CLI (adds newline unless --no-newline)
-oifs -i disk.img append /log.txt "new line"
-oifs -i disk.img append /log.txt "no newline" --no-newline
-
-# Creates file if it doesn't exist
-oifs -i disk.img --json append /new.txt "first line"
-```
-
-```rust
-let (parent, name) = session.resolve_parent("/log.txt")?;
-let inode_id = match session.lookup(parent, &name) {
-    Ok(id) => id,
-    Err(_) => session.create_file(parent, &name)?,
-};
-let mut existing = session.read_data(inode_id).unwrap_or_default();
-existing.extend_from_slice(b"new line\n");
-session.write_data(inode_id, 0, &existing, CompressionMode::Auto)?;
-session.flush()?;
-```
-
-**Details:** Reads entire file, appends in memory, rewrites from offset 0 (whole-file overwrite). Not an efficient streaming append — use `write_data` with offset for that.
-
----
-
-### `mkdir` — Create a Directory
-
-```bash
-# CLI
-oifs -i disk.img mkdir /data
-oifs -i disk.img mkdir /data/subdir
-oifs -i disk.img --json mkdir /data
-# {"ok": true, "inode": 456}
-```
-
-```rust
-let (parent, name) = session.resolve_parent("/data/subdir")?;
-let dir_id = session.create_directory(parent, &name)?;
-session.flush()?;
-```
-
-**Details:** Validates parent is a directory, name doesn't exist. Creates inode with `FileType::Directory`, zero size, empty block pointers.
-
----
-
-### `ls` — List Directory Entries
-
-```bash
-# CLI (flat, non-recursive by default)
-oifs -i disk.img ls
-oifs -i disk.img ls /data
-oifs -i disk.img ls /data --recursive
-
-# JSON output (array of entries)
-oifs -i disk.img --json ls /data
-# [
-#   {"name": "file.txt", "kind": "f", "size": 1024, "comp_size": 512, "modified": "2024-01-15 14:30:00"},
-#   {"name": "subdir", "kind": "d", "size": 0, "comp_size": null, "modified": "2024-01-15 14:25:00"}
-# ]
-```
-
-```rust
-let target = session.resolve_path("/data")?;
-let entries = session.list_dir(target)?;
-for e in entries {
-    let inode = session.read_inode(e.inode)?;
-    println!("{}  {}  {}", e.name, inode.size, if inode.mode == FileType::Directory { "d" } else { "f" });
-}
-```
-
-**Details:** Returns `Vec<DirectoryEntry>` (`inode`, `hash`, `name`). If the directory's `DirIndex` cache is `complete`, results are served from memory without disk reads. First `ls` on a cold directory triggers a full scan and promotes the index to `complete`.
-
----
-
-### `stat` — Inspect Inode Metadata
-
-```bash
-# CLI
-oifs -i disk.img stat /file.txt
-oifs -i disk.img stat /           # root directory
-oifs -i disk.img --json stat /file.txt
-# {
-#   "ok": true,
-#   "path": "/file.txt",
-#   "inode": 123,
-#   "kind": "file",
-#   "size": 1024,
-#   "compressed_size": 512,
-#   "encrypted": false,
-#   "seekable_64k": false,
-#   "created": "2024-01-15 14:30:00",
-#   "modified": "2024-01-15 14:35:00"
-# }
-```
-
-```rust
-let inode_id = session.resolve_path("/file.txt")?;
-let inode = session.read_inode(inode_id)?;
-println!("inode: {}, size: {}, compressed: {}, encrypted: {}",
-    inode_id, inode.size, inode.compressed_size, inode.encrypted);
-```
-
-**Details:** Reads the on-disk inode record. Shows logical size (`size`), compressed on-disk size (`compressed_size`, 0 if uncompressed), encryption flag, seekable-64K flag, timestamps.
-
----
-
-### `rm` — Delete File or Directory
-
-```bash
-# CLI (fails on non-empty directory unless --recursive)
-oifs -i disk.img rm /file.txt
-oifs -i disk.img rm /empty_dir
-oifs -i disk.img rm /non_empty_dir --recursive
-oifs -i disk.img --json rm /file.txt
-# {"ok": true, "removed": "/file.txt", "inode": 123, "recursive": false}
-```
-
-```rust
-let (parent, name) = session.resolve_parent("/file.txt")?;
-let target = session.lookup(parent, &name)?;
-let inode = session.read_inode(target)?;
-
-if inode.mode == FileType::Directory {
-    // Check empty (or recursively delete contents)
-    let entries = session.list_dir(target)?;
-    if !entries.is_empty() {
-        // Implement recursive traversal or error
+// Batch import (loop over entries)
+for entry in std::fs::read_dir(".")? {
+    let path = entry?.path();
+    if path.is_file() {
+        session.put(&path, None, CompressionMode::Auto, FilterConfig::none())?;
     }
 }
-session.delete_file(parent, &name)?;
-session.flush()?;
 ```
 
-**Details:** `delete_file` removes the directory entry, frees the target inode and all its data blocks, and invalidates parent & target `DirIndex` cache entries. Journaled images commit via WAL; legacy images write in-place. Root directory deletion is refused.
-
----
-
-### `truncate` — Resize a File
+### 3. List Directory (`ls`)
 
 ```bash
-# CLI (size in bytes)
-oifs -i disk.img truncate /file.txt --size 0        # empty the file
-oifs -i disk.img truncate /file.txt --size 1048576  # extend to 1 MiB (sparse for raw)
-oifs -i disk.img truncate /file.txt --size 500      # shrink
-oifs -i disk.img --json truncate /file.txt --size 0
-# {"ok": true, "path": "/file.txt", "size": 0}
+# Root directory
+oifs -i demo.img ls
+
+# Subdirectory (recursive)
+oifs -i demo.img ls /logs --recursive
+
+# JSON output for parsing
+oifs -i demo.img ls --json
 ```
 
 ```rust
-session.truncate_path("/file.txt", 0)?;       // by path
-session.truncate(inode_id, 1048576)?;         // by inode ID
-session.flush()?;
+let entries = session.list_dir(0)?; // root inode = 0
+for e in entries {
+    println!("{}  {}  {}", e.kind, e.name, e.size);
+}
 ```
 
-**Details:**
-
-| Case | Behavior |
-|------|----------|
-| **Shrink (raw)** | Frees whole blocks beyond new size; zeros trailing slack in last surviving block. Prunes empty indirect blocks. |
-| **Extend (raw)** | Sparse extension — new logical blocks read as zero until written. No data blocks allocated. |
-| **Compressed / Encrypted / Filtered** | Reads full decoded content, resizes in memory, re-encodes from offset 0 (whole-file rewrite). |
-| **Seekable 64K** | Special chunked path that can truncate individual chunks without full recompression. |
-
----
-
-## JSON Output Mode (`--json`)
-
-All subcommands emit structured JSON on success or `{"ok": false, "error": "..."}` on failure. Stdout is pure JSON (no prompts, no ANSI).
-
-| Subcommand | Success Schema |
-|------------|----------------|
-| `create` | `{"ok": true, "message": "...", "journal": boolean}` |
-| `put` | `{"ok": true, "inode": <u64>, "bytes": <usize>}` |
-| `get` | `{"ok": true, "bytes": <usize>, "dest": "<path>"}` |
-| `cat` | `{"ok": true, "path": "...", "bytes": <usize>, "content": "<utf8_lossy>"}` |
-| `append` | `{"ok": true, "inode": <u64>, "total_bytes": <usize>}` |
-| `mkdir` | `{"ok": true, "inode": <u64>}` |
-| `rm` | `{"ok": true, "removed": "<path>", "inode": <u64>, "recursive": boolean}` |
-| `ls` | Array of `{"name": "...", "kind": "f\|d", "size": <u64>, "comp_size": <u64|null>, "modified": "YYYY-MM-DD HH:MM:SS"}` |
-| `stat` | `{"ok": true, "path": "...", "inode": <u64>, "kind": "file\|directory", "size": <u64>, "compressed_size": <u64>, "encrypted": <bool>, "seekable_64k": <bool>, "created": "...", "modified": "..."}` |
-| `info` | `{"ok": true, "image": "...", "block_size": <u32>, "block_count": <u64>, "total_bytes": <u64>, "inode_count": <u64>, "data_block_start": <u64>, "format_version": <u32>, "encrypted": <bool>, "journaled": <bool>, "read_only": <bool>}` |
-| `truncate` | `{"ok": true, "path": "...", "size": <u64>}` |
-
----
-
-## Flush / Persistence
+### 4. Inspect Metadata (`stat`)
 
 ```bash
-# CLI: most mutating commands auto-flush; explicit flush not exposed as subcommand
-# But you can ensure durability via:
-oifs -i disk.img --json info   # forces session flush in CLI
+oifs -i demo.img stat /local.txt
 ```
 
 ```rust
-// Session API
-session.flush()?;   // blocks until msync/WAL checkpoint completes
+let stat = session.stat("/local.txt")?;
+println!("inode={} size={} compressed={} encrypted={} created={} modified={}",
+    stat.inode, stat.size, stat.compressed_size, stat.encrypted,
+    stat.created_at, stat.modified_at);
 ```
 
-**Details:** `flush()` acquires a global `sync_mutex` to serialize flushes, snapshots the WAL head, calls `sync_journal_region` (WAL first!), then `backing.flush()`. On journaled images, it checkpoints the WAL up to the snapshot head after the data flush. In Remote mode, `IpcRequest::Flush` is forwarded to the Master.
+### 5. Export Files (`get`)
 
----
+```bash
+# Export to current directory with same name
+oifs -i demo.img get local.txt
 
-## Directory Index Caching (`DirIndex`)
+# Export to specific destination
+oifs -i demo.img get local.txt ./backup/local.txt
 
-OIFS maintains a sharded, thread-safe `DirIndex` cache mapping `dir_inode_id → DirIndex`. Each index stores:
-
-| Field | Purpose |
-|-------|---------|
-| `complete: bool` | `true` once all on-disk entries are in `stored` (and `plain` on encrypted FS). Hits/misses are O(1). |
-| `cold_scans: u32` | After 8 cold scans, a full directory scan promotes the index to `complete`. |
-| `stored: HashMap<String, (inode, phys_blk, hash)>` | On-disk (ciphertext on encrypted FS) name → location. |
-| `plain: HashMap<String, (inode, hash)>` | Plaintext name → location (encrypted FS only; avoids re-encryption on lookup). |
-| `tail_offset` | Cached append position for `create_file` fast path. |
-
-**Promotion:** `lookup` caches positive hits immediately. Negative lookups and `list_dir` trigger cold scans; after 8 scans the index becomes `complete`. `create_file`/`delete_file` invalidate the parent's cache (`may_have_holes`, `tail_offset`) and drop the target's index.
-
----
-
-## Write Data Decision Tree (Advanced)
-
-`DiskManager::write_data_with_filters` selects one of four **WriteCase** variants in a lock-free Stage 1, then commits under exclusive lock in Stage 3:
-
-```text
-WriteCase::FullOverwrite      → replace entire payload from offset 0
-WriteCase::CompressedAppend   → append fresh Zstd frame to compressed stream (unencrypted, EOF, no filters)
-WriteCase::Recompress         → read-modify-rebuild: decode, splice, re-encode from 0
-WriteCase::Raw                → direct memcpy into existing/allocated blocks
+# Export to directory (name preserved)
+oifs -i demo.img get local.txt ./backup/
 ```
 
-**Stages:**
-1. **Stage 1 (shared read lock):** Inspect inode, resolve encryption/filters, decide `WriteCase`, build compressed/encrypted buffer (CPU-heavy).
-2. **Stage 2 (zero locks):** Filter → Zstd → XChaCha20-Poly1305 encryption (AAD binds to inode ID).
-3. **Stage 3 (exclusive write lock):** Allocate/free blocks, write buffer, update inode metadata, commit (WAL transaction on journaled images).
+```rust
+let bytes_written = session.get("/local.txt", "./output.txt")?;
+```
 
-Seekable 64K chunked files and encrypted partial upgrades use a separate chunked pipeline.
+### 6. View File Contents (`cat`)
+
+```bash
+oifs -i demo.img cat /local.txt
+```
+
+```rust
+let content = session.cat("/local.txt")?;
+// or
+let data = session.read_data(inode_id)?;
+```
+
+### 7. Rename / Move (`rename`)
+
+```bash
+# Rename within same directory
+oifs -i demo.img rename /old.txt /new.txt
+
+# Move to subdirectory (directory must exist)
+oifs -i demo.img rename /file.txt /subdir/file.txt
+```
+
+```rust
+session.rename("/old.txt", "/new.txt")?;
+```
+
+### 8. Remove Files/Directories (`rm`)
+
+```bash
+# Remove file
+oifs -i demo.img rm /local.txt
+
+# Remove non-empty directory (recursive)
+oifs -i demo.img rm /logs --recursive
+
+# JSON mode for scripting
+oifs -i demo.img rm /old.txt --json
+```
+
+```rust
+session.remove("/local.txt")?;
+session.remove_dir("/logs", true)?; // recursive = true
+```
 
 ---
 
-## Summary: CLI vs API Mapping
+## Multi-File Batch Operations
 
-| Operation | CLI Subcommand | Session API |
-|-----------|----------------|-------------|
-| Create image | `create` | `OifsSession::open_with_mode` / `open_journaled_with_mode` |
-| Import file | `put` | `create_file` + `write_data_with_filters` + `flush` |
-| Export file | `get` | `resolve_path` + `read_data` |
-| Print file | `cat` | `resolve_path` + `read_data` + write to stdout |
-| Append text | `append` | `lookup`/`create_file` + `read_data` + `write_data` + `flush` |
-| Create dir | `mkdir` | `resolve_parent` + `create_directory` + `flush` |
-| List dir | `ls` | `resolve_path` + `list_dir` |
-| Inspect metadata | `stat` | `resolve_path` + `read_inode` |
-| Delete | `rm` | `resolve_parent` + `lookup` + `delete_file` + `flush` |
-| Resize | `truncate` | `truncate_path` / `truncate` + `flush` |
-| Path → inode | (implicit) | `resolve_path` |
-| Path → parent+name | (implicit) | `resolve_parent` |
+### Batch Import with Pattern Matching
 
-All APIs work identically in Direct and Remote (IPC) modes.
+```bash
+# Import all .txt files
+for f in *.txt; do oifs -i demo.img put "$f"; done
+
+# Import with custom names
+oifs -i demo.img put ./data.csv --compress
+oifs -i demo.img put ./config.json --no-compress
+```
+
+### Batch Export
+
+```bash
+# Export all files (requires listing first)
+oifs -i demo.img ls --json | jq -r '.[] | select(.kind=="f") | .name' | while read name; do
+    oifs -i demo.img get "$name" "./export/$name"
+done
+```
+
+### Programmatic Batch Operations
+
+```rust
+use oifs::{OifsSession, CompressionMode, Filters::FilterConfig};
+use std::path::Path;
+
+let session = OifsSession::open("demo.img", 0)?;
+
+// Batch put with per-file compression decisions
+let files = vec![
+    ("small.txt", CompressionMode::Never, FilterConfig::none()),
+    ("large.log", CompressionMode::Auto, FilterConfig::none()),
+    ("metrics.bin", CompressionMode::Auto, FilterConfig { delta: true, typesize: 8, ..Default::default() }),
+];
+
+for (name, comp_mode, filter) in files {
+    let path = Path::new(name);
+    session.put(path, None, comp_mode, filter)?;
+}
+
+// Batch get
+let entries = session.list_dir(0)?;
+for entry in entries {
+    if entry.kind == FileType::File {
+        let dest = format!("./export/{}", entry.name);
+        session.get(&format!("/{}", entry.name), &dest)?;
+    }
+}
+```
+
+---
+
+## Verification: fsck & Integrity
+
+### CLI
+
+```bash
+# Full structural consistency check
+oifs -i demo.img fsck
+
+# JSON output for monitoring
+oifs -i demo.img fsck --json
+```
+
+### Programmatic
+
+```rust
+// Via DiskManager
+let report = dm.fsck()?;
+if !report.is_clean {
+    eprintln!("Orphan inodes: {:?}", report.orphan_inodes);
+    eprintln!("Leaked blocks: {:?}", report.leaked_blocks);
+    eprintln!("Missing blocks: {:?}", report.missing_blocks);
+    eprintln!("Cross-linked blocks: {:?}", report.cross_linked_blocks);
+    eprintln!("Corrupted inodes: {:?}", report.corrupted_inodes);
+}
+
+// Via OifsSession
+let report = session.fsck()?;
+```
+
+### What fsck Checks
+
+| Check | Description |
+|-------|-------------|
+| **Orphan inodes** | Allocated inodes not referenced by any directory entry |
+| **Leaked blocks** | Data bitmap marks block allocated but no inode maps it |
+| **Missing blocks** | Inode maps a block that data bitmap marks free |
+| **Cross-linked blocks** | Same block referenced by multiple inodes |
+| **Corrupted inodes** | Inode fails format decoding or CRC32C verification |
+
+---
+
+## JSON Output Mode
+
+All subcommands support `--json` for machine-readable output (CI/CD, automation, AI agents):
+
+```bash
+# Success format
+{"ok": true, "inode": 42, "bytes": 1024}
+
+# Error format (exit code 1)
+{"ok": false, "error": "File not found: /missing.txt"}
+```
+
+Key behaviors:
+- **No interactive prompts** — encrypted images require `--password` or `OIFS_PASSWORD`
+- **Structured errors** — consistent `{"ok": false, "error": "..."}` schema
+- **All commands emit to stdout** — stderr reserved for warnings
+
+---
+
+## Durability Modes
+
+Control write persistence vs. throughput trade-off:
+
+```rust
+use oifs::DurabilityMode;
+
+dm.set_durability_mode(DurabilityMode::Lazy);         // Default: process-safe, ~45x faster bulk writes
+dm.set_durability_mode(DurabilityMode::RangeAsync);   // Async range msync (balanced)
+dm.set_durability_mode(DurabilityMode::Strict);       // Sync msync per mutation (power-loss safe)
+```
+
+| Mode | Sync Behavior | Throughput | Power-Loss Safety |
+|------|---------------|------------|-------------------|
+| `Lazy` (default) | No per-op sync; OS writeback | Highest | On explicit `flush()` / `Drop` |
+| `RangeAsync` | Async `msync(MS_ASYNC)` per mutation | High | Pages scheduled for early writeback |
+| `Strict` | Sync `msync(MS_SYNC)` per mutation | Lowest | Guaranteed on physical storage before return |
+
+---
+
+## Complete Example: End-to-End Workflow
+
+```bash
+#!/bin/bash
+set -e
+
+IMG="workflow.img"
+
+# 1. Create journaled image
+oifs -i "$IMG" create --size 50 --journal
+
+# 2. Import files
+oifs -i "$IMG" put ./README.md
+oifs -i "$IMG" put ./src/main.rs --compress
+oifs -i "$IMG" put ./data/metrics.bin --filter delta --typesize 8
+
+# 3. List and inspect
+oifs -i "$IMG" ls --recursive
+oifs -i "$IMG" stat /README.md
+
+# 4. Export for verification
+mkdir -p ./verify
+oifs -i "$IMG" get /README.md ./verify/README.md
+oifs -i "$IMG" get /main.rs ./verify/main.rs
+
+# 5. Rename
+oifs -i "$IMG" rename /README.md /DOCS.md
+
+# 6. Verify fsck clean
+oifs -i "$IMG" fsck
+
+# 7. Cleanup (remove image)
+rm "$IMG"
+```
+
+```rust
+use oifs::{OifsSession, SessionMode, CompressionMode, Filters::FilterConfig};
+use std::path::Path;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let session = OifsSession::open_journaled_with_mode(
+        "workflow.img", 50 * 1024 * 1024, SessionMode::Standalone, None, false)?;
+
+    // Put
+    session.put(Path::new("README.md"), None, CompressionMode::Auto, FilterConfig::none())?;
+    session.put(Path::new("src/main.rs"), None, CompressionMode::Always, FilterConfig::none())?;
+    session.put(
+        Path::new("data/metrics.bin"),
+        None,
+        CompressionMode::Auto,
+        FilterConfig { delta: true, typesize: 8, ..Default::default() }
+    )?;
+
+    // List
+    for e in session.list_dir(0)? {
+        println!("{} {}", e.kind, e.name);
+    }
+
+    // Stat
+    let stat = session.stat("/README.md")?;
+    println!("size={} compressed={}", stat.size, stat.compressed_size);
+
+    // Get
+    session.get("/README.md", "./verify/README.md")?;
+    session.get("/main.rs", "./verify/main.rs")?;
+
+    // Rename
+    session.rename("/README.md", "/DOCS.md")?;
+
+    // Verify
+    let report = session.fsck()?;
+    assert!(report.is_clean, "fsck found corruption: {:?}", report);
+
+    // Cleanup
+    drop(session);
+    std::fs::remove_file("workflow.img")?;
+    Ok(())
+}
+```
+
+---
+
+## Error Handling Quick Reference
+
+| Error | Cause | Resolution |
+|-------|-------|------------|
+| `PasswordRequired` | Encrypted image opened without password | Provide `--password` or `OIFS_PASSWORD` |
+| `DecryptionFailed` | Wrong password or corrupted data | Verify password; check image integrity |
+| `NotEncrypted` | Password given for unencrypted image | Remove `--password` / `OIFS_PASSWORD` |
+| `ReadOnly` | Mutation attempted on `--read-only` mount | Remove `--read-only` flag |
+| `AlreadyExists` | Create file/dir with existing name | Use different name or remove first |
+| `NotFound` | Lookup of missing path | Verify path exists with `ls`/`stat` |
+| `NoSpace` | Image full (blocks or inodes) | Enable `--auto-grow` or run `vacuum` |
+| `Locking` | Another process holds exclusive lock | Wait for other process; check `lsof` |
+
+---
+
+## See Also
+
+- [CLI Reference](../operations/cli_reference.md) — Complete command reference
+- [Compression Workflows](../workflows/compression_workflows.md) — Filter pipelines, chunked compression
+- [Encrypted Workflows](../workflows/encrypted_workflows.md) — Key management, re-encryption
+- [Architecture: Disk Manager](../architecture/disk_manager_and_persistence.md) — Internals of `DiskManager`
+- [Architecture: Concurrency & Session](../architecture/concurrency_and_session.md) — IPC, Master/Proxy model

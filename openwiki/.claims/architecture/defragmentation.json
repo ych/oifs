@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:c0869d4827ed65342e08aac699ed703c8b8eb52173dfc5f132e7ec198c7d4aa3",
+  "pageVersion": "sha256:443f922dfc77a5ab5e0b28319835ef3a2b8d1540d384dca7a3ec80c086cc8ed1",
   "claims": [
     {
       "id": "claim_b64f414a380943d6b588686bea26f24e",
@@ -105,7 +105,7 @@
       "statement": "DefragStats returned by both safe and in-place defragmentation includes files_processed (regular files relocated), bytes_moved (payload bytes copied), blocks_freed (reduction in free_runs count), frag_before, and frag_after (typically 0.0 when fully compacted).",
       "evidence": [
         {
-          "resource": "repo://src/disk.rs#L189-L199",
+          "resource": "repo://src/disk.rs#L200-L210",
           "version": "repo-lines-v1:sha256:4087fb0c1df5ba5ee4b72e5c50cc695755c4ee2cccb5180fbb66607fea8cfb19:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzNmEwMWYwZmQ1ZTZhNThmODNmYTA3NTZiMzBmYjg2MjBmM2U3MDgwZjlmMTRkYjRlYTY2MDVlMjYyYjBjMjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3NjYwNTM4MTAwOWRiN2I1NzQ5ZDljMmVlMzI3YTdmMjcyYWFiMTMxYTk1ZDhlNDBmZTUzMGNlN2NkNjM1OTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkMGRhYWI4N2IxNzE3NmVmMjFmODI4MDkyODQ0Yzg1MTFiNjk5YTA4NGIxMDJkMzM2NWE1NDMzZmFhNmE1MDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlYmI2NjBjZGQ2ZDRjZDU0YThlZDY5NzE1MmY4NGI2M2I0ZDc5MzA2NjE5ZmVkMzdkMWZiMDU3OTgwMTdhMjcifQ"
         },
         {
@@ -121,6 +121,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-24T19:09:23.676Z"
+    "at": "2026-11-26T17:56:01.542Z"
   }
 }

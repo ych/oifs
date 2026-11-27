@@ -6,8 +6,9 @@
 [![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
 [![Kani Verified](https://img.shields.io/badge/Kani%20Verified-135%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
 [![BaaaTON Certified](https://baaaton.com/api/v1/certify/badge/pg_dyn_mcp_mwrq0scq_v6be.svg)](https://baaaton.com/agora/pg_dyn_mcp_mwrq0scq_v6be)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ych/oifs)
 
-[English](README.md) | [繁體中文](README_zh.md) | [📖 Online Documentation](https://ych.github.io/oifs/) | [`llms.txt`](llms.txt)
+[English](README.md) | [繁體中文](README_zh.md) | [📖 Online Documentation](https://ych.github.io/oifs/) | [🧠 DeepWiki](https://deepwiki.com/ych/oifs) | [`llms.txt`](llms.txt)
 
 **OIFS** is a high-performance, single-file Unix-like inode filesystem engine written in Rust (Edition 2024). It packs an entire POSIX-style directory tree—with crash-safe WAL journaling, C2SP `XAES-256-GCM` & `XChaCha20-Poly1305` AEAD encryption, SIMD numerical compression filters, seekable 64 KiB random-access chunks, pure-Rust FUSE & zero-kext NFSv3 mounting, cross-image CoW reflink transfers, C/C++17/20 zero-copy bindings, and an AI MCP server—into one portable `.img` container file.
 

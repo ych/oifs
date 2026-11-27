@@ -8,6 +8,7 @@ OIFS packs an entire POSIX directory tree into one portable `.img` file. It runs
 
 - [GitHub Repository](https://github.com/ych/oifs): Source code, issue tracker, releases, and Cargo crate
 - [Project Website](https://ych.github.io/oifs/): Overview, quick start, and OpenWiki interactive architecture graph
+- [DeepWiki Knowledge Base](https://deepwiki.com/ych/oifs): AI-indexed interactive codebase documentation and Q&A
 - [README (English)](https://github.com/ych/oifs/blob/master/README.md): Complete capabilities, C/C++/Rust examples, MCP config, and Apple M5 Pro benchmarks
 - [README (繁體中文)](https://github.com/ych/oifs/blob/master/README_zh.md): Traditional Chinese documentation mirror
 - [Full LLM Reference](https://ych.github.io/oifs/llms-full.txt): Detailed architecture, CLI commands, and 18 MCP tool schemas

@@ -6,8 +6,9 @@
 [![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
 [![Kani Verified](https://img.shields.io/badge/Kani%20Verified-135%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
 [![BaaaTON Certified](https://baaaton.com/api/v1/certify/badge/pg_dyn_mcp_mwrq0scq_v6be.svg)](https://baaaton.com/agora/pg_dyn_mcp_mwrq0scq_v6be)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ych/oifs)
 
-[English](README.md) | [繁體中文](README_zh.md) | [📖 線上官方文件](https://ych.github.io/oifs/) | [`llms.txt`](llms.txt)
+[English](README.md) | [繁體中文](README_zh.md) | [📖 線上官方文件](https://ych.github.io/oifs/) | [🧠 DeepWiki](https://deepwiki.com/ych/oifs) | [`llms.txt`](llms.txt)
 
 **OIFS** 是以 Rust（Edition 2024）打造的單檔、類 Unix Inode 嵌入式檔案系統引擎。它將完整的階層式檔案系統——包含斷電自癒 WAL、C2SP `XAES-256-GCM` 與 `XChaCha20-Poly1305` 加密、SIMD 科學數值壓縮濾鏡、可隨機存取的 64 KiB 分塊壓縮、純 Rust 跨平台 FUSE 與零核心擴充（Zero-Kext）NFSv3 掛載、跨映像檔 CoW Reflink 搬移、C/C++17/20 零拷貝介面與 AI MCP 伺服器——全部封裝在單一可攜的 `.img` 容器檔中。
 

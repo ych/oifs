@@ -207,6 +207,21 @@ impl FilterConfig {
     }
 }
 
+#[cfg(all(not(kani), target_arch = "x86_64"))]
+#[inline]
+unsafe fn sse2_deinterleave_u16_bytes(
+    a: std::arch::x86_64::__m128i,
+    b: std::arch::x86_64::__m128i,
+) -> (std::arch::x86_64::__m128i, std::arch::x86_64::__m128i) {
+    use std::arch::x86_64::*;
+    let low_mask = _mm_set1_epi16(0x00FFu16 as i16);
+    let lo_a = _mm_and_si128(a, low_mask);
+    let lo_b = _mm_and_si128(b, low_mask);
+    let hi_a = _mm_srli_epi16::<8>(a);
+    let hi_b = _mm_srli_epi16::<8>(b);
+    (_mm_packus_epi16(lo_a, lo_b), _mm_packus_epi16(hi_a, hi_b))
+}
+
 /// In-place first-order delta encoding with zero allocations
 #[inline]
 pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
@@ -221,18 +236,111 @@ pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
     #[cfg(target_endian = "little")]
     {
         // On Little-Endian architectures (x86_64, AArch64 / Apple Silicon), the in-memory
-        // byte representation matches on-disk format. If properly aligned, operating directly
-        // on typed slices eliminates bounds checks and allows auto-vectorization (AVX2/NEON).
+        // byte representation matches on-disk format. Because each lane in backwards-order
+        // delta encoding `cur[i] -= cur[i-1]` depends only on original inputs, chunks from the
+        // tail downward are 100% SIMD-parallel once the small remainder tail is handled.
         let ptr = data.as_mut_ptr();
         match typesize {
             1 => {
-                for i in (1..n).rev() {
+                #[allow(unused_mut)]
+                let mut simd_end = 1usize;
+                #[cfg(all(not(kani), target_arch = "aarch64"))]
+                if n > 32 {
+                    simd_end = 1 + ((n - 1) / 32) * 32;
+                    for i in (simd_end..n).rev() {
+                        data[i] = data[i].wrapping_sub(data[i - 1]);
+                    }
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let mut k = simd_end;
+                        while k > 1 {
+                            k -= 32;
+                            let p = ptr.add(k);
+                            let prev0 = vld1q_u8(p.sub(1));
+                            let cur0 = vld1q_u8(p);
+                            let prev1 = vld1q_u8(p.add(15));
+                            let cur1 = vld1q_u8(p.add(16));
+                            vst1q_u8(p, vsubq_u8(cur0, prev0));
+                            vst1q_u8(p.add(16), vsubq_u8(cur1, prev1));
+                        }
+                    }
+                    return;
+                }
+                #[cfg(all(not(kani), target_arch = "x86_64"))]
+                if n > 32 {
+                    simd_end = 1 + ((n - 1) / 32) * 32;
+                    for i in (simd_end..n).rev() {
+                        data[i] = data[i].wrapping_sub(data[i - 1]);
+                    }
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        let mut k = simd_end;
+                        while k > 1 {
+                            k -= 32;
+                            let p = ptr.add(k);
+                            let prev0 = _mm_loadu_si128(p.sub(1) as *const __m128i);
+                            let cur0 = _mm_loadu_si128(p as *const __m128i);
+                            let prev1 = _mm_loadu_si128(p.add(15) as *const __m128i);
+                            let cur1 = _mm_loadu_si128(p.add(16) as *const __m128i);
+                            _mm_storeu_si128(p as *mut __m128i, _mm_sub_epi8(cur0, prev0));
+                            _mm_storeu_si128(p.add(16) as *mut __m128i, _mm_sub_epi8(cur1, prev1));
+                        }
+                    }
+                    return;
+                }
+                for i in (simd_end..n).rev() {
                     data[i] = data[i].wrapping_sub(data[i - 1]);
                 }
                 return;
             }
             2 if (ptr as usize).is_multiple_of(std::mem::align_of::<u16>()) => {
                 let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u16, n) };
+                #[cfg(all(not(kani), target_arch = "aarch64"))]
+                if n > 16 {
+                    let simd_end = 1 + ((n - 1) / 16) * 16;
+                    for i in (simd_end..n).rev() {
+                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
+                    }
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let p_base = slice.as_mut_ptr();
+                        let mut k = simd_end;
+                        while k > 1 {
+                            k -= 16;
+                            let p = p_base.add(k);
+                            let prev0 = vld1q_u16(p.sub(1));
+                            let cur0 = vld1q_u16(p);
+                            let prev1 = vld1q_u16(p.add(7));
+                            let cur1 = vld1q_u16(p.add(8));
+                            vst1q_u16(p, vsubq_u16(cur0, prev0));
+                            vst1q_u16(p.add(8), vsubq_u16(cur1, prev1));
+                        }
+                    }
+                    return;
+                }
+                #[cfg(all(not(kani), target_arch = "x86_64"))]
+                if n > 16 {
+                    let simd_end = 1 + ((n - 1) / 16) * 16;
+                    for i in (simd_end..n).rev() {
+                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
+                    }
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        let p_base = slice.as_mut_ptr();
+                        let mut k = simd_end;
+                        while k > 1 {
+                            k -= 16;
+                            let p = p_base.add(k);
+                            let prev0 = _mm_loadu_si128(p.sub(1) as *const __m128i);
+                            let cur0 = _mm_loadu_si128(p as *const __m128i);
+                            let prev1 = _mm_loadu_si128(p.add(7) as *const __m128i);
+                            let cur1 = _mm_loadu_si128(p.add(8) as *const __m128i);
+                            _mm_storeu_si128(p as *mut __m128i, _mm_sub_epi16(cur0, prev0));
+                            _mm_storeu_si128(p.add(8) as *mut __m128i, _mm_sub_epi16(cur1, prev1));
+                        }
+                    }
+                    return;
+                }
                 for i in (1..n).rev() {
                     slice[i] = slice[i].wrapping_sub(slice[i - 1]);
                 }
@@ -240,6 +348,52 @@ pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
             }
             4 if (ptr as usize).is_multiple_of(std::mem::align_of::<u32>()) => {
                 let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
+                #[cfg(all(not(kani), target_arch = "aarch64"))]
+                if n > 8 {
+                    let simd_end = 1 + ((n - 1) / 8) * 8;
+                    for i in (simd_end..n).rev() {
+                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
+                    }
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let p_base = slice.as_mut_ptr();
+                        let mut k = simd_end;
+                        while k > 1 {
+                            k -= 8;
+                            let p = p_base.add(k);
+                            let prev0 = vld1q_u32(p.sub(1));
+                            let cur0 = vld1q_u32(p);
+                            let prev1 = vld1q_u32(p.add(3));
+                            let cur1 = vld1q_u32(p.add(4));
+                            vst1q_u32(p, vsubq_u32(cur0, prev0));
+                            vst1q_u32(p.add(4), vsubq_u32(cur1, prev1));
+                        }
+                    }
+                    return;
+                }
+                #[cfg(all(not(kani), target_arch = "x86_64"))]
+                if n > 8 {
+                    let simd_end = 1 + ((n - 1) / 8) * 8;
+                    for i in (simd_end..n).rev() {
+                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
+                    }
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        let p_base = slice.as_mut_ptr();
+                        let mut k = simd_end;
+                        while k > 1 {
+                            k -= 8;
+                            let p = p_base.add(k);
+                            let prev0 = _mm_loadu_si128(p.sub(1) as *const __m128i);
+                            let cur0 = _mm_loadu_si128(p as *const __m128i);
+                            let prev1 = _mm_loadu_si128(p.add(3) as *const __m128i);
+                            let cur1 = _mm_loadu_si128(p.add(4) as *const __m128i);
+                            _mm_storeu_si128(p as *mut __m128i, _mm_sub_epi32(cur0, prev0));
+                            _mm_storeu_si128(p.add(4) as *mut __m128i, _mm_sub_epi32(cur1, prev1));
+                        }
+                    }
+                    return;
+                }
                 for i in (1..n).rev() {
                     slice[i] = slice[i].wrapping_sub(slice[i - 1]);
                 }
@@ -247,6 +401,52 @@ pub fn delta_encode_inplace(data: &mut [u8], typesize: usize) {
             }
             8 if (ptr as usize).is_multiple_of(std::mem::align_of::<u64>()) => {
                 let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u64, n) };
+                #[cfg(all(not(kani), target_arch = "aarch64"))]
+                if n > 4 {
+                    let simd_end = 1 + ((n - 1) / 4) * 4;
+                    for i in (simd_end..n).rev() {
+                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
+                    }
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let p_base = slice.as_mut_ptr();
+                        let mut k = simd_end;
+                        while k > 1 {
+                            k -= 4;
+                            let p = p_base.add(k);
+                            let prev0 = vld1q_u64(p.sub(1));
+                            let cur0 = vld1q_u64(p);
+                            let prev1 = vld1q_u64(p.add(1));
+                            let cur1 = vld1q_u64(p.add(2));
+                            vst1q_u64(p, vsubq_u64(cur0, prev0));
+                            vst1q_u64(p.add(2), vsubq_u64(cur1, prev1));
+                        }
+                    }
+                    return;
+                }
+                #[cfg(all(not(kani), target_arch = "x86_64"))]
+                if n > 4 {
+                    let simd_end = 1 + ((n - 1) / 4) * 4;
+                    for i in (simd_end..n).rev() {
+                        slice[i] = slice[i].wrapping_sub(slice[i - 1]);
+                    }
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        let p_base = slice.as_mut_ptr();
+                        let mut k = simd_end;
+                        while k > 1 {
+                            k -= 4;
+                            let p = p_base.add(k);
+                            let prev0 = _mm_loadu_si128(p.sub(1) as *const __m128i);
+                            let cur0 = _mm_loadu_si128(p as *const __m128i);
+                            let prev1 = _mm_loadu_si128(p.add(1) as *const __m128i);
+                            let cur1 = _mm_loadu_si128(p.add(2) as *const __m128i);
+                            _mm_storeu_si128(p as *mut __m128i, _mm_sub_epi64(cur0, prev0));
+                            _mm_storeu_si128(p.add(2) as *mut __m128i, _mm_sub_epi64(cur1, prev1));
+                        }
+                    }
+                    return;
+                }
                 for i in (1..n).rev() {
                     slice[i] = slice[i].wrapping_sub(slice[i - 1]);
                 }
@@ -303,69 +503,129 @@ pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
         return;
     }
 
+    #[cfg(all(not(kani), any(target_arch = "aarch64", target_arch = "x86_64")))]
+    macro_rules! delta_decode_tree_scan {
+        ($ptr:expr, $n:expr, $i:ident, $lanes:expr, $vzero:expr, $vload:expr, $vstore:expr, $vadd:expr, $vscan16:expr, $vbcast_last:expr) => {{
+            let p_base = $ptr;
+            let mut carry = $vzero;
+            $i = 0;
+            let stride_8 = 8 * $lanes;
+            while $i + stride_8 <= $n {
+                let p = p_base.add($i);
+                let w0 = $vscan16($vload(p));
+                let s1 = $vscan16($vload(p.add($lanes)));
+                let mut w2 = $vscan16($vload(p.add(2 * $lanes)));
+                let s3 = $vscan16($vload(p.add(3 * $lanes)));
+                let s4 = $vscan16($vload(p.add(4 * $lanes)));
+                let s5 = $vscan16($vload(p.add(5 * $lanes)));
+                let s6 = $vscan16($vload(p.add(6 * $lanes)));
+                let s7 = $vscan16($vload(p.add(7 * $lanes)));
+
+                // Level 1: combine odd-even 16B pairs independently of `carry`.
+                let w1 = $vadd(s1, $vbcast_last(w0));
+                let w3_base = $vadd(s3, $vbcast_last(w2));
+                let w5_base = $vadd(s5, $vbcast_last(s4));
+                let u7 = $vadd(s7, $vbcast_last(s6));
+
+                // Level 2: combine 32B halves into two independent 64B scans.
+                let c01 = $vbcast_last(w1);
+                w2 = $vadd(w2, c01);
+                let w3 = $vadd(w3_base, c01);
+
+                let c45 = $vbcast_last(w5_base);
+                let w6_base = $vadd(s6, c45);
+                let w7_base = $vadd(u7, c45);
+
+                // Level 3: fold [0..64B) total into [64..128B) and precompute 128B block_total.
+                let c03 = $vbcast_last(w3);
+                let w4 = $vadd(s4, c03);
+                let w5 = $vadd(w5_base, c03);
+                let w6 = $vadd(w6_base, c03);
+                let w7 = $vadd(w7_base, c03);
+                let block_total = $vbcast_last(w7);
+
+                // Loop-carried critical path: ONLY 1 vector add (`carry += block_total`) per 128B!
+                $vstore(p, $vadd(w0, carry));
+                $vstore(p.add($lanes), $vadd(w1, carry));
+                $vstore(p.add(2 * $lanes), $vadd(w2, carry));
+                $vstore(p.add(3 * $lanes), $vadd(w3, carry));
+                $vstore(p.add(4 * $lanes), $vadd(w4, carry));
+                $vstore(p.add(5 * $lanes), $vadd(w5, carry));
+                $vstore(p.add(6 * $lanes), $vadd(w6, carry));
+                $vstore(p.add(7 * $lanes), $vadd(w7, carry));
+                carry = $vadd(carry, block_total);
+                $i += stride_8;
+            }
+            let stride_2 = 2 * $lanes;
+            while $i + stride_2 <= $n {
+                let p = p_base.add($i);
+                let s0 = $vscan16($vload(p));
+                let s1 = $vscan16($vload(p.add($lanes)));
+                let s1_full = $vadd(s1, $vbcast_last(s0));
+                let tail_total = $vbcast_last(s1_full);
+                $vstore(p, $vadd(s0, carry));
+                $vstore(p.add($lanes), $vadd(s1_full, carry));
+                carry = $vadd(carry, tail_total);
+                $i += stride_2;
+            }
+        }};
+    }
+
     #[cfg(target_endian = "little")]
     {
         let ptr = data.as_mut_ptr();
         match typesize {
             1 => {
+                #[allow(unused_mut)]
                 let mut i = 1usize;
                 #[cfg(all(not(kani), target_arch = "aarch64"))]
                 if n >= 32 {
                     unsafe {
                         use std::arch::aarch64::*;
                         let zero = vdupq_n_u8(0);
-                        let mut carry = vdupq_n_u8(0);
-                        i = 0;
-                        while i + 32 <= n {
-                            let p = ptr.add(i);
-                            let v0 = vld1q_u8(p);
-                            let v1 = vld1q_u8(p.add(16));
-                            let s1_0 = vaddq_u8(v0, vextq_u8::<15>(zero, v0));
-                            let s1_1 = vaddq_u8(v1, vextq_u8::<15>(zero, v1));
-                            let s2_0 = vaddq_u8(s1_0, vextq_u8::<14>(zero, s1_0));
-                            let s2_1 = vaddq_u8(s1_1, vextq_u8::<14>(zero, s1_1));
-                            let s3_0 = vaddq_u8(s2_0, vextq_u8::<12>(zero, s2_0));
-                            let s3_1 = vaddq_u8(s2_1, vextq_u8::<12>(zero, s2_1));
-                            let s4_0 = vaddq_u8(s3_0, vextq_u8::<8>(zero, s3_0));
-                            let s4_1 = vaddq_u8(s3_1, vextq_u8::<8>(zero, s3_1));
-                            let out0 = vaddq_u8(s4_0, carry);
-                            let carry0 = vdupq_laneq_u8::<15>(out0);
-                            let out1 = vaddq_u8(s4_1, carry0);
-                            carry = vdupq_laneq_u8::<15>(out1);
-                            vst1q_u8(p, out0);
-                            vst1q_u8(p.add(16), out1);
-                            i += 32;
-                        }
+                        delta_decode_tree_scan!(
+                            ptr,
+                            n,
+                            i,
+                            16,
+                            zero,
+                            |p| vld1q_u8(p),
+                            |p, v| vst1q_u8(p, v),
+                            |a, b| vaddq_u8(a, b),
+                            |v| {
+                                let s1 = vaddq_u8(v, vextq_u8::<15>(zero, v));
+                                let s2 = vaddq_u8(s1, vextq_u8::<14>(zero, s1));
+                                let s3 = vaddq_u8(s2, vextq_u8::<12>(zero, s2));
+                                vaddq_u8(s3, vextq_u8::<8>(zero, s3))
+                            },
+                            |v| vdupq_laneq_u8::<15>(v)
+                        );
                     }
                 }
                 #[cfg(all(not(kani), target_arch = "x86_64"))]
                 if n >= 32 {
                     unsafe {
                         use std::arch::x86_64::*;
-                        let mut carry = _mm_setzero_si128();
-                        i = 0;
-                        while i + 32 <= n {
-                            let p = ptr.add(i) as *mut __m128i;
-                            let v0 = _mm_loadu_si128(p);
-                            let v1 = _mm_loadu_si128(p.add(1));
-                            let s1_0 = _mm_add_epi8(v0, _mm_slli_si128::<1>(v0));
-                            let s1_1 = _mm_add_epi8(v1, _mm_slli_si128::<1>(v1));
-                            let s2_0 = _mm_add_epi8(s1_0, _mm_slli_si128::<2>(s1_0));
-                            let s2_1 = _mm_add_epi8(s1_1, _mm_slli_si128::<2>(s1_1));
-                            let s3_0 = _mm_add_epi8(s2_0, _mm_slli_si128::<4>(s2_0));
-                            let s3_1 = _mm_add_epi8(s2_1, _mm_slli_si128::<4>(s2_1));
-                            let s4_0 = _mm_add_epi8(s3_0, _mm_slli_si128::<8>(s3_0));
-                            let s4_1 = _mm_add_epi8(s3_1, _mm_slli_si128::<8>(s3_1));
-                            let out0 = _mm_add_epi8(s4_0, carry);
-                            let last0 = (_mm_extract_epi16::<7>(out0) >> 8) as i8;
-                            let carry0 = _mm_set1_epi8(last0);
-                            let out1 = _mm_add_epi8(s4_1, carry0);
-                            let last1 = (_mm_extract_epi16::<7>(out1) >> 8) as i8;
-                            carry = _mm_set1_epi8(last1);
-                            _mm_storeu_si128(p, out0);
-                            _mm_storeu_si128(p.add(1), out1);
-                            i += 32;
-                        }
+                        delta_decode_tree_scan!(
+                            ptr,
+                            n,
+                            i,
+                            16,
+                            _mm_setzero_si128(),
+                            |p: *mut u8| _mm_loadu_si128(p as *const __m128i),
+                            |p: *mut u8, v| _mm_storeu_si128(p as *mut __m128i, v),
+                            |a, b| _mm_add_epi8(a, b),
+                            |v| {
+                                let s1 = _mm_add_epi8(v, _mm_slli_si128::<1>(v));
+                                let s2 = _mm_add_epi8(s1, _mm_slli_si128::<2>(s1));
+                                let s3 = _mm_add_epi8(s2, _mm_slli_si128::<4>(s2));
+                                _mm_add_epi8(s3, _mm_slli_si128::<8>(s3))
+                            },
+                            |v| {
+                                let hi = _mm_unpackhi_epi8(v, v);
+                                _mm_shuffle_epi32::<0xFF>(_mm_shufflehi_epi16::<0xFF>(hi))
+                            }
+                        );
                     }
                 }
                 for j in i.max(1)..n {
@@ -375,61 +635,51 @@ pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
             }
             2 if (ptr as usize).is_multiple_of(std::mem::align_of::<u16>()) => {
                 let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u16, n) };
+                #[allow(unused_mut)]
                 let mut i = 1usize;
                 #[cfg(all(not(kani), target_arch = "aarch64"))]
                 if n >= 16 {
                     unsafe {
                         use std::arch::aarch64::*;
                         let zero = vdupq_n_u16(0);
-                        let mut carry = vdupq_n_u16(0);
-                        let p_base = slice.as_mut_ptr();
-                        i = 0;
-                        while i + 16 <= n {
-                            let p = p_base.add(i);
-                            let v0 = vld1q_u16(p);
-                            let v1 = vld1q_u16(p.add(8));
-                            let s1_0 = vaddq_u16(v0, vextq_u16::<7>(zero, v0));
-                            let s1_1 = vaddq_u16(v1, vextq_u16::<7>(zero, v1));
-                            let s2_0 = vaddq_u16(s1_0, vextq_u16::<6>(zero, s1_0));
-                            let s2_1 = vaddq_u16(s1_1, vextq_u16::<6>(zero, s1_1));
-                            let s3_0 = vaddq_u16(s2_0, vextq_u16::<4>(zero, s2_0));
-                            let s3_1 = vaddq_u16(s2_1, vextq_u16::<4>(zero, s2_1));
-                            let out0 = vaddq_u16(s3_0, carry);
-                            let carry0 = vdupq_laneq_u16::<7>(out0);
-                            let out1 = vaddq_u16(s3_1, carry0);
-                            carry = vdupq_laneq_u16::<7>(out1);
-                            vst1q_u16(p, out0);
-                            vst1q_u16(p.add(8), out1);
-                            i += 16;
-                        }
+                        delta_decode_tree_scan!(
+                            slice.as_mut_ptr(),
+                            n,
+                            i,
+                            8,
+                            zero,
+                            |p| vld1q_u16(p),
+                            |p, v| vst1q_u16(p, v),
+                            |a, b| vaddq_u16(a, b),
+                            |v| {
+                                let s1 = vaddq_u16(v, vextq_u16::<7>(zero, v));
+                                let s2 = vaddq_u16(s1, vextq_u16::<6>(zero, s1));
+                                vaddq_u16(s2, vextq_u16::<4>(zero, s2))
+                            },
+                            |v| vdupq_laneq_u16::<7>(v)
+                        );
                     }
                 }
                 #[cfg(all(not(kani), target_arch = "x86_64"))]
                 if n >= 16 {
                     unsafe {
                         use std::arch::x86_64::*;
-                        let mut carry = _mm_setzero_si128();
-                        let p_base = slice.as_mut_ptr();
-                        i = 0;
-                        while i + 16 <= n {
-                            let p = p_base.add(i) as *mut __m128i;
-                            let v0 = _mm_loadu_si128(p);
-                            let v1 = _mm_loadu_si128(p.add(1));
-                            let s1_0 = _mm_add_epi16(v0, _mm_slli_si128::<2>(v0));
-                            let s1_1 = _mm_add_epi16(v1, _mm_slli_si128::<2>(v1));
-                            let s2_0 = _mm_add_epi16(s1_0, _mm_slli_si128::<4>(s1_0));
-                            let s2_1 = _mm_add_epi16(s1_1, _mm_slli_si128::<4>(s1_1));
-                            let s3_0 = _mm_add_epi16(s2_0, _mm_slli_si128::<8>(s2_0));
-                            let s3_1 = _mm_add_epi16(s2_1, _mm_slli_si128::<8>(s2_1));
-                            let out0 = _mm_add_epi16(s3_0, carry);
-                            let carry0 =
-                                _mm_shuffle_epi32::<0xFF>(_mm_shufflehi_epi16::<0xFF>(out0));
-                            let out1 = _mm_add_epi16(s3_1, carry0);
-                            carry = _mm_shuffle_epi32::<0xFF>(_mm_shufflehi_epi16::<0xFF>(out1));
-                            _mm_storeu_si128(p, out0);
-                            _mm_storeu_si128(p.add(1), out1);
-                            i += 16;
-                        }
+                        delta_decode_tree_scan!(
+                            slice.as_mut_ptr(),
+                            n,
+                            i,
+                            8,
+                            _mm_setzero_si128(),
+                            |p: *mut u16| _mm_loadu_si128(p as *const __m128i),
+                            |p: *mut u16, v| _mm_storeu_si128(p as *mut __m128i, v),
+                            |a, b| _mm_add_epi16(a, b),
+                            |v| {
+                                let s1 = _mm_add_epi16(v, _mm_slli_si128::<2>(v));
+                                let s2 = _mm_add_epi16(s1, _mm_slli_si128::<4>(s1));
+                                _mm_add_epi16(s2, _mm_slli_si128::<8>(s2))
+                            },
+                            |v| _mm_shuffle_epi32::<0xFF>(_mm_shufflehi_epi16::<0xFF>(v))
+                        );
                     }
                 }
                 for j in i.max(1)..n {
@@ -439,56 +689,49 @@ pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
             }
             4 if (ptr as usize).is_multiple_of(std::mem::align_of::<u32>()) => {
                 let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u32, n) };
+                #[allow(unused_mut)]
                 let mut i = 1usize;
                 #[cfg(all(not(kani), target_arch = "aarch64"))]
                 if n >= 8 {
                     unsafe {
                         use std::arch::aarch64::*;
                         let zero = vdupq_n_u32(0);
-                        let mut carry = vdupq_n_u32(0);
-                        let p_base = slice.as_mut_ptr();
-                        i = 0;
-                        while i + 8 <= n {
-                            let p = p_base.add(i);
-                            let v0 = vld1q_u32(p);
-                            let v1 = vld1q_u32(p.add(4));
-                            let s1_0 = vaddq_u32(v0, vextq_u32::<3>(zero, v0));
-                            let s1_1 = vaddq_u32(v1, vextq_u32::<3>(zero, v1));
-                            let s2_0 = vaddq_u32(s1_0, vextq_u32::<2>(zero, s1_0));
-                            let s2_1 = vaddq_u32(s1_1, vextq_u32::<2>(zero, s1_1));
-                            let out0 = vaddq_u32(s2_0, carry);
-                            let carry0 = vdupq_laneq_u32::<3>(out0);
-                            let out1 = vaddq_u32(s2_1, carry0);
-                            carry = vdupq_laneq_u32::<3>(out1);
-                            vst1q_u32(p, out0);
-                            vst1q_u32(p.add(4), out1);
-                            i += 8;
-                        }
+                        delta_decode_tree_scan!(
+                            slice.as_mut_ptr(),
+                            n,
+                            i,
+                            4,
+                            zero,
+                            |p| vld1q_u32(p),
+                            |p, v| vst1q_u32(p, v),
+                            |a, b| vaddq_u32(a, b),
+                            |v| {
+                                let s1 = vaddq_u32(v, vextq_u32::<3>(zero, v));
+                                vaddq_u32(s1, vextq_u32::<2>(zero, s1))
+                            },
+                            |v| vdupq_laneq_u32::<3>(v)
+                        );
                     }
                 }
                 #[cfg(all(not(kani), target_arch = "x86_64"))]
                 if n >= 8 {
                     unsafe {
                         use std::arch::x86_64::*;
-                        let mut carry = _mm_setzero_si128();
-                        let p_base = slice.as_mut_ptr();
-                        i = 0;
-                        while i + 8 <= n {
-                            let p = p_base.add(i) as *mut __m128i;
-                            let v0 = _mm_loadu_si128(p);
-                            let v1 = _mm_loadu_si128(p.add(1));
-                            let s1_0 = _mm_add_epi32(v0, _mm_slli_si128::<4>(v0));
-                            let s1_1 = _mm_add_epi32(v1, _mm_slli_si128::<4>(v1));
-                            let s2_0 = _mm_add_epi32(s1_0, _mm_slli_si128::<8>(s1_0));
-                            let s2_1 = _mm_add_epi32(s1_1, _mm_slli_si128::<8>(s1_1));
-                            let out0 = _mm_add_epi32(s2_0, carry);
-                            let carry0 = _mm_shuffle_epi32::<0xFF>(out0);
-                            let out1 = _mm_add_epi32(s2_1, carry0);
-                            carry = _mm_shuffle_epi32::<0xFF>(out1);
-                            _mm_storeu_si128(p, out0);
-                            _mm_storeu_si128(p.add(1), out1);
-                            i += 8;
-                        }
+                        delta_decode_tree_scan!(
+                            slice.as_mut_ptr(),
+                            n,
+                            i,
+                            4,
+                            _mm_setzero_si128(),
+                            |p: *mut u32| _mm_loadu_si128(p as *const __m128i),
+                            |p: *mut u32, v| _mm_storeu_si128(p as *mut __m128i, v),
+                            |a, b| _mm_add_epi32(a, b),
+                            |v| {
+                                let s1 = _mm_add_epi32(v, _mm_slli_si128::<4>(v));
+                                _mm_add_epi32(s1, _mm_slli_si128::<8>(s1))
+                            },
+                            |v| _mm_shuffle_epi32::<0xFF>(v)
+                        );
                     }
                 }
                 for j in i.max(1)..n {
@@ -498,8 +741,47 @@ pub fn delta_decode_inplace(data: &mut [u8], typesize: usize) {
             }
             8 if (ptr as usize).is_multiple_of(std::mem::align_of::<u64>()) => {
                 let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u64, n) };
-                for i in 1..n {
-                    slice[i] = slice[i - 1].wrapping_add(slice[i]);
+                #[allow(unused_mut)]
+                let mut i = 1usize;
+                #[cfg(all(not(kani), target_arch = "aarch64"))]
+                if n >= 4 {
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let zero = vdupq_n_u64(0);
+                        delta_decode_tree_scan!(
+                            slice.as_mut_ptr(),
+                            n,
+                            i,
+                            2,
+                            zero,
+                            |p| vld1q_u64(p),
+                            |p, v| vst1q_u64(p, v),
+                            |a, b| vaddq_u64(a, b),
+                            |v| vaddq_u64(v, vextq_u64::<1>(zero, v)),
+                            |v| vdupq_laneq_u64::<1>(v)
+                        );
+                    }
+                }
+                #[cfg(all(not(kani), target_arch = "x86_64"))]
+                if n >= 4 {
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        delta_decode_tree_scan!(
+                            slice.as_mut_ptr(),
+                            n,
+                            i,
+                            2,
+                            _mm_setzero_si128(),
+                            |p: *mut u64| _mm_loadu_si128(p as *const __m128i),
+                            |p: *mut u64, v| _mm_storeu_si128(p as *mut __m128i, v),
+                            |a, b| _mm_add_epi64(a, b),
+                            |v| _mm_add_epi64(v, _mm_slli_si128::<8>(v)),
+                            |v| _mm_shuffle_epi32::<0xEE>(v)
+                        );
+                    }
+                }
+                for j in i.max(1)..n {
+                    slice[j] = slice[j - 1].wrapping_add(slice[j]);
                 }
                 return;
             }
@@ -558,48 +840,221 @@ pub fn shuffle_encode(data: &[u8], typesize: usize) -> Vec<u8> {
     if typesize <= 1 || data.is_empty() {
         return data.to_vec();
     }
-    let mut out = vec![0; data.len()];
-    let n = data.len() / typesize;
+    let len = data.len();
+    let n = len / typesize;
+
+    #[cfg(not(kani))]
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    #[cfg(kani)]
+    let mut out: Vec<u8> = vec![0; len];
+
+    let src = data.as_ptr();
+    let dst: *mut u8 = out.as_mut_ptr();
 
     match typesize {
         2 => {
-            for i in 0..n {
-                out[i] = data[i * 2];
-                out[n + i] = data[i * 2 + 1];
+            let mut i = 0usize;
+            #[cfg(all(not(kani), target_arch = "aarch64"))]
+            unsafe {
+                use std::arch::aarch64::*;
+                let d0 = dst;
+                let d1 = dst.add(n);
+                while i + 16 <= n {
+                    let pair = vld2q_u8(src.add(i * 2));
+                    vst1q_u8(d0.add(i), pair.0);
+                    vst1q_u8(d1.add(i), pair.1);
+                    i += 16;
+                }
+            }
+            #[cfg(all(not(kani), target_arch = "x86_64"))]
+            unsafe {
+                use std::arch::x86_64::*;
+                let d0 = dst;
+                let d1 = dst.add(n);
+                while i + 16 <= n {
+                    let v0 = _mm_loadu_si128(src.add(i * 2) as *const __m128i);
+                    let v1 = _mm_loadu_si128(src.add(i * 2 + 16) as *const __m128i);
+                    let (s0, s1) = sse2_deinterleave_u16_bytes(v0, v1);
+                    _mm_storeu_si128(d0.add(i) as *mut __m128i, s0);
+                    _mm_storeu_si128(d1.add(i) as *mut __m128i, s1);
+                    i += 16;
+                }
+            }
+            while i < n {
+                unsafe {
+                    *dst.add(i) = *src.add(i * 2);
+                    *dst.add(n + i) = *src.add(i * 2 + 1);
+                }
+                i += 1;
             }
         }
         4 => {
-            for i in 0..n {
-                out[i] = data[i * 4];
-                out[n + i] = data[i * 4 + 1];
-                out[2 * n + i] = data[i * 4 + 2];
-                out[3 * n + i] = data[i * 4 + 3];
+            let mut i = 0usize;
+            #[cfg(all(not(kani), target_arch = "aarch64"))]
+            unsafe {
+                use std::arch::aarch64::*;
+                let d0 = dst;
+                let d1 = dst.add(n);
+                let d2 = dst.add(2 * n);
+                let d3 = dst.add(3 * n);
+                while i + 16 <= n {
+                    let quad = vld4q_u8(src.add(i * 4));
+                    vst1q_u8(d0.add(i), quad.0);
+                    vst1q_u8(d1.add(i), quad.1);
+                    vst1q_u8(d2.add(i), quad.2);
+                    vst1q_u8(d3.add(i), quad.3);
+                    i += 16;
+                }
+            }
+            #[cfg(all(not(kani), target_arch = "x86_64"))]
+            unsafe {
+                use std::arch::x86_64::*;
+                let d0 = dst;
+                let d1 = dst.add(n);
+                let d2 = dst.add(2 * n);
+                let d3 = dst.add(3 * n);
+                while i + 16 <= n {
+                    let p = src.add(i * 4) as *const __m128i;
+                    let v0 = _mm_loadu_si128(p);
+                    let v1 = _mm_loadu_si128(p.add(1));
+                    let v2 = _mm_loadu_si128(p.add(2));
+                    let v3 = _mm_loadu_si128(p.add(3));
+                    let (e01, o01) = sse2_deinterleave_u16_bytes(v0, v1);
+                    let (e23, o23) = sse2_deinterleave_u16_bytes(v2, v3);
+                    let (s0, s2) = sse2_deinterleave_u16_bytes(e01, e23);
+                    let (s1, s3) = sse2_deinterleave_u16_bytes(o01, o23);
+                    _mm_storeu_si128(d0.add(i) as *mut __m128i, s0);
+                    _mm_storeu_si128(d1.add(i) as *mut __m128i, s1);
+                    _mm_storeu_si128(d2.add(i) as *mut __m128i, s2);
+                    _mm_storeu_si128(d3.add(i) as *mut __m128i, s3);
+                    i += 16;
+                }
+            }
+            while i < n {
+                unsafe {
+                    *dst.add(i) = *src.add(i * 4);
+                    *dst.add(n + i) = *src.add(i * 4 + 1);
+                    *dst.add(2 * n + i) = *src.add(i * 4 + 2);
+                    *dst.add(3 * n + i) = *src.add(i * 4 + 3);
+                }
+                i += 1;
             }
         }
         8 => {
-            for i in 0..n {
-                out[i] = data[i * 8];
-                out[n + i] = data[i * 8 + 1];
-                out[2 * n + i] = data[i * 8 + 2];
-                out[3 * n + i] = data[i * 8 + 3];
-                out[4 * n + i] = data[i * 8 + 4];
-                out[5 * n + i] = data[i * 8 + 5];
-                out[6 * n + i] = data[i * 8 + 6];
-                out[7 * n + i] = data[i * 8 + 7];
+            let mut i = 0usize;
+            #[cfg(all(not(kani), target_arch = "aarch64"))]
+            unsafe {
+                use std::arch::aarch64::*;
+                let d0 = dst;
+                let d1 = dst.add(n);
+                let d2 = dst.add(2 * n);
+                let d3 = dst.add(3 * n);
+                let d4 = dst.add(4 * n);
+                let d5 = dst.add(5 * n);
+                let d6 = dst.add(6 * n);
+                let d7 = dst.add(7 * n);
+                while i + 16 <= n {
+                    let a = vld4q_u8(src.add(i * 8));
+                    let b = vld4q_u8(src.add(i * 8 + 64));
+                    vst1q_u8(d0.add(i), vuzp1q_u8(a.0, b.0));
+                    vst1q_u8(d4.add(i), vuzp2q_u8(a.0, b.0));
+                    vst1q_u8(d1.add(i), vuzp1q_u8(a.1, b.1));
+                    vst1q_u8(d5.add(i), vuzp2q_u8(a.1, b.1));
+                    vst1q_u8(d2.add(i), vuzp1q_u8(a.2, b.2));
+                    vst1q_u8(d6.add(i), vuzp2q_u8(a.2, b.2));
+                    vst1q_u8(d3.add(i), vuzp1q_u8(a.3, b.3));
+                    vst1q_u8(d7.add(i), vuzp2q_u8(a.3, b.3));
+                    i += 16;
+                }
+            }
+            #[cfg(all(not(kani), target_arch = "x86_64"))]
+            unsafe {
+                use std::arch::x86_64::*;
+                let d0 = dst;
+                let d1 = dst.add(n);
+                let d2 = dst.add(2 * n);
+                let d3 = dst.add(3 * n);
+                let d4 = dst.add(4 * n);
+                let d5 = dst.add(5 * n);
+                let d6 = dst.add(6 * n);
+                let d7 = dst.add(7 * n);
+                while i + 16 <= n {
+                    let p = src.add(i * 8) as *const __m128i;
+                    let (e01, o01) =
+                        sse2_deinterleave_u16_bytes(_mm_loadu_si128(p), _mm_loadu_si128(p.add(1)));
+                    let (e23, o23) = sse2_deinterleave_u16_bytes(
+                        _mm_loadu_si128(p.add(2)),
+                        _mm_loadu_si128(p.add(3)),
+                    );
+                    let (e45, o45) = sse2_deinterleave_u16_bytes(
+                        _mm_loadu_si128(p.add(4)),
+                        _mm_loadu_si128(p.add(5)),
+                    );
+                    let (e67, o67) = sse2_deinterleave_u16_bytes(
+                        _mm_loadu_si128(p.add(6)),
+                        _mm_loadu_si128(p.add(7)),
+                    );
+                    let (ee0, eo0) = sse2_deinterleave_u16_bytes(e01, e23);
+                    let (ee1, eo1) = sse2_deinterleave_u16_bytes(e45, e67);
+                    let (oe0, oo0) = sse2_deinterleave_u16_bytes(o01, o23);
+                    let (oe1, oo1) = sse2_deinterleave_u16_bytes(o45, o67);
+                    let (s0, s4) = sse2_deinterleave_u16_bytes(ee0, ee1);
+                    let (s2, s6) = sse2_deinterleave_u16_bytes(eo0, eo1);
+                    let (s1, s5) = sse2_deinterleave_u16_bytes(oe0, oe1);
+                    let (s3, s7) = sse2_deinterleave_u16_bytes(oo0, oo1);
+                    _mm_storeu_si128(d0.add(i) as *mut __m128i, s0);
+                    _mm_storeu_si128(d1.add(i) as *mut __m128i, s1);
+                    _mm_storeu_si128(d2.add(i) as *mut __m128i, s2);
+                    _mm_storeu_si128(d3.add(i) as *mut __m128i, s3);
+                    _mm_storeu_si128(d4.add(i) as *mut __m128i, s4);
+                    _mm_storeu_si128(d5.add(i) as *mut __m128i, s5);
+                    _mm_storeu_si128(d6.add(i) as *mut __m128i, s6);
+                    _mm_storeu_si128(d7.add(i) as *mut __m128i, s7);
+                    i += 16;
+                }
+            }
+            while i < n {
+                unsafe {
+                    *dst.add(i) = *src.add(i * 8);
+                    *dst.add(n + i) = *src.add(i * 8 + 1);
+                    *dst.add(2 * n + i) = *src.add(i * 8 + 2);
+                    *dst.add(3 * n + i) = *src.add(i * 8 + 3);
+                    *dst.add(4 * n + i) = *src.add(i * 8 + 4);
+                    *dst.add(5 * n + i) = *src.add(i * 8 + 5);
+                    *dst.add(6 * n + i) = *src.add(i * 8 + 6);
+                    *dst.add(7 * n + i) = *src.add(i * 8 + 7);
+                }
+                i += 1;
             }
         }
         _ => {
             for i in 0..n {
                 for j in 0..typesize {
-                    out[j * n + i] = data[i * typesize + j];
+                    unsafe {
+                        *dst.add(j * n + i) = *src.add(i * typesize + j);
+                    }
                 }
             }
         }
     }
 
     let tail_start = n * typesize;
-    if tail_start < data.len() {
-        out[tail_start..].copy_from_slice(&data[tail_start..]);
+    if tail_start < len {
+        // SAFETY: `tail_start < len`, `src` and `dst` are non-overlapping, and `dst` has capacity `len`.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src.add(tail_start),
+                dst.add(tail_start),
+                len - tail_start,
+            );
+        }
+    }
+
+    // SAFETY: Every byte in `0..len` (`typesize * n` stream bytes plus `tail_start..len`
+    // remainder) has now been initialized via `dst`.
+    #[cfg(not(kani))]
+    unsafe {
+        out.set_len(len);
     }
 
     out
@@ -609,48 +1064,240 @@ pub fn shuffle_decode(data: &[u8], typesize: usize) -> Vec<u8> {
     if typesize <= 1 || data.is_empty() {
         return data.to_vec();
     }
-    let mut out = vec![0; data.len()];
-    let n = data.len() / typesize;
+    let len = data.len();
+    let n = len / typesize;
+
+    #[cfg(not(kani))]
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    #[cfg(kani)]
+    let mut out: Vec<u8> = vec![0; len];
+
+    let src = data.as_ptr();
+    let dst: *mut u8 = out.as_mut_ptr();
 
     match typesize {
         2 => {
-            for i in 0..n {
-                out[i * 2] = data[i];
-                out[i * 2 + 1] = data[n + i];
+            let mut i = 0usize;
+            #[cfg(all(not(kani), target_arch = "aarch64"))]
+            unsafe {
+                use std::arch::aarch64::*;
+                let s0 = src;
+                let s1 = src.add(n);
+                while i + 16 <= n {
+                    let v0 = vld1q_u8(s0.add(i));
+                    let v1 = vld1q_u8(s1.add(i));
+                    vst2q_u8(dst.add(i * 2), uint8x16x2_t(v0, v1));
+                    i += 16;
+                }
+            }
+            #[cfg(all(not(kani), target_arch = "x86_64"))]
+            unsafe {
+                use std::arch::x86_64::*;
+                let s0 = src;
+                let s1 = src.add(n);
+                while i + 16 <= n {
+                    let v0 = _mm_loadu_si128(s0.add(i) as *const __m128i);
+                    let v1 = _mm_loadu_si128(s1.add(i) as *const __m128i);
+                    _mm_storeu_si128(dst.add(i * 2) as *mut __m128i, _mm_unpacklo_epi8(v0, v1));
+                    _mm_storeu_si128(
+                        dst.add(i * 2 + 16) as *mut __m128i,
+                        _mm_unpackhi_epi8(v0, v1),
+                    );
+                    i += 16;
+                }
+            }
+            while i < n {
+                unsafe {
+                    *dst.add(i * 2) = *src.add(i);
+                    *dst.add(i * 2 + 1) = *src.add(n + i);
+                }
+                i += 1;
             }
         }
         4 => {
-            for i in 0..n {
-                out[i * 4] = data[i];
-                out[i * 4 + 1] = data[n + i];
-                out[i * 4 + 2] = data[2 * n + i];
-                out[i * 4 + 3] = data[3 * n + i];
+            let mut i = 0usize;
+            #[cfg(all(not(kani), target_arch = "aarch64"))]
+            unsafe {
+                use std::arch::aarch64::*;
+                let s0 = src;
+                let s1 = src.add(n);
+                let s2 = src.add(2 * n);
+                let s3 = src.add(3 * n);
+                while i + 16 <= n {
+                    let v0 = vld1q_u8(s0.add(i));
+                    let v1 = vld1q_u8(s1.add(i));
+                    let v2 = vld1q_u8(s2.add(i));
+                    let v3 = vld1q_u8(s3.add(i));
+                    vst4q_u8(dst.add(i * 4), uint8x16x4_t(v0, v1, v2, v3));
+                    i += 16;
+                }
+            }
+            #[cfg(all(not(kani), target_arch = "x86_64"))]
+            unsafe {
+                use std::arch::x86_64::*;
+                let s0 = src;
+                let s1 = src.add(n);
+                let s2 = src.add(2 * n);
+                let s3 = src.add(3 * n);
+                while i + 16 <= n {
+                    let v0 = _mm_loadu_si128(s0.add(i) as *const __m128i);
+                    let v1 = _mm_loadu_si128(s1.add(i) as *const __m128i);
+                    let v2 = _mm_loadu_si128(s2.add(i) as *const __m128i);
+                    let v3 = _mm_loadu_si128(s3.add(i) as *const __m128i);
+                    let t01_lo = _mm_unpacklo_epi8(v0, v1);
+                    let t01_hi = _mm_unpackhi_epi8(v0, v1);
+                    let t23_lo = _mm_unpacklo_epi8(v2, v3);
+                    let t23_hi = _mm_unpackhi_epi8(v2, v3);
+                    let p = dst.add(i * 4) as *mut __m128i;
+                    _mm_storeu_si128(p, _mm_unpacklo_epi16(t01_lo, t23_lo));
+                    _mm_storeu_si128(p.add(1), _mm_unpackhi_epi16(t01_lo, t23_lo));
+                    _mm_storeu_si128(p.add(2), _mm_unpacklo_epi16(t01_hi, t23_hi));
+                    _mm_storeu_si128(p.add(3), _mm_unpackhi_epi16(t01_hi, t23_hi));
+                    i += 16;
+                }
+            }
+            while i < n {
+                unsafe {
+                    *dst.add(i * 4) = *src.add(i);
+                    *dst.add(i * 4 + 1) = *src.add(n + i);
+                    *dst.add(i * 4 + 2) = *src.add(2 * n + i);
+                    *dst.add(i * 4 + 3) = *src.add(3 * n + i);
+                }
+                i += 1;
             }
         }
         8 => {
-            for i in 0..n {
-                out[i * 8] = data[i];
-                out[i * 8 + 1] = data[n + i];
-                out[i * 8 + 2] = data[2 * n + i];
-                out[i * 8 + 3] = data[3 * n + i];
-                out[i * 8 + 4] = data[4 * n + i];
-                out[i * 8 + 5] = data[5 * n + i];
-                out[i * 8 + 6] = data[6 * n + i];
-                out[i * 8 + 7] = data[7 * n + i];
+            let mut i = 0usize;
+            #[cfg(all(not(kani), target_arch = "aarch64"))]
+            unsafe {
+                use std::arch::aarch64::*;
+                let b0 = src;
+                let b1 = src.add(n);
+                let b2 = src.add(2 * n);
+                let b3 = src.add(3 * n);
+                let b4 = src.add(4 * n);
+                let b5 = src.add(5 * n);
+                let b6 = src.add(6 * n);
+                let b7 = src.add(7 * n);
+                while i + 16 <= n {
+                    let s0 = vld1q_u8(b0.add(i));
+                    let s1 = vld1q_u8(b1.add(i));
+                    let s2 = vld1q_u8(b2.add(i));
+                    let s3 = vld1q_u8(b3.add(i));
+                    let s4 = vld1q_u8(b4.add(i));
+                    let s5 = vld1q_u8(b5.add(i));
+                    let s6 = vld1q_u8(b6.add(i));
+                    let s7 = vld1q_u8(b7.add(i));
+                    let a = uint8x16x4_t(
+                        vzip1q_u8(s0, s4),
+                        vzip1q_u8(s1, s5),
+                        vzip1q_u8(s2, s6),
+                        vzip1q_u8(s3, s7),
+                    );
+                    let b = uint8x16x4_t(
+                        vzip2q_u8(s0, s4),
+                        vzip2q_u8(s1, s5),
+                        vzip2q_u8(s2, s6),
+                        vzip2q_u8(s3, s7),
+                    );
+                    vst4q_u8(dst.add(i * 8), a);
+                    vst4q_u8(dst.add(i * 8 + 64), b);
+                    i += 16;
+                }
+            }
+            #[cfg(all(not(kani), target_arch = "x86_64"))]
+            unsafe {
+                use std::arch::x86_64::*;
+                let b0 = src;
+                let b1 = src.add(n);
+                let b2 = src.add(2 * n);
+                let b3 = src.add(3 * n);
+                let b4 = src.add(4 * n);
+                let b5 = src.add(5 * n);
+                let b6 = src.add(6 * n);
+                let b7 = src.add(7 * n);
+                while i + 16 <= n {
+                    let s0 = _mm_loadu_si128(b0.add(i) as *const __m128i);
+                    let s1 = _mm_loadu_si128(b1.add(i) as *const __m128i);
+                    let s2 = _mm_loadu_si128(b2.add(i) as *const __m128i);
+                    let s3 = _mm_loadu_si128(b3.add(i) as *const __m128i);
+                    let s4 = _mm_loadu_si128(b4.add(i) as *const __m128i);
+                    let s5 = _mm_loadu_si128(b5.add(i) as *const __m128i);
+                    let s6 = _mm_loadu_si128(b6.add(i) as *const __m128i);
+                    let s7 = _mm_loadu_si128(b7.add(i) as *const __m128i);
+
+                    let t01_l = _mm_unpacklo_epi8(s0, s1);
+                    let t01_h = _mm_unpackhi_epi8(s0, s1);
+                    let t23_l = _mm_unpacklo_epi8(s2, s3);
+                    let t23_h = _mm_unpackhi_epi8(s2, s3);
+                    let t45_l = _mm_unpacklo_epi8(s4, s5);
+                    let t45_h = _mm_unpackhi_epi8(s4, s5);
+                    let t67_l = _mm_unpacklo_epi8(s6, s7);
+                    let t67_h = _mm_unpackhi_epi8(s6, s7);
+
+                    let q0 = _mm_unpacklo_epi16(t01_l, t23_l);
+                    let q1 = _mm_unpackhi_epi16(t01_l, t23_l);
+                    let q2 = _mm_unpacklo_epi16(t01_h, t23_h);
+                    let q3 = _mm_unpackhi_epi16(t01_h, t23_h);
+                    let q4 = _mm_unpacklo_epi16(t45_l, t67_l);
+                    let q5 = _mm_unpackhi_epi16(t45_l, t67_l);
+                    let q6 = _mm_unpacklo_epi16(t45_h, t67_h);
+                    let q7 = _mm_unpackhi_epi16(t45_h, t67_h);
+
+                    let p = dst.add(i * 8) as *mut __m128i;
+                    _mm_storeu_si128(p, _mm_unpacklo_epi32(q0, q4));
+                    _mm_storeu_si128(p.add(1), _mm_unpackhi_epi32(q0, q4));
+                    _mm_storeu_si128(p.add(2), _mm_unpacklo_epi32(q1, q5));
+                    _mm_storeu_si128(p.add(3), _mm_unpackhi_epi32(q1, q5));
+                    _mm_storeu_si128(p.add(4), _mm_unpacklo_epi32(q2, q6));
+                    _mm_storeu_si128(p.add(5), _mm_unpackhi_epi32(q2, q6));
+                    _mm_storeu_si128(p.add(6), _mm_unpacklo_epi32(q3, q7));
+                    _mm_storeu_si128(p.add(7), _mm_unpackhi_epi32(q3, q7));
+                    i += 16;
+                }
+            }
+            while i < n {
+                unsafe {
+                    *dst.add(i * 8) = *src.add(i);
+                    *dst.add(i * 8 + 1) = *src.add(n + i);
+                    *dst.add(i * 8 + 2) = *src.add(2 * n + i);
+                    *dst.add(i * 8 + 3) = *src.add(3 * n + i);
+                    *dst.add(i * 8 + 4) = *src.add(4 * n + i);
+                    *dst.add(i * 8 + 5) = *src.add(5 * n + i);
+                    *dst.add(i * 8 + 6) = *src.add(6 * n + i);
+                    *dst.add(i * 8 + 7) = *src.add(7 * n + i);
+                }
+                i += 1;
             }
         }
         _ => {
             for i in 0..n {
                 for j in 0..typesize {
-                    out[i * typesize + j] = data[j * n + i];
+                    unsafe {
+                        *dst.add(i * typesize + j) = *src.add(j * n + i);
+                    }
                 }
             }
         }
     }
 
     let tail_start = n * typesize;
-    if tail_start < data.len() {
-        out[tail_start..].copy_from_slice(&data[tail_start..]);
+    if tail_start < len {
+        // SAFETY: `tail_start < len`, `src` and `dst` are non-overlapping, and `dst` has capacity `len`.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src.add(tail_start),
+                dst.add(tail_start),
+                len - tail_start,
+            );
+        }
+    }
+
+    // SAFETY: Every byte in `0..len` (`typesize * n` element bytes plus `tail_start..len`
+    // remainder) has now been initialized via `dst`.
+    #[cfg(not(kani))]
+    unsafe {
+        out.set_len(len);
     }
 
     out

@@ -339,6 +339,7 @@ type MetadataBlockShard = crate::CachePadded<RwLock<FxHashMap<u64, Arc<[u8; BLOC
 
 struct MetadataBlockCache {
     shards: Box<[MetadataBlockShard]>,
+    count: crate::CachePadded<AtomicUsize>,
 }
 
 impl MetadataBlockCache {
@@ -352,6 +353,7 @@ impl MetadataBlockCache {
         }
         Self {
             shards: shards.into_boxed_slice(),
+            count: crate::CachePadded::new(AtomicUsize::new(0)),
         }
     }
 
@@ -363,6 +365,9 @@ impl MetadataBlockCache {
 
     #[inline]
     fn get(&self, block_id: u64) -> Option<Arc<[u8; BLOCK_SIZE]>> {
+        if self.count.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
         let shard = self.shards[Self::shard_idx(block_id)]
             .read()
             .unwrap_or_else(|e| e.into_inner());
@@ -373,6 +378,9 @@ impl MetadataBlockCache {
     /// cloning the `Arc`, eliminating atomic refcount contention on hot indirect pointer blocks.
     #[inline]
     fn read_u64_le(&self, block_id: u64, off: usize) -> Option<u64> {
+        if self.count.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
         let shard = self.shards[Self::shard_idx(block_id)]
             .read()
             .unwrap_or_else(|e| e.into_inner());
@@ -385,19 +393,35 @@ impl MetadataBlockCache {
         let mut shard = self.shards[Self::shard_idx(block_id)]
             .write()
             .unwrap_or_else(|e| e.into_inner());
-        if shard.len() >= Self::MAX_PER_SHARD && !shard.contains_key(&block_id) {
+        let existed = shard.contains_key(&block_id);
+        let mut net_delta: isize = if existed { 0 } else { 1 };
+        if shard.len() >= Self::MAX_PER_SHARD && !existed {
             // Drop one arbitrary entry rather than wiping the entire shard.
-            if let Some(&evict_key) = shard.keys().next() {
-                shard.remove(&evict_key);
+            if let Some(&evict_key) = shard.keys().next()
+                && shard.remove(&evict_key).is_some()
+            {
+                net_delta -= 1;
             }
         }
         shard.insert(block_id, block);
+        if net_delta > 0 {
+            self.count.fetch_add(net_delta as usize, Ordering::AcqRel);
+        }
     }
 
+    #[inline]
     fn update_if_present(&self, block_id: u64, offset_in_block: usize, data: &[u8]) {
-        let mut shard = self.shards[Self::shard_idx(block_id)]
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
+        if self.count.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        let idx = Self::shard_idx(block_id);
+        {
+            let shard = self.shards[idx].read().unwrap_or_else(|e| e.into_inner());
+            if !shard.contains_key(&block_id) {
+                return;
+            }
+        }
+        let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
         if let Some(arc_blk) = shard.get_mut(&block_id) {
             let end = (offset_in_block + data.len()).min(BLOCK_SIZE);
             if offset_in_block < end {
@@ -407,25 +431,49 @@ impl MetadataBlockCache {
         }
     }
 
+    #[inline]
     fn invalidate(&self, block_id: u64) {
-        let mut shard = self.shards[Self::shard_idx(block_id)]
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        shard.remove(&block_id);
+        if self.count.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        let idx = Self::shard_idx(block_id);
+        {
+            let shard = self.shards[idx].read().unwrap_or_else(|e| e.into_inner());
+            if !shard.contains_key(&block_id) {
+                return;
+            }
+        }
+        let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
+        if shard.remove(&block_id).is_some() {
+            self.count.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 
     fn invalidate_block_range(&self, first_blk: u64, last_blk: u64) {
+        if self.count.load(Ordering::Acquire) == 0 {
+            return;
+        }
         for lock in self.shards.iter() {
             let mut shard = lock.write().unwrap_or_else(|e| e.into_inner());
             if !shard.is_empty() {
+                let before = shard.len();
                 shard.retain(|&k, _| k < first_blk || k > last_blk);
+                let removed = before - shard.len();
+                if removed > 0 {
+                    self.count.fetch_sub(removed, Ordering::AcqRel);
+                }
             }
         }
     }
 
     fn clear(&self) {
         for s in self.shards.iter() {
-            s.write().unwrap_or_else(|e| e.into_inner()).clear();
+            let mut shard = s.write().unwrap_or_else(|e| e.into_inner());
+            let removed = shard.len();
+            shard.clear();
+            if removed > 0 {
+                self.count.fetch_sub(removed, Ordering::AcqRel);
+            }
         }
     }
 }
@@ -600,6 +648,19 @@ impl DataPageCache {
         None
     }
 
+    /// Returns `true` if `block_id` is currently cached (shared shard read lock only).
+    #[inline]
+    fn contains(&self, block_id: u64) -> bool {
+        if self.count.load(Ordering::Relaxed) == 0 {
+            return false;
+        }
+        self.shards[Self::shard_idx(block_id)]
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .map
+            .contains_key(&block_id)
+    }
+
     /// Attempts to copy `[in_blk_off..in_blk_off + dst.len()]` from a cached block.
     /// Returns `true` on hit (under a shared shard read lock with lock-free clock bit update).
     #[inline]
@@ -663,9 +724,14 @@ impl DataPageCache {
         if self.count.load(Ordering::Acquire) == 0 {
             return;
         }
-        let mut shard = self.shards[Self::shard_idx(block_id)]
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
+        let idx = Self::shard_idx(block_id);
+        {
+            let shard = self.shards[idx].read().unwrap_or_else(|e| e.into_inner());
+            if !shard.map.contains_key(&block_id) {
+                return;
+            }
+        }
+        let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = shard.map.get_mut(&block_id) {
             let end = (offset_in_block + data.len()).min(BLOCK_SIZE);
             if offset_in_block < end {
@@ -679,9 +745,14 @@ impl DataPageCache {
         if self.count.load(Ordering::Acquire) == 0 {
             return;
         }
-        let mut shard = self.shards[Self::shard_idx(block_id)]
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
+        let idx = Self::shard_idx(block_id);
+        {
+            let shard = self.shards[idx].read().unwrap_or_else(|e| e.into_inner());
+            if !shard.map.contains_key(&block_id) {
+                return;
+            }
+        }
+        let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
         if shard.map.remove(&block_id).is_some() {
             self.count.fetch_sub(1, Ordering::AcqRel);
         }
@@ -739,6 +810,7 @@ pub(crate) struct FileBacking {
     data_bitmap: Vec<u8>,
     journal_off: u64,
     journal_buf: Vec<u8>,
+    data_off: u64,
     block_cache: MetadataBlockCache,
     data_cache: DataPageCache,
 }
@@ -767,6 +839,7 @@ impl FileBacking {
             data_bitmap: Vec::new(),
             journal_off: 0,
             journal_buf: Vec::new(),
+            data_off: 0,
             block_cache: MetadataBlockCache::new(),
             data_cache: DataPageCache::new(DataPageCache::default_capacity_bytes()),
         }
@@ -859,6 +932,7 @@ impl FileBacking {
         self.data_bitmap = db;
         self.journal_off = j_off;
         self.journal_buf = jb;
+        self.data_off = sb.data_block_start.saturating_mul(BLOCK_SIZE as u64);
         self.block_cache.clear();
         self.data_cache.clear();
         Ok(())
@@ -869,25 +943,27 @@ impl FileBacking {
     fn sync_mirrors_on_write(&mut self, offset: u64, src: &[u8]) {
         let write_end = offset.saturating_add(src.len() as u64);
 
-        // Helper to copy overlapping range into a mirror buffer.
-        let copy_overlap = |mirror_off: u64, mirror: &mut [u8]| {
-            if mirror.is_empty() {
-                return;
-            }
-            let m_end = mirror_off.saturating_add(mirror.len() as u64);
-            let ov_start = offset.max(mirror_off);
-            let ov_end = write_end.min(m_end);
-            if ov_start < ov_end {
-                let s_off = (ov_start - offset) as usize;
-                let m_off = (ov_start - mirror_off) as usize;
-                let n = (ov_end - ov_start) as usize;
-                mirror[m_off..m_off + n].copy_from_slice(&src[s_off..s_off + n]);
-            }
-        };
+        if self.data_off == 0 || offset < self.data_off {
+            // Helper to copy overlapping range into a mirror buffer.
+            let copy_overlap = |mirror_off: u64, mirror: &mut [u8]| {
+                if mirror.is_empty() {
+                    return;
+                }
+                let m_end = mirror_off.saturating_add(mirror.len() as u64);
+                let ov_start = offset.max(mirror_off);
+                let ov_end = write_end.min(m_end);
+                if ov_start < ov_end {
+                    let s_off = (ov_start - offset) as usize;
+                    let m_off = (ov_start - mirror_off) as usize;
+                    let n = (ov_end - ov_start) as usize;
+                    mirror[m_off..m_off + n].copy_from_slice(&src[s_off..s_off + n]);
+                }
+            };
 
-        copy_overlap(self.inode_bitmap_off, &mut self.inode_bitmap);
-        copy_overlap(self.data_bitmap_off, &mut self.data_bitmap);
-        copy_overlap(self.journal_off, &mut self.journal_buf);
+            copy_overlap(self.inode_bitmap_off, &mut self.inode_bitmap);
+            copy_overlap(self.data_bitmap_off, &mut self.data_bitmap);
+            copy_overlap(self.journal_off, &mut self.journal_buf);
+        }
 
         // Keep cached 4 KiB metadata and data blocks coherent with [offset..write_end).
         if !src.is_empty() {
@@ -1429,23 +1505,68 @@ impl ImageBacking {
                     let blk_id = cur_off / BLOCK_SIZE as u64;
                     let in_blk = (cur_off % BLOCK_SIZE as u64) as usize;
                     let take = (dst.len() - written).min(BLOCK_SIZE - in_blk);
-                    let dst_slice = &mut dst[written..written + take];
-                    if !fb.data_cache.try_copy_into(blk_id, in_blk, dst_slice) {
-                        let blk_byte_off = blk_id * BLOCK_SIZE as u64;
-                        if (blk_byte_off as usize)
-                            .checked_add(BLOCK_SIZE)
-                            .is_some_and(|e| e <= fb.len)
-                        {
+                    if fb.data_cache.try_copy_into(
+                        blk_id,
+                        in_blk,
+                        &mut dst[written..written + take],
+                    ) {
+                        written += take;
+                        cur_off += take as u64;
+                        continue;
+                    }
+
+                    let blk_byte_off = blk_id * BLOCK_SIZE as u64;
+                    if (blk_byte_off as usize)
+                        .checked_add(BLOCK_SIZE)
+                        .is_some_and(|e| e <= fb.len)
+                    {
+                        // Coalesce contiguous missed full blocks in this request into one `pread` syscall.
+                        let end_blk_inclusive = (offset + dst.len() as u64 - 1) / BLOCK_SIZE as u64;
+                        let mut run_blocks = 1usize;
+                        let mut probe_blk = blk_id + 1;
+                        while probe_blk <= end_blk_inclusive {
+                            let p_byte_off = probe_blk * BLOCK_SIZE as u64;
+                            if (p_byte_off as usize)
+                                .checked_add(BLOCK_SIZE)
+                                .is_some_and(|e| e <= fb.len)
+                                && !fb.data_cache.contains(probe_blk)
+                            {
+                                run_blocks += 1;
+                                probe_blk += 1;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        if run_blocks == 1 {
                             let mut page = Box::new([0u8; BLOCK_SIZE]);
                             file_read_exact_at(&fb.file, blk_byte_off, &mut page[..])?;
-                            dst_slice.copy_from_slice(&page[in_blk..in_blk + take]);
+                            dst[written..written + take]
+                                .copy_from_slice(&page[in_blk..in_blk + take]);
                             fb.data_cache.insert(blk_id, page);
+                            written += take;
+                            cur_off += take as u64;
                         } else {
-                            file_read_exact_at(&fb.file, cur_off, dst_slice)?;
+                            let total_bytes = run_blocks * BLOCK_SIZE;
+                            let total_take = (dst.len() - written).min(total_bytes - in_blk);
+                            let mut scratch = vec![0u8; total_bytes];
+                            file_read_exact_at(&fb.file, blk_byte_off, &mut scratch)?;
+                            dst[written..written + total_take]
+                                .copy_from_slice(&scratch[in_blk..in_blk + total_take]);
+                            for i in 0..run_blocks {
+                                let p_off = i * BLOCK_SIZE;
+                                let mut page = Box::new([0u8; BLOCK_SIZE]);
+                                page.copy_from_slice(&scratch[p_off..p_off + BLOCK_SIZE]);
+                                fb.data_cache.insert(blk_id + i as u64, page);
+                            }
+                            written += total_take;
+                            cur_off += total_take as u64;
                         }
+                    } else {
+                        file_read_exact_at(&fb.file, cur_off, &mut dst[written..written + take])?;
+                        written += take;
+                        cur_off += take as u64;
                     }
-                    written += take;
-                    cur_off += take as u64;
                 }
                 Ok(())
             }

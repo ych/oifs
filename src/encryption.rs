@@ -68,10 +68,14 @@ pub struct EncryptionKey {
     filename_cipher_key: [u8; 32],
     /// Domain-separated 256-bit subkey for file and chunk C2SP `XAES-256-GCM` payloads (v3)
     aes_payload_key: [u8; 32],
+    /// Pre-expanded AES-256 cipher schedule for C2SP `XAES-256-GCM` subkey derivation
+    aes_payload_cipher: Aes256,
     /// Precomputed C2SP `XAES-256-GCM` CMAC doubling constant `K1` for `aes_payload_key`
     aes_payload_k1: [u8; 16],
     /// Domain-separated 256-bit subkey for filename RFC 8452 `AES-256-GCM-SIV` encryption (v3)
     aes_filename_key: [u8; 32],
+    /// Pre-expanded AES-256-GCM-SIV cipher instance for deterministic `v3` filenames
+    aes_filename_cipher: Aes256GcmSiv,
     /// Domain separation label: see [`KDF_CONTEXT_IPC_AUTH`].
     /// Domain-separated 256-bit subkey for IPC challenge-response authentication
     ipc_auth_key: [u8; 32],
@@ -86,8 +90,10 @@ impl Zeroize for EncryptionKey {
         self.filename_siv_key.zeroize();
         self.filename_cipher_key.zeroize();
         self.aes_payload_key.zeroize();
+        self.aes_payload_cipher = Aes256::new(&[0u8; 32].into());
         self.aes_payload_k1.zeroize();
         self.aes_filename_key.zeroize();
+        self.aes_filename_cipher = Aes256GcmSiv::new(&[0u8; 32].into());
         self.ipc_auth_key.zeroize();
         self.superblock_mac_key.zeroize();
     }
@@ -109,8 +115,10 @@ impl EncryptionKey {
         let filename_siv_key = derive_subkey(&bytes, KDF_CONTEXT_FILENAME_SIV);
         let filename_cipher_key = derive_subkey(&bytes, KDF_CONTEXT_FILENAME_CIPHER);
         let aes_payload_key = derive_subkey(&bytes, KDF_CONTEXT_PAYLOAD_XAES256GCM);
+        let aes_payload_cipher = Aes256::new((&aes_payload_key).into());
         let aes_payload_k1 = xaes256gcm_derive_k1(&aes_payload_key);
         let aes_filename_key = derive_subkey(&bytes, KDF_CONTEXT_FILENAME_AES256GCMSIV);
+        let aes_filename_cipher = Aes256GcmSiv::new((&aes_filename_key).into());
         let ipc_auth_key = derive_subkey(&bytes, KDF_CONTEXT_IPC_AUTH);
         let superblock_mac_key = derive_subkey(&bytes, KDF_CONTEXT_SUPERBLOCK_MAC);
         Self {
@@ -119,8 +127,10 @@ impl EncryptionKey {
             filename_siv_key,
             filename_cipher_key,
             aes_payload_key,
+            aes_payload_cipher,
             aes_payload_k1,
             aes_filename_key,
+            aes_filename_cipher,
             ipc_auth_key,
             superblock_mac_key,
         }
@@ -245,11 +255,11 @@ pub(crate) fn xaes256gcm_derive_k1(key: &[u8; 32]) -> [u8; 16] {
     k1
 }
 
-/// Derive `(Kx, Nx)` from 256-bit key `key`, precomputed `k1`, and 192-bit `nonce`
+/// Derive `(Kx, Nx)` using an already-expanded `Aes256` key schedule and precomputed `k1`
 /// per `c2sp.org/XAES-256-GCM`.
 #[inline]
-pub(crate) fn xaes256gcm_derive_subkey(
-    key: &[u8; 32],
+pub(crate) fn xaes256gcm_derive_subkey_with_cipher(
+    cipher: &Aes256,
     k1: &[u8; 16],
     nonce: &[u8; 24],
 ) -> ([u8; 32], [u8; 12]) {
@@ -271,7 +281,6 @@ pub(crate) fn xaes256gcm_derive_subkey(
     let mut blocks = [AesBlock::from(m1), AesBlock::from(m2)];
     m1.zeroize();
     m2.zeroize();
-    let cipher = Aes256::new(key.into());
     cipher.encrypt_blocks(&mut blocks);
 
     let mut kx = [0u8; 32];
@@ -285,15 +294,28 @@ pub(crate) fn xaes256gcm_derive_subkey(
     (kx, nx)
 }
 
+/// Derive `(Kx, Nx)` from raw 256-bit key `key`, precomputed `k1`, and 192-bit `nonce`
+/// per `c2sp.org/XAES-256-GCM`.
+#[allow(dead_code)]
 #[inline]
-fn xaes256gcm_encrypt_in_place_detached(
+pub(crate) fn xaes256gcm_derive_subkey(
     key: &[u8; 32],
+    k1: &[u8; 16],
+    nonce: &[u8; 24],
+) -> ([u8; 32], [u8; 12]) {
+    let cipher = Aes256::new(key.into());
+    xaes256gcm_derive_subkey_with_cipher(&cipher, k1, nonce)
+}
+
+#[inline]
+fn xaes256gcm_encrypt_in_place_detached_with_cipher(
+    aes_cipher: &Aes256,
     k1: &[u8; 16],
     nonce: &[u8; 24],
     aad: &[u8],
     buffer: &mut [u8],
 ) -> Result<[u8; 16], EncryptionError> {
-    let (mut kx, nx) = xaes256gcm_derive_subkey(key, k1, nonce);
+    let (mut kx, nx) = xaes256gcm_derive_subkey_with_cipher(aes_cipher, k1, nonce);
     let cipher = Aes256Gcm::new((&kx).into());
     kx.zeroize();
     let tag = cipher
@@ -305,15 +327,15 @@ fn xaes256gcm_encrypt_in_place_detached(
 }
 
 #[inline]
-fn xaes256gcm_decrypt_in_place_detached(
-    key: &[u8; 32],
+fn xaes256gcm_decrypt_in_place_detached_with_cipher(
+    aes_cipher: &Aes256,
     k1: &[u8; 16],
     nonce: &[u8; 24],
     aad: &[u8],
     buffer: &mut [u8],
     tag_bytes: &[u8; 16],
 ) -> Result<(), EncryptionError> {
-    let (mut kx, nx) = xaes256gcm_derive_subkey(key, k1, nonce);
+    let (mut kx, nx) = xaes256gcm_derive_subkey_with_cipher(aes_cipher, k1, nonce);
     let cipher = Aes256Gcm::new((&kx).into());
     kx.zeroize();
     cipher
@@ -327,14 +349,14 @@ fn xaes256gcm_decrypt_in_place_detached(
 }
 
 #[inline]
-fn xaes256gcm_encrypt_in_place(
-    key: &[u8; 32],
+fn xaes256gcm_encrypt_in_place_with_cipher(
+    aes_cipher: &Aes256,
     k1: &[u8; 16],
     nonce: &[u8; 24],
     aad: &[u8],
     buffer: &mut Vec<u8>,
 ) -> Result<(), EncryptionError> {
-    let (mut kx, nx) = xaes256gcm_derive_subkey(key, k1, nonce);
+    let (mut kx, nx) = xaes256gcm_derive_subkey_with_cipher(aes_cipher, k1, nonce);
     let cipher = Aes256Gcm::new((&kx).into());
     kx.zeroize();
     cipher
@@ -343,6 +365,36 @@ fn xaes256gcm_encrypt_in_place(
 }
 
 #[inline]
+fn xaes256gcm_decrypt_in_place_with_cipher(
+    aes_cipher: &Aes256,
+    k1: &[u8; 16],
+    nonce: &[u8; 24],
+    aad: &[u8],
+    buffer: &mut Vec<u8>,
+) -> Result<(), EncryptionError> {
+    let (mut kx, nx) = xaes256gcm_derive_subkey_with_cipher(aes_cipher, k1, nonce);
+    let cipher = Aes256Gcm::new((&kx).into());
+    kx.zeroize();
+    cipher
+        .decrypt_in_place(AesGcmNonce::from_slice(&nx), aad, buffer)
+        .map_err(|_| EncryptionError::DecryptionFailed)
+}
+
+#[cfg(test)]
+#[inline]
+fn xaes256gcm_encrypt_in_place(
+    key: &[u8; 32],
+    k1: &[u8; 16],
+    nonce: &[u8; 24],
+    aad: &[u8],
+    buffer: &mut Vec<u8>,
+) -> Result<(), EncryptionError> {
+    let aes_cipher = Aes256::new(key.into());
+    xaes256gcm_encrypt_in_place_with_cipher(&aes_cipher, k1, nonce, aad, buffer)
+}
+
+#[cfg(test)]
+#[inline]
 fn xaes256gcm_decrypt_in_place(
     key: &[u8; 32],
     k1: &[u8; 16],
@@ -350,12 +402,85 @@ fn xaes256gcm_decrypt_in_place(
     aad: &[u8],
     buffer: &mut Vec<u8>,
 ) -> Result<(), EncryptionError> {
-    let (mut kx, nx) = xaes256gcm_derive_subkey(key, k1, nonce);
-    let cipher = Aes256Gcm::new((&kx).into());
-    kx.zeroize();
-    cipher
-        .decrypt_in_place(AesGcmNonce::from_slice(&nx), aad, buffer)
-        .map_err(|_| EncryptionError::DecryptionFailed)
+    let aes_cipher = Aes256::new(key.into());
+    xaes256gcm_decrypt_in_place_with_cipher(&aes_cipher, k1, nonce, aad, buffer)
+}
+
+/// Derives a unique 24-byte chunk nonce within a write batch while keeping `nonce[0..12]`
+/// identical so C2SP `XAES-256-GCM` reuses one derived `AES-256-GCM` key schedule `Kx` across
+/// all chunks in the batch.
+#[inline]
+pub fn derive_batch_chunk_nonce(batch_seed: &[u8; 24], batch_idx: u64) -> [u8; 24] {
+    let mut out = *batch_seed;
+    let tail = u64::from_le_bytes(out[16..24].try_into().unwrap());
+    out[16..24].copy_from_slice(&(tail ^ batch_idx.wrapping_add(1)).to_le_bytes());
+    out
+}
+
+/// Pre-expanded batch AEAD cipher shared across all chunks in a single Seekable 64K write,
+/// eliminating per-chunk `OsRng` syscalls and repeated `AES-256` / `AES-256-GCM` key setup.
+#[allow(clippy::large_enum_variant)]
+pub enum PrecomputedBatchAead {
+    Xaes(Aes256Gcm),
+    XChaCha(XChaCha20Poly1305),
+}
+
+impl PrecomputedBatchAead {
+    /// Initializes a batch AEAD cipher bound to `batch_seed[0..12]` and `scheme`.
+    pub fn new(
+        key: &EncryptionKey,
+        batch_seed: &[u8; 24],
+        scheme: u8,
+    ) -> Result<Self, EncryptionError> {
+        if scheme == ENCRYPTION_SCHEME_AES256_GCM_V3 {
+            let (mut kx, _) = xaes256gcm_derive_subkey_with_cipher(
+                &key.aes_payload_cipher,
+                &key.aes_payload_k1,
+                batch_seed,
+            );
+            let cipher = Aes256Gcm::new((&kx).into());
+            kx.zeroize();
+            return Ok(Self::Xaes(cipher));
+        }
+        let cipher = XChaCha20Poly1305::new_from_slice(key.payload_key())
+            .map_err(|_| EncryptionError::InvalidKey)?;
+        Ok(Self::XChaCha(cipher))
+    }
+
+    /// Encrypts `plaintext` directly into a single `[24-byte nonce | ciphertext | 16-byte tag]`
+    /// buffer (pre-reserving `extra_tail_cap` bytes so subsequent block-alignment zero padding
+    /// does not reallocate).
+    #[inline]
+    pub fn encrypt_with_nonce_prefix(
+        &self,
+        plaintext: &[u8],
+        nonce: &[u8; 24],
+        aad: &[u8],
+        extra_tail_cap: usize,
+    ) -> Result<Vec<u8>, EncryptionError> {
+        let mut out = Vec::with_capacity(24 + plaintext.len() + 16 + extra_tail_cap);
+        out.extend_from_slice(nonce);
+        out.extend_from_slice(plaintext);
+        match self {
+            Self::Xaes(cipher) => {
+                let tag = cipher
+                    .encrypt_in_place_detached(
+                        AesGcmNonce::from_slice(&nonce[12..24]),
+                        aad,
+                        &mut out[24..],
+                    )
+                    .map_err(|_| EncryptionError::EncryptionFailed)?;
+                out.extend_from_slice(tag.as_slice());
+            }
+            Self::XChaCha(cipher) => {
+                let tag = cipher
+                    .encrypt_in_place_detached(XNonce::from_slice(nonce), aad, &mut out[24..])
+                    .map_err(|_| EncryptionError::EncryptionFailed)?;
+                out.extend_from_slice(tag.as_slice());
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// Encrypt data using XChaCha20-Poly1305 AEAD cipher (legacy/default v2 helper)
@@ -385,7 +510,8 @@ pub fn encrypt_data_for_scheme(
     aad: &[u8],
     scheme: u8,
 ) -> Result<Vec<u8>, EncryptionError> {
-    let mut out = plaintext.to_vec();
+    let mut out = Vec::with_capacity(plaintext.len() + 16);
+    out.extend_from_slice(plaintext);
     encrypt_data_in_place_for_scheme(&mut out, key, nonce, aad, scheme)?;
     Ok(out)
 }
@@ -443,8 +569,8 @@ pub fn encrypt_data_in_place_for_scheme(
     scheme: u8,
 ) -> Result<(), EncryptionError> {
     if scheme == ENCRYPTION_SCHEME_AES256_GCM_V3 {
-        return xaes256gcm_encrypt_in_place(
-            key.aes_payload_key(),
+        return xaes256gcm_encrypt_in_place_with_cipher(
+            &key.aes_payload_cipher,
             &key.aes_payload_k1,
             nonce,
             aad,
@@ -489,8 +615,8 @@ pub fn encrypt_with_nonce_prefix_for_scheme(
     out.extend_from_slice(plaintext);
 
     if scheme == ENCRYPTION_SCHEME_AES256_GCM_V3 {
-        let tag = xaes256gcm_encrypt_in_place_detached(
-            key.aes_payload_key(),
+        let tag = xaes256gcm_encrypt_in_place_detached_with_cipher(
+            &key.aes_payload_cipher,
             &key.aes_payload_k1,
             nonce,
             aad,
@@ -547,8 +673,8 @@ pub fn decrypt_into_slice_for_scheme(
         let tag_bytes: &[u8; 16] = ciphertext_with_tag[ct_len..]
             .try_into()
             .map_err(|_| EncryptionError::DecryptionFailed)?;
-        return xaes256gcm_decrypt_in_place_detached(
-            key.aes_payload_key(),
+        return xaes256gcm_decrypt_in_place_detached_with_cipher(
+            &key.aes_payload_cipher,
             &key.aes_payload_k1,
             nonce,
             aad,
@@ -585,8 +711,8 @@ pub fn decrypt_data_in_place_for_scheme(
     scheme: u8,
 ) -> Result<(), EncryptionError> {
     if scheme == ENCRYPTION_SCHEME_AES256_GCM_V3 {
-        return xaes256gcm_decrypt_in_place(
-            key.aes_payload_key(),
+        return xaes256gcm_decrypt_in_place_with_cipher(
+            &key.aes_payload_cipher,
             &key.aes_payload_k1,
             nonce,
             aad,
@@ -684,13 +810,8 @@ impl EncryptionCipher {
         match s.trim().to_ascii_lowercase().as_str() {
             "default" | "aes" | "aes256" | "aes-256-gcm" | "aes256-gcm" | "aes_256_gcm"
             | "aes256_gcm" | "xaes" | "xaes-256-gcm" | "xaes256-gcm" | "v3" => Ok(Self::Aes256Gcm),
-            "chacha"
-            | "chacha20"
-            | "xchacha20"
-            | "xchacha20-poly1305"
-            | "xchacha20poly1305"
-            | "xchacha20_poly1305"
-            | "v2" => Ok(Self::XChaCha20Poly1305),
+            "chacha" | "chacha20" | "xchacha20" | "xchacha20-poly1305" | "xchacha20poly1305"
+            | "xchacha20_poly1305" | "v2" => Ok(Self::XChaCha20Poly1305),
             _ => Err("Unknown encryption cipher; expected 'aes256-gcm' or 'xchacha20-poly1305'"),
         }
     }
@@ -1016,10 +1137,7 @@ pub(crate) fn ct_eq_slice(a: &[u8], b: &[u8]) -> bool {
 ///
 /// The returned tag is guaranteed non-zero so `header_mac == [0u8; 32]` unambiguously
 /// distinguishes pre-MAC legacy headers from authenticated headers.
-pub fn compute_superblock_mac(
-    key: &EncryptionKey,
-    sb: &crate::superblock::SuperBlock,
-) -> [u8; 32] {
+pub fn compute_superblock_mac(key: &EncryptionKey, sb: &crate::superblock::SuperBlock) -> [u8; 32] {
     let mut hasher = Blake2b512::new();
     hasher.update(b"OIFS-SUPERBLOCK-MAC-V1");
     hasher.update(key.superblock_mac_key());
@@ -1037,10 +1155,7 @@ pub fn compute_superblock_mac(
 /// Verifies `sb.header_mac` in constant time against `compute_superblock_mac(key, sb)`.
 ///
 /// Returns `false` if `header_mac` is all-zero or does not match.
-pub fn verify_superblock_mac(
-    key: &EncryptionKey,
-    sb: &crate::superblock::SuperBlock,
-) -> bool {
+pub fn verify_superblock_mac(key: &EncryptionKey, sb: &crate::superblock::SuperBlock) -> bool {
     if !sb.has_header_mac() {
         return false;
     }
@@ -1154,7 +1269,7 @@ pub fn encrypt_filename_for_scheme(
     let name_bytes = name.as_bytes();
     let nonce = filename_aes_gcmsiv_nonce(parent_inode);
     let aad = filename_aad_stack(parent_inode);
-    let cipher = Aes256GcmSiv::new(key.aes_filename_key().into());
+    let cipher = &key.aes_filename_cipher;
 
     if name_bytes.len() <= 255 {
         let total_raw = name_bytes.len() + 16;
@@ -1170,11 +1285,17 @@ pub fn encrypt_filename_for_scheme(
         raw[name_bytes.len()..total_raw].copy_from_slice(tag.as_slice());
 
         let b64_len = Base64UrlUnpadded::encoded_len(&raw[..total_raw]);
-        let mut out = vec![0u8; FILENAME_ENC_PREFIX.len() + b64_len];
-        out[..FILENAME_ENC_PREFIX.len()].copy_from_slice(FILENAME_ENC_PREFIX.as_bytes());
-        Base64UrlUnpadded::encode(&raw[..total_raw], &mut out[FILENAME_ENC_PREFIX.len()..])
-            .map_err(|_| EncryptionError::EncryptionFailed)?;
-        return Ok(String::from_utf8(out).unwrap());
+        let mut str_buf = [0u8; 384];
+        let prefix_len = FILENAME_ENC_PREFIX.len();
+        str_buf[..prefix_len].copy_from_slice(FILENAME_ENC_PREFIX.as_bytes());
+        Base64UrlUnpadded::encode(
+            &raw[..total_raw],
+            &mut str_buf[prefix_len..prefix_len + b64_len],
+        )
+        .map_err(|_| EncryptionError::EncryptionFailed)?;
+        return Ok(std::str::from_utf8(&str_buf[..prefix_len + b64_len])
+            .unwrap()
+            .to_owned());
     }
 
     let ct_with_tag = cipher
@@ -1241,7 +1362,7 @@ pub fn decrypt_filename_authenticated(
 
     if encryption_version == ENCRYPTION_SCHEME_AES256_GCM_V3 {
         let nonce = filename_aes_gcmsiv_nonce(parent_inode);
-        let cipher = Aes256GcmSiv::new(key.aes_filename_key().into());
+        let cipher = &key.aes_filename_cipher;
         if b64.len() <= 400 {
             let mut decode_buf = [0u8; 320];
             let payload_len = match Base64UrlUnpadded::decode(b64, &mut decode_buf) {
@@ -1695,24 +1816,15 @@ mod tests {
         let parent_inode = 42u64;
         let name = "budget_2026_confidential_report.parquet";
 
-        let enc = encrypt_filename_for_scheme(
-            &key,
-            parent_inode,
-            name,
-            ENCRYPTION_SCHEME_AES256_GCM_V3,
-        )
-        .unwrap();
+        let enc =
+            encrypt_filename_for_scheme(&key, parent_inode, name, ENCRYPTION_SCHEME_AES256_GCM_V3)
+                .unwrap();
         assert!(enc.starts_with(FILENAME_ENC_PREFIX));
         // Deterministic lookup key for same (key, parent_inode, name)
         assert_eq!(
             enc,
-            encrypt_filename_for_scheme(
-                &key,
-                parent_inode,
-                name,
-                ENCRYPTION_SCHEME_AES256_GCM_V3
-            )
-            .unwrap()
+            encrypt_filename_for_scheme(&key, parent_inode, name, ENCRYPTION_SCHEME_AES256_GCM_V3)
+                .unwrap()
         );
         // Domain-separated per directory
         assert_ne!(
@@ -1744,7 +1856,10 @@ mod tests {
         for idx in [0usize, raw.len() / 2, raw.len() - 1] {
             let mut t = raw.clone();
             t[idx] ^= 0x01;
-            let tok = format!("{FILENAME_ENC_PREFIX}{}", Base64UrlUnpadded::encode_string(&t));
+            let tok = format!(
+                "{FILENAME_ENC_PREFIX}{}",
+                Base64UrlUnpadded::encode_string(&t)
+            );
             assert!(
                 decrypt_filename_authenticated(
                     &key,
@@ -1806,7 +1921,10 @@ mod tests {
         let nonce = [0x24u8; 24];
         let aad = file_aad_stack(7);
 
-        for (label, size, iters) in [("64KiB", 64 * 1024usize, 4096usize), ("1MiB", 1024 * 1024, 512)] {
+        for (label, size, iters) in [
+            ("64KiB", 64 * 1024usize, 4096usize),
+            ("1MiB", 1024 * 1024, 512),
+        ] {
             let payload = vec![0xA5u8; size];
             for (cipher_name, scheme) in [
                 ("XChaCha20-Poly1305 (v2)", ENCRYPTION_SCHEME_CONTEXT_BOUND),

@@ -474,3 +474,352 @@ fn test_dir_snapshot_cache_invalidates_on_direct_disk_mutations() {
         assert!(!names.contains(&"f_020.txt".to_string()));
     }
 }
+
+#[test]
+#[ignore]
+fn bench_opt_wave_1_2_3_4_8() {
+    use oifs::filters::{
+        delta_decode_inplace, delta_encode_inplace, shuffle_decode, shuffle_encode,
+    };
+    use oifs::journal::{MetadataOp, coalesce_ops};
+    use oifs::{DurabilityMode, StorageMode};
+    use std::time::Instant;
+
+    const KB: usize = 1024;
+    const MB: usize = 1024 * 1024;
+
+    // 1. Seekable 64K encrypted writes (Mmap & FileIo)
+    println!("\n=== [Wave #1/#2] Encrypted Seekable-64K Writes (32 MiB) ===");
+    let seek_payload: Vec<u8> = (0..(32 * MB))
+        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
+        .collect();
+    let seek_mode = CompressionMode::Seekable {
+        chunk_size: 65536,
+        level: 1,
+    };
+    for mode in [StorageMode::Mmap, StorageMode::FileIo] {
+        let dir = tempdir().unwrap();
+        let img = dir.path().join("seek_enc.img");
+        let dm =
+            DiskManager::open_with_options(&img, 256 * MB as u64, Some("bench-pw"), false, mode)
+                .unwrap();
+        let t0 = Instant::now();
+        let ino = dm
+            .create_file_with_data(0, "bulk.bin", &seek_payload, seek_mode)
+            .unwrap();
+        let elapsed = t0.elapsed().as_secs_f64();
+        println!(
+            "  {mode:?} create_file_with_data (32 MiB encrypted Seekable-64K): {:.2} ms ({:.2} GB/s)",
+            elapsed * 1e3,
+            (seek_payload.len() as f64) / (elapsed * 1e9)
+        );
+
+        // 2. FileIo cold 64 KiB coalesced read_at after reopen
+        if mode == StorageMode::FileIo {
+            drop(dm);
+            let dm_ro = DiskManager::open_with_options(
+                &img,
+                256 * MB as u64,
+                Some("bench-pw"),
+                false,
+                StorageMode::FileIo,
+            )
+            .unwrap();
+            let mut rbuf = vec![0u8; 64 * KB];
+            let mut off = 0u64;
+            let tr0 = Instant::now();
+            while (off as usize) < seek_payload.len() {
+                dm_ro.read_at(ino, off, &mut rbuf).unwrap();
+                off += (64 * KB) as u64;
+            }
+            let r_sec = tr0.elapsed().as_secs_f64();
+            println!(
+                "  FileIo cold 64K sequential read_at (32 MiB): {:.2} ms ({:.2} GB/s)",
+                r_sec * 1e3,
+                (seek_payload.len() as f64) / (r_sec * 1e9)
+            );
+        }
+    }
+
+    // 3. WAL coalesce_ops (4,000 scattered/adjacent ops) & Strict small-file WAL traffic
+    println!("\n=== [Wave #3] WAL coalesce_ops (4,000 ops) & Strict Small-File Commit ===");
+    let raw_ops: Vec<MetadataOp> = (0..4000u64)
+        .map(|i| MetadataOp::SetDataBitmapRange {
+            start_block: (i * 3) % 8192,
+            count: ((i % 4) as u32) + 1,
+            allocated: i % 5 != 0,
+        })
+        .collect();
+    let tc0 = Instant::now();
+    let coalesced = coalesce_ops(raw_ops);
+    let tc_us = tc0.elapsed().as_secs_f64() * 1e6;
+    println!(
+        "  coalesce_ops (4,000 ops -> {} intervals): {:.1} us",
+        coalesced.len(),
+        tc_us
+    );
+    {
+        let dir = tempdir().unwrap();
+        let img = dir.path().join("strict_wal.img");
+        let dm =
+            DiskManager::open_with_options(&img, 64 * MB as u64, None, true, StorageMode::Mmap)
+                .unwrap();
+        dm.set_durability_mode(DurabilityMode::Strict);
+        let t0 = Instant::now();
+        for i in 0..20 {
+            let name = format!("f_{i:03}.txt");
+            dm.create_file_with_data(0, &name, b"small-payload", CompressionMode::Never)
+                .unwrap();
+        }
+        let dt_ms = t0.elapsed().as_secs_f64() * 1e3;
+        println!(
+            "  Strict journaled 20x create_file_with_data: {:.2} ms ({:.2} ms/file)",
+            dt_ms,
+            dt_ms / 20.0
+        );
+    }
+
+    // 4. WriteBatch (10 ops inside 5,000-file encrypted directory)
+    println!("\n=== [Wave #4] WriteBatch (10 ops) in 5,000-File Encrypted Dir ===");
+    {
+        let dir = tempdir().unwrap();
+        let img = dir.path().join("batch_5k.img");
+        let dm = DiskManager::open_with_options(
+            &img,
+            128 * MB as u64,
+            Some("batch-pw"),
+            true,
+            StorageMode::Mmap,
+        )
+        .unwrap();
+        let mut seed_batch = dm.begin_write_batch();
+        for i in 0..5000 {
+            seed_batch.create_file_with_data(
+                0,
+                format!("seed_{i:05}.txt"),
+                b"v".to_vec(),
+                CompressionMode::Never,
+            );
+        }
+        seed_batch.commit().unwrap();
+
+        let mut b10 = dm.begin_write_batch();
+        for i in 0..10 {
+            b10.create_file_with_data(
+                0,
+                format!("hot_{i:02}.txt"),
+                vec![b'x'; 256],
+                CompressionMode::Never,
+            );
+        }
+        let tb0 = Instant::now();
+        b10.commit().unwrap();
+        let tb_ms = tb0.elapsed().as_secs_f64() * 1e3;
+        println!("  10-op encrypted WriteBatch commit (in 5,000-file dir): {tb_ms:.2} ms");
+    }
+
+    // 5. SIMD Filters (1 MiB x 100 iters)
+    println!("\n=== [Wave #8] SIMD Filters (1 MiB x 100 iterations) ===");
+    let src_1m: Vec<u8> = (0..MB).map(|i| (i.wrapping_mul(131)) as u8).collect();
+    let iters = 100usize;
+    let total_bytes = (MB * iters) as f64;
+    for ts in [2usize, 4, 8] {
+        let mut enc_last = Vec::new();
+        let t0 = Instant::now();
+        for _ in 0..iters {
+            enc_last = shuffle_encode(&src_1m, ts);
+        }
+        let sec_enc = t0.elapsed().as_secs_f64();
+        let mut dec_last = Vec::new();
+        let t1 = Instant::now();
+        for _ in 0..iters {
+            dec_last = shuffle_decode(&enc_last, ts);
+        }
+        let sec_dec = t1.elapsed().as_secs_f64();
+        assert_eq!(dec_last, src_1m);
+        println!(
+            "  ByteShuffle ts={ts}: encode {:6.2} GB/s | decode {:6.2} GB/s",
+            total_bytes / (sec_enc * 1e9),
+            total_bytes / (sec_dec * 1e9)
+        );
+    }
+    for ts in [1usize, 2, 4, 8] {
+        let mut buf = src_1m.clone();
+        let t0 = Instant::now();
+        for _ in 0..iters {
+            delta_encode_inplace(&mut buf, ts);
+        }
+        let sec_enc = t0.elapsed().as_secs_f64();
+        let t1 = Instant::now();
+        for _ in 0..iters {
+            delta_decode_inplace(&mut buf, ts);
+        }
+        let sec_dec = t1.elapsed().as_secs_f64();
+        assert_eq!(buf, src_1m);
+        println!(
+            "  DeltaInplace ts={ts}: encode {:6.2} GB/s | decode {:6.2} GB/s",
+            total_bytes / (sec_enc * 1e9),
+            total_bytes / (sec_dec * 1e9)
+        );
+    }
+
+    // 6. Wave #7: Decode double-copy & unaligned parallel seekable read & multi-frame pooled Zstd
+    println!(
+        "\n=== [Wave #7] Unaligned Seekable Read, Sub-Chunk Cache & 100-Frame Zstd Stream ==="
+    );
+    {
+        let dir = tempdir().unwrap();
+        let img = dir.path().join("wave7_seek.img");
+        let dm = DiskManager::open(&img, 128 * MB as u64).unwrap();
+        let payload: Vec<u8> = (0..(16 * MB))
+            .map(|i| ((i % 251) ^ ((i >> 8) & 0xFF)) as u8)
+            .collect();
+        let ino = dm
+            .create_file_with_data(
+                0,
+                "seek16m.bin",
+                &payload,
+                CompressionMode::Seekable {
+                    chunk_size: 65536,
+                    level: 1,
+                },
+            )
+            .unwrap();
+
+        // Warm once then time unaligned 16 MiB - 4 KiB read_at (triggers parallel path at offset 4096)
+        let mut unaligned_buf = vec![0u8; payload.len() - 4096];
+        let _ = dm.read_at(ino, 4096, &mut unaligned_buf).unwrap();
+        let t0 = Instant::now();
+        for _ in 0..5 {
+            let n = dm.read_at(ino, 4096, &mut unaligned_buf).unwrap();
+            assert_eq!(n, payload.len() - 4096);
+        }
+        let sec_unaligned = t0.elapsed().as_secs_f64();
+        assert_eq!(unaligned_buf, payload[4096..]);
+        println!(
+            "  Unaligned parallel Seekable-64K read_at(off=4096, 16M x 5): {:.2} ms ({:.2} GB/s)",
+            sec_unaligned * 1e3,
+            (unaligned_buf.len() * 5) as f64 / (sec_unaligned * 1e9)
+        );
+
+        // 4 KiB sequential sub-chunk read_at exercising Arc<Vec<u8>> ChunkReadCache
+        let mut sub_buf = vec![0u8; 4096];
+        let t1 = Instant::now();
+        let mut off = 0u64;
+        while (off as usize) < 4 * MB {
+            dm.read_at(ino, off, &mut sub_buf).unwrap();
+            off += 4096;
+        }
+        let sec_sub = t1.elapsed().as_secs_f64();
+        println!(
+            "  4 KiB sequential sub-chunk read_at (4 MiB): {:.2} ms ({:.2} GB/s)",
+            sec_sub * 1e3,
+            (4 * MB) as f64 / (sec_sub * 1e9)
+        );
+
+        // 100-frame concatenated Stream Zstd file read_data via pooled STREAM_DECOMPRESSOR
+        let mf_ino = dm.create_file(0, "multiframe_100.zst").unwrap();
+        let frame_chunk = vec![b'A'; 4096];
+        for i in 0..100u64 {
+            dm.write_data(mf_ino, i * 4096, &frame_chunk, CompressionMode::Always)
+                .unwrap();
+        }
+        let _ = dm.read_data(mf_ino).unwrap();
+        let t2 = Instant::now();
+        for _ in 0..20 {
+            let out = dm.read_data(mf_ino).unwrap();
+            assert_eq!(out.len(), 100 * 4096);
+        }
+        let sec_mf = t2.elapsed().as_secs_f64();
+        println!(
+            "  100-frame Zstd stream read_data x 20 (400 KiB each): {:.2} ms ({:.2} GB/s)",
+            sec_mf * 1e3,
+            (100 * 4096 * 20) as f64 / (sec_mf * 1e9)
+        );
+    }
+}
+
+#[test]
+fn test_unaligned_parallel_seekable_read_and_multiframe_pooled_zstd() {
+    use oifs::StorageMode;
+    use oifs::zstd_pool::train_dictionary;
+
+    // Build synthetic structured corpus and train a Zstd dictionary
+    let samples: Vec<Vec<u8>> = (0..32u32)
+        .map(|s| {
+            let mut v = Vec::with_capacity(4096);
+            for i in 0..256u32 {
+                v.extend_from_slice(format!("REC:{s:02}:{i:04}:alpha_beta_gamma;").as_bytes());
+            }
+            v
+        })
+        .collect();
+    let dict = train_dictionary(&samples, 16 * 1024).unwrap();
+
+    // 1. Unaligned parallel read_at across both Mmap and FileIo with encryption + Zstd dict
+    let payload: Vec<u8> = (0usize..(512 * 1024 + 137))
+        .map(|i| {
+            if i % 64 < 32 {
+                b'K'
+            } else {
+                ((i.wrapping_mul(2654435761)) >> 24) as u8
+            }
+        })
+        .collect();
+
+    for mode in [StorageMode::Mmap, StorageMode::FileIo] {
+        let dir = tempdir().unwrap();
+        let img = dir.path().join(format!("unaligned_{mode:?}.img"));
+        let dm =
+            DiskManager::open_with_options(&img, 32 * 1024 * 1024, Some("pw-wave7"), false, mode)
+                .unwrap();
+        let dict_id = dm.register_and_use_zstd_dict(&dict).unwrap();
+
+        let ino = dm
+            .create_file_with_data(
+                0,
+                "seek_unaligned.bin",
+                &payload,
+                CompressionMode::Seekable {
+                    chunk_size: 65536,
+                    level: 1,
+                },
+            )
+            .unwrap();
+
+        for &off in &[1u64, 4099, 65_535, 65_537, 131_071] {
+            let len = payload.len() - off as usize;
+            let mut got = vec![0u8; len];
+            let n = dm.read_at(ino, off, &mut got).unwrap();
+            assert_eq!(n, len);
+            assert_eq!(
+                got,
+                payload[off as usize..],
+                "unaligned parallel read_at mismatch for mode={mode:?}, off={off}"
+            );
+        }
+
+        // 2. Multi-frame concatenated stream mixing dict frames & non-dict frames via STREAM_DECOMPRESSOR
+        let stream_ino = dm.create_file(0, "mixed_frames.zst").unwrap();
+        let mut expected_stream = Vec::new();
+        for frame_idx in 0..30usize {
+            if frame_idx % 3 == 0 {
+                dm.set_default_zstd_dict(None).unwrap();
+            } else {
+                dm.set_default_zstd_dict(Some(dict_id)).unwrap();
+            }
+            let part: Vec<u8> = (0..3072)
+                .map(|j| ((frame_idx * 31 + j) % 199) as u8)
+                .collect();
+            let offset = expected_stream.len() as u64;
+            dm.write_data(stream_ino, offset, &part, CompressionMode::Always)
+                .unwrap();
+            expected_stream.extend_from_slice(&part);
+        }
+        let actual_stream = dm.read_data(stream_ino).unwrap();
+        assert_eq!(
+            actual_stream, expected_stream,
+            "mixed multi-frame pooled Zstd decode mismatch for mode={mode:?}"
+        );
+    }
+}

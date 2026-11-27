@@ -513,6 +513,244 @@ impl MetadataOp {
     }
 }
 
+/// Ordered disjoint-interval map abstraction used by [`coalesce_data_bitmap_with_map`]
+/// (`BTreeMap` in production, a fixed array in Kani / unit tests).
+pub(crate) trait OrderedIntervalMap {
+    /// Last interval whose start is `< ns`.
+    fn prev_before(&self, ns: u64) -> Option<(u64, u64, bool)>;
+    /// First interval whose start lies in `[ns, ne)`.
+    fn first_in_range(&self, ns: u64, ne: u64) -> Option<(u64, u64, bool)>;
+    fn insert_interval(&mut self, s: u64, e: u64, alloc: bool);
+    fn remove_interval(&mut self, s: u64);
+    fn for_each_ascending<F: FnMut(u64, u64, bool)>(&self, f: F);
+}
+
+impl OrderedIntervalMap for std::collections::BTreeMap<u64, (u64, bool)> {
+    #[inline]
+    fn prev_before(&self, ns: u64) -> Option<(u64, u64, bool)> {
+        self.range(..ns).next_back().map(|(&s, &(e, a))| (s, e, a))
+    }
+    #[inline]
+    fn first_in_range(&self, ns: u64, ne: u64) -> Option<(u64, u64, bool)> {
+        self.range(ns..ne).next().map(|(&s, &(e, a))| (s, e, a))
+    }
+    #[inline]
+    fn insert_interval(&mut self, s: u64, e: u64, alloc: bool) {
+        self.insert(s, (e, alloc));
+    }
+    #[inline]
+    fn remove_interval(&mut self, s: u64) {
+        self.remove(&s);
+    }
+    #[inline]
+    fn for_each_ascending<F: FnMut(u64, u64, bool)>(&self, mut f: F) {
+        for (&s, &(e, a)) in self {
+            f(s, e, a);
+        }
+    }
+}
+
+#[inline]
+fn push_data_bitmap_interval(out: &mut Vec<MetadataOp>, s: u64, e: u64, alloc: bool) {
+    let count = (e - s) as u32;
+    if count == 1 {
+        out.push(MetadataOp::SetDataBitmap {
+            block_id: s,
+            allocated: alloc,
+        });
+    } else {
+        out.push(MetadataOp::SetDataBitmapRange {
+            start_block: s,
+            count,
+            allocated: alloc,
+        });
+    }
+}
+
+/// Resolve chronological last-write-wins over data-bitmap intervals via a disjoint
+/// interval map, then emit canonical runs: all `allocated == false` runs first, then all
+/// `allocated == true` runs, each ascending and maximally merged (no sort needed since
+/// the map already iterates in ascending start order).
+pub(crate) fn coalesce_data_bitmap_intervals_into<M, F>(
+    data_bitmap_ops: &[(u64, u32, bool)],
+    map: &mut M,
+    mut emit: F,
+) where
+    M: OrderedIntervalMap,
+    F: FnMut(u64, u32, bool),
+{
+    for &(blk, count, alloc) in data_bitmap_ops {
+        if count == 0 {
+            continue;
+        }
+        let ns = blk;
+        let ne = blk.saturating_add(count as u64);
+        if ns >= ne {
+            continue;
+        }
+        if let Some((es, ee, ea)) = map.prev_before(ns)
+            && ee > ns
+        {
+            map.insert_interval(es, ns, ea);
+            if ee > ne {
+                map.insert_interval(ne, ee, ea);
+                map.insert_interval(ns, ne, alloc);
+                continue;
+            }
+        }
+        while let Some((ks, ke, ka)) = map.first_in_range(ns, ne) {
+            map.remove_interval(ks);
+            if ke > ne {
+                map.insert_interval(ne, ke, ka);
+                break;
+            }
+        }
+        map.insert_interval(ns, ne, alloc);
+    }
+
+    for target_alloc in [false, true] {
+        let mut cur: Option<(u64, u64)> = None;
+        map.for_each_ascending(|s, e, a| {
+            if a != target_alloc {
+                return;
+            }
+            match cur {
+                Some((cs, ce)) if ce == s && e.saturating_sub(cs) <= u32::MAX as u64 => {
+                    cur = Some((cs, e));
+                }
+                Some((cs, ce)) => {
+                    emit(cs, (ce - cs) as u32, target_alloc);
+                    cur = Some((s, e));
+                }
+                None => cur = Some((s, e)),
+            }
+        });
+        if let Some((cs, ce)) = cur {
+            emit(cs, (ce - cs) as u32, target_alloc);
+        }
+    }
+}
+
+/// Fixed-capacity ordered interval map (`N` slots) for Kani proofs and differential tests.
+#[cfg(any(test, kani))]
+pub(crate) struct FixedIntervalMap<const N: usize> {
+    entries: [(u64, u64, bool); N],
+    len: usize,
+}
+
+#[cfg(any(test, kani))]
+impl<const N: usize> FixedIntervalMap<N> {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: [(0, 0, false); N],
+            len: 0,
+        }
+    }
+}
+
+#[cfg(any(test, kani))]
+impl<const N: usize> OrderedIntervalMap for FixedIntervalMap<N> {
+    fn prev_before(&self, ns: u64) -> Option<(u64, u64, bool)> {
+        let mut found = None;
+        for i in 0..N {
+            if i < self.len && self.entries[i].0 < ns {
+                found = Some(self.entries[i]);
+            }
+        }
+        found
+    }
+    fn first_in_range(&self, ns: u64, ne: u64) -> Option<(u64, u64, bool)> {
+        for i in 0..N {
+            if i < self.len && self.entries[i].0 >= ns && self.entries[i].0 < ne {
+                return Some(self.entries[i]);
+            }
+        }
+        None
+    }
+    fn insert_interval(&mut self, s: u64, e: u64, alloc: bool) {
+        for i in 0..N {
+            if i < self.len && self.entries[i].0 == s {
+                self.entries[i] = (s, e, alloc);
+                return;
+            }
+        }
+        assert!(self.len < N);
+        let mut pos = self.len;
+        for i in 0..N {
+            if i < self.len && self.entries[i].0 > s {
+                pos = i;
+                break;
+            }
+        }
+        let mut j = self.len;
+        while j > pos {
+            self.entries[j] = self.entries[j - 1];
+            j -= 1;
+        }
+        self.entries[pos] = (s, e, alloc);
+        self.len += 1;
+    }
+    fn remove_interval(&mut self, s: u64) {
+        for i in 0..N {
+            if i < self.len && self.entries[i].0 == s {
+                for j in i..(N - 1) {
+                    self.entries[j] = self.entries[j + 1];
+                }
+                self.len -= 1;
+                return;
+            }
+        }
+    }
+    fn for_each_ascending<F: FnMut(u64, u64, bool)>(&self, mut f: F) {
+        for i in 0..N {
+            if i < self.len {
+                let (s, e, a) = self.entries[i];
+                f(s, e, a);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fixed_interval_map_tests {
+    use super::*;
+
+    #[test]
+    fn btree_and_fixed_map_coalesce_identically() {
+        let mut x: u64 = 0x1234_5678_9ABC_DEF0;
+        let mut next = || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (x >> 33) as u32
+        };
+        for _ in 0..500 {
+            let n = (next() % 5 + 1) as usize;
+            let mut raw = Vec::new();
+            for _ in 0..n {
+                let start = (next() % 8) as u64;
+                let count = next() % 4 + 1;
+                let count = count.min((8 - start) as u32);
+                raw.push((start, count, next() % 2 == 0));
+            }
+            let mut a = Vec::new();
+            coalesce_data_bitmap_intervals_into(
+                &raw,
+                &mut std::collections::BTreeMap::new(),
+                |s, c, alloc| push_data_bitmap_interval(&mut a, s, s + c as u64, alloc),
+            );
+            let mut b = Vec::new();
+            coalesce_data_bitmap_intervals_into(
+                &raw,
+                &mut FixedIntervalMap::<8>::new(),
+                |s, c, alloc| push_data_bitmap_interval(&mut b, s, s + c as u64, alloc),
+            );
+            assert_eq!(encode_ops(&a), encode_ops(&b), "raw={raw:?}");
+            assert!(is_already_coalesced(&a), "raw={raw:?}");
+        }
+    }
+}
+
 /// Coalesce contiguous operations into compact single operations.
 ///
 /// Merges adjacent `SetDataBitmap` allocations into `SetDataBitmapRange` and
@@ -583,77 +821,13 @@ pub fn coalesce_ops(ops: Vec<MetadataOp>) -> Vec<MetadataOp> {
         });
     }
 
-    // 2. Data bitmap ops: resolve chronological last-write-wins over intervals,
-    //    then sort by polarity & start block and merge contiguous runs.
-    let mut intervals: Vec<(u64, u64, bool)> = Vec::with_capacity(data_bitmap_ops.len());
-    for (blk, count, alloc) in data_bitmap_ops {
-        if count == 0 {
-            continue;
-        }
-        let ns = blk;
-        let ne = blk.saturating_add(count as u64);
-        let mut next = Vec::with_capacity(intervals.len() + 1);
-        for (es, ee, ea) in intervals {
-            if ee <= ns || es >= ne {
-                next.push((es, ee, ea));
-            } else {
-                if es < ns {
-                    next.push((es, ns, ea));
-                }
-                if ee > ne {
-                    next.push((ne, ee, ea));
-                }
-            }
-        }
-        next.push((ns, ne, alloc));
-        intervals = next;
-    }
-
-    intervals.sort_unstable_by_key(|&(s, _, alloc)| (alloc, s));
-    let mut cur_range: Option<(u64, u64, bool)> = None;
-    for (s, e, alloc) in intervals {
-        match cur_range {
-            Some((cs, ce, ca)) => {
-                let merged_len = e.saturating_sub(cs);
-                if ca == alloc && ce == s && merged_len <= u32::MAX as u64 {
-                    cur_range = Some((cs, e, ca));
-                } else {
-                    let count = (ce - cs) as u32;
-                    if count == 1 {
-                        coalesced.push(MetadataOp::SetDataBitmap {
-                            block_id: cs,
-                            allocated: ca,
-                        });
-                    } else {
-                        coalesced.push(MetadataOp::SetDataBitmapRange {
-                            start_block: cs,
-                            count,
-                            allocated: ca,
-                        });
-                    }
-                    cur_range = Some((s, e, alloc));
-                }
-            }
-            None => {
-                cur_range = Some((s, e, alloc));
-            }
-        }
-    }
-    if let Some((cs, ce, ca)) = cur_range {
-        let count = (ce - cs) as u32;
-        if count == 1 {
-            coalesced.push(MetadataOp::SetDataBitmap {
-                block_id: cs,
-                allocated: ca,
-            });
-        } else {
-            coalesced.push(MetadataOp::SetDataBitmapRange {
-                start_block: cs,
-                count,
-                allocated: ca,
-            });
-        }
-    }
+    // 2. Data bitmap ops: resolve chronological last-write-wins over intervals in O(N log N)
+    //    via a disjoint interval BTreeMap, then sort by polarity & start block and merge runs.
+    coalesce_data_bitmap_intervals_into(
+        &data_bitmap_ops,
+        &mut std::collections::BTreeMap::new(),
+        |s, count, alloc| push_data_bitmap_interval(&mut coalesced, s, s + count as u64, alloc),
+    );
 
     // 3. Block slice ops: merge overlapping & contiguous slices on the same block
     //    in chronological order (latest write wins), so a 4 KiB zero-init of a
@@ -2547,6 +2721,85 @@ mod kani_proofs {
             "exact ring-full collision avoided"
         );
     }
+
+    /// Prove that `coalesce_ops`'s O(N log N) `BTreeMap` interval resolver produces the
+    /// exact same final bitmap state as sequential un-coalesced replay, and emits strictly
+    /// non-overlapping, sorted, maximally merged intervals.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn proof_coalesce_data_bitmap_intervals_equivalence() {
+        let mut raw = [(0u64, 0u32, false); 3];
+        let mut expected = [false; 4];
+        let mut expected_touched = [false; 4];
+
+        for i in 0..3usize {
+            let start: u64 = kani::any();
+            let count: u32 = kani::any();
+            let allocated: bool = kani::any();
+            kani::assume(start < 4);
+            kani::assume(count >= 1 && count <= 4 && start + (count as u64) <= 4);
+            for b in 0..4usize {
+                if (b as u64) >= start && (b as u64) < start + (count as u64) {
+                    expected[b] = allocated;
+                    expected_touched[b] = true;
+                }
+            }
+            raw[i] = (start, count, allocated);
+        }
+
+        let mut out = [(0u64, 0u32, false); 4];
+        let mut out_len = 0usize;
+        coalesce_data_bitmap_intervals_into(&raw, &mut FixedIntervalMap::<4>::new(), |s, c, a| {
+            assert!(out_len < 4);
+            out[out_len] = (s, c, a);
+            out_len += 1;
+        });
+
+        let mut actual = [false; 4];
+        let mut touched = [false; 4];
+        let mut prev: Option<(bool, u64)> = None;
+        for idx in 0..4usize {
+            if idx >= out_len {
+                break;
+            }
+            let (start, count, allocated) = out[idx];
+            assert!(count >= 1 && start + (count as u64) <= 4);
+            if let Some((pa, pe)) = prev {
+                assert!(!(pa && !allocated), "false runs must precede true runs");
+                if pa == allocated {
+                    assert!(
+                        pe < start,
+                        "same-polarity runs must be strictly non-adjacent"
+                    );
+                }
+            }
+            prev = Some((allocated, start + (count as u64)));
+            for b in 0..4usize {
+                if (b as u64) >= start && (b as u64) < start + (count as u64) {
+                    assert!(!touched[b], "output intervals must be disjoint");
+                    touched[b] = true;
+                    actual[b] = allocated;
+                }
+            }
+        }
+
+        assert_eq!(
+            touched, expected_touched,
+            "exact touched block set must match"
+        );
+        assert_eq!(
+            actual, expected,
+            "coalesced interval replay must match sequential execution"
+        );
+        kani::cover!(
+            raw[0].0 == 0
+                && raw[0].1 == 4
+                && raw[1].0 == 1
+                && raw[1].1 == 2
+                && raw[0].2 != raw[1].2,
+            "interior 3-way split reached"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3716,10 +3969,126 @@ impl AllocSim {
 }
 
 #[inline]
+pub(crate) fn slice_has_nonzero_u64(slice: &[u8]) -> bool {
+    let (chunks, rem) = slice.as_chunks::<8>();
+    chunks.iter().any(|c| u64::from_ne_bytes(*c) != 0) || rem.iter().any(|&b| b != 0)
+}
+
+#[inline]
 pub(crate) fn block_has_nonzero_bytes(backing: &ImageBacking, block_id: u64) -> bool {
-    backing
-        .with_block(block_id, |slice| slice.iter().any(|&b| b != 0))
-        .unwrap_or(false)
+    let Some(off) = usize::try_from(block_id)
+        .ok()
+        .and_then(|b| b.checked_mul(BLOCK_SIZE))
+    else {
+        return false;
+    };
+    if let Some(mmap) = backing.as_mmap_slice() {
+        return off
+            .checked_add(BLOCK_SIZE)
+            .is_some_and(|end| end <= mmap.len() && slice_has_nonzero_u64(&mmap[off..end]));
+    }
+    let mut buf = [0u8; BLOCK_SIZE];
+    if backing.read_exact_at(off as u64, &mut buf).is_err() {
+        return false;
+    }
+    slice_has_nonzero_u64(&buf)
+}
+
+/// Returns the trimmed end offset `>= min_len` beyond which `disk_blk` is already all zeros.
+#[inline]
+pub(crate) fn trailing_zero_trimmed_len(disk_blk: &[u8], min_len: usize) -> usize {
+    let min_clamped = min_len.min(disk_blk.len());
+    let mut end = disk_blk.len();
+    while end >= min_clamped + 8 {
+        if u64::from_ne_bytes(disk_blk[end - 8..end].try_into().unwrap()) == 0 {
+            end -= 8;
+        } else {
+            break;
+        }
+    }
+    while end > min_clamped && disk_blk[end - 1] == 0 {
+        end -= 1;
+    }
+    end
+}
+
+/// Builds the minimal post-image `WriteBlockSlice` for initializing a newly allocated block with
+/// `prefix` followed by zeros across `[prefix.len()..BLOCK_SIZE)`.
+///
+/// Only emits explicit zero padding up to the last non-zero byte already present on disk
+/// (`trailing_zero_trimmed_len`), shrinking small-file and new-dir-block WAL traffic from
+/// 4,096 bytes down to `prefix.len()` on virgin blocks while staying 100% safe on recycled blocks.
+pub(crate) fn minimal_fresh_block_slice_op(
+    backing: &ImageBacking,
+    block_id: u64,
+    prefix: &[u8],
+) -> MetadataOp {
+    let min_len = prefix.len().min(BLOCK_SIZE);
+    let end = if let Some(mmap) = backing.as_mmap_slice()
+        && let Some(off) = usize::try_from(block_id)
+            .ok()
+            .and_then(|b| b.checked_mul(BLOCK_SIZE))
+        && off.checked_add(BLOCK_SIZE).is_some_and(|e| e <= mmap.len())
+    {
+        trailing_zero_trimmed_len(&mmap[off..off + BLOCK_SIZE], min_len)
+    } else {
+        let mut buf = [0u8; BLOCK_SIZE];
+        if let Some(off) = block_id.checked_mul(BLOCK_SIZE as u64)
+            && backing.read_exact_at(off, &mut buf).is_ok()
+        {
+            trailing_zero_trimmed_len(&buf, min_len)
+        } else {
+            BLOCK_SIZE
+        }
+    };
+    let mut data = Vec::with_capacity(end);
+    data.extend_from_slice(&prefix[..min_len]);
+    if end > min_len {
+        data.resize(end, 0);
+    }
+    MetadataOp::WriteBlockSlice {
+        block_id,
+        offset: 0,
+        data,
+    }
+}
+
+/// Computes the minimal differing byte span `[lo..hi)` between `old_block` and `new_block`.
+#[inline]
+pub(crate) fn minimal_diff_block_slice_op(
+    block_id: u64,
+    old_block: &[u8],
+    new_block: &[u8],
+) -> Option<MetadataOp> {
+    let len = old_block.len().min(new_block.len());
+    let mut lo = 0usize;
+    while lo + 8 <= len
+        && u64::from_ne_bytes(old_block[lo..lo + 8].try_into().unwrap())
+            == u64::from_ne_bytes(new_block[lo..lo + 8].try_into().unwrap())
+    {
+        lo += 8;
+    }
+    while lo < len && old_block[lo] == new_block[lo] {
+        lo += 1;
+    }
+    if lo == len {
+        return None;
+    }
+    let mut hi = len;
+    while hi >= lo + 8
+        && u64::from_ne_bytes(old_block[hi - 8..hi].try_into().unwrap())
+            == u64::from_ne_bytes(new_block[hi - 8..hi].try_into().unwrap())
+    {
+        hi -= 8;
+    }
+    while hi > lo && old_block[hi - 1] == new_block[hi - 1] {
+        hi -= 1;
+    }
+    Some(MetadataOp::WriteBlockSlice {
+        block_id,
+        offset: lo as u32,
+        data: new_block[lo..hi].to_vec(),
+    })
 }
 
 fn sim_ensure_root(

@@ -92,6 +92,30 @@ impl DiskManager {
         Ok(())
     }
 
+    /// Zero-pads an owned chunk buffer to `blocks_needed * BLOCK_SIZE` and issues a single
+    /// contiguous `write_all_at`, eliminating the second tail-padding `pwrite` syscall on `FileIo`.
+    pub(super) fn write_chunk_blocks_owned(
+        backing: &mut crate::storage::ImageBacking,
+        start_blk: u64,
+        blocks_needed: usize,
+        mut payload: Vec<u8>,
+    ) -> Result<(), DiskManagerError> {
+        if blocks_needed == 0 {
+            return Ok(());
+        }
+        let total_bytes = blocks_needed.checked_mul(BLOCK_SIZE).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::other("chunk byte length overflow"))
+        })?;
+        let start_off = start_blk.checked_mul(BLOCK_SIZE as u64).ok_or_else(|| {
+            DiskManagerError::Io(std::io::Error::other("chunk block offset overflow"))
+        })?;
+        if payload.len() < total_bytes {
+            payload.resize(total_bytes, 0);
+        }
+        backing.write_all_at(start_off, &payload[..total_bytes])?;
+        Ok(())
+    }
+
     pub(super) fn set_logical_chunk_entry(
         guard: &mut DiskManagerInner,
         inode: &mut Inode,
@@ -281,6 +305,29 @@ impl DiskManager {
         encryption_key: Option<&crate::encryption::EncryptionKey>,
         aad_ctx: ChunkAadContext,
     ) -> Result<(Vec<u8>, u8, u16, usize), DiskManagerError> {
+        Self::prepare_chunk_payload_with_batch(
+            chunk_buf,
+            chunk_valid_len,
+            zstd_level,
+            compress,
+            cdict,
+            encryption_key,
+            None,
+            aad_ctx,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn prepare_chunk_payload_with_batch(
+        chunk_buf: &[u8],
+        chunk_valid_len: usize,
+        zstd_level: i32,
+        compress: bool,
+        cdict: Option<&zstd::zstd_safe::CDict<'_>>,
+        encryption_key: Option<&crate::encryption::EncryptionKey>,
+        batch_aead: Option<(&crate::encryption::PrecomputedBatchAead, [u8; 24])>,
+        aad_ctx: ChunkAadContext,
+    ) -> Result<(Vec<u8>, u8, u16, usize), DiskManagerError> {
         let compressed_opt = if compress {
             let compressed = if let Some(cd) = cdict {
                 crate::zstd_pool::compress_frame_with_cdict(&chunk_buf[..chunk_valid_len], cd)
@@ -293,7 +340,7 @@ impl DiskManager {
             };
             // Check final post-AEAD size BEFORE encrypting so incompressible
             // encrypted chunks never waste an AEAD pass + nonce generation.
-            let fits = if encryption_key.is_some() {
+            let fits = if encryption_key.is_some() || batch_aead.is_some() {
                 let total_enc_len = 24 + compressed.len() + 16;
                 total_enc_len < chunk_valid_len && total_enc_len <= 65535
             } else {
@@ -304,8 +351,26 @@ impl DiskManager {
             None
         };
 
-        if let Some(key) = encryption_key {
-            let nonce = crate::encryption::generate_nonce();
+        if encryption_key.is_some() || batch_aead.is_some() {
+            let encrypt_slice = |pt: &[u8], aad: &[u8]| -> Result<Vec<u8>, DiskManagerError> {
+                let enc_len = 24 + pt.len() + 16;
+                let blks = enc_len.div_ceil(BLOCK_SIZE);
+                let slack = blks.saturating_mul(BLOCK_SIZE).saturating_sub(enc_len);
+                if let Some((aead, nonce)) = batch_aead {
+                    Ok(aead.encrypt_with_nonce_prefix(pt, &nonce, aad, slack)?)
+                } else {
+                    let key = encryption_key.expect("checked is_some above");
+                    let nonce = crate::encryption::generate_nonce();
+                    Ok(crate::encryption::encrypt_with_nonce_prefix_for_scheme(
+                        pt,
+                        key,
+                        &nonce,
+                        aad,
+                        aad_ctx.scheme,
+                    )?)
+                }
+            };
+
             if let Some(compressed) = compressed_opt {
                 // Stack-staged AAD + single-alloc `[nonce | ct | tag]`.
                 let (aad_buf, aad_len) = crate::encryption::chunk_aad_for_scheme_stack(
@@ -314,13 +379,7 @@ impl DiskManager {
                     crate::inode::ChunkEntry::FLAG_COMPRESSED,
                     aad_ctx.scheme,
                 );
-                let payload = crate::encryption::encrypt_with_nonce_prefix_for_scheme(
-                    &compressed,
-                    key,
-                    &nonce,
-                    &aad_buf[..aad_len],
-                    aad_ctx.scheme,
-                )?;
+                let payload = encrypt_slice(&compressed, &aad_buf[..aad_len])?;
                 let blks = payload.len().div_ceil(BLOCK_SIZE);
                 let comp_len = payload.len() as u16;
                 return Ok((
@@ -338,13 +397,7 @@ impl DiskManager {
                 crate::inode::ChunkEntry::FLAG_RAW,
                 aad_ctx.scheme,
             );
-            let payload = crate::encryption::encrypt_with_nonce_prefix_for_scheme(
-                &chunk_buf[..chunk_valid_len],
-                key,
-                &nonce,
-                &aad_buf[..aad_len],
-                aad_ctx.scheme,
-            )?;
+            let payload = encrypt_slice(&chunk_buf[..chunk_valid_len], &aad_buf[..aad_len])?;
             let blks = payload.len().div_ceil(BLOCK_SIZE);
             let comp_len = (payload.len().min(65535)) as u16;
             Ok((payload, crate::inode::ChunkEntry::FLAG_RAW, comp_len, blks))
@@ -506,7 +559,7 @@ impl DiskManager {
                     }
                     guard
                         .backing
-                        .read_exact_at(s_off as u64, &mut io_buf[..copy_len])?;
+                        .read_data_cached(s_off as u64, &mut io_buf[..copy_len])?;
                     decrypt_raw(&io_buf[..copy_len], dst)
                 });
             } else {
@@ -514,8 +567,10 @@ impl DiskManager {
                 if let Some(mmap) = guard.backing.as_mmap_slice() {
                     dst[..n].copy_from_slice(&mmap[s_off..s_off + n]);
                 } else if n > 0 {
-                    // Direct pread straight into caller's destination slice (zero intermediate copy).
-                    guard.backing.read_exact_at(s_off as u64, &mut dst[..n])?;
+                    // Route through DataPageCache for <= 64 KiB chunks (bypasses above 64 KiB).
+                    guard
+                        .backing
+                        .read_data_cached(s_off as u64, &mut dst[..n])?;
                 }
                 if n < dst.len() {
                     dst[n..].fill(0);
@@ -638,7 +693,7 @@ impl DiskManager {
                 }
                 guard
                     .backing
-                    .read_exact_at(s_off as u64, &mut io_buf[..copy_len])?;
+                    .read_data_cached(s_off as u64, &mut io_buf[..copy_len])?;
                 decode_compressed(&io_buf[..copy_len], dst)
             });
         }
@@ -724,13 +779,19 @@ impl DiskManager {
 
         let to_read_total = (buf.len()).min((inode.size - file_offset) as usize);
 
-        // Parallel multi-chunk fast path for chunk-aligned `read_at` calls (>= 192 KiB)
-        // using the persistent worker pool (warm Zstd DCtx + zero pthread_create overhead).
-        if (file_offset as usize).is_multiple_of(crate::inode::CHUNK_SIZE_64K)
-            && to_read_total >= 3 * crate::inode::CHUNK_SIZE_64K
-        {
-            let base_chunk = (file_offset as usize) / crate::inode::CHUNK_SIZE_64K;
-            let total_chunks = to_read_total.div_ceil(crate::inode::CHUNK_SIZE_64K);
+        // Parallel multi-chunk fast path for large `read_at` spans (>= 192 KiB),
+        // regardless of whether `file_offset` is 64 KiB-aligned.
+        if to_read_total >= 3 * crate::inode::CHUNK_SIZE_64K {
+            thread_local! {
+                static TL_BOUNDARY_SCRATCH: std::cell::RefCell<Vec<u8>> =
+                    const { std::cell::RefCell::new(Vec::new()) };
+            }
+            let chunk_sz = crate::inode::CHUNK_SIZE_64K;
+            let chunk_sz_u64 = chunk_sz as u64;
+            let first_chunk = (file_offset / chunk_sz_u64) as usize;
+            let end_pos_u64 = file_offset + to_read_total as u64;
+            let last_chunk = ((end_pos_u64 - 1) / chunk_sz_u64) as usize;
+            let total_chunks = last_chunk - first_chunk + 1;
             let buf_ptr = buf.as_mut_ptr() as usize;
             let first_err: Mutex<Option<DiskManagerError>> = Mutex::new(None);
             let failed = std::sync::atomic::AtomicBool::new(false);
@@ -738,16 +799,23 @@ impl DiskManager {
                 if failed.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
-                let start = rel_idx * crate::inode::CHUNK_SIZE_64K;
-                let len = (to_read_total - start).min(crate::inode::CHUNK_SIZE_64K);
-                // SAFETY: each `rel_idx` owns the disjoint range `[start..start + len)` within `buf`.
-                let dst =
-                    unsafe { std::slice::from_raw_parts_mut((buf_ptr as *mut u8).add(start), len) };
-                let chunk_idx = base_chunk + rel_idx;
-                let chunk_start = (chunk_idx * crate::inode::CHUNK_SIZE_64K) as u64;
-                let chunk_valid_len =
-                    ((inode.size - chunk_start) as usize).min(crate::inode::CHUNK_SIZE_64K);
-                let res = if len == chunk_valid_len {
+                let chunk_idx = first_chunk + rel_idx;
+                let chunk_start = (chunk_idx as u64) * chunk_sz_u64;
+                let chunk_valid_len = ((inode.size - chunk_start) as usize).min(chunk_sz);
+                let req_start = file_offset.max(chunk_start);
+                let req_end = end_pos_u64.min(chunk_start + chunk_valid_len as u64);
+                let slice_len = req_end.saturating_sub(req_start) as usize;
+                if slice_len == 0 {
+                    return;
+                }
+                let dst_off = (req_start - file_offset) as usize;
+                let in_chunk_off = (req_start - chunk_start) as usize;
+                // SAFETY: each `rel_idx` handles a distinct `chunk_idx` and owns a strictly
+                // disjoint range `[dst_off..dst_off + slice_len)` within `buf`.
+                let dst = unsafe {
+                    std::slice::from_raw_parts_mut((buf_ptr as *mut u8).add(dst_off), slice_len)
+                };
+                let res = if in_chunk_off == 0 && slice_len == chunk_valid_len {
                     Self::read_single_chunk_into(
                         guard,
                         inode_id,
@@ -757,14 +825,22 @@ impl DiskManager {
                         dst,
                     )
                 } else {
-                    Self::read_single_chunk_decompressed(
-                        guard,
-                        inode_id,
-                        inode,
-                        chunk_idx,
-                        chunk_valid_len,
-                    )
-                    .map(|tmp| dst.copy_from_slice(&tmp[..len]))
+                    TL_BOUNDARY_SCRATCH.with(|cell| {
+                        let mut scratch = cell.borrow_mut();
+                        if scratch.len() < chunk_valid_len {
+                            scratch.resize(chunk_sz, 0);
+                        }
+                        Self::read_single_chunk_into(
+                            guard,
+                            inode_id,
+                            inode,
+                            chunk_idx,
+                            chunk_valid_len,
+                            &mut scratch[..chunk_valid_len],
+                        )?;
+                        dst.copy_from_slice(&scratch[in_chunk_off..in_chunk_off + slice_len]);
+                        Ok(())
+                    })
                 };
                 if let Err(e) = res {
                     failed.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -907,7 +983,7 @@ impl DiskManager {
                                 c_idx,
                                 c_entry,
                                 c_valid,
-                                Arc::from(tmp),
+                                Arc::new(tmp),
                             );
                         }
                         avail
@@ -926,7 +1002,7 @@ impl DiskManager {
                             buf[bytes_read..bytes_read + avail]
                                 .copy_from_slice(&tmp[in_chunk_offset..in_chunk_offset + avail]);
                         }
-                        let arc: Arc<[u8]> = Arc::from(tmp);
+                        let arc = Arc::new(tmp);
                         guard.chunk_read_cache.insert(
                             inode_id,
                             chunk_idx,
@@ -1212,9 +1288,18 @@ impl DiskManager {
         } = stage1;
 
         // --- STAGE 2: CPU-Bound Processing (ZERO filesystem locks held) ---
+        let batch_aead_ctx = encryption_key
+            .as_ref()
+            .map(|key| {
+                let seed = crate::encryption::generate_nonce();
+                crate::encryption::PrecomputedBatchAead::new(key, &seed, scheme)
+                    .map(|aead| (aead, seed))
+            })
+            .transpose()?;
         let total_chunks = uncompressed_chunks.len();
         let prepared_chunks: Vec<PreparedChunkPayload> = if total_chunks > 1 {
             let enc_key_ref = encryption_key.as_ref();
+            let batch_ref = batch_aead_ctx.as_ref();
             let slots: Vec<
                 std::cell::UnsafeCell<Option<Result<PreparedChunkPayload, DiskManagerError>>>,
             > = (0..total_chunks)
@@ -1236,13 +1321,20 @@ impl DiskManager {
 
             crate::zstd_pool::par_for_index(total_chunks, |i| {
                 let (chunk_idx, chunk_buf, chunk_valid_len) = &uncompressed_chunks[i];
-                let res = Self::prepare_chunk_payload(
+                let batch_arg = batch_ref.map(|(aead, seed)| {
+                    (
+                        aead,
+                        crate::encryption::derive_batch_chunk_nonce(seed, i as u64),
+                    )
+                });
+                let res = Self::prepare_chunk_payload_with_batch(
                     chunk_buf.as_ref(),
                     *chunk_valid_len,
                     level,
                     compress,
                     cdict.as_deref(),
                     enc_key_ref,
+                    batch_arg,
                     ChunkAadContext {
                         inode_id,
                         chunk_idx: *chunk_idx as u64,
@@ -1271,20 +1363,30 @@ impl DiskManager {
             all
         } else {
             let mut out = Vec::with_capacity(total_chunks);
-            for (chunk_idx, chunk_buf, chunk_valid_len) in uncompressed_chunks {
-                let (payload, flag, comp_len, blocks_needed) = Self::prepare_chunk_payload(
-                    chunk_buf.as_ref(),
-                    chunk_valid_len,
-                    level,
-                    compress,
-                    cdict.as_deref(),
-                    encryption_key.as_ref(),
-                    ChunkAadContext {
-                        inode_id,
-                        chunk_idx: chunk_idx as u64,
-                        scheme,
-                    },
-                )?;
+            for (idx, (chunk_idx, chunk_buf, chunk_valid_len)) in
+                uncompressed_chunks.into_iter().enumerate()
+            {
+                let batch_arg = batch_aead_ctx.as_ref().map(|(aead, seed)| {
+                    (
+                        aead,
+                        crate::encryption::derive_batch_chunk_nonce(seed, idx as u64),
+                    )
+                });
+                let (payload, flag, comp_len, blocks_needed) =
+                    Self::prepare_chunk_payload_with_batch(
+                        chunk_buf.as_ref(),
+                        chunk_valid_len,
+                        level,
+                        compress,
+                        cdict.as_deref(),
+                        encryption_key.as_ref(),
+                        batch_arg,
+                        ChunkAadContext {
+                            inode_id,
+                            chunk_idx: chunk_idx as u64,
+                            scheme,
+                        },
+                    )?;
                 out.push(PreparedChunkPayload {
                     chunk_idx,
                     payload,
@@ -1644,7 +1746,7 @@ impl DiskManager {
             let mut payload_ranges: Vec<(usize, usize)> = Vec::new();
             let mut compressed_size_delta: i64 = 0;
 
-            for prepared in prepared_chunks {
+            for mut prepared in prepared_chunks {
                 // 1. Allocate blocks via AllocSim (simulated in memory, NOT touching data bitmap)
                 let new_start_blk = sim.alloc_contiguous(&guard.backing, prepared.blocks_needed)?;
                 crate::journal::push_data_bitmap_op(
@@ -1661,11 +1763,12 @@ impl DiskManager {
                         prepared.blocks_needed.saturating_mul(BLOCK_SIZE),
                     ));
                 }
-                Self::write_chunk_blocks(
+                let chunk_payload = std::mem::take(&mut prepared.payload);
+                Self::write_chunk_blocks_owned(
                     &mut guard.backing,
                     new_start_blk,
                     prepared.blocks_needed,
-                    &prepared.payload,
+                    chunk_payload,
                 )?;
 
                 // 3. Read old chunk entry
@@ -1981,7 +2084,7 @@ impl DiskManager {
 
             // Phase 2: All allocations succeeded; write payloads, update chunk pointers using
             // preallocated indirects, write inode, and ONLY THEN free replaced old blocks.
-            for st in &staged_writes {
+            for st in &mut staged_writes {
                 let _ = (st.flag, st.comp_len);
                 if track_ranges && st.blocks_needed > 0 {
                     payload_ranges.push((
@@ -1989,11 +2092,12 @@ impl DiskManager {
                         st.blocks_needed.saturating_mul(BLOCK_SIZE),
                     ));
                 }
-                Self::write_chunk_blocks(
+                let chunk_payload = std::mem::take(&mut st.payload);
+                Self::write_chunk_blocks_owned(
                     &mut guard.backing,
                     st.new_start_blk,
                     st.blocks_needed,
-                    &st.payload,
+                    chunk_payload,
                 )?;
             }
 

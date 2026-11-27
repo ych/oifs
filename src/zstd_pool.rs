@@ -60,6 +60,22 @@ impl Drop for LocalDecompressor {
     }
 }
 
+struct StreamDecompressorSlot {
+    dctx: Option<zstd::zstd_safe::DCtx<'static>>,
+    scratch: Vec<u8>,
+    loaded_dict: Option<(u32, [u8; 32])>,
+}
+
+impl StreamDecompressorSlot {
+    const fn new() -> Self {
+        Self {
+            dctx: None,
+            scratch: Vec::new(),
+            loaded_dict: None,
+        }
+    }
+}
+
 thread_local! {
     /// Pooled single-frame compressors, keyed by compression level.
     static COMPRESSORS: RefCell<LocalCompressors> =
@@ -74,6 +90,13 @@ thread_local! {
     /// Dedicated thread-local `DCtx` for dictionary-based decompression.
     static DICT_DECOMPRESSOR: RefCell<Option<zstd::zstd_safe::DCtx<'static>>> =
         const { RefCell::new(None) };
+    /// Dedicated thread-local `DCtx` for zero-`memset` non-dict `Vec<u8>` decompression.
+    static FAST_VEC_DECOMPRESSOR: RefCell<Option<zstd::zstd_safe::DCtx<'static>>> =
+        const { RefCell::new(None) };
+    /// Dedicated thread-local streaming `DCtx`, 64 KiB scratch buffer, and loaded dictionary
+    /// fingerprint for concatenated multi-frame Zstd streams.
+    static STREAM_DECOMPRESSOR: RefCell<StreamDecompressorSlot> =
+        const { RefCell::new(StreamDecompressorSlot::new()) };
 }
 
 fn acquire_compressor(level: i32) -> std::io::Result<zstd::bulk::Compressor<'static>> {
@@ -150,6 +173,15 @@ pub fn release_pooled_contexts() {
     });
     DICT_DECOMPRESSOR.with(|cell| {
         *cell.borrow_mut() = None;
+    });
+    FAST_VEC_DECOMPRESSOR.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+    STREAM_DECOMPRESSOR.with(|cell| {
+        let mut s = cell.borrow_mut();
+        s.dctx = None;
+        s.scratch = Vec::new();
+        s.loaded_dict = None;
     });
 }
 
@@ -336,6 +368,16 @@ impl ZstdDictRegistry {
             .map(|(raw, _)| Arc::clone(raw))
     }
 
+    /// Looks up both the raw dictionary bytes and content hash for `dict_id`.
+    pub fn get_raw_with_hash(&self, dict_id: u32) -> Option<(Arc<Vec<u8>>, [u8; 32])> {
+        self.inner
+            .read()
+            .unwrap()
+            .raw
+            .get(&dict_id)
+            .map(|(raw, hash)| (Arc::clone(raw), *hash))
+    }
+
     /// Removes `dict_id` from the registry (clears `default_dict_id` if it pointed to it).
     pub fn unregister(&self, dict_id: u32) -> bool {
         let mut state = self.inner.write().unwrap();
@@ -397,13 +439,16 @@ impl ZstdDictRegistry {
     }
 }
 
-/// Compresses `data` into a single Zstd frame using `cdict` and a dedicated TLS `CCtx`.
+/// Compresses `data` into a single Zstd frame using `cdict` and a dedicated TLS `CCtx`
+/// without zero-initializing the spare output capacity before compression.
 pub fn compress_frame_with_cdict(
     data: &[u8],
     cdict: &zstd::zstd_safe::CDict<'_>,
 ) -> std::io::Result<Vec<u8>> {
     let bound = zstd::zstd_safe::compress_bound(data.len());
-    let mut out = vec![0u8; bound];
+    let mut out = Vec::new();
+    out.try_reserve_exact(bound)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "Zstd OOM"))?;
     let written = DICT_COMPRESSOR.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -448,6 +493,167 @@ pub fn decompress_frame_into_with_ddict(
                     ),
                 )
             })
+    })
+}
+
+/// Decompresses a single non-dictionary Zstd frame directly into an unzeroed `Vec<u8>`
+/// of `expected_len` capacity via `zstd_safe::WriteBuf`, eliminating up-front `memset(0)`.
+pub fn decompress_frame_to_vec(source: &[u8], expected_len: usize) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(expected_len)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "Zstd OOM"))?;
+    FAST_VEC_DECOMPRESSOR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = zstd::zstd_safe::DCtx::try_create();
+        }
+        let dctx = slot
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("Failed to allocate Zstd DCtx"))?;
+        dctx.decompress(&mut out, source).map_err(|code| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Zstd decompression failed: {}",
+                    zstd::zstd_safe::get_error_name(code)
+                ),
+            )
+        })
+    })?;
+    Ok(out)
+}
+
+/// Decompresses a single dictionary Zstd frame directly into an unzeroed `Vec<u8>` of
+/// `expected_len` capacity via `zstd_safe::WriteBuf`, eliminating up-front `memset(0)`.
+pub fn decompress_frame_to_vec_with_ddict(
+    source: &[u8],
+    expected_len: usize,
+    ddict: &zstd::zstd_safe::DDict<'_>,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(expected_len)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "Zstd OOM"))?;
+    DICT_DECOMPRESSOR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = zstd::zstd_safe::DCtx::try_create();
+        }
+        let dctx = slot
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("Failed to allocate Zstd DCtx"))?;
+        dctx.decompress_using_ddict(&mut out, source, ddict)
+            .map_err(|code| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Zstd DDict decompression failed: {}",
+                        zstd::zstd_safe::get_error_name(code)
+                    ),
+                )
+            })
+    })?;
+    Ok(out)
+}
+
+/// Appends the decompressed payload of a single Zstd `frame` onto `out` using a pooled
+/// thread-local streaming `DCtx` (no per-frame `zstd::stream::Decoder` allocation, and
+/// skips dictionary reload on consecutive frames sharing the same `(dict_id, hash)`).
+pub fn decompress_frame_streaming_append(
+    frame: &[u8],
+    dict: Option<(u32, &[u8], [u8; 32])>,
+    out: &mut Vec<u8>,
+    max_total_bytes: u64,
+) -> std::io::Result<()> {
+    const STREAM_SCRATCH_BYTES: usize = 64 * 1024;
+    STREAM_DECOMPRESSOR.with(|cell| {
+        let mut state = cell.borrow_mut();
+        if state.dctx.is_none() {
+            state.dctx = zstd::zstd_safe::DCtx::try_create();
+            state.loaded_dict = None;
+        }
+        if state.scratch.len() < STREAM_SCRATCH_BYTES {
+            state.scratch.resize(STREAM_SCRATCH_BYTES, 0);
+        }
+        let StreamDecompressorSlot {
+            dctx: dctx_opt,
+            scratch,
+            loaded_dict,
+        } = &mut *state;
+        let dctx = dctx_opt
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("Failed to allocate Zstd DCtx"))?;
+
+        match dict {
+            Some((id, raw, hash)) => {
+                if *loaded_dict == Some((id, hash)) {
+                    dctx.reset(zstd::zstd_safe::ResetDirective::SessionOnly)
+                        .map_err(|c| std::io::Error::other(zstd::zstd_safe::get_error_name(c)))?;
+                } else {
+                    dctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+                        .map_err(|c| std::io::Error::other(zstd::zstd_safe::get_error_name(c)))?;
+                    dctx.load_dictionary(raw)
+                        .map_err(|c| std::io::Error::other(zstd::zstd_safe::get_error_name(c)))?;
+                    *loaded_dict = Some((id, hash));
+                }
+            }
+            None => {
+                if loaded_dict.is_some() {
+                    dctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+                        .map_err(|c| std::io::Error::other(zstd::zstd_safe::get_error_name(c)))?;
+                    dctx.disable_dictionary()
+                        .map_err(|c| std::io::Error::other(zstd::zstd_safe::get_error_name(c)))?;
+                    *loaded_dict = None;
+                } else {
+                    dctx.reset(zstd::zstd_safe::ResetDirective::SessionOnly)
+                        .map_err(|c| std::io::Error::other(zstd::zstd_safe::get_error_name(c)))?;
+                }
+            }
+        }
+
+        let mut in_buf = zstd::zstd_safe::InBuffer::around(frame);
+        loop {
+            let prev_pos = in_buf.pos;
+            let written_len = {
+                let mut out_buf = zstd::zstd_safe::OutBuffer::around(scratch.as_mut_slice());
+                let hint = dctx
+                    .decompress_stream(&mut out_buf, &mut in_buf)
+                    .map_err(|code| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "Zstd streaming decompression failed: {}",
+                                zstd::zstd_safe::get_error_name(code)
+                            ),
+                        )
+                    })?;
+                let written = out_buf.as_slice().len();
+                if (out.len() as u64).saturating_add(written as u64) > max_total_bytes {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "Decompressed payload exceeds maximum allowed size ({max_total_bytes} bytes)"
+                        ),
+                    ));
+                }
+                if written > 0 {
+                    out.try_reserve(written).map_err(|_| {
+                        std::io::Error::new(std::io::ErrorKind::OutOfMemory, "Zstd OOM")
+                    })?;
+                    out.extend_from_slice(&scratch[..written]);
+                }
+                if hint == 0 && in_buf.pos >= frame.len() {
+                    break;
+                }
+                written
+            };
+            if written_len == 0 && in_buf.pos == prev_pos {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Truncated or stalled Zstd stream frame",
+                ));
+            }
+        }
+        Ok(())
     })
 }
 

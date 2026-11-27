@@ -254,7 +254,7 @@ impl<'a> WriteBatch<'a> {
             return Err(DiskManagerError::ReadOnly);
         }
 
-        validate_batch_semantics(&guard, &prepared_ops)?;
+        validate_batch_semantics(&guard, &mut prepared_ops)?;
 
         let (created_inodes, wal_transactions) = if guard.superblock.has_journal_layout() {
             execute_batch_journaled(&mut guard, prepared_ops)?
@@ -307,21 +307,31 @@ enum PreparedBatchOp {
     CreateFileWithData {
         parent_inode_id: u64,
         name: String,
+        stored_name: String,
+        stored_hash: u64,
         payload: PreparedPayload,
     },
     Mkdir {
         parent_inode_id: u64,
         name: String,
+        stored_name: String,
+        stored_hash: u64,
     },
     Delete {
         parent_inode_id: u64,
         name: String,
+        stored_name: String,
+        stored_hash: u64,
     },
     Rename {
         old_parent_inode_id: u64,
         old_name: String,
+        old_stored_name: String,
+        old_stored_hash: u64,
         new_parent_inode_id: u64,
         new_name: String,
+        new_stored_name: String,
+        new_stored_hash: u64,
     },
 }
 
@@ -408,6 +418,8 @@ fn prepare_op_stage2(
                 Ok(PreparedBatchOp::CreateFileWithData {
                     parent_inode_id,
                     name,
+                    stored_name: String::new(),
+                    stored_hash: 0,
                     payload: PreparedPayload::Seekable {
                         orig_data: data,
                         chunks,
@@ -432,6 +444,8 @@ fn prepare_op_stage2(
                 Ok(PreparedBatchOp::CreateFileWithData {
                     parent_inode_id,
                     name,
+                    stored_name: String::new(),
+                    stored_hash: 0,
                     payload: PreparedPayload::Standard {
                         bytes,
                         is_compressed,
@@ -447,6 +461,8 @@ fn prepare_op_stage2(
         } => Ok(PreparedBatchOp::Mkdir {
             parent_inode_id,
             name,
+            stored_name: String::new(),
+            stored_hash: 0,
         }),
         BatchOp::Delete {
             parent_inode_id,
@@ -454,6 +470,8 @@ fn prepare_op_stage2(
         } => Ok(PreparedBatchOp::Delete {
             parent_inode_id,
             name,
+            stored_name: String::new(),
+            stored_hash: 0,
         }),
         BatchOp::Rename {
             old_parent_inode_id,
@@ -463,8 +481,12 @@ fn prepare_op_stage2(
         } => Ok(PreparedBatchOp::Rename {
             old_parent_inode_id,
             old_name,
+            old_stored_name: String::new(),
+            old_stored_hash: 0,
             new_parent_inode_id,
             new_name,
+            new_stored_name: String::new(),
+            new_stored_hash: 0,
         }),
     }
 }
@@ -500,14 +522,41 @@ fn prepare_single_seekable_stage2(
 // ---------------------------------------------------------------------------
 
 struct SimDirState {
-    /// Entry plain name -> `(sim_or_real_inode_id, FileType)`.
-    entries: FxHashMap<String, (u64, FileType)>,
+    is_synthetic_dir: bool,
+    dir_inode: Option<Inode>,
+    /// Uncommitted entries created or moved into this directory during the batch.
+    added: FxHashMap<String, (u64, FileType)>,
+    /// Entry names removed or moved out of this directory during the batch.
+    removed: FxHashSet<String>,
+    /// Lazy per-name lookup memo backed by `DiskManager::dir_lookup`.
+    lookup_cache: FxHashMap<String, Option<(u64, FileType)>>,
+}
+
+impl SimDirState {
+    fn synthetic() -> Self {
+        Self {
+            is_synthetic_dir: true,
+            dir_inode: None,
+            added: FxHashMap::default(),
+            removed: FxHashSet::default(),
+            lookup_cache: FxHashMap::default(),
+        }
+    }
+
+    fn from_disk(dir_inode: Inode) -> Self {
+        Self {
+            is_synthetic_dir: false,
+            dir_inode: Some(dir_inode),
+            added: FxHashMap::default(),
+            removed: FxHashSet::default(),
+            lookup_cache: FxHashMap::default(),
+        }
+    }
 }
 
 struct SimNamespace<'a> {
     guard: &'a DiskManagerInner,
     dirs: FxHashMap<u64, SimDirState>,
-    modes: FxHashMap<u64, FileType>,
     deleted_inodes: FxHashSet<u64>,
     parent_override: FxHashMap<u64, u64>,
     next_synth_id: u64,
@@ -518,7 +567,6 @@ impl<'a> SimNamespace<'a> {
         Self {
             guard,
             dirs: FxHashMap::default(),
-            modes: FxHashMap::default(),
             deleted_inodes: FxHashSet::default(),
             parent_override: FxHashMap::default(),
             next_synth_id: u64::MAX - 1,
@@ -535,7 +583,7 @@ impl<'a> SimNamespace<'a> {
         inode_id > u64::MAX / 2
     }
 
-    fn ensure_dir_loaded(&mut self, dir_id: u64) -> Result<(), DiskManagerError> {
+    fn ensure_dir_valid(&mut self, dir_id: u64) -> Result<(), DiskManagerError> {
         if self.deleted_inodes.contains(&dir_id) {
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -562,22 +610,78 @@ impl<'a> SimNamespace<'a> {
                 "Not a directory",
             )));
         }
-        self.modes.insert(dir_id, FileType::Directory);
-        let list = DiskManager::list_dir_with_guard(self.guard, dir_id)?;
-        let mut map = FxHashMap::with_capacity_and_hasher(list.len(), Default::default());
-        for entry in list {
-            if let Ok(child_inode) = DiskManager::read_inode_internal(self.guard, entry.inode) {
-                self.modes.entry(entry.inode).or_insert(child_inode.mode);
-                map.insert(entry.name, (entry.inode, child_inode.mode));
-            }
-        }
-        self.dirs.insert(dir_id, SimDirState { entries: map });
+        self.dirs.insert(dir_id, SimDirState::from_disk(dir_inode));
         Ok(())
     }
 
+    fn lookup_entry(
+        &mut self,
+        dir_id: u64,
+        name: &str,
+    ) -> Result<Option<(u64, FileType)>, DiskManagerError> {
+        self.ensure_dir_valid(dir_id)?;
+        {
+            let st = &self.dirs[&dir_id];
+            if let Some(&v) = st.added.get(name) {
+                return Ok(Some(v));
+            }
+            if st.removed.contains(name) || st.is_synthetic_dir {
+                return Ok(None);
+            }
+            if let Some(&cached) = st.lookup_cache.get(name) {
+                return Ok(cached);
+            }
+        }
+        let found = match DiskManager::dir_lookup(self.guard, dir_id, name)? {
+            Some(child_id) => match DiskManager::read_inode_internal(self.guard, child_id) {
+                Ok(child_inode) => Some((child_id, child_inode.mode)),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        if let Some(st) = self.dirs.get_mut(&dir_id) {
+            st.lookup_cache.insert(name.to_string(), found);
+        }
+        Ok(found)
+    }
+
+    fn insert_entry(&mut self, dir_id: u64, name: String, inode_id: u64, mode: FileType) {
+        if let Some(st) = self.dirs.get_mut(&dir_id) {
+            st.removed.remove(&name);
+            st.added.insert(name, (inode_id, mode));
+        }
+    }
+
+    fn remove_entry(&mut self, dir_id: u64, name: &str) {
+        if let Some(st) = self.dirs.get_mut(&dir_id) {
+            st.added.remove(name);
+            st.removed.insert(name.to_string());
+        }
+    }
+
     fn is_dir_empty_sim(&mut self, dir_id: u64) -> Result<bool, DiskManagerError> {
-        self.ensure_dir_loaded(dir_id)?;
-        Ok(self.dirs[&dir_id].entries.is_empty())
+        self.ensure_dir_valid(dir_id)?;
+        let (has_added, is_synth, no_removed, dir_inode_opt) = {
+            let st = &self.dirs[&dir_id];
+            (
+                !st.added.is_empty(),
+                st.is_synthetic_dir,
+                st.removed.is_empty(),
+                st.dir_inode.as_ref().cloned(),
+            )
+        };
+        if has_added {
+            return Ok(false);
+        }
+        if is_synth {
+            return Ok(true);
+        }
+        if no_removed {
+            return DiskManager::is_dir_empty(self.guard, dir_inode_opt.as_ref().unwrap());
+        }
+        let list = DiskManager::list_dir_with_guard(self.guard, dir_id)?;
+        let st = &self.dirs[&dir_id];
+        Ok(!list.into_iter().any(|e| !st.removed.contains(&e.name)))
     }
 
     fn check_cycle(&self, src_dir_id: u64, new_parent_id: u64) -> Result<bool, DiskManagerError> {
@@ -607,72 +711,66 @@ impl<'a> SimNamespace<'a> {
 
 fn validate_batch_semantics(
     guard: &DiskManagerInner,
-    ops: &[PreparedBatchOp],
+    ops: &mut [PreparedBatchOp],
 ) -> Result<(), DiskManagerError> {
     let mut sim = SimNamespace::new(guard);
     let mut delta_inodes: i64 = 0;
 
-    for op in ops {
+    for op in ops.iter_mut() {
         match op {
             PreparedBatchOp::CreateFileWithData {
                 parent_inode_id,
                 name,
+                stored_name,
+                stored_hash,
                 ..
             } => {
-                sim.ensure_dir_loaded(*parent_inode_id)?;
-                if sim.dirs[parent_inode_id].entries.contains_key(name) {
+                if sim.lookup_entry(*parent_inode_id, name)?.is_some() {
                     return Err(DiskManagerError::Io(std::io::Error::new(
                         std::io::ErrorKind::AlreadyExists,
                         format!("File '{}' already exists", name),
                     )));
                 }
-                let stored = DiskManager::stored_filename(guard, *parent_inode_id, name)?;
-                validate_name_arg(stored.as_ref())?;
+                let stored =
+                    DiskManager::stored_filename(guard, *parent_inode_id, name)?.into_owned();
+                validate_name_arg(&stored)?;
+                *stored_hash = hash_filename(&stored);
+                *stored_name = stored;
                 let sid = sim.alloc_synth_id();
-                sim.modes.insert(sid, FileType::File);
-                sim.dirs
-                    .get_mut(parent_inode_id)
-                    .unwrap()
-                    .entries
-                    .insert(name.clone(), (sid, FileType::File));
+                sim.insert_entry(*parent_inode_id, name.clone(), sid, FileType::File);
                 sim.parent_override.insert(sid, *parent_inode_id);
                 delta_inodes += 1;
             }
             PreparedBatchOp::Mkdir {
                 parent_inode_id,
                 name,
+                stored_name,
+                stored_hash,
             } => {
-                sim.ensure_dir_loaded(*parent_inode_id)?;
-                if sim.dirs[parent_inode_id].entries.contains_key(name) {
+                if sim.lookup_entry(*parent_inode_id, name)?.is_some() {
                     return Err(DiskManagerError::Io(std::io::Error::new(
                         std::io::ErrorKind::AlreadyExists,
                         format!("File '{}' already exists", name),
                     )));
                 }
-                let stored = DiskManager::stored_filename(guard, *parent_inode_id, name)?;
-                validate_name_arg(stored.as_ref())?;
+                let stored =
+                    DiskManager::stored_filename(guard, *parent_inode_id, name)?.into_owned();
+                validate_name_arg(&stored)?;
+                *stored_hash = hash_filename(&stored);
+                *stored_name = stored;
                 let sid = sim.alloc_synth_id();
-                sim.modes.insert(sid, FileType::Directory);
-                sim.dirs
-                    .get_mut(parent_inode_id)
-                    .unwrap()
-                    .entries
-                    .insert(name.clone(), (sid, FileType::Directory));
-                sim.dirs.insert(
-                    sid,
-                    SimDirState {
-                        entries: FxHashMap::default(),
-                    },
-                );
+                sim.insert_entry(*parent_inode_id, name.clone(), sid, FileType::Directory);
+                sim.dirs.insert(sid, SimDirState::synthetic());
                 sim.parent_override.insert(sid, *parent_inode_id);
                 delta_inodes += 1;
             }
             PreparedBatchOp::Delete {
                 parent_inode_id,
                 name,
+                stored_name,
+                stored_hash,
             } => {
-                sim.ensure_dir_loaded(*parent_inode_id)?;
-                let Some(&(target_id, mode)) = sim.dirs[parent_inode_id].entries.get(name) else {
+                let Some((target_id, mode)) = sim.lookup_entry(*parent_inode_id, name)? else {
                     return Err(DiskManagerError::Io(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         "File not found",
@@ -683,36 +781,46 @@ fn validate_batch_semantics(
                         "Directory is not empty",
                     )));
                 }
-                sim.dirs
-                    .get_mut(parent_inode_id)
-                    .unwrap()
-                    .entries
-                    .remove(name);
+                let stored =
+                    DiskManager::stored_filename(guard, *parent_inode_id, name)?.into_owned();
+                *stored_hash = hash_filename(&stored);
+                *stored_name = stored;
+                sim.remove_entry(*parent_inode_id, name);
                 sim.deleted_inodes.insert(target_id);
                 delta_inodes -= 1;
             }
             PreparedBatchOp::Rename {
                 old_parent_inode_id,
                 old_name,
+                old_stored_name,
+                old_stored_hash,
                 new_parent_inode_id,
                 new_name,
+                new_stored_name,
+                new_stored_hash,
             } => {
-                sim.ensure_dir_loaded(*old_parent_inode_id)?;
-                if old_parent_inode_id != new_parent_inode_id {
-                    sim.ensure_dir_loaded(*new_parent_inode_id)?;
-                }
-                let Some(&(src_id, src_mode)) = sim.dirs[old_parent_inode_id].entries.get(old_name)
+                let Some((src_id, src_mode)) = sim.lookup_entry(*old_parent_inode_id, old_name)?
                 else {
                     return Err(DiskManagerError::Io(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         "File not found",
                     )));
                 };
-                if old_parent_inode_id == new_parent_inode_id && old_name == new_name {
+                if *old_parent_inode_id == *new_parent_inode_id && old_name == new_name {
                     continue;
                 }
-                let stored = DiskManager::stored_filename(guard, *new_parent_inode_id, new_name)?;
-                validate_name_arg(stored.as_ref())?;
+                let old_stored =
+                    DiskManager::stored_filename(guard, *old_parent_inode_id, old_name)?
+                        .into_owned();
+                let new_stored =
+                    DiskManager::stored_filename(guard, *new_parent_inode_id, new_name)?
+                        .into_owned();
+                validate_name_arg(&new_stored)?;
+                *old_stored_hash = hash_filename(&old_stored);
+                *old_stored_name = old_stored;
+                *new_stored_hash = hash_filename(&new_stored);
+                *new_stored_name = new_stored;
+
                 if src_mode == FileType::Directory
                     && sim.check_cycle(src_id, *new_parent_inode_id)?
                 {
@@ -721,8 +829,8 @@ fn validate_batch_semantics(
                         "Cannot move a directory into itself or its subdirectory",
                     )));
                 }
-                if let Some(&(dst_id, dst_mode)) =
-                    sim.dirs[new_parent_inode_id].entries.get(new_name)
+                if let Some((dst_id, dst_mode)) =
+                    sim.lookup_entry(*new_parent_inode_id, new_name)?
                 {
                     if dst_id == src_id {
                         continue;
@@ -750,16 +858,8 @@ fn validate_batch_semantics(
                     sim.deleted_inodes.insert(dst_id);
                     delta_inodes -= 1;
                 }
-                sim.dirs
-                    .get_mut(old_parent_inode_id)
-                    .unwrap()
-                    .entries
-                    .remove(old_name);
-                sim.dirs
-                    .get_mut(new_parent_inode_id)
-                    .unwrap()
-                    .entries
-                    .insert(new_name.clone(), (src_id, src_mode));
+                sim.remove_entry(*old_parent_inode_id, old_name);
+                sim.insert_entry(*new_parent_inode_id, new_name.clone(), src_id, src_mode);
                 sim.parent_override.insert(src_id, *new_parent_inode_id);
             }
         }
@@ -1220,13 +1320,12 @@ fn execute_batch_journaled(
         match op {
             PreparedBatchOp::CreateFileWithData {
                 parent_inode_id,
-                name,
+                name: _,
+                stored_name,
+                stored_hash,
                 payload,
             } => {
                 let mut parent_inode = overlay.read_inode(guard, parent_inode_id)?;
-                let stored_name =
-                    DiskManager::stored_filename(guard, parent_inode_id, &name)?.into_owned();
-                let stored_hash = hash_filename(&stored_name);
                 let new_inode_id = overlay.sim.alloc_inode()?;
                 overlay.ops.push(MetadataOp::SetInodeBitmap {
                     inode_id: new_inode_id,
@@ -1380,12 +1479,11 @@ fn execute_batch_journaled(
             }
             PreparedBatchOp::Mkdir {
                 parent_inode_id,
-                name,
+                name: _,
+                stored_name,
+                stored_hash,
             } => {
                 let mut parent_inode = overlay.read_inode(guard, parent_inode_id)?;
-                let stored_name =
-                    DiskManager::stored_filename(guard, parent_inode_id, &name)?.into_owned();
-                let stored_hash = hash_filename(&stored_name);
                 let new_inode_id = overlay.sim.alloc_inode()?;
                 overlay.ops.push(MetadataOp::SetInodeBitmap {
                     inode_id: new_inode_id,
@@ -1419,12 +1517,11 @@ fn execute_batch_journaled(
             }
             PreparedBatchOp::Delete {
                 parent_inode_id,
-                name,
+                name: _,
+                stored_name,
+                stored_hash,
             } => {
                 let mut parent_inode = overlay.read_inode(guard, parent_inode_id)?;
-                let stored_name =
-                    DiskManager::stored_filename(guard, parent_inode_id, &name)?.into_owned();
-                let stored_hash = hash_filename(&stored_name);
                 let (target_id, phys_blk) = overlay
                     .locate_entry(&guard.backing, &parent_inode, &stored_name, stored_hash)
                     .ok_or_else(|| {
@@ -1465,8 +1562,12 @@ fn execute_batch_journaled(
             PreparedBatchOp::Rename {
                 old_parent_inode_id,
                 old_name,
+                old_stored_name: old_stored,
+                old_stored_hash: old_hash,
                 new_parent_inode_id,
                 new_name,
+                new_stored_name: new_stored,
+                new_stored_hash: new_hash,
             } => {
                 if old_parent_inode_id == new_parent_inode_id && old_name == new_name {
                     continue;
@@ -1478,15 +1579,6 @@ fn execute_batch_journaled(
                 } else {
                     Some(overlay.read_inode(guard, new_parent_inode_id)?)
                 };
-
-                let old_stored =
-                    DiskManager::stored_filename(guard, old_parent_inode_id, &old_name)?
-                        .into_owned();
-                let new_stored =
-                    DiskManager::stored_filename(guard, new_parent_inode_id, &new_name)?
-                        .into_owned();
-                let old_hash = hash_filename(&old_stored);
-                let new_hash = hash_filename(&new_stored);
 
                 let (src_id, src_phys_blk) = overlay
                     .locate_entry(&guard.backing, &old_parent, &old_stored, old_hash)
@@ -1653,13 +1745,12 @@ fn execute_batch_in_place(
         match op {
             PreparedBatchOp::CreateFileWithData {
                 parent_inode_id,
-                name,
+                name: _,
+                stored_name,
+                stored_hash,
                 payload,
             } => {
                 let mut parent_inode = DiskManager::read_inode_internal(guard, parent_inode_id)?;
-                let stored_name =
-                    DiskManager::stored_filename(guard, parent_inode_id, &name)?.into_owned();
-                let stored_hash = hash_filename(&stored_name);
 
                 let new_inode_id = allocate_inode_in_place(guard)?;
                 touched_inode_bm = true;
@@ -1812,12 +1903,11 @@ fn execute_batch_in_place(
             }
             PreparedBatchOp::Mkdir {
                 parent_inode_id,
-                name,
+                name: _,
+                stored_name,
+                stored_hash,
             } => {
                 let mut parent_inode = DiskManager::read_inode_internal(guard, parent_inode_id)?;
-                let stored_name =
-                    DiskManager::stored_filename(guard, parent_inode_id, &name)?.into_owned();
-                let stored_hash = hash_filename(&stored_name);
 
                 let new_inode_id = allocate_inode_in_place(guard)?;
                 touched_inode_bm = true;
@@ -1861,12 +1951,11 @@ fn execute_batch_in_place(
             }
             PreparedBatchOp::Delete {
                 parent_inode_id,
-                name,
+                name: _,
+                stored_name,
+                stored_hash,
             } => {
                 let mut parent_inode = DiskManager::read_inode_internal(guard, parent_inode_id)?;
-                let stored_name =
-                    DiskManager::stored_filename(guard, parent_inode_id, &name)?.into_owned();
-                let stored_hash = hash_filename(&stored_name);
                 let (target_id, phys_blk) = DiskManager::locate_entry_in_dir(
                     &guard.backing,
                     &parent_inode,
@@ -1917,8 +2006,12 @@ fn execute_batch_in_place(
             PreparedBatchOp::Rename {
                 old_parent_inode_id,
                 old_name,
+                old_stored_name: old_stored,
+                old_stored_hash: old_hash,
                 new_parent_inode_id,
                 new_name,
+                new_stored_name: new_stored,
+                new_stored_hash: new_hash,
             } => {
                 if old_parent_inode_id == new_parent_inode_id && old_name == new_name {
                     continue;
@@ -1933,15 +2026,6 @@ fn execute_batch_in_place(
                         new_parent_inode_id,
                     )?)
                 };
-
-                let old_stored =
-                    DiskManager::stored_filename(guard, old_parent_inode_id, &old_name)?
-                        .into_owned();
-                let new_stored =
-                    DiskManager::stored_filename(guard, new_parent_inode_id, &new_name)?
-                        .into_owned();
-                let old_hash = hash_filename(&old_stored);
-                let new_hash = hash_filename(&new_stored);
 
                 let (src_id, src_phys_blk) = DiskManager::locate_entry_in_dir(
                     &guard.backing,

@@ -429,6 +429,99 @@ fn test_simd_delta_decode_and_inplace_bitshuffle_roundtrip() {
     }
 }
 
+#[test]
+fn test_simd_delta_and_byteshuffle_exact_parity_all_typesizes_and_tails() {
+    use oifs::filters::{delta_decode, delta_encode, shuffle_decode, shuffle_encode};
+
+    fn scalar_delta_encode_ref(data: &[u8], typesize: usize) -> Vec<u8> {
+        let mut out = data.to_vec();
+        if typesize == 0 {
+            return out;
+        }
+        let n = out.len() / typesize;
+        for i in (1..n).rev() {
+            match typesize {
+                1 => out[i] = out[i].wrapping_sub(out[i - 1]),
+                2 => {
+                    let c = u16::from_le_bytes(out[i * 2..i * 2 + 2].try_into().unwrap());
+                    let p = u16::from_le_bytes(out[(i - 1) * 2..i * 2].try_into().unwrap());
+                    out[i * 2..i * 2 + 2].copy_from_slice(&c.wrapping_sub(p).to_le_bytes());
+                }
+                4 => {
+                    let c = u32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+                    let p = u32::from_le_bytes(out[(i - 1) * 4..i * 4].try_into().unwrap());
+                    out[i * 4..i * 4 + 4].copy_from_slice(&c.wrapping_sub(p).to_le_bytes());
+                }
+                8 => {
+                    let c = u64::from_le_bytes(out[i * 8..i * 8 + 8].try_into().unwrap());
+                    let p = u64::from_le_bytes(out[(i - 1) * 8..i * 8].try_into().unwrap());
+                    out[i * 8..i * 8 + 8].copy_from_slice(&c.wrapping_sub(p).to_le_bytes());
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn scalar_shuffle_encode_ref(data: &[u8], typesize: usize) -> Vec<u8> {
+        if typesize <= 1 || data.is_empty() {
+            return data.to_vec();
+        }
+        let mut out = vec![0u8; data.len()];
+        let n = data.len() / typesize;
+        for i in 0..n {
+            for j in 0..typesize {
+                out[j * n + i] = data[i * typesize + j];
+            }
+        }
+        let tail = n * typesize;
+        out[tail..].copy_from_slice(&data[tail..]);
+        out
+    }
+
+    let lengths = [
+        0usize, 1, 2, 3, 4, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 159, 160, 161,
+        255, 256, 257, 512, 513, 1024, 1057, 4096, 65_549,
+    ];
+    for &typesize in &[1usize, 2, 3, 4, 8, 16] {
+        for &len in &lengths {
+            // Non-symmetric LCG pseudo-random input so every lane/byte permutation bug is exposed.
+            let mut x: u64 = 0x9E37_79B9_7F4A_7C15 ^ ((typesize as u64) << 32) ^ (len as u64);
+            let mut src = Vec::with_capacity(len);
+            for _ in 0..len {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                src.push((x >> 33) as u8);
+            }
+
+            let enc_simd = delta_encode(&src, typesize);
+            let enc_ref = scalar_delta_encode_ref(&src, typesize);
+            assert_eq!(
+                enc_simd, enc_ref,
+                "delta_encode SIMD vs ref mismatch typesize={typesize} len={len}"
+            );
+            let dec_simd = delta_decode(&enc_simd, typesize);
+            assert_eq!(
+                dec_simd, src,
+                "delta_decode roundtrip mismatch typesize={typesize} len={len}"
+            );
+
+            let sh_simd = shuffle_encode(&src, typesize);
+            let sh_ref = scalar_shuffle_encode_ref(&src, typesize);
+            assert_eq!(
+                sh_simd, sh_ref,
+                "shuffle_encode SIMD vs ref mismatch typesize={typesize} len={len}"
+            );
+            let unsh_simd = shuffle_decode(&sh_simd, typesize);
+            assert_eq!(
+                unsh_simd, src,
+                "shuffle_decode roundtrip mismatch typesize={typesize} len={len}"
+            );
+        }
+    }
+}
+
 fn elapsed_ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
 }

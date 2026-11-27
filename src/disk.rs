@@ -904,6 +904,8 @@ pub(crate) struct FullOverwritePayload<'a> {
     pub encryption_nonce: Option<[u8; 24]>,
 }
 
+type FinalizedCreatePayload<'a> = (std::borrow::Cow<'a, [u8]>, bool, Option<[u8; 24]>);
+
 /// The context that binds a seekable chunk ciphertext to its chunk.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChunkAadContext {
@@ -1033,10 +1035,7 @@ fn plan_write_prepared_with_dict<'a>(
     // A write at offset 0 replaces the whole file when requested to truncate to the
     // write end, when extending/matching the current size, when empty, or when transformed.
     let is_full_overwrite = file_offset == 0
-        && (truncate_to_write_end
-            || old_size == 0
-            || data.len() as u64 >= old_size
-            || transformed);
+        && (truncate_to_write_end || old_size == 0 || data.len() as u64 >= old_size || transformed);
 
     if is_full_overwrite {
         // The effective filter keeps a file's stored filter pipeline when the
@@ -3608,15 +3607,13 @@ impl DiskManager {
                 sim,
                 &mut ops,
             )?;
-            // A freshly grown directory block is zero-filled by the legacy path, so the
-            // post-image is the whole block rather than just the entry.
-            let mut block_image = vec![0u8; BLOCK_SIZE];
-            block_image[..entry_bytes.len()].copy_from_slice(&entry_bytes);
-            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                block_id: phys_blk,
-                offset: 0,
-                data: block_image,
-            });
+            // Record only up to the last non-zero byte currently on disk so virgin blocks log
+            // `entry_bytes.len()` bytes instead of a full 4,096-byte zero-padded block.
+            ops.push(crate::journal::minimal_fresh_block_slice_op(
+                &guard.backing,
+                phys_blk,
+                &entry_bytes,
+            ));
             parent_inode.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
             (phys_blk, Some((phys_blk, entry_len as u16)))
         };
@@ -3993,7 +3990,7 @@ impl DiskManager {
         }
 
         // --- STAGE 1: Out-of-Lock Validation & Filename Encryption ---
-        let (stored_name, stored_hash, cdict) = {
+        let (stored_name, stored_hash, cdict, enc_key, enc_scheme, predicted_inode_id) = {
             let guard = self.inner.read().unwrap();
             let parent_inode = Self::read_inode_internal(&guard, parent_inode_id)?;
             if parent_inode.mode != crate::inode::FileType::Directory {
@@ -4014,18 +4011,50 @@ impl DiskManager {
             })?;
             let stored_hash = crate::directory::hash_filename(&stored_name);
             let cdict = Self::resolve_default_cdict(&guard.zstd_dicts, compression_mode);
-            (stored_name, stored_hash, cdict)
+            let predicted_inode_id = if guard.encryption_key.is_some() {
+                guard.inode_bitmap_slice().and_then(|s| {
+                    crate::bitmap::BitmapRef::new(s)
+                        .find_next_free_bounded(
+                            guard.free_inode_hint as usize,
+                            guard.superblock.usable_inode_count() as usize,
+                        )
+                        .map(|id| id as u64)
+                })
+            } else {
+                None
+            };
+            (
+                stored_name,
+                stored_hash,
+                cdict,
+                guard.encryption_key.clone(),
+                guard.superblock.encryption_version,
+                predicted_inode_id,
+            )
         };
 
-        // --- STAGE 2: Lock-Free Pre-Compression Filtering & Compression ---
-        // Encryption is finalized in Stage 3 once `new_inode_id` is allocated so the
-        // AEAD associated data binds to the newly assigned inode ID.
-        let prep = Self::build_full_overwrite_buffer_pure_with_dict(
+        // --- STAGE 2: Lock-Free Pre-Compression Filtering, Compression, & AEAD Encryption ---
+        // Optimistically encrypt against `predicted_inode_id` so the expensive AEAD pass executes
+        // with zero locks held; Stage 3 verifies `new_inode_id == predicted_inode_id` and only
+        // re-encrypts in the rare case another writer claimed `predicted_inode_id` first.
+        let (aad_buf, aad_len) = match (&enc_key, predicted_inode_id) {
+            (Some(_), Some(pred_id)) => {
+                crate::encryption::file_aad_for_scheme_stack(pred_id, enc_scheme)
+            }
+            _ => ([0u8; 20], 0),
+        };
+        let stage2_enc_key = if predicted_inode_id.is_some() {
+            enc_key.as_ref()
+        } else {
+            None
+        };
+        let prep = Self::build_full_overwrite_buffer_pure_for_scheme(
             data,
             compression_mode,
             &filter_config,
-            None,
-            &[],
+            stage2_enc_key,
+            &aad_buf[..aad_len],
+            enc_scheme,
             cdict.as_deref(),
         )?;
         let est_payload_blks = (prep.buffer.len() + 16).div_ceil(BLOCK_SIZE) as u64;
@@ -4043,6 +4072,7 @@ impl DiskManager {
                 stored_name,
                 stored_hash,
                 data.len() as u64,
+                predicted_inode_id,
                 prep,
                 filter_config,
             );
@@ -4105,38 +4135,29 @@ impl DiskManager {
         new_inode.filter_shuffle = filter_config.shuffle;
         new_inode.filter_bitshuffle = filter_config.bitshuffle;
 
-        let (final_buf, encryption_nonce) = if let Some(key) = guard.encryption_key.as_ref() {
-            let scheme = guard.superblock.encryption_version;
-            let (aad_buf, aad_len) =
-                crate::encryption::file_aad_for_scheme_stack(new_inode_id, scheme);
-            let nonce = crate::encryption::generate_nonce();
-            let mut enc = prep.buffer.into_owned();
-            enc.reserve(16);
-            if let Err(e) = crate::encryption::encrypt_data_in_place_for_scheme(
-                &mut enc,
-                key,
-                &nonce,
-                &aad_buf[..aad_len],
-                scheme,
-            ) {
+        let (final_buf, is_compressed, encryption_nonce) = match Self::finalize_create_file_payload(
+            &guard,
+            new_inode_id,
+            predicted_inode_id,
+            prep,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
                 Self::rollback_unlinked_file(&mut guard, new_inode_id, &new_inode);
-                return Err(e.into());
+                return Err(e);
             }
-            (std::borrow::Cow::Owned(enc), Some(nonce))
-        } else {
-            (prep.buffer, None)
         };
 
         if let Some(nonce) = encryption_nonce {
             new_inode.encrypted = true;
             new_inode.encryption_nonce = nonce;
         }
-        new_inode.size = if prep.is_compressed {
+        new_inode.size = if is_compressed {
             data.len() as u64
         } else {
             final_buf.len() as u64
         };
-        new_inode.compressed_size = if prep.is_compressed {
+        new_inode.compressed_size = if is_compressed {
             final_buf.len() as u64
         } else {
             0
@@ -4240,11 +4261,22 @@ impl DiskManager {
         if !blocks.is_empty() {
             let db_start = guard.superblock.data_block_start;
             let mut min_blk = u64::MAX;
+            let mut max_blk = 0u64;
+            let mut freed_any = false;
             if let Some(mut slice) = guard.data_bitmap_slice_mut() {
                 let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
                 for &blk in &blocks {
-                    let _ = da.free(blk);
-                    min_blk = min_blk.min(blk);
+                    if da.free(blk).is_ok() {
+                        min_blk = min_blk.min(blk);
+                        max_blk = max_blk.max(blk);
+                        freed_any = true;
+                    }
+                }
+                if freed_any {
+                    slice.set_dirty_bits(
+                        (min_blk - db_start) as usize,
+                        (max_blk - min_blk + 1) as usize,
+                    );
                 }
             }
             if min_blk < guard.free_block_hint {
@@ -4262,6 +4294,61 @@ impl DiskManager {
         guard.inode_cache.remove(inode_id);
     }
 
+    fn finalize_create_file_payload<'a>(
+        guard: &DiskManagerInner,
+        new_inode_id: u64,
+        predicted_inode_id: Option<u64>,
+        prep: FullOverwritePayload<'a>,
+    ) -> Result<FinalizedCreatePayload<'a>, DiskManagerError> {
+        let is_compressed = prep.is_compressed;
+        let Some(key) = guard.encryption_key.as_ref() else {
+            return Ok((prep.buffer, is_compressed, None));
+        };
+        let scheme = guard.superblock.encryption_version;
+        if let Some(nonce) = prep.encryption_nonce {
+            if predicted_inode_id == Some(new_inode_id) {
+                return Ok((prep.buffer, is_compressed, Some(nonce)));
+            }
+            let mut enc = prep.buffer.into_owned();
+            if let Some(pred_id) = predicted_inode_id {
+                let (old_aad, old_len) =
+                    crate::encryption::file_aad_for_scheme_stack(pred_id, scheme);
+                crate::encryption::decrypt_data_in_place_for_scheme(
+                    &mut enc,
+                    key,
+                    &nonce,
+                    &old_aad[..old_len],
+                    scheme,
+                )?;
+            }
+            let (new_aad, new_len) =
+                crate::encryption::file_aad_for_scheme_stack(new_inode_id, scheme);
+            let new_nonce = crate::encryption::generate_nonce();
+            enc.reserve(16);
+            crate::encryption::encrypt_data_in_place_for_scheme(
+                &mut enc,
+                key,
+                &new_nonce,
+                &new_aad[..new_len],
+                scheme,
+            )?;
+            return Ok((std::borrow::Cow::Owned(enc), is_compressed, Some(new_nonce)));
+        }
+
+        let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(new_inode_id, scheme);
+        let nonce = crate::encryption::generate_nonce();
+        let mut enc = prep.buffer.into_owned();
+        enc.reserve(16);
+        crate::encryption::encrypt_data_in_place_for_scheme(
+            &mut enc,
+            key,
+            &nonce,
+            &aad_buf[..aad_len],
+            scheme,
+        )?;
+        Ok((std::borrow::Cow::Owned(enc), is_compressed, Some(nonce)))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn create_file_with_data_journaled(
         guard: &mut DiskManagerInner,
@@ -4270,6 +4357,7 @@ impl DiskManager {
         stored_name: String,
         stored_hash: u64,
         orig_len: u64,
+        predicted_inode_id: Option<u64>,
         prep: FullOverwritePayload<'_>,
         filter_config: crate::filters::FilterConfig,
     ) -> Result<u64, DiskManagerError> {
@@ -4309,33 +4397,19 @@ impl DiskManager {
         new_inode.filter_shuffle = filter_config.shuffle;
         new_inode.filter_bitshuffle = filter_config.bitshuffle;
 
-        let final_buf = if let Some(key) = guard.encryption_key.as_ref() {
-            let scheme = guard.superblock.encryption_version;
-            let (aad_buf, aad_len) =
-                crate::encryption::file_aad_for_scheme_stack(new_inode_id, scheme);
-            let nonce = crate::encryption::generate_nonce();
-            let mut enc = prep.buffer.into_owned();
-            enc.reserve(16);
-            crate::encryption::encrypt_data_in_place_for_scheme(
-                &mut enc,
-                key,
-                &nonce,
-                &aad_buf[..aad_len],
-                scheme,
-            )?;
+        let (final_buf, is_compressed, encryption_nonce) =
+            Self::finalize_create_file_payload(guard, new_inode_id, predicted_inode_id, prep)?;
+        if let Some(nonce) = encryption_nonce {
             new_inode.encrypted = true;
             new_inode.encryption_nonce = nonce;
-            std::borrow::Cow::Owned(enc)
-        } else {
-            prep.buffer
-        };
+        }
 
-        new_inode.size = if prep.is_compressed {
+        new_inode.size = if is_compressed {
             orig_len
         } else {
             final_buf.len() as u64
         };
-        new_inode.compressed_size = if prep.is_compressed {
+        new_inode.compressed_size = if is_compressed {
             final_buf.len() as u64
         } else {
             0
@@ -4374,14 +4448,11 @@ impl DiskManager {
                 crate::journal::push_data_bitmap_op(&mut ops, blk, 1, true);
                 let chunk_start = i * BLOCK_SIZE;
                 let chunk_end = (chunk_start + BLOCK_SIZE).min(final_buf.len());
-                let mut blk_img = vec![0u8; BLOCK_SIZE];
-                blk_img[..chunk_end - chunk_start]
-                    .copy_from_slice(&final_buf[chunk_start..chunk_end]);
-                ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                    block_id: blk,
-                    offset: 0,
-                    data: blk_img,
-                });
+                ops.push(crate::journal::minimal_fresh_block_slice_op(
+                    &guard.backing,
+                    blk,
+                    &final_buf[chunk_start..chunk_end],
+                ));
                 new_inode.blocks[i] = blk;
             }
         } else if !final_buf.is_empty() {
@@ -4437,13 +4508,11 @@ impl DiskManager {
                 &mut sim,
                 &mut ops,
             )?;
-            let mut block_image = vec![0u8; BLOCK_SIZE];
-            block_image[..entry_bytes.len()].copy_from_slice(&entry_bytes);
-            ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                block_id: phys_blk,
-                offset: 0,
-                data: block_image,
-            });
+            ops.push(crate::journal::minimal_fresh_block_slice_op(
+                &guard.backing,
+                phys_blk,
+                &entry_bytes,
+            ));
             parent_inode.size = (new_blk_idx + 1) as u64 * BLOCK_SIZE as u64;
             (phys_blk, Some((phys_blk, entry_len as u16)))
         };
@@ -4960,7 +5029,7 @@ impl DiskManager {
         })
     }
 
-    pub(crate) fn try_alloc_zeroed_vec(len: usize) -> Result<Vec<u8>, DiskManagerError> {
+    pub(crate) fn try_alloc_vec_with_capacity(len: usize) -> Result<Vec<u8>, DiskManagerError> {
         let mut buf = Vec::new();
         buf.try_reserve_exact(len).map_err(|_| {
             DiskManagerError::Io(std::io::Error::new(
@@ -4968,6 +5037,11 @@ impl DiskManager {
                 format!("Failed to allocate {len} bytes"),
             ))
         })?;
+        Ok(buf)
+    }
+
+    pub(crate) fn try_alloc_zeroed_vec(len: usize) -> Result<Vec<u8>, DiskManagerError> {
+        let mut buf = Self::try_alloc_vec_with_capacity(len)?;
         buf.resize(len, 0);
         Ok(buf)
     }
@@ -4981,40 +5055,33 @@ impl DiskManager {
             Self::checked_read_alloc_len(expected_size, Self::MAX_DECOMPRESSED_STREAM_BYTES)?;
 
         // Single-pass pooled `DCtx` fast path when the payload is a single Zstd frame
-        // within the 64 MiB fast-path budget.
+        // within the 64 MiB fast-path budget (writes straight into spare capacity, no memset).
         let single_frame = zstd::zstd_safe::find_frame_compressed_size(zstd_src)
             .is_ok_and(|frame_len| frame_len == zstd_src.len());
         if single_frame && expected_len <= 64 * 1024 * 1024 {
-            let mut decoded = Self::try_alloc_zeroed_vec(expected_len)?;
             let fast_res = if let Some(dict_id) = crate::zstd_pool::frame_dict_id(zstd_src) {
                 let ddict = dict_registry
                     .get_ddict(dict_id)
                     .ok_or(DiskManagerError::MissingDictionary { dict_id })?;
-                crate::zstd_pool::decompress_frame_into_with_ddict(zstd_src, &mut decoded, &ddict)
+                crate::zstd_pool::decompress_frame_to_vec_with_ddict(zstd_src, expected_len, &ddict)
             } else {
-                crate::zstd_pool::decompress_frame_into(zstd_src, &mut decoded)
+                crate::zstd_pool::decompress_frame_to_vec(zstd_src, expected_len)
             };
-            if let Ok(written) = fast_res
-                && written == expected_len
+            if let Ok(decoded) = fast_res
+                && decoded.len() == expected_len
             {
                 return Ok(decoded);
             }
         }
 
-        // Bounded per-frame streaming fallback (handles multi-frame concatenated streams,
-        // mixed dict/non-dict appended frames, large > 64 MiB files, and corrupt sizes).
-        use std::io::Read;
+        // Bounded per-frame streaming fallback using pooled `DCtx` + `ref_ddict`
+        // (handles multi-frame streams, mixed dict/non-dict appended frames, > 64 MiB files,
+        // and corrupt sizes without recreating a 128 KiB `Decoder` per frame).
         let max_decompressed_bytes = expected_size
             .saturating_add(65536)
             .min(Self::MAX_DECOMPRESSED_STREAM_BYTES as u64);
         let init_cap = expected_len.min(16 * 1024 * 1024);
-        let mut decoded = Vec::new();
-        decoded.try_reserve(init_cap).map_err(|_| {
-            DiskManagerError::Io(std::io::Error::new(
-                std::io::ErrorKind::OutOfMemory,
-                format!("Failed to allocate {init_cap} bytes for decompression"),
-            ))
-        })?;
+        let mut decoded = Self::try_alloc_vec_with_capacity(init_cap)?;
 
         let mut remaining = zstd_src;
         while !remaining.is_empty() {
@@ -5031,34 +5098,25 @@ impl DiskManager {
             let (frame, rest) = remaining.split_at(frame_len);
             remaining = rest;
 
-            let budget_left = max_decompressed_bytes.saturating_sub(decoded.len() as u64);
-            let limit = budget_left.saturating_add(1);
             if let Some(dict_id) = crate::zstd_pool::frame_dict_id(frame) {
-                let raw_dict = dict_registry
-                    .get_raw(dict_id)
+                let (raw_dict, hash) = dict_registry
+                    .get_raw_with_hash(dict_id)
                     .ok_or(DiskManagerError::MissingDictionary { dict_id })?;
-                let decoder =
-                    zstd::stream::Decoder::with_dictionary(std::io::Cursor::new(frame), &raw_dict)
-                        .map_err(DiskManagerError::Io)?;
-                decoder
-                    .take(limit)
-                    .read_to_end(&mut decoded)
-                    .map_err(DiskManagerError::Io)?;
+                crate::zstd_pool::decompress_frame_streaming_append(
+                    frame,
+                    Some((dict_id, raw_dict.as_slice(), hash)),
+                    &mut decoded,
+                    max_decompressed_bytes,
+                )
+                .map_err(DiskManagerError::Io)?;
             } else {
-                let decoder = zstd::stream::Decoder::new(std::io::Cursor::new(frame))
-                    .map_err(DiskManagerError::Io)?;
-                decoder
-                    .take(limit)
-                    .read_to_end(&mut decoded)
-                    .map_err(DiskManagerError::Io)?;
-            }
-            if decoded.len() as u64 > max_decompressed_bytes {
-                return Err(DiskManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "Decompressed payload exceeds maximum allowed size ({max_decompressed_bytes} bytes)"
-                    ),
-                )));
+                crate::zstd_pool::decompress_frame_streaming_append(
+                    frame,
+                    None,
+                    &mut decoded,
+                    max_decompressed_bytes,
+                )
+                .map_err(DiskManagerError::Io)?;
             }
         }
         Ok(decoded)
@@ -5183,15 +5241,17 @@ impl DiskManager {
             }
         }
 
-        let mut raw_data = Self::try_alloc_zeroed_vec(phys_len)?;
-        if guard.io_engine.effective() == IoBackend::Mmap
+        let raw_data = if guard.io_engine.effective() == IoBackend::Mmap
             && let Some(mmap) = guard.backing.as_mmap_slice()
         {
-            // Zero-copy path: coalesce physically contiguous runs and memcpy from the mapping.
+            // Collect coalesced `(src_off, dst_off, len)` runs first: when hole-free, allocate
+            // unzeroed capacity and extend directly from the mmap (eliminates `memset(0)`).
             let data_start = guard.superblock.data_block_start;
             let data_end = guard.superblock.block_count;
             let mmap_len = mmap.len();
-            let mut pending_run: Option<(usize, usize, usize)> = None;
+            let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+            let mut expected_dst = 0usize;
+            let mut hole_free = true;
             Self::walk_payload_blocks(
                 &guard.backing,
                 inode,
@@ -5204,30 +5264,38 @@ impl DiskManager {
                         .and_then(|b| b.checked_mul(BLOCK_SIZE))
                         && src_off.saturating_add(len) <= mmap_len
                     {
-                        match pending_run {
-                            Some((run_src, run_dst, run_len))
-                                if run_src + run_len == src_off && run_dst + run_len == off =>
-                            {
-                                pending_run = Some((run_src, run_dst, run_len + len));
-                            }
-                            Some((run_src, run_dst, run_len)) => {
-                                raw_data[run_dst..run_dst + run_len]
-                                    .copy_from_slice(&mmap[run_src..run_src + run_len]);
-                                pending_run = Some((src_off, off, len));
-                            }
-                            None => {
-                                pending_run = Some((src_off, off, len));
-                            }
+                        if off != expected_dst {
+                            hole_free = false;
+                        }
+                        expected_dst = off + len;
+                        if let Some((prev_src, prev_dst, prev_len)) = runs.last_mut()
+                            && *prev_src + *prev_len == src_off
+                            && *prev_dst + *prev_len == off
+                        {
+                            *prev_len += len;
+                        } else {
+                            runs.push((src_off, off, len));
                         }
                     }
                 },
             );
-            if let Some((run_src, run_dst, run_len)) = pending_run {
-                raw_data[run_dst..run_dst + run_len]
-                    .copy_from_slice(&mmap[run_src..run_src + run_len]);
+            if hole_free && expected_dst == phys_len {
+                let mut buf = Self::try_alloc_vec_with_capacity(phys_len)?;
+                for (run_src, _, run_len) in runs {
+                    buf.extend_from_slice(&mmap[run_src..run_src + run_len]);
+                }
+                buf
+            } else {
+                let mut buf = Self::try_alloc_zeroed_vec(phys_len)?;
+                for (run_src, run_dst, run_len) in runs {
+                    buf[run_dst..run_dst + run_len]
+                        .copy_from_slice(&mmap[run_src..run_src + run_len]);
+                }
+                buf
             }
         } else {
             // Gather coalesced extents, then hand them to the engine in one submission.
+            let mut raw_data = Self::try_alloc_zeroed_vec(phys_len)?;
             let mut extents = ExtentList::new();
             let data_start = guard.superblock.data_block_start;
             let data_end = guard.superblock.block_count;
@@ -5256,7 +5324,8 @@ impl DiskManager {
                     extents: extents.as_slice(),
                 }],
             )?;
-        }
+            raw_data
+        };
 
         // === DECRYPTION STEP ===
         let mut decrypted_data = raw_data;
@@ -5268,8 +5337,7 @@ impl DiskManager {
 
             // Stack-staged AAD binds the ciphertext to the file with zero allocs.
             let scheme = guard.superblock.encryption_version;
-            let (aad_buf, aad_len) =
-                crate::encryption::file_aad_for_scheme_stack(inode_id, scheme);
+            let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(inode_id, scheme);
             crate::encryption::decrypt_data_in_place_for_scheme(
                 &mut decrypted_data,
                 encryption_key,
@@ -6815,15 +6883,25 @@ impl DiskManager {
         if plan.case.frees_previous_blocks() {
             let old_blocks = Self::collect_inode_blocks(&guard.backing, &inode);
             let mut min_freed_blk = u64::MAX;
-            {
+            let mut max_freed_blk = 0u64;
+            if !old_blocks.is_empty() {
                 let db_start = guard.superblock.data_block_start;
                 let mut slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
                     DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
                 })?;
                 let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
+                let mut freed_any = false;
                 for blk in old_blocks {
                     da.free(blk)?;
                     min_freed_blk = min_freed_blk.min(blk);
+                    max_freed_blk = max_freed_blk.max(blk);
+                    freed_any = true;
+                }
+                if freed_any {
+                    slice.set_dirty_bits(
+                        (min_freed_blk - db_start) as usize,
+                        (max_freed_blk - min_freed_blk + 1) as usize,
+                    );
                 }
             }
             if min_freed_blk < guard.free_block_hint {
@@ -7599,17 +7677,12 @@ impl DiskManager {
         // 1. Ensure only 1 flush operation performs msync at any given time (prevents redundant writeback storms)
         let _sync_guard = crate::lock_unpoisoned(&self.sync_mutex);
 
-        // 2. Snapshot the ring head under the shared lock, *before* the flush.
-        //
-        // The flush itself must stay on a read lock so concurrent readers are not
-        // blocked. But reclaiming the ring needs a write lock, and taking one
-        // only after the flush opens a window in which another thread can commit a
-        // new transaction — one the flush never made durable. Reclaiming up to this
-        // snapshot discards only what the flush actually covered.
+        // 2 & 3. Snapshot the WAL cursor AND flush under one shared read lock,
+        // preventing writers from interleaving while allowing concurrent readers to continue.
         let journal_head_before_flush = {
             let guard = self.inner.read().unwrap();
             let sb = guard.superblock;
-            if sb.has_journal_layout() {
+            let head_opt = if sb.has_journal_layout() {
                 let bs = sb.block_size as u64;
                 let region = guard.backing.journal_region_ref(&sb)?;
                 let header_len = usize::try_from(bs)
@@ -7620,13 +7693,8 @@ impl DiskManager {
                 crate::journal::JournalState::decode(&region[..header_len]).map(|s| s.head)
             } else {
                 None
-            }
-        };
+            };
 
-        // 3. Acquire shared read lock: prevents concurrent writers, but allows all
-        // concurrent readers to proceed.
-        {
-            let guard = self.inner.read().unwrap();
             {
                 let mut pending = crate::lock_unpoisoned(&guard.pending_async_ranges);
                 pending.ranges.clear();
@@ -7635,12 +7703,15 @@ impl DiskManager {
                 self.async_drain_ready
                     .store(false, std::sync::atomic::Ordering::Release);
             }
-            // WAL first: a sync point must never let image bytes reach disk ahead of
-            // the log describing them, even when individual transactions skipped
-            // their own barrier because of a non-Strict durability mode.
-            Self::sync_journal_region(&guard)?;
+            // WAL first on Mmap: never let image bytes reach disk ahead of the log describing
+            // them. Under `FileIo`, `guard.backing.flush()` calls `file.sync_data()` on the
+            // same OS file descriptor, so an extra `sync_journal_region` syscall is redundant.
+            if guard.backing.mode() != crate::storage::StorageMode::FileIo {
+                Self::sync_journal_region(&guard)?;
+            }
             guard.backing.flush().map_err(DiskManagerError::Io)?;
-        }
+            head_opt
+        };
 
         // 4. Everything committed up to the snapshot is now on disk, so those
         // transactions can be retired. Anything newer stays pending for recovery.
@@ -7861,7 +7932,7 @@ impl DiskManager {
             )));
         }
 
-        // Build post-image by compacting raw block bytes in place (zero String allocs).
+        // Build minimal differing slice op by compacting a copy and diffing against old bytes.
         let mut dir_image = guard
             .backing
             .with_block(phys_blk, |s| s.to_vec())
@@ -7869,6 +7940,12 @@ impl DiskManager {
                 DiskManagerError::Io(std::io::Error::other("Directory block not found"))
             })?;
         crate::directory::remove_entry_in_block_bytes(&mut dir_image, &matched_name, matched_hash);
+        let dir_diff_op = guard
+            .backing
+            .with_block(phys_blk, |old| {
+                crate::journal::minimal_diff_block_slice_op(phys_blk, old, &dir_image)
+            })
+            .unwrap_or(None);
 
         let blocks_to_free = Self::collect_inode_blocks(&guard.backing, &file_inode);
 
@@ -7888,11 +7965,9 @@ impl DiskManager {
         for &blk in &blocks_to_free {
             crate::journal::push_data_bitmap_op(&mut ops, blk, 1, false);
         }
-        ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-            block_id: phys_blk,
-            offset: 0,
-            data: dir_image,
-        });
+        if let Some(op) = dir_diff_op {
+            ops.push(op);
+        }
         ops.push(crate::journal::MetadataOp::WriteInode {
             inode_id: parent_inode_id,
             inode_bytes: Box::new(parent_image),
@@ -8552,11 +8627,23 @@ impl DiskManager {
                 }
             }
             for (&blk_id, blk_data) in &modified_blocks {
-                journal_ops.push(crate::journal::MetadataOp::WriteBlockSlice {
-                    block_id: blk_id,
-                    offset: 0,
-                    data: blk_data.clone(),
-                });
+                if allocated_new_block && blk_id == inserted_phys_blk {
+                    journal_ops.push(crate::journal::minimal_fresh_block_slice_op(
+                        &guard.backing,
+                        blk_id,
+                        entry_bytes,
+                    ));
+                } else if let Ok(Some(diff_op)) = guard.backing.with_block(blk_id, |old| {
+                    crate::journal::minimal_diff_block_slice_op(blk_id, old, blk_data)
+                }) {
+                    journal_ops.push(diff_op);
+                } else {
+                    journal_ops.push(crate::journal::MetadataOp::WriteBlockSlice {
+                        block_id: blk_id,
+                        offset: 0,
+                        data: blk_data.clone(),
+                    });
+                }
             }
             let old_parent_img =
                 Self::build_inode_post_image(guard, old_parent_inode_id, &old_parent)?;
@@ -8894,15 +8981,25 @@ impl DiskManager {
             if plan.case.frees_previous_blocks() {
                 let old_blocks = Self::collect_inode_blocks(&guard.backing, &inode);
                 let mut min_freed_blk = u64::MAX;
-                {
+                let mut max_freed_blk = 0u64;
+                if !old_blocks.is_empty() {
                     let db_start = guard.superblock.data_block_start;
                     let mut slice = guard.data_bitmap_slice_mut().ok_or_else(|| {
                         DiskManagerError::Io(std::io::Error::other("data bitmap not found"))
                     })?;
                     let mut da = SimpleBlockAllocator::new(&mut slice, db_start);
+                    let mut freed_any = false;
                     for blk in old_blocks {
                         da.free(blk)?;
                         min_freed_blk = min_freed_blk.min(blk);
+                        max_freed_blk = max_freed_blk.max(blk);
+                        freed_any = true;
+                    }
+                    if freed_any {
+                        slice.set_dirty_bits(
+                            (min_freed_blk - db_start) as usize,
+                            (max_freed_blk - min_freed_blk + 1) as usize,
+                        );
                     }
                 }
                 if min_freed_blk < guard.free_block_hint {
@@ -11220,8 +11317,8 @@ mod encryption_scheme_tests {
     fn legacy_encryption_scheme_stays_readable() {
         let path =
             std::env::temp_dir().join(format!("oifs_legacy_scheme_{}.img", std::process::id()));
-        let dst_path = std::env::temp_dir()
-            .join(format!("oifs_legacy_upgrade_{}.img", std::process::id()));
+        let dst_path =
+            std::env::temp_dir().join(format!("oifs_legacy_upgrade_{}.img", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&dst_path);
 
@@ -11280,16 +11377,31 @@ mod encryption_scheme_tests {
         // reject all writes with ReadOnly, and allow upgrading out via transfer_file_to.
         let dm = DiskManager::open_with_password(&path, 0, Some("pw123456"))
             .expect("reopen legacy v1 encrypted image");
-        assert!(dm.is_read_only(), "legacy v1 encryption must write-freeze mounts");
+        assert!(
+            dm.is_read_only(),
+            "legacy v1 encryption must write-freeze mounts"
+        );
         assert_eq!(dm.lookup(root, "legacy.txt").expect("lookup legacy"), id);
-        assert_eq!(dm.read_data(id).expect("read legacy payload"), payload.to_vec());
-        assert!(matches!(dm.create_file(root, "new.txt"), Err(DiskManagerError::ReadOnly)));
+        assert_eq!(
+            dm.read_data(id).expect("read legacy payload"),
+            payload.to_vec()
+        );
+        assert!(matches!(
+            dm.create_file(root, "new.txt"),
+            Err(DiskManagerError::ReadOnly)
+        ));
         assert!(matches!(
             dm.write_data(id, 0, b"nope", CompressionMode::Never),
             Err(DiskManagerError::ReadOnly)
         ));
-        assert!(matches!(dm.truncate(id, 1), Err(DiskManagerError::ReadOnly)));
-        assert!(matches!(dm.delete_file(root, "legacy.txt"), Err(DiskManagerError::ReadOnly)));
+        assert!(matches!(
+            dm.truncate(id, 1),
+            Err(DiskManagerError::ReadOnly)
+        ));
+        assert!(matches!(
+            dm.delete_file(root, "legacy.txt"),
+            Err(DiskManagerError::ReadOnly)
+        ));
 
         let dst_v3 = DiskManager::create_encrypted(&dst_path, 10 * 1024 * 1024, "dst_pw")
             .expect("create v3 destination");
@@ -11308,7 +11420,11 @@ mod encryption_scheme_tests {
         .expect("migrate legacy file to v3");
         assert_eq!(
             dst_v3
-                .read_data(dst_v3.resolve_path("upgraded.txt").expect("resolve upgraded"))
+                .read_data(
+                    dst_v3
+                        .resolve_path("upgraded.txt")
+                        .expect("resolve upgraded")
+                )
                 .expect("read upgraded payload"),
             payload.to_vec()
         );
@@ -11568,8 +11684,10 @@ mod bugfix_repro_tests {
         // - at least one byte in the pre-wrap ring tail [head..ring_bytes] is non-zero
         let mut seq = 0usize;
         let mut ready = false;
-        while seq < 2500 {
-            let name = format!("f{seq:04}");
+        let mut prev_name = String::new();
+        while seq < 10_000 {
+            let pad = seq % 37;
+            let name = format!("f{seq:04}_{}", "a".repeat(pad));
             let _ = dm.create_file(0, &name).unwrap();
             seq += 1;
 
@@ -11591,10 +11709,11 @@ mod bugfix_repro_tests {
                 ready = true;
                 break;
             }
-            if seq.is_multiple_of(20) {
+            if seq.is_multiple_of(20) && !prev_name.is_empty() {
                 // Keep directory compact while generating WAL traffic across laps.
-                let _ = dm.delete_file(0, &format!("f{:04}", seq - 1));
+                let _ = dm.delete_file(0, &prev_name);
             }
+            prev_name = name;
         }
         assert!(
             ready,

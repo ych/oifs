@@ -15,7 +15,7 @@ const NUM_PAYLOAD_CACHE_SHARDS: usize = 16;
 /// pay a single atomic load on invalidation and concurrent seekable readers contend only
 /// on matching `(inode_id, chunk_idx)` shards.
 type ChunkCacheKey = (u64, usize, u64, usize);
-type ChunkCacheShard = crate::CachePadded<RwLock<VecDeque<(ChunkCacheKey, Arc<[u8]>)>>>;
+type ChunkCacheShard = crate::CachePadded<RwLock<VecDeque<(ChunkCacheKey, Arc<Vec<u8>>)>>>;
 
 pub(crate) struct ChunkReadCache {
     shards: Box<[ChunkCacheShard]>,
@@ -29,7 +29,7 @@ impl Default for ChunkReadCache {
 }
 
 impl ChunkReadCache {
-    const MAX_PER_SHARD: usize = 2;
+    const MAX_PER_SHARD: usize = 4;
 
     pub(crate) fn new() -> Self {
         let mut shards = Vec::with_capacity(NUM_PAYLOAD_CACHE_SHARDS);
@@ -117,7 +117,7 @@ impl ChunkReadCache {
         chunk_idx: usize,
         raw_entry: u64,
         valid_len: usize,
-        data: Arc<[u8]>,
+        data: Arc<Vec<u8>>,
     ) {
         let key = (inode_id, chunk_idx, raw_entry, valid_len);
         let mut shard = crate::write_unpoisoned(&self.shards[Self::shard_idx(inode_id, chunk_idx)]);
@@ -815,7 +815,7 @@ mod inode_cache_tests {
 
         let mut chunks = ChunkReadCache::new();
         assert!(!chunks.has_chunk(1, 0));
-        chunks.insert(1, 0, 99, 8, Arc::from(b"abcdefgh".as_slice()));
+        chunks.insert(1, 0, 99, 8, Arc::new(b"abcdefgh".to_vec()));
         assert!(chunks.has_chunk(1, 0));
         let mut out = [0u8; 4];
         assert_eq!(chunks.copy_slice_if_hit(1, 0, 99, 8, 2, &mut out), Some(4));

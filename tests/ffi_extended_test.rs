@@ -1,18 +1,17 @@
 use oifs::ffi::{
     OIFS_CIPHER_AES256_GCM, OIFS_CIPHER_DEFAULT, OIFS_CIPHER_XCHACHA20_POLY1305,
-    OIFS_WRITE_POLICY_DEFAULT, OIFS_WRITE_POLICY_RAW, OIFS_WRITE_POLICY_SEEKABLE_64K,
-    OIFSAutoGrowConfig, OIFSBatchCommitResult, OIFSByteSlice, OIFSFilterConfig, OIFSResizeStats,
-    OIFSVacuumOptions, OIFSVacuumStats, OIFS_RESIZE_METHOD_IN_PLACE, oifs_batch_begin, oifs_batch_commit, oifs_batch_create_file_with_data, oifs_batch_delete,
-    oifs_batch_free, oifs_batch_len, oifs_batch_mkdir, oifs_batch_rename, oifs_check_version,
-    oifs_clear_zstd_dicts, oifs_close, oifs_default_zstd_dict_id, oifs_encryption_cipher,
-    oifs_flush, oifs_get_auto_grow, oifs_grow, oifs_image_size_bytes, oifs_last_error,
-    oifs_loaded_path,
-    oifs_mkdir, oifs_open, oifs_open_read_only, oifs_open_with_cipher, oifs_open_with_password,
-    oifs_read_file, oifs_register_zstd_dict, oifs_registered_zstd_dict_ids, oifs_resize,
-    oifs_set_auto_grow, oifs_set_default_zstd_dict, oifs_train_zstd_dict,
-    oifs_train_zstd_dict_from_dir, oifs_unregister_zstd_dict, oifs_vacuum, oifs_version_code,
-    oifs_version_major, oifs_version_minor, oifs_version_patch, oifs_version_string,
-    oifs_write_file,
+    OIFS_RESIZE_METHOD_IN_PLACE, OIFS_WRITE_POLICY_DEFAULT, OIFS_WRITE_POLICY_RAW,
+    OIFS_WRITE_POLICY_SEEKABLE_64K, OIFSAutoGrowConfig, OIFSBatchCommitResult, OIFSByteSlice,
+    OIFSFilterConfig, OIFSResizeStats, OIFSVacuumOptions, OIFSVacuumStats, oifs_batch_begin,
+    oifs_batch_commit, oifs_batch_create_file_with_data, oifs_batch_delete, oifs_batch_free,
+    oifs_batch_len, oifs_batch_mkdir, oifs_batch_rename, oifs_check_version, oifs_clear_zstd_dicts,
+    oifs_close, oifs_default_zstd_dict_id, oifs_encryption_cipher, oifs_flush, oifs_get_auto_grow,
+    oifs_grow, oifs_image_size_bytes, oifs_last_error, oifs_loaded_path, oifs_mkdir, oifs_open,
+    oifs_open_read_only, oifs_open_with_cipher, oifs_open_with_password, oifs_read_file,
+    oifs_register_zstd_dict, oifs_registered_zstd_dict_ids, oifs_resize, oifs_set_auto_grow,
+    oifs_set_default_zstd_dict, oifs_train_zstd_dict, oifs_train_zstd_dict_from_dir,
+    oifs_unregister_zstd_dict, oifs_vacuum, oifs_version_code, oifs_version_major,
+    oifs_version_minor, oifs_version_patch, oifs_version_string, oifs_write_file,
 };
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -129,9 +128,9 @@ fn test_ffi_version_handshake_compatibility() {
         .unwrap();
 
     assert_eq!(major, 1);
-    assert_eq!(minor, 6);
-    assert_eq!(patch, 1);
-    assert_eq!(version_str, "1.6.1");
+    assert_eq!(minor, 7);
+    assert_eq!(patch, 0);
+    assert_eq!(version_str, "1.7.0");
     assert!(code > 0);
 
     // Rule: "舊版本 error out (-1)，新版本 warning (1)，預期版本就沒事 (0)"
@@ -212,10 +211,7 @@ fn test_ffi_autogrow_resize_vacuum_batch_and_zstd_dict() {
     assert_eq!(ag_out.max_size_bytes, 16 * 1024 * 1024);
 
     let mut resize_stats = OIFSResizeStats::default();
-    assert_eq!(
-        oifs_grow(handle, 8 * 1024 * 1024, &mut resize_stats),
-        0
-    );
+    assert_eq!(oifs_grow(handle, 8 * 1024 * 1024, &mut resize_stats), 0);
     assert_eq!(resize_stats.bytes_after, 8 * 1024 * 1024);
     assert_eq!(resize_stats.method, OIFS_RESIZE_METHOD_IN_PLACE);
     assert_eq!(oifs_image_size_bytes(handle), 8 * 1024 * 1024);
@@ -341,8 +337,10 @@ fn test_ffi_autogrow_resize_vacuum_batch_and_zstd_dict() {
     let mut raw_samples = Vec::new();
     for i in 0..16u32 {
         raw_samples.push(
-            format!("{{\"event\":\"heartbeat\",\"worker\":{i},\"region\":\"ap-east-1\",\"ok\":true}}")
-                .into_bytes(),
+            format!(
+                "{{\"event\":\"heartbeat\",\"worker\":{i},\"region\":\"ap-east-1\",\"ok\":true}}"
+            )
+            .into_bytes(),
         );
     }
     let slice_vec: Vec<OIFSByteSlice> = raw_samples
@@ -376,7 +374,12 @@ fn test_ffi_autogrow_resize_vacuum_batch_and_zstd_dict() {
     let c_dict_file = CString::new("dict_small.json").unwrap();
     let payload = &raw_samples[5];
     assert_eq!(
-        oifs_write_file(handle, c_dict_file.as_ptr(), payload.as_ptr(), payload.len() as u64),
+        oifs_write_file(
+            handle,
+            c_dict_file.as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u64
+        ),
         0
     );
     let mut back = vec![0u8; payload.len()];
@@ -434,7 +437,10 @@ fn test_ffi_autogrow_resize_vacuum_batch_and_zstd_dict() {
     assert_eq!(oifs_unregister_zstd_dict(handle, dict_id as u32), 1);
     assert_eq!(oifs_unregister_zstd_dict(handle, dict_id as u32), 0);
     assert_eq!(oifs_clear_zstd_dicts(handle), 0);
-    assert_eq!(oifs_registered_zstd_dict_ids(handle, std::ptr::null_mut(), 0), 0);
+    assert_eq!(
+        oifs_registered_zstd_dict_ids(handle, std::ptr::null_mut(), 0),
+        0
+    );
 
     // Vacuum + resize down
     let vac_opts = OIFSVacuumOptions {
@@ -462,7 +468,12 @@ fn test_ffi_autogrow_resize_vacuum_batch_and_zstd_dict() {
     assert!(oifs_register_zstd_dict(ro, dict_bytes.as_ptr(), dict_bytes.len(), 0) == dict_id);
     let mut ro_back = vec![0u8; payload.len()];
     assert_eq!(
-        oifs_read_file(ro, c_dict_file.as_ptr(), ro_back.as_mut_ptr(), ro_back.len() as u64),
+        oifs_read_file(
+            ro,
+            c_dict_file.as_ptr(),
+            ro_back.as_mut_ptr(),
+            ro_back.len() as u64
+        ),
         payload.len() as i64
     );
     assert_eq!(&ro_back, payload);
@@ -475,8 +486,16 @@ fn test_ffi_selectable_cipher_suites() {
     let pw = CString::new("FfiCipher#2026").unwrap();
 
     for (fname, cipher_flag, expected_ver) in [
-        ("c_default.img", OIFS_CIPHER_DEFAULT, OIFS_CIPHER_AES256_GCM as i32),
-        ("c_v3.img", OIFS_CIPHER_AES256_GCM, OIFS_CIPHER_AES256_GCM as i32),
+        (
+            "c_default.img",
+            OIFS_CIPHER_DEFAULT,
+            OIFS_CIPHER_AES256_GCM as i32,
+        ),
+        (
+            "c_v3.img",
+            OIFS_CIPHER_AES256_GCM,
+            OIFS_CIPHER_AES256_GCM as i32,
+        ),
         (
             "c_v2.img",
             OIFS_CIPHER_XCHACHA20_POLY1305,
@@ -485,7 +504,14 @@ fn test_ffi_selectable_cipher_suites() {
     ] {
         let p = dir.path().join(fname);
         let c_p = CString::new(p.to_str().unwrap()).unwrap();
-        let h = oifs_open_with_cipher(c_p.as_ptr(), 4 * 1024 * 1024, pw.as_ptr(), 0, 1, cipher_flag);
+        let h = oifs_open_with_cipher(
+            c_p.as_ptr(),
+            4 * 1024 * 1024,
+            pw.as_ptr(),
+            0,
+            1,
+            cipher_flag,
+        );
         assert!(!h.is_null());
         assert_eq!(oifs_encryption_cipher(h), expected_ver);
 
@@ -513,6 +539,8 @@ fn test_ffi_selectable_cipher_suites() {
 
     // Invalid cipher ID must fail cleanly
     let bad_p = CString::new(dir.path().join("bad_cipher.img").to_str().unwrap()).unwrap();
-    assert!(oifs_open_with_cipher(bad_p.as_ptr(), 4 * 1024 * 1024, pw.as_ptr(), 0, 0, 99).is_null());
+    assert!(
+        oifs_open_with_cipher(bad_p.as_ptr(), 4 * 1024 * 1024, pw.as_ptr(), 0, 0, 99).is_null()
+    );
     assert_eq!(oifs_encryption_cipher(std::ptr::null()), -1);
 }

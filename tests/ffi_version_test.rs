@@ -130,8 +130,8 @@ fn test_c_header_version_contract_compilation() {
 int main(void) {
     // 1. Verify compile-time macros
     assert(OIFS_VERSION_MAJOR == 1);
-    assert(OIFS_VERSION_MINOR == 6);
-    assert(OIFS_VERSION_PATCH == 1);
+    assert(OIFS_VERSION_MINOR == 7);
+    assert(OIFS_VERSION_PATCH == 0);
     assert(OIFS_VERSION_COMPAT_OK == 0);
     assert(OIFS_VERSION_COMPAT_WARN == 1);
     assert(OIFS_VERSION_COMPAT_ERR == -1);
@@ -145,7 +145,7 @@ int main(void) {
     assert(warn_status == OIFS_VERSION_COMPAT_WARN);
 
     // 4. Simulated newer requirement -> should error out (-1)
-    int err_status = oifs_check_version(1, 7, 0);
+    int err_status = oifs_check_version(1, 8, 0);
     assert(err_status == OIFS_VERSION_COMPAT_ERR);
 
     // 5. Test loaded path retrieval

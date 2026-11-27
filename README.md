@@ -1,15 +1,15 @@
 # OIFS (O's Inode File System)
 
 [![CI](https://github.com/ych/oifs/actions/workflows/rust.yml/badge.svg)](https://github.com/ych/oifs/actions/workflows/rust.yml)
-[![Release](https://img.shields.io/badge/release-v1.6.1-blue.svg)](https://github.com/ych/oifs/releases/tag/1.6.1)
+[![Release](https://img.shields.io/badge/release-v1.7.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.7.0)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
-[![Kani Verified](https://img.shields.io/badge/Kani%20Verified-131%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
+[![Kani Verified](https://img.shields.io/badge/Kani%20Verified-135%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
 [![BaaaTON Certified](https://baaaton.com/api/v1/certify/badge/pg_dyn_mcp_mwrq0scq_v6be.svg)](https://baaaton.com/agora/pg_dyn_mcp_mwrq0scq_v6be)
 
-[English](README.md) | [繁體中文](README_zh.md) | [📖 Online Documentation](https://ych.github.io/oifs/)
+[English](README.md) | [繁體中文](README_zh.md) | [📖 Online Documentation](https://ych.github.io/oifs/) | [`llms.txt`](llms.txt)
 
-**OIFS** is a high-performance, single-file Unix-like inode filesystem engine written in Rust (Edition 2024). It packs an entire POSIX-style directory tree—with crash-safe WAL journaling, XChaCha20-Poly1305 AEAD encryption, SIMD numerical compression filters, seekable 64 KiB random-access chunks, pure-Rust FUSE mounting, cross-image CoW reflink transfers, C/C++17/20 zero-copy bindings, and an AI MCP server—into one portable `.img` container file.
+**OIFS** is a high-performance, single-file Unix-like inode filesystem engine written in Rust (Edition 2024). It packs an entire POSIX-style directory tree—with crash-safe WAL journaling, C2SP `XAES-256-GCM` & `XChaCha20-Poly1305` AEAD encryption, SIMD numerical compression filters, seekable 64 KiB random-access chunks, pure-Rust FUSE & zero-kext NFSv3 mounting, cross-image CoW reflink transfers, C/C++17/20 zero-copy bindings, and an AI MCP server—into one portable `.img` container file.
 
 > 🌐 **Interactive Architecture & Specs**: [https://ych.github.io/oifs/](https://ych.github.io/oifs/)
 
@@ -29,7 +29,7 @@ Choose OIFS when you need **real filesystem semantics inside a single portable f
 | :--- | :---: | :---: | :---: | :---: |
 | **Read-Write + Crash-Safe WAL** | ✅ (Ordered WAL + `fsck`) | ✅ (SQLite WAL) | ⚠️ (fragile on crash) | ❌ (read-only) |
 | **Multi-Process & OS Mount** | ✅ Master-Proxy IPC + Pure-Rust FUSE + `F_RDLCK` RO | ✅ File locks | ⚠️ SWMR only | ✅ FUSE (RO only) |
-| **Built-in AEAD Encryption** | ✅ XChaCha20-Poly1305 + 192-bit SIV filenames | 🔌 Paid / third-party | ❌ | ❌ |
+| **Built-in AEAD Encryption** | ✅ `XAES-256-GCM` / `XChaCha20-Poly1305` + SIV filenames | 🔌 Paid / third-party | ❌ | ❌ |
 | **Numerical SIMD Filters + Seekable 64K** | ✅ Delta / Shuffle / BitShuffle + 64K Zstd | ❌ | ✅ Chunked filters | ⚠️ Generic / dedup |
 | **POSIX Hierarchy & Cross-Image Reflink** | ✅ Directories, `rename`, `FICLONERANGE`, 1 OS FD | ❌ SQL tables | ⚠️ Group tree | ✅ Read-only tree |
 
@@ -52,7 +52,7 @@ flowchart TB
 
     subgraph Engine["OIFS Storage Engine (DiskManager)"]
         Cache["32-Shard Inode Cache & Sharded Dir Cache (Fibonacci Hash)"]
-        Pipe["Out-of-Lock Pipeline: SIMD Delta/Shuffle/BitShuffle -> Zstd -> XChaCha20-Poly1305"]
+        Pipe["Out-of-Lock Pipeline: SIMD Delta/Shuffle/BitShuffle -> Zstd -> XAES-256-GCM / XChaCha20-Poly1305"]
         Transfer["3-Tier Cross-Image Transfer: FICLONERANGE -> copy_file_range -> Raw Blocks"]
         WAL["Metadata WAL (CRC32C, 128 KiB Ring, Ordered Mode, Deferred Checkpoint)"]
     end
@@ -77,7 +77,7 @@ flowchart TB
 
 ```bash
 # Option 1: One-line install directly from GitHub Release tag (no git clone needed)
-cargo install --git https://github.com/ych/oifs --tag 1.6.1
+cargo install --git https://github.com/ych/oifs --tag 1.7.0
 
 # Option 2: Download prebuilt binaries (Linux x86_64/arm64 & macOS Intel/Apple Silicon)
 #   https://github.com/ych/oifs/releases
@@ -90,7 +90,7 @@ cargo build --release
 ### Everyday CLI Workflows
 
 ```bash
-# 1. Create a 64 MiB journaled image (or add --encrypt for Argon2id + XChaCha20-Poly1305)
+# 1. Create a 64 MiB journaled image (add --encrypt for Argon2id + XAES-256-GCM + AES-256-GCM-SIV; optional --cipher xchacha20-poly1305)
 oifs -i dataset.img create --size 64 --journal
 oifs -i vault.img create --size 64 --journal --encrypt
 
@@ -131,25 +131,44 @@ oifs -i legacy_v1.img migrate    # Upgrades legacy v1 bincode inodes in place to
 
 ## MCP Server for AI Agents 🤖
 
-`oifs_mcp` (`--features mcp`, enabled by default) exposes an OIFS `.img` container over stdio JSON-RPC so Claude Desktop, Cursor, or custom AI agents get an isolated, persistent single-file sandbox.
+`oifs_mcp` (`--features mcp`, enabled by default) exposes an OIFS `.img` container over local **stdio JSON-RPC** (`2024-11-05`) so **Claude Desktop, Claude Code, Cursor, Codex, Gemini CLI**, or custom model-agnostic agents get an isolated, persistent single-file sandbox.
 
-Add to `claude_desktop_config.json` or `.mcp.json`:
+### Multi-Client Setup & Baton Relay
 
-```json
-{
-  "mcpServers": {
-    "oifs-sandbox": {
-      "command": "oifs_mcp",
-      "args": ["/path/to/agent_workspace.img", "--size", "64"],
-      "env": {
-        "OIFS_PASSWORD": "optional-vault-password"
+- **Claude Code**:
+  ```bash
+  claude mcp add oifs-sandbox -- oifs_mcp /path/to/agent_workspace.img --size 64 --journal --auto-grow=512
+  ```
+- **Claude Desktop / Cursor / Codex / Gemini CLI (`mcpServers` JSON)**:
+  ```json
+  {
+    "mcpServers": {
+      "oifs-sandbox": {
+        "command": "oifs_mcp",
+        "args": ["/path/to/agent_workspace.img", "--size", "64", "--journal", "--auto-grow=512"],
+        "env": {
+          "OIFS_PASSWORD": "optional-vault-password"
+        }
       }
     }
   }
-}
-```
+  ```
+- **Multi-Agent CoW Baton Relay & Shared Read-Only Inspection**: Fork an agent's workspace in O(1) (`oifs clone agent_a.img agent_b.img`) with 0 extra disk space until write divergence, or attach concurrent verifier agents with `--read-only` (OS `fcntl(F_RDLCK)` + `PROT_READ`).
 
-**Exposed MCP Tools**: `read_file`, `write_file`, `append_file`, `list_dir`, `mkdir`, `delete_file`, `truncate_file`, and `status`.
+### Exposed MCP Tools (18 Tools)
+
+| Category | Tools | Key Parameters & Safety Bounds |
+| :--- | :--- | :--- |
+| **Read & Inspect** | `read_file`, `list_dir`, `stat_path`, `status`, `verify_integrity`, `load_zstd_dict` | `read_file` enforces a **256 KiB** default anti-token-drain cap (max **4 MiB**, UTF-8 boundary-safe `offset`/`max_bytes`); `list_dir` paginates at **500** entries (max **5,000** via `offset`/`limit`). |
+| **Write & Atomic Batch** | `write_file`, `append_file`, `mkdir`, `delete_file`, `truncate_file`, `rename_path`, `write_batch` | `write_batch` commits mixed creates, directories, deletes, and renames atomically in chunked WAL transactions; all mutations are rejected under `--read-only`. |
+| **Capacity & Dicts** | `resize_image`, `vacuum_image`, `configure_auto_grow`, `train_zstd_dict`, `set_default_zstd_dict` | Online `grow`/`resize`/`vacuum`, capped `auto_grow`, and custom Zstd dictionary training from container corpora. |
+
+### What `oifs_mcp` Never Does & Clean-Exit Sovereignty
+
+* **Zero Outbound Network / Zero Telemetry / Zero Hidden Tolls**: 100% Apache-2.0 open source; runs strictly offline over local stdio and never calls external APIs or requires accounts.
+* **Anti-Token-Drain Defaults**: Bounded `read_file` and `list_dir` pagination prevent huge files or directories from exhausting LLM context budgets.
+* **Zero Vendor Lock-In (Clean Exit)**: Inspect, verify (`verify_integrity`), or export every byte anytime as native host files via `oifs mount` (pure-Rust FUSE or zero-kext NFSv3), `oifs cat`, or the C/C++17/20 & Rust APIs.
+* **Machine-Readable Manifests**: [`llms.txt`](llms.txt) · [`server.json`](server.json) · [`SKILL.md`](SKILL.md) · [`SECURITY.md`](SECURITY.md) · [`.well-known/mcp.json`](.well-known/mcp.json) · [`.well-known/agent.json`](.well-known/agent.json)
 
 ---
 
@@ -246,8 +265,8 @@ int main() {
 *   **Custom Zstd Dictionaries & Explicit `WriteBatch`**: Pooled thread-safe `ZstdDictRegistry` (`CDict`/`DDict`, CLI `--dict` & `oifs dict train`) with small-file `Auto` threshold bypass, plus `DiskManager::begin_write_batch()` coalescing mixed creates, directories, deletes, and renames into chunked 96 KiB WAL commits.
 *   **Transactional Metadata WAL, Inode v3 CRC32C & Configurable Durability**: Opt-in 33-block (1 header + 128 KiB ring) CRC32C WAL (`Lazy`, `RangeAsync`, `Strict`), backward-compatible Inode `record_version == 3` CRC32C checksums verified by `fsck`, single-transaction `create_file_with_data` (inline data-journaling payloads `<= 8 KiB`), and async Group-Commit writes.
 *   **128B Cache-Line Isolation & 32-Shard Concurrency**: 32-shard Fibonacci-hashed `BoundedInodeCache` & `ShardedDirCache`, 16/64-shard caches and `zstd_pool` workers isolated with 128-byte `CachePadded` alignment against cross-core false sharing, out-of-lock SIMD filter / Zstd / AEAD execution, and non-blocking `flush()`.
-*   **Hardened Cryptography & Defense-in-Depth**: OWASP/RFC 9106 Argon2id (`64 MiB`, `t=3`, `p=4`), BLAKE2b-512 domain-separated subkeys, context-bound XChaCha20-Poly1305 AEAD (`inode_id` + `chunk_idx` + `flags` in AAD; AArch64 NEON / x86_64 AVX2 payloads + 1-block scalar short-filename fast path), 192-bit SIV filenames, zeroed block reuse, owner-only `0600` files, bounded OOM/bomb protections, and loopback-only default TCP IPC (`--allow-remote-ipc` opt-in).
-*   **Formal Verification & Quality Assurance**: **131 AWS Kani (CBMC) formal proofs**, Bolero property/fuzz testing, Shuttle DPOR concurrency testing, and **83 integration test suites**.
+*   **Hardened Cryptography & Defense-in-Depth**: OWASP/RFC 9106 Argon2id (`64 MiB`, `t=3`, `p=4`), BLAKE2b-512 domain-separated subkeys, SuperBlock `header_mac` anti-downgrade authentication, default hardware-accelerated C2SP `XAES-256-GCM` + RFC 8452 `AES-256-GCM-SIV` filenames (plus legacy `XChaCha20-Poly1305` v2 compatibility), zeroed block reuse, owner-only `0600` files, bounded OOM/bomb protections, and loopback-only default TCP IPC (`--allow-remote-ipc` opt-in).
+*   **Formal Verification & Quality Assurance**: **135 AWS Kani (CBMC) formal proofs**, Bolero property/fuzz testing, Shuttle DPOR concurrency testing, and **83 integration test suites** (see [`SECURITY.md`](SECURITY.md)).
 
 ---
 
@@ -301,7 +320,7 @@ OIFS_STORAGE_MODE=pread cargo test --release --test transfer_test --test rename_
 # Run live kernel FUSE mount E2E tests & APFS benchmark (requires macFUSE or /dev/fuse)
 cargo test --release --test fuse_live_mount_test -- --ignored --nocapture --test-threads=1
 
-# Run all 131 Kani formal verification proofs in parallel
+# Run all 135 Kani formal verification proofs in parallel
 cargo kani --lib -j 8 --output-format=terse
 
 # One-click pre-release verification (fmt, clippy, build, test, shuttle, kani, coverage)

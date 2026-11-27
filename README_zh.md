@@ -1,15 +1,15 @@
 # OIFS (O's Inode File System)
 
 [![CI](https://github.com/ych/oifs/actions/workflows/rust.yml/badge.svg)](https://github.com/ych/oifs/actions/workflows/rust.yml)
-[![Release](https://img.shields.io/badge/release-v1.6.1-blue.svg)](https://github.com/ych/oifs/releases/tag/1.6.1)
+[![Release](https://img.shields.io/badge/release-v1.7.0-blue.svg)](https://github.com/ych/oifs/releases/tag/1.7.0)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
-[![Kani Verified](https://img.shields.io/badge/Kani%20Verified-131%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
+[![Kani Verified](https://img.shields.io/badge/Kani%20Verified-135%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
 [![BaaaTON Certified](https://baaaton.com/api/v1/certify/badge/pg_dyn_mcp_mwrq0scq_v6be.svg)](https://baaaton.com/agora/pg_dyn_mcp_mwrq0scq_v6be)
 
-[English](README.md) | [繁體中文](README_zh.md) | [📖 線上官方文件](https://ych.github.io/oifs/)
+[English](README.md) | [繁體中文](README_zh.md) | [📖 線上官方文件](https://ych.github.io/oifs/) | [`llms.txt`](llms.txt)
 
-**OIFS** 是以 Rust（Edition 2024）打造的單檔、類 Unix Inode 嵌入式檔案系統引擎。它將完整的階層式檔案系統——包含斷電自癒 WAL、XChaCha20-Poly1305 加密、SIMD 科學數值壓縮濾鏡、可隨機存取的 64 KiB 分塊壓縮、純 Rust 跨平台 FUSE 掛載、跨映像檔 CoW Reflink 搬移、C/C++17/20 零拷貝介面與 AI MCP 伺服器——全部封裝在單一可攜的 `.img` 容器檔中。
+**OIFS** 是以 Rust（Edition 2024）打造的單檔、類 Unix Inode 嵌入式檔案系統引擎。它將完整的階層式檔案系統——包含斷電自癒 WAL、C2SP `XAES-256-GCM` 與 `XChaCha20-Poly1305` 加密、SIMD 科學數值壓縮濾鏡、可隨機存取的 64 KiB 分塊壓縮、純 Rust 跨平台 FUSE 與零核心擴充（Zero-Kext）NFSv3 掛載、跨映像檔 CoW Reflink 搬移、C/C++17/20 零拷貝介面與 AI MCP 伺服器——全部封裝在單一可攜的 `.img` 容器檔中。
 
 > 🌐 **線上官方文件與架構視覺化網站**：[https://ych.github.io/oifs/](https://ych.github.io/oifs/)
 
@@ -29,7 +29,7 @@
 | :--- | :---: | :---: | :---: | :---: |
 | **可讀寫＋崩潰安全 WAL** | ✅（Ordered WAL + `fsck`） | ✅（SQLite WAL） | ⚠️（崩潰易損壞） | ❌（唯讀） |
 | **多行程併發與系統掛載** | ✅ Master-Proxy IPC + 純 Rust FUSE + `F_RDLCK` 唯讀 | ✅ 檔案鎖 | ⚠️ 僅 SWMR | ✅ FUSE（僅唯讀） |
-| **內建 AEAD 加密** | ✅ XChaCha20-Poly1305 + 192-bit SIV 檔名 | 🔌 需付費／外掛 | ❌ | ❌ |
+| **內建 AEAD 加密** | ✅ `XAES-256-GCM` / `XChaCha20-Poly1305` + SIV 檔名 | 🔌 需付費／外掛 | ❌ | ❌ |
 | **數值 SIMD 濾鏡＋隨機 64K 壓縮** | ✅ Delta / Shuffle / BitShuffle + 64K Zstd | ❌ | ✅ 分塊濾鏡 | ⚠️ 通用壓縮／去重 |
 | **POSIX 目錄語意與跨檔 Reflink** | ✅ 目錄樹、`rename`、`FICLONERANGE`、單一 FD | ❌ SQL 資料表 | ⚠️ Group 樹 | ✅ 唯讀目錄樹 |
 
@@ -52,7 +52,7 @@ flowchart TB
 
     subgraph Engine["OIFS 儲存引擎 (DiskManager)"]
         Cache["32 分片 Inode 快取 & 目錄快取 (費氏雜湊)"]
-        Pipe["鎖外處理管線: SIMD Delta/Shuffle/BitShuffle -> Zstd -> XChaCha20-Poly1305"]
+        Pipe["鎖外處理管線: SIMD Delta/Shuffle/BitShuffle -> Zstd -> XAES-256-GCM / XChaCha20-Poly1305"]
         Transfer["跨映像檔三層降級傳輸: FICLONERANGE -> copy_file_range -> Raw Blocks"]
         WAL["Metadata WAL (CRC32C, 128 KiB 環狀緩衝, Ordered Mode, 延遲 Checkpoint)"]
     end
@@ -77,7 +77,7 @@ flowchart TB
 
 ```bash
 # 方式一：一行免 Clone 直接從 GitHub Release Tag 安裝
-cargo install --git https://github.com/ych/oifs --tag 1.6.1
+cargo install --git https://github.com/ych/oifs --tag 1.7.0
 
 # 方式二：直接下載預編譯執行檔（Linux x86_64/arm64 與 macOS Intel/Apple Silicon）
 #   https://github.com/ych/oifs/releases
@@ -90,7 +90,7 @@ cargo build --release
 ### 常用 CLI 操作
 
 ```bash
-# 1. 建立 64 MiB 具 WAL 保護的映像檔（加 --encrypt 啟用 Argon2id + XChaCha20-Poly1305）
+# 1. 建立 64 MiB 具 WAL 保護的映像檔（加 --encrypt 啟用 Argon2id + XAES-256-GCM + AES-256-GCM-SIV；可選 --cipher xchacha20-poly1305）
 oifs -i dataset.img create --size 64 --journal
 oifs -i vault.img create --size 64 --journal --encrypt
 
@@ -131,25 +131,44 @@ oifs -i legacy_v1.img migrate    # 將舊版 v1 bincode Inode 原地升級為固
 
 ## AI Agent 專用 MCP 伺服器設定 🤖
 
-`oifs_mcp`（預設啟用 `mcp` feature）透過 stdio JSON-RPC 將單一 `.img` 沙盒直接暴露給 Claude Desktop、Cursor 或自訂 AI Agent。
+`oifs_mcp`（預設啟用 `mcp` feature）透過本機 **stdio JSON-RPC**（`2024-11-05`）將單一 `.img` 沙盒直接暴露給 **Claude Desktop、Claude Code、Cursor、Codex、Gemini CLI** 或任何模型無關的 AI Agent。
 
-在 `claude_desktop_config.json` 或 Cursor `.mcp.json` 加入：
+### 多客戶端快速設定與 Baton 交接
 
-```json
-{
-  "mcpServers": {
-    "oifs-sandbox": {
-      "command": "oifs_mcp",
-      "args": ["/path/to/agent_workspace.img", "--size", "64"],
-      "env": {
-        "OIFS_PASSWORD": "optional-vault-password"
+- **Claude Code 一鍵指令**：
+  ```bash
+  claude mcp add oifs-sandbox -- oifs_mcp /path/to/agent_workspace.img --size 64 --journal --auto-grow=512
+  ```
+- **Claude Desktop / Cursor / Codex / Gemini CLI（`mcpServers` JSON）**：
+  ```json
+  {
+    "mcpServers": {
+      "oifs-sandbox": {
+        "command": "oifs_mcp",
+        "args": ["/path/to/agent_workspace.img", "--size", "64", "--journal", "--auto-grow=512"],
+        "env": {
+          "OIFS_PASSWORD": "optional-vault-password"
+        }
       }
     }
   }
-}
-```
+  ```
+- **多 Agent O(1) CoW Baton 交棒與共享唯讀稽核**：透過 `oifs clone agent_a.img agent_b.img` 在毫秒內複製工作區狀態（寫入分歧前 0 額外磁碟開銷），或使用 `--read-only`（OS `fcntl(F_RDLCK)` + `PROT_READ`）讓多個稽核 Agent 安全併發檢視同一份 `.img`。
 
-**提供之 MCP Tools**：`read_file`、`write_file`、`append_file`、`list_dir`、`mkdir`、`delete_file`、`truncate_file`、`status`。
+### 提供之 MCP Tools（完整 18 項工具）
+
+| 分類 | 工具名稱 | 防護機制與參數說明 |
+| :--- | :--- | :--- |
+| **唯讀／檢視** | `read_file`、`list_dir`、`stat_path`、`status`、`verify_integrity`、`load_zstd_dict` | `read_file` 預設強制 **256 KiB** Anti-Token-Drain 上限（單次最大 **4 MiB**，支援 `offset`/`max_bytes` 與 UTF-8 字元邊界自動對齊）；`list_dir` 預設分頁 **500** 筆（最大 **5,000**，支援 `offset`/`limit`）。 |
+| **寫入／原子批次** | `write_file`、`append_file`、`mkdir`、`delete_file`、`truncate_file`、`rename_path`、`write_batch` | `write_batch` 以分塊 WAL 單筆原子提交建檔、目錄、刪除與更名；`--read-only` 模式下拒絕一切異動。 |
+| **容量與字典調校** | `resize_image`、`vacuum_image`、`configure_auto_grow`、`train_zstd_dict`、`set_default_zstd_dict` | 線上 `grow`/`resize`/`vacuum`、可設上限之 `auto_grow`，以及依語料訓練 Zstd 字典。 |
+
+### 安全邊界與乾淨退出保證（Clean-Exit Sovereignty）
+
+* **零外傳／零遙測／零隱藏 API 收費**：100% Apache-2.0 開源本機運行，無雲端帳號依賴、無外部網路連線。
+* **防 Token 耗竭防護（Anti-Token-Drain）**：`read_file` 與 `list_dir` 皆內建上下文保護上限與分頁續傳提示。
+* **無廠商鎖定（Zero Vendor Lock-In）**：隨時可透過 `oifs mount`（純 Rust FUSE 或零核心擴充 NFSv3）、`oifs cat` 或 Rust / C / C++17/20 介面無痛匯出標準檔案。
+* **機器可讀探索清單**：[`llms.txt`](llms.txt) · [`server.json`](server.json) · [`SKILL.md`](SKILL.md) · [`SECURITY.md`](SECURITY.md) · [`.well-known/mcp.json`](.well-known/mcp.json) · [`.well-known/agent.json`](.well-known/agent.json)
 
 ---
 
@@ -246,8 +265,8 @@ int main() {
 *   **自帶 Zstd 字典與明確 `WriteBatch`**：支援執行緒安全池化的 `ZstdDictRegistry`（`CDict`/`DDict`、CLI `--dict` 與 `oifs dict train`）及 `Auto` 模式小檔自動字典壓縮；`DiskManager::begin_write_batch()` 可將混合建檔、目錄、刪除與更名合併為 96 KiB 分塊 WAL 交易提交。
 *   **交易式 Metadata WAL、Inode v3 CRC32C 與 Group-Commit**：33 區塊（1 Header + 128 KiB Ring）CRC32C WAL，Inode `record_version == 3` 內建硬體加速 CRC32C 校驗並由 `fsck` 主動偵測位元翻轉（完全向後相容 v2/v1），支援 `Lazy` / `RangeAsync` / `Strict` 模式與單交易 `create_file_with_data`。
 *   **128B 快取線隔離與 32 分片並行**：32 分片費氏雜湊 `BoundedInodeCache` / `ShardedDirCache`、16/64 分片底層快取、`zstd_pool` 工作竊取計數與 `auto_grow_enabled` 旁路旗標皆以 128-byte `CachePadded` 隔離消除跨核心 False Sharing，搭配鎖外 SIMD 濾鏡／壓縮／加密與非阻塞 `flush()`。
-*   **密碼學縱深防禦**：OWASP Argon2id（`64 MiB`, `t=3`, `p=4`）、BLAKE2b-512 子金鑰隔離、Context-Bound XChaCha20-Poly1305 AEAD（NEON/AVX2＋短檔名 1-block scalar fast path）、192-bit SIV 檔名加密、新區塊清零、OOM/解壓炸彈邊界防護與預設僅綁 loopback 的 TCP IPC（`--allow-remote-ipc`）。
-*   **形式化驗證與測試覆蓋**：**131 項 AWS Kani (CBMC) 數學證明**、Bolero 模糊測試、Shuttle 並行排程驗證與 **83 組整合測試套件**。
+*   **密碼學縱深防禦**：OWASP Argon2id（`64 MiB`, `t=3`, `p=4`）、BLAKE2b-512 子金鑰隔離、SuperBlock `header_mac` 防降級驗證、預設硬體加速 C2SP `XAES-256-GCM`＋RFC 8452 `AES-256-GCM-SIV` 檔名（並完整相容舊版 `XChaCha20-Poly1305`）、新區塊清零、OOM/解壓炸彈邊界防護與預設僅綁 loopback 的 TCP IPC（`--allow-remote-ipc`）。
+*   **形式化驗證與測試覆蓋**：**135 項 AWS Kani (CBMC) 數學證明**、Bolero 模糊測試、Shuttle 並行排程驗證與 **83 組整合測試套件**（詳見 [`SECURITY.md`](SECURITY.md)）。
 
 ---
 
@@ -301,7 +320,7 @@ OIFS_STORAGE_MODE=pread cargo test --release --test transfer_test --test rename_
 # 執行真實核心 FUSE 掛載端對端測試與 APFS 對照 benchmark（需 macFUSE 或 /dev/fuse）
 cargo test --release --test fuse_live_mount_test -- --ignored --nocapture --test-threads=1
 
-# 平行執行全部 131 項 Kani 數學形式化證明
+# 平行執行全部 135 項 Kani 數學形式化證明
 cargo kani --lib -j 8 --output-format=terse
 
 # 一鍵發布前檢查（fmt、clippy、build、test、shuttle、kani、coverage）

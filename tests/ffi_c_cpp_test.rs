@@ -102,9 +102,9 @@ int main(void) {{
     int v_status = OIFS_CHECK_VERSION();
     assert(v_status == OIFS_VERSION_COMPAT_OK);
     assert(oifs_version_major() == 1);
-    assert(oifs_version_minor() == 6);
-    assert(oifs_version_patch() == 1);
-    assert(strcmp(oifs_version_string(), "1.6.1") == 0);
+    assert(oifs_version_minor() == 7);
+    assert(oifs_version_patch() == 0);
+    assert(strcmp(oifs_version_string(), "1.7.0") == 0);
 
     // 2. Verify Loaded Library Path
     char dylib_file[1024] = {{0}};
@@ -284,7 +284,7 @@ int main() {{
     // 1. C++ Header Inclusion and Version Handshake Check
     assert(OIFS_CHECK_VERSION() == OIFS_VERSION_COMPAT_OK);
     std::string ver = oifs_version_string();
-    assert(ver == "1.6.1");
+    assert(ver == "1.7.0");
 
     // 2. Open via RAII Smart Pointer
     const std::string img_path = "{img_path}";
@@ -465,7 +465,7 @@ int main() {{
     // 1. Verify C++20 Header Inclusion and Version Handshake
     assert(OIFS_CHECK_VERSION() == OIFS_VERSION_COMPAT_OK);
     std::string ver = oifs_version_string();
-    assert(ver == "1.6.1");
+    assert(ver == "1.7.0");
 
     // 2. Open via RAII Smart Pointer
     const std::string img_path = "{img_path}";

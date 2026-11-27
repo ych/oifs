@@ -21,9 +21,17 @@ use oifs::disk::{
 use oifs::inode::FileType;
 use oifs::storage::StorageMode;
 
-// ── Default image config ──────────────────────────────────────────────
+// ── Default image & anti-token-drain bounds ────────────────────────────
 const DEFAULT_IMAGE: &str = "agent_memory.img";
 const DEFAULT_SIZE_MB: u64 = 10;
+/// Default per-call byte ceiling (256 KiB) to prevent accidental LLM context/token drain.
+const DEFAULT_MCP_READ_MAX_BYTES: usize = 256 * 1024;
+/// Hard per-call byte ceiling (4 MiB) for bounded paginated reads.
+const HARD_MCP_READ_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Default directory listing page size (500 entries) against large-directory token floods.
+const DEFAULT_MCP_LIST_LIMIT: usize = 500;
+/// Hard directory listing page size cap (5,000 entries).
+const HARD_MCP_LIST_LIMIT: usize = 5_000;
 
 // ── MCP Server struct & config ─────────────────────────────────────────
 struct OifsMcpConfig {
@@ -87,8 +95,13 @@ impl OifsMcpServer {
         })
     }
 
-    /// Helper: list entries under a directory inode.
-    fn list_entries_inner(dm: &DiskManager, dir_inode_id: u64) -> Result<Vec<EntryInfo>> {
+    /// Helper: list a bounded page of entries under a directory inode.
+    fn list_entries_paginated(
+        dm: &DiskManager,
+        dir_inode_id: u64,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<EntryInfo>, usize)> {
         let sess = dm.begin_read();
         let inode = sess.read_inode(dir_inode_id)?;
         if inode.mode != FileType::Directory {
@@ -96,8 +109,10 @@ impl OifsMcpServer {
         }
 
         let dir_entries = sess.list_dir(dir_inode_id)?;
-        let mut entries = Vec::with_capacity(dir_entries.len());
-        for entry in dir_entries {
+        let total = dir_entries.len();
+        let page = dir_entries.into_iter().skip(offset).take(limit);
+        let mut entries = Vec::with_capacity(total.saturating_sub(offset).min(limit));
+        for entry in page {
             let child_inode = sess.read_inode(entry.inode)?;
             let kind = match child_inode.mode {
                 FileType::File => "file",
@@ -109,7 +124,7 @@ impl OifsMcpServer {
                 size: child_inode.size,
             });
         }
-        Ok(entries)
+        Ok((entries, total))
     }
 }
 
@@ -127,12 +142,24 @@ struct WriteFileParams {
 struct ReadFileParams {
     /// Path inside the OIFS image (e.g. "notes/todo.txt")
     path: String,
+    /// Optional byte offset to start reading from (default 0)
+    #[serde(default)]
+    offset: Option<u64>,
+    /// Optional max bytes to return in one call (default 262144 = 256 KiB, max 4194304 = 4 MiB; anti-token-drain cap)
+    #[serde(default)]
+    max_bytes: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct ListDirParams {
     /// Path inside the OIFS image (e.g. "." for root, "notes" for a subdirectory)
     path: String,
+    /// Optional starting entry index for pagination (default 0)
+    #[serde(default)]
+    offset: Option<usize>,
+    /// Optional maximum entries to return in one call (default 500, max 5000; anti-token-drain cap)
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -343,8 +370,14 @@ fn auto_grow_json_fields(cfg: &AutoGrowConfig) -> Vec<(&'static str, serde_json:
             "min_increment_bytes",
             serde_json::Value::from(cfg.min_increment_bytes),
         ),
-        ("max_size_bytes", serde_json::Value::from(cfg.max_size_bytes)),
-        ("allow_relayout", serde_json::Value::Bool(cfg.allow_relayout)),
+        (
+            "max_size_bytes",
+            serde_json::Value::from(cfg.max_size_bytes),
+        ),
+        (
+            "allow_relayout",
+            serde_json::Value::Bool(cfg.allow_relayout),
+        ),
     ]
 }
 
@@ -379,14 +412,59 @@ impl OifsMcpServer {
     }
 
     #[tool(
-        description = "Read the contents of a file inside the OIFS sandbox image. Returns UTF-8 text content."
+        description = "Read UTF-8 file contents inside the OIFS sandbox image with anti-token-drain pagination (default 256 KiB cap; pass offset and max_bytes up to 4 MiB for large files)."
     )]
     async fn read_file(&self, Parameters(params): Parameters<ReadFileParams>) -> String {
         let dm = self.dm.clone();
         let result = tokio::task::spawn_blocking(move || -> Result<String> {
             let inode_id = dm.resolve_path(&params.path)?;
-            let data = dm.read_data(inode_id)?;
-            String::from_utf8(data).map_err(|_| "File contains non-UTF-8 data".into())
+            let inode = dm.read_inode(inode_id)?;
+            if inode.mode != FileType::File {
+                return Err("Path is not a regular file".into());
+            }
+            let offset = params.offset.unwrap_or(0);
+            if offset >= inode.size {
+                return Ok(String::new());
+            }
+            let explicit_slice = params.offset.is_some() || params.max_bytes.is_some();
+            let cap = params
+                .max_bytes
+                .unwrap_or(DEFAULT_MCP_READ_MAX_BYTES)
+                .clamp(1, HARD_MCP_READ_MAX_BYTES);
+            let remaining = inode.size - offset;
+            let to_read = remaining.min(cap as u64) as usize;
+            let mut data = vec![0u8; to_read];
+            let n = dm.read_at(inode_id, offset, &mut data)?;
+            data.truncate(n);
+            let hit_eof = offset.saturating_add(n as u64) >= inode.size;
+
+            let text = match String::from_utf8(data) {
+                Ok(s) => s,
+                Err(e) => {
+                    let utf8_err = e.utf8_error();
+                    let valid = utf8_err.valid_up_to();
+                    if !hit_eof && utf8_err.error_len().is_none() && valid > 0 {
+                        let mut bytes = e.into_bytes();
+                        bytes.truncate(valid);
+                        String::from_utf8(bytes).map_err(|_| "File contains non-UTF-8 data")?
+                    } else {
+                        return Err("File contains non-UTF-8 data".into());
+                    }
+                }
+            };
+
+            let is_truncated = offset.saturating_add(text.len() as u64) < inode.size;
+            if is_truncated && !explicit_slice {
+                Ok(format!(
+                    "{}\n[oifs_mcp: truncated at {} of {} bytes to protect context budget; call read_file with offset={} to continue]",
+                    text,
+                    text.len(),
+                    inode.size,
+                    offset.saturating_add(text.len() as u64)
+                ))
+            } else {
+                Ok(text)
+            }
         })
         .await;
         match result {
@@ -397,17 +475,25 @@ impl OifsMcpServer {
     }
 
     #[tool(
-        description = "List files and directories at a given path inside the OIFS sandbox image. Returns one JSON object per line (JSONL)."
+        description = "List files and directories inside the OIFS sandbox image as JSONL with anti-token-drain pagination (default 500 entries, max 5000 via offset and limit)."
     )]
     async fn list_dir(&self, Parameters(params): Parameters<ListDirParams>) -> String {
         let dm = self.dm.clone();
         let result = tokio::task::spawn_blocking(move || -> Result<String> {
             let dir_inode_id = dm.resolve_path(&params.path)?;
-            let entries = Self::list_entries_inner(&dm, dir_inode_id)?;
-            if entries.is_empty() {
+            let offset = params.offset.unwrap_or(0);
+            let limit = params
+                .limit
+                .unwrap_or(DEFAULT_MCP_LIST_LIMIT)
+                .clamp(1, HARD_MCP_LIST_LIMIT);
+            let (entries, total) = Self::list_entries_paginated(&dm, dir_inode_id, offset, limit)?;
+            if total == 0 {
                 return Ok("{\"entries\":0}".to_string());
             }
-            let lines: Vec<String> = entries
+            let returned = entries.len();
+            let next_offset = offset.saturating_add(returned);
+            let has_more = next_offset < total;
+            let mut lines: Vec<String> = entries
                 .iter()
                 .map(|e| {
                     json_object(vec![
@@ -417,6 +503,20 @@ impl OifsMcpServer {
                     ])
                 })
                 .collect();
+            if offset > 0 || has_more {
+                let next_val = if has_more {
+                    serde_json::Value::from(next_offset)
+                } else {
+                    serde_json::Value::Null
+                };
+                lines.push(json_object(vec![
+                    ("has_more", serde_json::Value::Bool(has_more)),
+                    ("offset", serde_json::Value::from(offset)),
+                    ("returned", serde_json::Value::from(returned)),
+                    ("total_entries", serde_json::Value::from(total)),
+                    ("next_offset", next_val),
+                ]));
+            }
             Ok(lines.join("\n"))
         })
         .await;
@@ -550,10 +650,16 @@ impl OifsMcpServer {
             };
             Ok(json_object(vec![
                 ("image", serde_json::Value::String(image_display)),
-                ("image_size_bytes", serde_json::Value::from(dm.image_size_bytes())),
+                (
+                    "image_size_bytes",
+                    serde_json::Value::from(dm.image_size_bytes()),
+                ),
                 ("read_only", serde_json::Value::Bool(dm.is_read_only())),
                 ("encrypted", serde_json::Value::Bool(sb.encrypted)),
-                ("encryption_version", serde_json::Value::from(sb.encryption_version)),
+                (
+                    "encryption_version",
+                    serde_json::Value::from(sb.encryption_version),
+                ),
                 ("cipher", cipher_val),
                 ("auto_grow_enabled", serde_json::Value::Bool(ag.enabled)),
                 ("default_zstd_dict_id", default_dict),
@@ -708,9 +814,15 @@ impl OifsMcpServer {
                 ("ok", serde_json::Value::Bool(true)),
                 ("bytes_before", serde_json::Value::from(stats.bytes_before)),
                 ("bytes_after", serde_json::Value::from(stats.bytes_after)),
-                ("blocks_before", serde_json::Value::from(stats.blocks_before)),
+                (
+                    "blocks_before",
+                    serde_json::Value::from(stats.blocks_before),
+                ),
                 ("blocks_after", serde_json::Value::from(stats.blocks_after)),
-                ("inodes_before", serde_json::Value::from(stats.inodes_before)),
+                (
+                    "inodes_before",
+                    serde_json::Value::from(stats.inodes_before),
+                ),
                 ("inodes_after", serde_json::Value::from(stats.inodes_after)),
                 (
                     "method",
@@ -754,7 +866,10 @@ impl OifsMcpServer {
                     "bytes_reclaimed",
                     serde_json::Value::from(stats.bytes_reclaimed),
                 ),
-                ("blocks_before", serde_json::Value::from(stats.blocks_before)),
+                (
+                    "blocks_before",
+                    serde_json::Value::from(stats.blocks_before),
+                ),
                 ("blocks_after", serde_json::Value::from(stats.blocks_after)),
                 (
                     "blocks_relocated",
@@ -974,8 +1089,10 @@ impl ServerHandler for OifsMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "OIFS Memory Sandbox — A sandboxed inode filesystem for AI agent memory. \
-                 All reads/writes are isolated inside a .img file."
+                "OIFS Memory Sandbox — Local-only, zero-telemetry sandboxed inode filesystem for AI agent memory \
+                 isolated inside a portable .img file. Supports bounded anti-token-drain pagination (read_file default \
+                 256 KiB / list_dir default 500 entries), optional XAES-256-GCM encryption, F_RDLCK read-only mounts, \
+                 atomic WriteBatch/rename, online fsck, and clean vendor-free export via FUSE or NFSv3."
                     .into(),
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
@@ -1001,7 +1118,9 @@ fn print_usage() {
         "  --auto-grow[=MAX_MB] Enable transparent auto-grow on capacity exhaustion (optional cap in MB)"
     );
     eprintln!("  --dict <PATH>        Load a trained Zstd dictionary file from host at startup");
-    eprintln!("  --cipher <NAME>      Encryption cipher for new encrypted images: aes256-gcm (default) or xchacha20-poly1305");
+    eprintln!(
+        "  --cipher <NAME>      Encryption cipher for new encrypted images: aes256-gcm (default) or xchacha20-poly1305"
+    );
     eprintln!("  -h, --help           Show this help");
     eprintln!();
     eprintln!("Environment:");
@@ -1044,7 +1163,9 @@ async fn main() -> Result<()> {
             "--read-only" => read_only = true,
             "--auto-grow" => auto_grow = AutoGrowConfig::enabled(),
             "--dict" => {
-                let v = args.next().ok_or("--dict requires a dictionary file path")?;
+                let v = args
+                    .next()
+                    .ok_or("--dict requires a dictionary file path")?;
                 dict_path = Some(PathBuf::from(v));
             }
             "--cipher" => {

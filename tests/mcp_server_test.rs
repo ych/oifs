@@ -172,8 +172,8 @@ fn test_mcp_tool_response_escapes_hostile_names() {
 }
 
 fn parse_mcp_tool_text_json(resp_line: &str) -> serde_json::Value {
-    let outer: serde_json::Value =
-        serde_json::from_str(resp_line).unwrap_or_else(|e| panic!("invalid JSON-RPC: {resp_line} ({e})"));
+    let outer: serde_json::Value = serde_json::from_str(resp_line)
+        .unwrap_or_else(|e| panic!("invalid JSON-RPC: {resp_line} ({e})"));
     let text = outer["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or_else(|| panic!("missing result.content[0].text in: {resp_line}"));
@@ -408,6 +408,113 @@ fn test_mcp_v161_tools_batch_resize_vacuum_dict_and_read_only() {
         ro_by_id(21)["result"]["content"][0]["text"],
         "hello batch mcp"
     );
-    assert_eq!(parse_mcp_tool_text_json(&ro_by_id(22).to_string())["ok"], false);
-    assert_eq!(parse_mcp_tool_text_json(&ro_by_id(23).to_string())["ok"], false);
+    assert_eq!(
+        parse_mcp_tool_text_json(&ro_by_id(22).to_string())["ok"],
+        false
+    );
+    assert_eq!(
+        parse_mcp_tool_text_json(&ro_by_id(23).to_string())["ok"],
+        false
+    );
+}
+
+#[test]
+fn test_mcp_anti_token_drain_pagination_read_and_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("mcp_pagination.img");
+    let img_str = img_path.to_str().unwrap();
+
+    // Create a >256 KiB UTF-8 payload with 3-byte characters straddling the 262,144-byte mark
+    // so read_file's default cap must trim cleanly at a valid UTF-8 codepoint boundary.
+    let prefix = "a".repeat(262_142);
+    let tail = "測試_tail_end";
+    let large_payload = format!("{prefix}{tail}");
+    assert!(large_payload.len() > 262_144);
+
+    let mut batch_ops = vec![serde_json::json!({
+        "op": "create_file",
+        "path": "big.txt",
+        "content": large_payload,
+        "compression": "never"
+    })];
+    for i in 0..10 {
+        batch_ops.push(serde_json::json!({
+            "op": "create_file",
+            "path": format!("items/file_{i:02}.txt"),
+            "content": format!("v{i}"),
+            "compression": "never"
+        }));
+    }
+
+    let reqs = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"mkdir","arguments":{"path":"items"}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"write_batch","arguments":{"ops": batch_ops}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"big.txt"}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"big.txt","offset":262142,"max_bytes":64}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"list_dir","arguments":{"path":"items","offset":2,"limit":4}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"list_dir","arguments":{"path":"items","offset":8,"limit":4}}}),
+    ];
+
+    let responses = send_mcp_requests(&["--size", "8", img_str], &reqs);
+    let by_id = |target_id: i64| -> serde_json::Value {
+        responses
+            .iter()
+            .find(|v| v["id"].as_i64() == Some(target_id))
+            .unwrap_or_else(|| panic!("missing response for id={target_id}: {responses:?}"))
+            .clone()
+    };
+
+    assert_eq!(parse_mcp_tool_text_json(&by_id(9).to_string())["ok"], true);
+    assert_eq!(parse_mcp_tool_text_json(&by_id(10).to_string())["ok"], true);
+
+    // Default read_file truncates safely on UTF-8 boundary and provides an offset continuation hint.
+    let r11_text = by_id(11)["result"]["content"][0]["text"]
+        .as_str()
+        .expect("id 11 text")
+        .to_string();
+    assert!(
+        r11_text.starts_with(&prefix),
+        "default read_file must preserve valid prefix up to UTF-8 boundary"
+    );
+    assert!(
+        r11_text.contains("offset=262142"),
+        "truncation hint must provide next UTF-8-aligned byte offset: {r11_text}"
+    );
+
+    // Explicit paginated slice returns exact tail without synthetic footer.
+    let r12 = by_id(12);
+    let r12_text = r12["result"]["content"][0]["text"]
+        .as_str()
+        .expect("id 12 text");
+    assert_eq!(r12_text, tail);
+
+    // Paginated list_dir (middle page) returns 4 entries + pagination footer.
+    let r13 = by_id(13);
+    let r13_text = r13["result"]["content"][0]["text"]
+        .as_str()
+        .expect("id 13 text");
+    let r13_lines: Vec<serde_json::Value> = r13_text
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("valid JSONL line"))
+        .collect();
+    assert_eq!(r13_lines.len(), 5);
+    assert_eq!(r13_lines[4]["has_more"], true);
+    assert_eq!(r13_lines[4]["offset"], 2);
+    assert_eq!(r13_lines[4]["returned"], 4);
+    assert_eq!(r13_lines[4]["total_entries"], 10);
+    assert_eq!(r13_lines[4]["next_offset"], 6);
+
+    // Paginated list_dir (final page) returns 2 entries + footer with has_more=false.
+    let r14 = by_id(14);
+    let r14_text = r14["result"]["content"][0]["text"]
+        .as_str()
+        .expect("id 14 text");
+    let r14_lines: Vec<serde_json::Value> = r14_text
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("valid JSONL line"))
+        .collect();
+    assert_eq!(r14_lines.len(), 3);
+    assert_eq!(r14_lines[2]["has_more"], false);
+    assert_eq!(r14_lines[2]["returned"], 2);
+    assert!(r14_lines[2]["next_offset"].is_null());
 }

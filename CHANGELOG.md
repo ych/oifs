@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-28
+
+### Added
+- **Default `v3` Hardware-Accelerated Authenticated Encryption (`src/encryption.rs`, `src/disk.rs`, `src/disk/chunked.rs`)**:
+  - Added `EncryptionCipher` (`Aes256Gcm` default `v3`, or `XChaCha20Poly1305` `v2` via `--cipher` / FFI / C++ / MCP). Default **v3** uses single-pass hardware-accelerated **C2SP XAES-256-GCM** (24-byte nonces, AArch64 `aes_armv8` + `polyval_armv8` / x86_64 AES-NI + PCLMULQDQ) for payloads and **RFC 8452 AES-256-GCM-SIV** for deterministic `_e_...` filenames (`parent_inode` bound in nonce and AAD).
+  - Added keyed BLAKE2b-256 `SuperBlock::header_mac` verified at mount time for `v3` and new `v2` encrypted images to prevent cipher-version, salt, and format downgrades (`legacy v1` remains readable and mounts read-only automatically against AAD downgrade).
+- **`oifs_mcp` Anti-Token-Drain Pagination & Machine-Readable Agent Discovery Manifests**:
+  - Added bounded pagination to `oifs_mcp` (`src/bin/oifs_mcp.rs`): `read_file` supports `offset` / `max_bytes` (256 KiB default cap, 4 MiB hard cap, UTF-8 boundary-safe trimming, and continuation hints), and `list_dir` supports `offset` / `limit` (500-entry default page, 5,000 hard cap, JSONL pagination footer).
+  - Added standard agent/registry discovery files: `server.json`, `glama.json`, `llms.txt`, `SKILL.md`, `SECURITY.md`, `.well-known/mcp.json`, `.well-known/agent.json`, and GitHub Pages mirrors in `docs/`.
+- **Kani Formal Verification Suite Expanded to 135 Harnesses (+4 since v1.6.1)**:
+  - Added `proof_coalesce_data_bitmap_intervals_equivalence`, `proof_encryption_cipher_roundtrip_and_v3_filename_nonce_injective`, and additional filter/codec formal harnesses (`135` total `#[kani::proof]` harnesses in `src/`).
+
+### Performance
+- **Authenticated Encryption Hot Path (`src/encryption.rs`, `src/disk.rs`, `src/disk/chunked.rs`)**: Pre-expanded `Aes256` & `Aes256GcmSiv` key schedules in `EncryptionKey`, stack Base64url short-filename encoding, capacity-reserved `encrypt_data_for_scheme`, per-batch `PrecomputedBatchAead` counter nonces for Seekable 64K writes, and out-of-lock optimistic AEAD encryption on `create_file_with_data_with_filters`.
+- **`StorageMode::FileIo` Syscall Batching & Cache Fast Paths (`src/storage.rs`, `src/disk.rs`, `src/disk/chunked.rs`)**: Added lock-free `count == 0` cache bypasses and read-probe fast paths in `MetadataBlockCache` / `DataPageCache`, coalesced contiguous cold-miss `pread` runs in `read_data_cached`, combined chunk block writes via `write_chunk_blocks_owned`, completed `set_dirty_bits` bitmap tracking, and eliminated redundant `fdatasync` barriers in `DiskManager::flush()`.
+- **Metadata WAL Interval Coalescing & Compact Diff Slices (`src/journal.rs`, `src/disk.rs`)**: Replaced quadratic bitmap coalescing in `coalesce_ops` with $O(N \log N)$ `OrderedIntervalMap` merging, added cache-pollution-free `block_has_nonzero_bytes` scanning, and emitted minimal sub-block WAL diff slices (`minimal_fresh_block_slice_op` / `minimal_diff_block_slice_op`) for directory and small-file commits.
+- **Lazy `WriteBatch` Namespace Validation (`src/disk/batch.rs`)**: Replaced full parent-directory scans during `WriteBatch` validation with lazy per-entry `dir_lookup` probes and cached `(stored_name, stored_hash)` in `PreparedBatchOp`.
+- **Zero-Copy Decode, `ChunkReadCache` & Pooled Multi-Frame Zstd (`src/disk/caches.rs`, `src/disk/chunked.rs`, `src/zstd_pool.rs`, `src/disk.rs`)**: Stored `Arc<Vec<u8>>` directly in `ChunkReadCache` (`MAX_PER_SHARD = 4`), added zero-`memset` `WriteBuf` Zstd frame decompression (`decompress_frame_to_vec*`) and pooled TLS `StreamDecompressorSlot` reuse across multi-frame Zstd streams, routed `FileIo` chunk reads through `read_data_cached`, skipped redundant zero-fills on hole-free `Mmap` reads, and enabled parallel multi-chunk Seekable-64K `read_at` (`>= 192 KiB`) on unaligned offsets via `TL_BOUNDARY_SCRATCH`.
+- **NEON / SSE2 `ByteShuffle` & 128-Byte Tree-Scan `Delta` Filters (`src/filters.rs`)**: Vectorized `ByteShuffle` (`typesize = 2, 4, 8`) and `delta_encode_inplace` (`typesize = 1, 2, 4, 8`), and upgraded `delta_decode_inplace` (`typesize = 1, 2, 4, 8`) to a 128-Byte (8-vector) decoupled binary-tree prefix sum.
+
+### Documentation
+- Updated `README.md`, `README_zh.md`, `docs/index.html`, `docs/formal_verification/README.md`, `CHANGELOG.md`, `include/oifs.h`, and BaaaTON SVG certification badge for `v1.7.0`.
+
 ## [1.6.1] - 2026-11-26
 
 ### Fixed

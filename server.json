@@ -1,0 +1,81 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ych/oifs",
+  "title": "OIFS Memory Sandbox",
+  "description": "Local-only single-file POSIX inode filesystem MCP server with optional XAES-256-GCM encryption, Zstd/SIMD compression, WAL journaling, CoW branching, and anti-token-drain pagination.",
+  "websiteUrl": "https://ych.github.io/oifs/",
+  "repository": {
+    "url": "https://github.com/ych/oifs",
+    "source": "github"
+  },
+  "version": "1.7.0",
+  "packages": [
+    {
+      "registryType": "crates.io",
+      "identifier": "oifs",
+      "version": "1.7.0",
+      "runtimeHint": "cargo",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "workspace.img",
+          "description": "Path to the single-file .img container sandbox (created automatically if missing unless --read-only is set)."
+        },
+        {
+          "type": "named",
+          "name": "--size",
+          "description": "Initial image size in MB when creating a new image (default 10)."
+        },
+        {
+          "type": "named",
+          "name": "--journal",
+          "description": "Enable CRC32C metadata Write-Ahead Logging when creating a new image."
+        },
+        {
+          "type": "named",
+          "name": "--no-mmap",
+          "description": "Use pure positional pread/pwrite storage engine (zero mmap)."
+        },
+        {
+          "type": "named",
+          "name": "--read-only",
+          "description": "Open existing image with shared F_RDLCK lock and reject all mutations."
+        },
+        {
+          "type": "named",
+          "name": "--auto-grow",
+          "description": "Enable transparent container expansion (optional =MAX_MB cap)."
+        },
+        {
+          "type": "named",
+          "name": "--dict",
+          "description": "Load a trained Zstd dictionary file at startup."
+        },
+        {
+          "type": "named",
+          "name": "--cipher",
+          "description": "Encryption cipher for new encrypted images: aes256-gcm (default) or xchacha20-poly1305."
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "OIFS_PASSWORD",
+          "description": "Optional encryption passphrase. When set, opens an existing encrypted container or initializes a new encrypted container; never stored or transmitted over the network.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "OIFS_STORAGE_MODE",
+          "description": "Optional default storage mode override ('mmap' or 'pread').",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "name": "oifs_mcp",
+  "displayName": "OIFS Memory Sandbox",
+  "version": "1.7.0",
+  "license": "Apache-2.0",
+  "description": "Single-file containerized POSIX inode filesystem MCP server with optional XAES-256-GCM encryption, Zstd/SIMD compression, CRC32C WAL, atomic WriteBatch, and bounded pagination.",
+  "repository": "https://github.com/ych/oifs",
+  "homepage": "https://ych.github.io/oifs/",
+  "llmsTxt": "https://ych.github.io/oifs/llms.txt",
+  "agentCard": "https://ych.github.io/oifs/.well-known/agent.json",
+  "transport": {
+    "type": "stdio",
+    "command": "oifs_mcp",
+    "args": ["workspace.img", "--size", "64", "--journal"]
+  },
+  "costSchema": {
+    "pricing": "free",
+    "openSource": true,
+    "hiddenApiTolls": false,
+    "requiresAccount": false
+  },
+  "safetyPolicies": {
+    "localOnly": true,
+    "telemetry": "none",
+    "outboundNetworkAccess": false,
+    "readOnlyLocking": "fcntl F_RDLCK + PROT_READ",
+    "antiTokenDrain": {
+      "readFileDefaultMaxBytes": 262144,
+      "readFileHardMaxBytes": 4194304,
+      "listDirDefaultLimit": 500,
+      "listDirHardLimit": 5000
+    },
+    "cleanExitExport": [
+      "oifs mount <mnt> (pure-Rust FUSE ABI v7.28 or zero-kext NFSv3)",
+      "oifs cat / ls / info CLI extraction",
+      "Standard Apache-2.0 Rust/C/C++ library access"
+    ]
+  },
+  "tools": [
+    {"name": "read_file", "readOnly": true, "description": "Read bounded UTF-8 file contents (default 256 KiB cap, supports offset and max_bytes)."},
+    {"name": "list_dir", "readOnly": true, "description": "List directory entries as JSONL with pagination (default 500, max 5000 via offset and limit)."},
+    {"name": "stat_path", "readOnly": true, "description": "Inspect inode metadata, size, compressed_size, timestamps, encryption, and seekable flags."},
+    {"name": "status", "readOnly": true, "description": "Show container path, byte size, read-only/auto-grow state, Zstd dicts, block usage, and fragmentation."},
+    {"name": "verify_integrity", "readOnly": true, "description": "Run online structural fsck consistency check across inodes, directories, and bitmaps."},
+    {"name": "write_file", "readOnly": false, "description": "Create or overwrite a UTF-8 file inside the sandbox container."},
+    {"name": "append_file", "readOnly": false, "description": "Mutex-serialized newline-terminated append (ideal for JSONL agent logs)."},
+    {"name": "mkdir", "readOnly": false, "description": "Create a directory inside the sandbox container."},
+    {"name": "delete_file", "readOnly": false, "description": "Delete a file from the sandbox container."},
+    {"name": "truncate_file", "readOnly": false, "description": "Truncate or zero-extend a file to target byte length."},
+    {"name": "rename_path", "readOnly": false, "description": "Atomic POSIX rename/move with SIV filename re-encryption."},
+    {"name": "write_batch", "readOnly": false, "description": "Commit mixed create_file/mkdir/delete/rename operations in one atomic WAL transaction."},
+    {"name": "resize_image", "readOnly": false, "description": "Online grow/shrink container bytes (in-place or inode-preserving AtomicRelayout)."},
+    {"name": "vacuum_image", "readOnly": false, "description": "Reclaim trailing free space and compact sparse gaps."},
+    {"name": "configure_auto_grow", "readOnly": false, "description": "Enable/disable or tune transparent capacity expansion with optional max_size_bytes cap."},
+    {"name": "train_zstd_dict", "readOnly": false, "description": "Train a custom Zstd dictionary from directory samples inside the container."},
+    {"name": "load_zstd_dict", "readOnly": true, "description": "Load and register a trained Zstd dictionary stored inside the container."},
+    {"name": "set_default_zstd_dict", "readOnly": false, "description": "Set or clear the active default Zstd dictionary ID on this mount."}
+  ]
+}

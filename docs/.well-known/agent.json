@@ -1,0 +1,58 @@
+{
+  "name": "OIFS Memory Sandbox",
+  "description": "Local-first, model-agnostic single-file POSIX inode filesystem and MCP server in Rust for encrypted AI agent workspaces, CoW baton handoff, and numerical datasets.",
+  "url": "https://ych.github.io/oifs/",
+  "repository": "https://github.com/ych/oifs",
+  "version": "1.7.0",
+  "license": "Apache-2.0",
+  "protocolVersions": ["MCP 2024-11-05"],
+  "defaultInputModes": ["application/json", "text/plain"],
+  "defaultOutputModes": ["application/json", "text/plain"],
+  "capabilities": {
+    "localOnly": true,
+    "zeroTelemetry": true,
+    "modelAgnostic": true,
+    "stdioMcp": true,
+    "atomicBatchTransactions": true,
+    "antiTokenDrainPagination": true,
+    "readOnlySharedLocking": true,
+    "cowStateCloning": true
+  },
+  "costModel": {
+    "pricing": "free",
+    "openSource": true,
+    "hiddenApiTolls": false,
+    "vendorLockIn": false
+  },
+  "interoperability": {
+    "mcpClients": ["Claude Desktop", "Claude Code", "Cursor", "Codex", "Gemini CLI", "Custom stdio JSON-RPC clients"],
+    "batonRelay": "Instant O(1) CoW container cloning (`oifs clone src.img handoff.img`) and concurrent shared `F_RDLCK` read-only mounts across heterogeneous agents.",
+    "cleanExit": "Native OS mounting via `oifs mount` (pure-Rust FUSE ABI v7.28 or zero-kext NFSv3) and CLI extraction without proprietary database lock-in.",
+    "nativeBindings": ["Rust crate (oifs)", "C FFI (include/oifs.h)", "Modern C++17/20 (include/oifs.hpp)"]
+  },
+  "manifests": {
+    "llmsTxt": "https://ych.github.io/oifs/llms.txt",
+    "llmsFullTxt": "https://ych.github.io/oifs/llms-full.txt",
+    "mcpDiscovery": "https://ych.github.io/oifs/.well-known/mcp.json",
+    "registryServerJson": "https://raw.githubusercontent.com/ych/oifs/master/server.json",
+    "agentSkill": "https://raw.githubusercontent.com/ych/oifs/master/SKILL.md",
+    "securityPolicy": "https://raw.githubusercontent.com/ych/oifs/master/SECURITY.md"
+  },
+  "skills": [
+    {
+      "id": "sandbox-vfs",
+      "name": "Single-File POSIX Agent Sandbox",
+      "description": "Isolated .img workspace with read_file/list_dir pagination, atomic write_batch, rename_path, and verify_integrity."
+    },
+    {
+      "id": "encrypted-vault",
+      "name": "Authenticated Encrypted Storage",
+      "description": "XAES-256-GCM + AES-256-GCM-SIV filename encryption with OWASP Argon2id KDF and SuperBlock header MAC."
+    },
+    {
+      "id": "cow-baton-relay",
+      "name": "O(1) CoW Baton Handoff & Clean Exit",
+      "description": "Fork agent state instantaneously (`oifs clone`), verify read-only (`--read-only`), or mount natively (`oifs mount`)."
+    }
+  ]
+}

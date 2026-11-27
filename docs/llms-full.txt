@@ -1,0 +1,57 @@
+# OIFS (O's Inode File System) — Full Technical Reference for AI Agents
+
+> Single-file, containerized POSIX inode filesystem engine in Rust (Edition 2024, Apache-2.0). Version: `1.7.0`. Repository: `https://github.com/ych/oifs`. Docs: `https://ych.github.io/oifs/`.
+
+## 1. Architecture Summary
+
+OIFS packs an entire Unix-like filesystem (4096-byte blocks, SuperBlock, dynamic v3 Inode/Data bitmaps, optional 33-block CRC32C Metadata WAL ring, fixed 256-byte Inodes, indirect pointer trees up to ~513 GiB, multi-block directories, and compressed/encrypted data blocks) inside one portable `.img` file.
+
+- **Dual Storage Engine**: `StorageMode::Mmap` (zero-copy `MAP_SHARED`, default) and `StorageMode::FileIo` (`--no-mmap` / `OIFS_STORAGE_MODE=pread`, zero `mmap`, 16-shard `MetadataBlockCache`, 64-shard Second-Chance Clock `DataPageCache`).
+- **Encryption (v3 Default & Legacy v2/v1)**: OWASP / RFC 9106 Argon2id (`64 MiB`, `t=3`, `p=4`) + BLAKE2b-512 subkeys + SuperBlock `header_mac`. Default **v3** uses single-pass C2SP `XAES-256-GCM` (24-byte nonces, `inode_id`/`chunk_idx`/`flags` bound in AAD) and RFC 8452 `AES-256-GCM-SIV` filenames (`parent_inode` bound in nonce & AAD). **v2** `XChaCha20-Poly1305` remains readable/writable; legacy **v1** auto-mounts read-only against AAD downgrades.
+- **Compression & SIMD Filters**: AArch64 NEON / x86_64 SSE2 `Delta` (including 128-Byte 8-vector decoupled tree prefix sum decode), `ByteShuffle`, `BitShuffle`, `TruncPrecision`, pooled Zstd (`CDict`/`DDict`), and Seekable 64 KiB random-access chunks.
+- **OS Mounting & Cross-Image Reflink**: Pure-Rust FUSE ABI v7.28 (`Linux /dev/fuse` + `macFUSE 5.x`) and zero-kext loopback NFSv3 (`MOUNT v3` + 18 `NFS v3` procedures over `127.0.0.1:0`), plus `oifs clone` (`clonefile`/`FICLONE`) and 3-tier `transfer_file_to` / `splice_range_to`.
+
+## 2. MCP Server (`oifs_mcp`) Specification (18 Tools)
+
+`oifs_mcp` communicates strictly over **stdio JSON-RPC (`2024-11-05`)**, binds zero sockets by default, makes zero outbound network requests, collects zero telemetry, and requires zero accounts or API fees.
+
+### Launch Options
+
+```bash
+oifs_mcp [IMAGE_PATH] [--size <MB>] [--journal] [--no-mmap] [--read-only] [--auto-grow[=MAX_MB]] [--dict <PATH>] [--cipher aes256-gcm|xchacha20-poly1305]
+# Environment: OIFS_PASSWORD (optional vault passphrase; never logged or transmitted)
+```
+
+### Complete MCP Tool Inventory (18 Tools)
+
+| Tool | Mutating? | Parameters | Anti-Token-Drain / Safety Behavior |
+| :--- | :---: | :--- | :--- |
+| `read_file` | Read-Only | `path`, `offset?`, `max_bytes?` | Defaults to `262,144` bytes (`256 KiB`), hard max `4,194,304` bytes (`4 MiB`). Trims UTF-8 codepoint boundaries safely and emits an `offset=` continuation hint if truncated. |
+| `list_dir` | Read-Only | `path`, `offset?`, `limit?` | Returns JSONL entries paginated at `500` by default (hard max `5,000`), appending a pagination footer `{has_more, offset, returned, total_entries, next_offset}` when sliced or incomplete. |
+| `stat_path` | Read-Only | `path` | Returns `inode`, `kind`, `size`, `compressed_size`, `created_at`, `modified_at`, `encrypted`, `seekable_64k`. |
+| `status` | Read-Only | *(none)* | Returns container byte size, `read_only`, `encrypted`, `encryption_version`, `cipher`, `auto_grow_enabled`, Zstd dicts, blocks, and `fragmentation`. |
+| `verify_integrity` | Read-Only | *(none)* | Online structural `fsck` across inodes, directories, bitmaps, and indirect trees. |
+| `load_zstd_dict` | Read-Only (or sets mount default) | `path`, `activate?` | Registers a trained Zstd dictionary stored inside the `.img`. |
+| `write_file` | Mutating | `path`, `content` | Creates or overwrites a UTF-8 file (`CompressionMode::Auto`). Rejected on `--read-only`. |
+| `append_file` | Mutating | `path`, `content` | Mutex-serialized newline-terminated append for JSONL logs. |
+| `mkdir` | Mutating | `path` | Creates a directory (parent must exist). |
+| `delete_file` | Mutating | `path` | Deletes a file and frees blocks cleanly via WAL/zeroing rules. |
+| `truncate_file` | Mutating | `path`, `size` | Truncates or zero-extends a file. |
+| `rename_path` | Mutating | `old_path`, `new_path` | Single-WAL-transaction atomic POSIX rename/move with SIV filename re-encryption. |
+| `write_batch` | Mutating | `ops: [{op: create_file|mkdir|delete|rename, ...}]` | Atomic all-or-nothing batch execution in chunked WAL transactions. |
+| `resize_image` | Mutating | `size_bytes`, `grow_only?` | Online grow/shrink via O(1) in-place or inode-preserving `AtomicRelayout`. |
+| `vacuum_image` | Mutating | `min_headroom_bytes?`, `headroom_percent?`, `min_image_bytes?`, `allow_relayout?` | Compacts trailing free blocks cleanly. |
+| `configure_auto_grow` | Mutating | `enabled`, `growth_factor?`, `min_increment_bytes?`, `max_size_bytes?`, `allow_relayout?` | Tunes transparent growth policy with optional `max_size_bytes` cap. |
+| `train_zstd_dict` | Mutating (if `save_path`) | `dir_path`, `save_path?`, `max_dict_bytes?`, `max_samples?`, `activate?` | Trains a Zstd dictionary from directory samples inside the container. |
+| `set_default_zstd_dict` | Config | `dict_id?` | Selects or clears the active default dictionary ID for this mount. |
+
+## 3. Multi-Agent Baton Relay & Clean Exit (Zero Vendor Lock-In)
+
+1. **Instant CoW Handoff**: Agent A finishes writing into `state.img` and executes `oifs clone state.img agent_b.img` (0.09 ms on APFS `clonefile` / Linux `FICLONE`, 0 extra disk blocks until divergence). Agent B mutates `agent_b.img` independently without corrupting `state.img`.
+2. **Concurrent Read-Only Auditor Swarm**: Multiple verification agents attach `oifs_mcp --read-only state.img`, acquiring shared OS `fcntl(F_RDLCK)` locks with `PROT_READ` memory safety.
+3. **Clean Exit**: Leave OIFS anytime with zero proprietary format lock-in: `oifs -i state.img mount ./export --foreground` exposes standard host POSIX files via FUSE or NFSv3, or extract directly with `oifs get` / `oifs cat`.
+
+## 4. Verification & Reproducibility
+
+- `cargo test --features mcp` — full unit, MCP JSON-RPC, differential fuzz, crash-VFS, FFI, C++, and FUSE/NFS integration suites.
+- `cargo kani --lib -j 8 --output-format=terse` — **135 AWS Kani (CBMC)** formal proofs covering block addressing, directory hashing, WAL ring/coalescing equivalence, Inode v3 CRC32C, encryption nonce injectivity & domain separation, SIMD filters, and cross-image splice invariants.

@@ -1,0 +1,39 @@
+# OIFS (O's Inode File System)
+
+> High-performance, single-file containerized Unix-like inode filesystem engine in Rust (Edition 2024, Apache-2.0) with optional CRC32C WAL journaling, XAES-256-GCM & XChaCha20-Poly1305 encryption, SIMD Zstd filters, pure-Rust FUSE & zero-kext NFSv3 mounting, C/C++17/20 zero-copy bindings, 135 Kani formal proofs, and the local `oifs_mcp` MCP server.
+
+OIFS packs an entire POSIX directory tree into one portable `.img` file. It runs 100% locally with zero outbound network telemetry, zero hidden API tolls, and zero vendor lock-in.
+
+## Documentation & Entrypoints
+
+- [GitHub Repository](https://github.com/ych/oifs): Source code, issue tracker, releases, and Cargo crate
+- [Project Website](https://ych.github.io/oifs/): Overview, quick start, and OpenWiki interactive architecture graph
+- [README (English)](https://github.com/ych/oifs/blob/master/README.md): Complete capabilities, C/C++/Rust examples, MCP config, and Apple M5 Pro benchmarks
+- [README (繁體中文)](https://github.com/ych/oifs/blob/master/README_zh.md): Traditional Chinese documentation mirror
+- [Full LLM Reference](https://ych.github.io/oifs/llms-full.txt): Detailed architecture, CLI commands, and 18 MCP tool schemas
+
+## Machine-Readable Manifests
+
+- [MCP Registry Manifest (`server.json`)](https://raw.githubusercontent.com/ych/oifs/master/server.json): Official MCP schema descriptor for `oifs_mcp` stdio deployment
+- [MCP Discovery (`.well-known/mcp.json`)](https://ych.github.io/oifs/.well-known/mcp.json): Transport, tool inventory, anti-token-drain defaults, and cost policy
+- [A2A Agent Card (`.well-known/agent.json`)](https://ych.github.io/oifs/.well-known/agent.json): Model-agnostic agent capabilities and baton-relay interoperability
+- [Portable Agent Skill (`SKILL.md`)](https://raw.githubusercontent.com/ych/oifs/master/SKILL.md): Step-by-step instructions for Claude Code, Cursor, Codex, Gemini CLI, and agent swarms
+- [Glama Descriptor (`glama.json`)](https://raw.githubusercontent.com/ych/oifs/master/glama.json): Registry maintainer verification
+- [Security Policy (`SECURITY.md`)](https://raw.githubusercontent.com/ych/oifs/master/SECURITY.md): Cryptographic model, resource bounds, and disclosure contact
+
+## Autonomy, Safety & Clean Exit Guarantees
+
+- **Zero Telemetry & Zero Hidden Tolls**: 100% Apache-2.0 open source (`oifs` / `oifs_mcp`). Executes entirely in local storage with no cloud account, no API keys, and no external network calls.
+- **Anti-Token-Drain Pagination (`oifs_mcp`)**: `read_file` caps unpaginated reads at 256 KiB (`offset` / `max_bytes` up to 4 MiB with UTF-8 boundary trimming and continuation hints); `list_dir` paginates at 500 entries by default (max 5,000 via `offset` / `limit`).
+- **Hardened Read-Only Isolation**: `--read-only` opens images `O_RDONLY` under shared OS `fcntl(F_RDLCK)` + `PROT_READ`, allowing concurrent multi-agent verification while rejecting all mutations.
+- **Zero Vendor Lock-In (Clean Exit)**: Extract or inspect any `.img` anytime via `oifs mount` (pure-Rust FUSE ABI v7.28 or zero-kext NFSv3), `oifs cat`, or standard Rust/C/C++ APIs.
+- **Multi-Agent Baton Relay**: Fork an entire workspace state in O(1) via `oifs clone agent_a.img agent_b.img` (APFS `clonefile` / Linux `FICLONE`) or pass `--read-only` snapshots safely between heterogeneous agents.
+- **Formal Verification & Bounds**: Verified with **135 AWS Kani (CBMC) proofs**, Bolero fuzzing, Shuttle DPOR concurrency testing, `MAX_DECOMPRESSED_STREAM_BYTES` bomb guards, and owner-only `0600` image permissions.
+
+## Design Specifications (`docs/`)
+
+- [NFSv3 Local Loopback Server](https://github.com/ych/oifs/blob/master/docs/nfs_mount_design.md): Zero-kext macOS/Linux mounting over ONC RPC v2 + XDR
+- [Cross-Image Reflink & Splice](https://github.com/ych/oifs/blob/master/docs/cross_image_reflink_design.md): 3-tier `FICLONERANGE` / `copy_file_range` / raw compressed block transfer
+- [Metadata WAL Specification](https://github.com/ych/oifs/blob/master/docs/metadata_wal_design.md): Ordered-mode CRC32C journaling and crash recovery
+- [C/C++ Zero-Copy & Async API](https://github.com/ych/oifs/blob/master/docs/cpp_and_async_api_design.md): `oifs::PinnableSlice` and C++20 `co_await`
+- [Formal Verification Docs](https://github.com/ych/oifs/blob/master/docs/formal_verification/README.md): AWS Kani proof suite documentation

@@ -10,7 +10,7 @@ OIFS employs a multi-tiered formal verification and model checking methodology:
 | :--- | :--- | :--- | :--- |
 | **Language** | **RustBelt Type Semantics (Coq)** | Data-Race Freedom under Safe Rust and `RwLock` | Proven by Rust language type system |
 | **Concurrency** | **Shuttle Bounded Model Checking (DPOR)** | Randomized thread interleavings, No Torn Reads, `OpenMode` race mutual exclusion | Active (`tests/shuttle_concurrency_test.rs`) |
-| **Symbolic SMT** | **AWS Kani Rust Verifier (CBMC/CaDiCaL)** | Exhaustive symbolic verification (**131 proofs**) across extent allocation, bit isolation, inode v3 CRC32C, Auto-Grow/Vacuum resize, WriteBatch chunking, range coalescing, slice clamping, transfer/splice gates, NFSv3/FUSE protocols, and 128B cache padding | Active (`cargo kani --lib -j 8 --output-format=terse`) |
+| **Symbolic SMT** | **AWS Kani Rust Verifier (CBMC/CaDiCaL)** | Exhaustive symbolic verification (**135 proofs**) across extent allocation, bit isolation, inode v3 CRC32C, Auto-Grow/Vacuum resize, WriteBatch chunking, range coalescing, slice clamping, transfer/splice gates, NFSv3/FUSE protocols, and 128B cache padding | Active (`cargo kani --lib -j 8 --output-format=terse`) |
 | **Protocol** | **TLA+ Specification & TLC Model Checker** | Linearizability and atomic commit of Copy-on-Write (COW) extent pointer swapping | Active (`OifsCowProtection.tla`) |
 
 ---
@@ -39,7 +39,7 @@ java -cp tla2tools.jar tlc2.TLC OifsCowProtection.tla \
 
 ## 3. Kani SMT Proofs in Rust
 
-OIFS maintains **131 AWS Kani harnesses** across its core engine (`superblock`, `inode`, `inode_format`, `bitmap`, `allocator`, `directory`, `disk`, `disk::resize`, `disk::batch`, `disk::caches`, `disk::transfer`, `journal`, `storage`, `encryption`, `filters`, `zstd_pool`, `io_engine`, `auto_defrag`, `ipc`, `ffi`, `fuse`, and `nfs`).
+OIFS maintains **135 AWS Kani harnesses** across its core engine (`superblock`, `inode`, `inode_format`, `bitmap`, `allocator`, `directory`, `disk`, `disk::resize`, `disk::batch`, `disk::caches`, `disk::transfer`, `journal`, `storage`, `encryption`, `filters`, `zstd_pool`, `io_engine`, `auto_defrag`, `ipc`, `ffi`, `fuse`, and `nfs`).
 
 To execute the Kani symbolic execution proofs:
 

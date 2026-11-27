@@ -882,10 +882,12 @@ impl WriteCase {
 /// The encryption inputs of a write plan.
 ///
 /// The associated data binds the ciphertext to the file it belongs to
-///; an empty slice means the legacy scheme.
+/// (an empty slice means the legacy scheme), while `scheme` selects the
+/// image cipher suite (`v1/v2` = XChaCha20-Poly1305, `v3` = C2SP XAES-256-GCM).
 struct EncryptionContext<'a> {
     key: Option<&'a crate::encryption::EncryptionKey>,
     aad: &'a [u8],
+    scheme: u8,
 }
 
 /// The decision half of a write: what bytes land where, and what the inode becomes.
@@ -1041,12 +1043,13 @@ fn plan_write_prepared_with_dict<'a>(
         // caller does not request a new one; the payload and the inode metadata
         // must always agree on whether the payload is filtered.
         let effective = DiskManager::effective_filter(inode, filter_config);
-        let payload = DiskManager::build_full_overwrite_buffer_pure_with_dict(
+        let payload = DiskManager::build_full_overwrite_buffer_pure_for_scheme(
             data,
             compression_mode,
             &effective,
             encryption_key,
             aad,
+            encryption.scheme,
             cdict,
         )?;
         // A compressed payload keeps its logical length in `size`; an uncompressed
@@ -1125,12 +1128,13 @@ fn plan_write_prepared_with_dict<'a>(
         full[file_offset as usize..end].copy_from_slice(data);
 
         let effective = DiskManager::effective_filter(inode, filter_config);
-        let payload = DiskManager::build_full_overwrite_buffer_pure_with_dict(
+        let payload = DiskManager::build_full_overwrite_buffer_pure_for_scheme(
             &full,
             compression_mode,
             &effective,
             encryption_key,
             aad,
+            encryption.scheme,
             cdict,
         )?;
         let new_size = if payload.is_compressed {
@@ -1213,6 +1217,7 @@ fn plan_write<'a>(
         EncryptionContext {
             key: guard.encryption_key.as_ref(),
             aad: &aad_buf[..aad_len],
+            scheme: guard.superblock.encryption_version,
         },
         cdict.as_deref(),
         truncate_to_write_end,
@@ -1258,8 +1263,34 @@ impl DiskManager {
         journaled: bool,
         mode: StorageMode,
     ) -> Result<Self, DiskManagerError> {
+        Self::open_with_options_and_cipher(
+            path,
+            total_size,
+            password,
+            journaled,
+            mode,
+            crate::encryption::EncryptionCipher::default(),
+        )
+    }
+
+    /// Open or create an OIFS image with explicit password, metadata WAL journaling flag,
+    /// [`StorageMode`], and creation-time [`crate::encryption::EncryptionCipher`].
+    ///
+    /// When opening an existing encrypted image, the cipher stored in its SuperBlock
+    /// (`v1`/`v2` XChaCha20-Poly1305 or `v3` XAES-256-GCM + AES-256-GCM-SIV) is honored
+    /// automatically.
+    pub fn open_with_options_and_cipher<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>,
+        journaled: bool,
+        mode: StorageMode,
+        cipher: crate::encryption::EncryptionCipher,
+    ) -> Result<Self, DiskManagerError> {
         let create_enc = !path.as_ref().exists() && password.is_some_and(|p| !p.is_empty());
-        Self::init_or_open(path, total_size, password, create_enc, journaled, mode)
+        Self::init_or_open_with_key_and_cipher(
+            path, total_size, password, None, create_enc, journaled, mode, cipher,
+        )
     }
 
     /// Open (or create) an OIFS image using pure positional `pread`/`pwrite` I/O (zero `mmap`).
@@ -1393,6 +1424,39 @@ impl DiskManager {
         )
     }
 
+    /// Create a new encrypted filesystem using an explicit [`crate::encryption::EncryptionCipher`]
+    /// (`Aes256Gcm` = XAES-256-GCM + AES-256-GCM-SIV by default, or `XChaCha20Poly1305`).
+    pub fn create_encrypted_with_cipher<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: &str,
+        journaled: bool,
+        mode: StorageMode,
+        cipher: crate::encryption::EncryptionCipher,
+    ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open_with_key_and_cipher(
+            path,
+            total_size,
+            Some(password),
+            None,
+            true,
+            journaled,
+            mode,
+            cipher,
+        )
+    }
+
+    /// Returns the active [`crate::encryption::EncryptionCipher`] suite if encryption is enabled.
+    pub fn encryption_cipher(&self) -> Option<crate::encryption::EncryptionCipher> {
+        let guard = self.inner.read().unwrap();
+        if !guard.superblock.encrypted {
+            return None;
+        }
+        crate::encryption::EncryptionCipher::from_scheme_version(
+            guard.superblock.encryption_version,
+        )
+    }
+
     /// Open an existing OIFS image with an existing derived encryption key (or unencrypted if None).
     pub fn open_with_key<P: AsRef<Path>>(
         path: P,
@@ -1493,11 +1557,13 @@ impl DiskManager {
 
         let (encryption_key, password_verifier) = if superblock.encrypted {
             if let Some(key) = existing_key {
+                Self::verify_encrypted_superblock_on_mount(&superblock, &key)?;
                 let verifier = password.map(|pwd| Self::compute_password_verifier(&key, pwd));
                 (Some(key), verifier)
             } else {
                 let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
                 let key = crate::encryption::derive_key(pwd, &superblock.encryption_salt)?;
+                Self::verify_encrypted_superblock_on_mount(&superblock, &key)?;
                 let verifier = Self::compute_password_verifier(&key, pwd);
                 (Some(key), Some(verifier))
             }
@@ -1520,6 +1586,10 @@ impl DiskManager {
                     "Journal has unrecovered transactions; open read-write first to recover",
                 )));
             }
+        }
+
+        if let Some(ref key) = encryption_key {
+            Self::verify_legacy_pre_mac_root_dir(&backing, &superblock, key)?;
         }
 
         let backing_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -1579,6 +1649,86 @@ impl DiskManager {
         pending_txs: usize,
     ) -> bool {
         !has_journal || pending_txs == 0
+    }
+
+    /// Returns `true` when an encrypted image still uses the legacy `v1` encryption scheme,
+    /// which is mounted read-only to prevent silent write-side AAD downgrades.
+    #[inline]
+    pub(crate) const fn is_legacy_v1_encryption_write_frozen(sb: &SuperBlock) -> bool {
+        sb.encrypted && sb.encryption_version == crate::encryption::ENCRYPTION_SCHEME_LEGACY
+    }
+
+    /// Verifies `SuperBlock::header_mac` at mount time whenever `v3` or a non-zero `header_mac`
+    /// is present, blocking version-downgrade, salt, and format tampering immediately.
+    pub(crate) fn verify_encrypted_superblock_on_mount(
+        sb: &SuperBlock,
+        key: &crate::encryption::EncryptionKey,
+    ) -> Result<(), DiskManagerError> {
+        if !sb.encrypted {
+            return Ok(());
+        }
+        if (sb.encryption_version == crate::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3
+            || sb.has_header_mac())
+            && !crate::encryption::verify_superblock_mac(key, sb)
+        {
+            return Err(DiskManagerError::DecryptionFailed);
+        }
+        Ok(())
+    }
+
+    /// For pre-MAC legacy (`header_mac == [0; 32]`) encrypted images that already have
+    /// encrypted root directory entries, verifies that at least one `_e_` entry authenticates
+    /// with `key` and `sb.encryption_version` — blocking `v3 -> v2/v1` stripped-MAC downgrades
+    /// and wrong keys at mount time.
+    fn verify_legacy_pre_mac_root_dir(
+        backing: &ImageBacking,
+        sb: &SuperBlock,
+        key: &crate::encryption::EncryptionKey,
+    ) -> Result<(), DiskManagerError> {
+        if !sb.encrypted || sb.has_header_mac() {
+            return Ok(());
+        }
+        let (offset, end) = Self::inode_slot_range_for(sb, backing.len(), sb.root_inode)?;
+        let version = sb.inode_record_version_for(sb.root_inode);
+        let root_inode = if let Some(mmap) = backing.as_mmap_slice() {
+            crate::inode_format::decode_for(&mmap[offset..end], version)
+        } else {
+            let mut raw = [0u8; crate::inode_format::INODE_SLOT_SIZE];
+            backing.read_exact_at(offset as u64, &mut raw[..end - offset])?;
+            crate::inode_format::decode_for(&raw[..end - offset], version)
+        }
+        .map_err(|e| {
+            DiskManagerError::Io(std::io::Error::other(format!("Inode decode failed: {e}")))
+        })?;
+
+        let mut total_enc = 0usize;
+        let mut valid_enc = 0usize;
+        for blk_idx in 0..Self::dir_num_blocks(&root_inode) {
+            let phys_blk = Self::resolve_logical_block_id(backing, &root_inode, blk_idx);
+            if phys_blk < sb.data_block_start || phys_blk >= sb.block_count {
+                continue;
+            }
+            let block_entries = Self::read_dir_entries_from_block(backing, phys_blk)?;
+            for e in block_entries {
+                if e.name.starts_with(crate::encryption::FILENAME_ENC_PREFIX) {
+                    total_enc += 1;
+                    if crate::encryption::decrypt_filename_authenticated(
+                        key,
+                        sb.root_inode,
+                        &e.name,
+                        sb.encryption_version,
+                    )
+                    .is_ok()
+                    {
+                        valid_enc += 1;
+                    }
+                }
+            }
+        }
+        if total_enc > 0 && valid_enc == 0 {
+            return Err(DiskManagerError::DecryptionFailed);
+        }
+        Ok(())
     }
 
     /// Returns `true` when opening a path with `mode` requires write permission given
@@ -1818,6 +1968,29 @@ impl DiskManager {
         journal: bool,
         storage_mode: StorageMode,
     ) -> Result<Self, DiskManagerError> {
+        Self::init_or_open_with_key_and_cipher(
+            path,
+            total_size,
+            password,
+            existing_key,
+            create_encrypted,
+            journal,
+            storage_mode,
+            crate::encryption::EncryptionCipher::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn init_or_open_with_key_and_cipher<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        password: Option<&str>,
+        existing_key: Option<crate::encryption::EncryptionKey>,
+        create_encrypted: bool,
+        journal: bool,
+        storage_mode: StorageMode,
+        cipher: crate::encryption::EncryptionCipher,
+    ) -> Result<Self, DiskManagerError> {
         let path = path.as_ref();
         let existed_before = path.exists();
 
@@ -1878,8 +2051,7 @@ impl DiskManager {
                 if let Some(key) = existing_key {
                     sb.encrypted = true;
                     sb.encryption_salt = crate::encryption::generate_salt();
-                    // New images bind the ciphertext to its file.
-                    sb.encryption_version = crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
+                    sb.encryption_version = cipher.scheme_version();
                     if let Some(pwd) = password {
                         password_verifier = Some(Self::compute_password_verifier(&key, pwd));
                     }
@@ -1888,14 +2060,16 @@ impl DiskManager {
                     let pwd = password.unwrap_or_default();
                     sb.encrypted = true;
                     sb.encryption_salt = crate::encryption::generate_salt();
-                    // New images bind the ciphertext to its file.
-                    sb.encryption_version = crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
+                    sb.encryption_version = cipher.scheme_version();
                     let key = crate::encryption::derive_key(pwd, &sb.encryption_salt)?;
                     password_verifier = Some(Self::compute_password_verifier(&key, pwd));
                     encryption_key = Some(key);
                 }
             } else {
                 encryption_key = None;
+            }
+            if let Some(ref key) = encryption_key {
+                sb.header_mac = crate::encryption::compute_superblock_mac(key, &sb);
             }
             let serialized = bincode::serialize(&sb)?;
             backing.write_all_at(0, &serialized)?;
@@ -1916,6 +2090,7 @@ impl DiskManager {
 
             if superblock.encrypted {
                 if let Some(key) = existing_key {
+                    Self::verify_encrypted_superblock_on_mount(&superblock, &key)?;
                     if let Some(pwd) = password {
                         password_verifier = Some(Self::compute_password_verifier(&key, pwd));
                     }
@@ -1923,6 +2098,7 @@ impl DiskManager {
                 } else {
                     let pwd = password.ok_or(DiskManagerError::PasswordRequired)?;
                     let key = crate::encryption::derive_key(pwd, &superblock.encryption_salt)?;
+                    Self::verify_encrypted_superblock_on_mount(&superblock, &key)?;
                     password_verifier = Some(Self::compute_password_verifier(&key, pwd));
                     encryption_key = Some(key);
                 }
@@ -1942,9 +2118,14 @@ impl DiskManager {
         // caller can ever observe a filesystem mid-replay.
         if is_new {
             Self::format_journal(&mut backing, &superblock)?;
-        } else if superblock.has_journal_layout() {
-            Self::recover_journal(&mut backing, &superblock)?;
-            backing.flush()?;
+        } else {
+            if superblock.has_journal_layout() {
+                Self::recover_journal(&mut backing, &superblock)?;
+                backing.flush()?;
+            }
+            if let Some(ref key) = encryption_key {
+                Self::verify_legacy_pre_mac_root_dir(&backing, &superblock, key)?;
+            }
         }
 
         let backing_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -1957,6 +2138,7 @@ impl DiskManager {
                 _ => IoBackend::Pread,
             },
         };
+        let write_frozen = !is_new && Self::is_legacy_v1_encryption_write_frozen(&superblock);
         let inner = DiskManagerInner {
             file,
             backing_path,
@@ -1975,7 +2157,7 @@ impl DiskManager {
             async_drain_ready: async_drain_ready.clone(),
             io_engine: IoEngine::new(requested_io_backend),
             inode_write_gen: DiskManagerInner::alloc_zeroed_inode_write_gen(),
-            read_only: false,
+            read_only: write_frozen,
             zstd_dicts: Arc::new(crate::zstd_pool::ZstdDictRegistry::new()),
             auto_grow: AutoGrowConfig::disabled(),
         };
@@ -2515,7 +2697,12 @@ impl DiskManager {
         name: &'a str,
     ) -> Result<std::borrow::Cow<'a, str>, DiskManagerError> {
         if let Some(key) = &guard.encryption_key {
-            let enc = crate::encryption::encrypt_filename(key, parent_inode_id, name)?;
+            let enc = crate::encryption::encrypt_filename_for_scheme(
+                key,
+                parent_inode_id,
+                name,
+                guard.superblock.encryption_version,
+            )?;
             Ok(std::borrow::Cow::Owned(enc))
         } else {
             Ok(std::borrow::Cow::Borrowed(name))
@@ -3919,16 +4106,19 @@ impl DiskManager {
         new_inode.filter_bitshuffle = filter_config.bitshuffle;
 
         let (final_buf, encryption_nonce) = if let Some(key) = guard.encryption_key.as_ref() {
-            let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(
-                new_inode_id,
-                guard.superblock.encryption_version,
-            );
+            let scheme = guard.superblock.encryption_version;
+            let (aad_buf, aad_len) =
+                crate::encryption::file_aad_for_scheme_stack(new_inode_id, scheme);
             let nonce = crate::encryption::generate_nonce();
             let mut enc = prep.buffer.into_owned();
             enc.reserve(16);
-            if let Err(e) =
-                crate::encryption::encrypt_data_in_place(&mut enc, key, &nonce, &aad_buf[..aad_len])
-            {
+            if let Err(e) = crate::encryption::encrypt_data_in_place_for_scheme(
+                &mut enc,
+                key,
+                &nonce,
+                &aad_buf[..aad_len],
+                scheme,
+            ) {
                 Self::rollback_unlinked_file(&mut guard, new_inode_id, &new_inode);
                 return Err(e.into());
             }
@@ -4120,14 +4310,19 @@ impl DiskManager {
         new_inode.filter_bitshuffle = filter_config.bitshuffle;
 
         let final_buf = if let Some(key) = guard.encryption_key.as_ref() {
-            let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(
-                new_inode_id,
-                guard.superblock.encryption_version,
-            );
+            let scheme = guard.superblock.encryption_version;
+            let (aad_buf, aad_len) =
+                crate::encryption::file_aad_for_scheme_stack(new_inode_id, scheme);
             let nonce = crate::encryption::generate_nonce();
             let mut enc = prep.buffer.into_owned();
             enc.reserve(16);
-            crate::encryption::encrypt_data_in_place(&mut enc, key, &nonce, &aad_buf[..aad_len])?;
+            crate::encryption::encrypt_data_in_place_for_scheme(
+                &mut enc,
+                key,
+                &nonce,
+                &aad_buf[..aad_len],
+                scheme,
+            )?;
             new_inode.encrypted = true;
             new_inode.encryption_nonce = nonce;
             std::borrow::Cow::Owned(enc)
@@ -5072,15 +5267,15 @@ impl DiskManager {
                 .ok_or(DiskManagerError::PasswordRequired)?;
 
             // Stack-staged AAD binds the ciphertext to the file with zero allocs.
-            let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(
-                inode_id,
-                guard.superblock.encryption_version,
-            );
-            crate::encryption::decrypt_data_in_place(
+            let scheme = guard.superblock.encryption_version;
+            let (aad_buf, aad_len) =
+                crate::encryption::file_aad_for_scheme_stack(inode_id, scheme);
+            crate::encryption::decrypt_data_in_place_for_scheme(
                 &mut decrypted_data,
                 encryption_key,
                 &inode.encryption_nonce,
                 &aad_buf[..aad_len],
+                scheme,
             )
             .map_err(|_| DiskManagerError::DecryptionFailed)?;
         }
@@ -6153,6 +6348,26 @@ impl DiskManager {
         aad: &[u8],
         cdict: Option<&zstd::zstd_safe::CDict<'_>>,
     ) -> Result<FullOverwritePayload<'a>, DiskManagerError> {
+        Self::build_full_overwrite_buffer_pure_for_scheme(
+            data,
+            compression_mode,
+            filter_config,
+            encryption_key,
+            aad,
+            crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND,
+            cdict,
+        )
+    }
+
+    pub(crate) fn build_full_overwrite_buffer_pure_for_scheme<'a>(
+        data: &'a [u8],
+        compression_mode: CompressionMode,
+        filter_config: &crate::filters::FilterConfig,
+        encryption_key: Option<&crate::encryption::EncryptionKey>,
+        aad: &[u8],
+        encryption_scheme: u8,
+        cdict: Option<&zstd::zstd_safe::CDict<'_>>,
+    ) -> Result<FullOverwritePayload<'a>, DiskManagerError> {
         let filtered = crate::filters::apply_filters_cow(data, filter_config);
         let working: &[u8] = &filtered;
 
@@ -6196,7 +6411,13 @@ impl DiskManager {
             // In-place AEAD avoids allocating a second full-payload ciphertext buffer.
             let mut enc = final_data.into_owned();
             enc.reserve(16);
-            crate::encryption::encrypt_data_in_place(&mut enc, key, &nonce, aad)?;
+            crate::encryption::encrypt_data_in_place_for_scheme(
+                &mut enc,
+                key,
+                &nonce,
+                aad,
+                encryption_scheme,
+            )?;
             return Ok(FullOverwritePayload {
                 buffer: std::borrow::Cow::Owned(enc),
                 is_compressed,
@@ -6497,6 +6718,7 @@ impl DiskManager {
             EncryptionContext {
                 key: encryption_key.as_ref(),
                 aad: &aad_buf[..aad_len],
+                scheme: encryption_scheme,
             },
             cdict.as_deref(),
             truncate_to_write_end,
@@ -6664,9 +6886,10 @@ impl DiskManager {
     }
 
     // Internal Helpers working on guards
-    /// Byte range of the 256-byte inode slot for `inode_id` within the image.
-    fn inode_slot_range(
-        guard: &DiskManagerInner,
+    /// Byte range of the 256-byte inode slot for `inode_id` within an image of length `backing_len`.
+    fn inode_slot_range_for(
+        sb: &SuperBlock,
+        backing_len: usize,
         inode_id: u64,
     ) -> Result<(usize, usize), DiskManagerError> {
         let inode_size = crate::inode_format::INODE_SLOT_SIZE as u64;
@@ -6679,30 +6902,37 @@ impl DiskManager {
         // An inode id beyond the inode table would address the data
         // area, where a crafted byte sequence could be mistaken for an inode
         // (a "fake inode") and used to read or overwrite another file.
-        if inode_id >= guard.superblock.usable_inode_count() {
+        if inode_id >= sb.usable_inode_count() {
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
                     "Inode id {inode_id} is outside the inode table ({} usable inodes)",
-                    guard.superblock.usable_inode_count()
+                    sb.usable_inode_count()
                 ),
             )));
         }
-        let base = guard
-            .superblock
+        let base = sb
             .inode_table_block
             .checked_mul(BLOCK_SIZE as u64)
             .ok_or_else(overflow)?;
         let id_off = inode_id.checked_mul(inode_size).ok_or_else(overflow)?;
         let offset = base.checked_add(id_off).ok_or_else(overflow)?;
         let end = offset.checked_add(inode_size).ok_or_else(overflow)?;
-        if end > guard.backing.len() as u64 {
+        if end > backing_len as u64 {
             return Err(DiskManagerError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "Bounds",
             )));
         }
         Ok((offset as usize, end as usize))
+    }
+
+    /// Byte range of the 256-byte inode slot for `inode_id` within the image.
+    fn inode_slot_range(
+        guard: &DiskManagerInner,
+        inode_id: u64,
+    ) -> Result<(usize, usize), DiskManagerError> {
+        Self::inode_slot_range_for(&guard.superblock, guard.backing.len(), inode_id)
     }
 
     /// Build the exact bytes that will be stored in `inode_id`'s 256-byte slot.
@@ -8641,10 +8871,8 @@ impl DiskManager {
             };
 
             // The associated data binds the ciphertext to the file.
-            let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(
-                inode_id,
-                guard.superblock.encryption_version,
-            );
+            let scheme = guard.superblock.encryption_version;
+            let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(inode_id, scheme);
             let plan = plan_write_prepared(
                 &inode,
                 0,
@@ -8655,6 +8883,7 @@ impl DiskManager {
                 EncryptionContext {
                     key: guard.encryption_key.as_ref(),
                     aad: &aad_buf[..aad_len],
+                    scheme,
                 },
             )?;
 
@@ -10984,23 +11213,60 @@ mod encryption_scheme_tests {
     use super::*;
     use crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
 
-    /// An image written with the legacy scheme (no associated data) must stay
-    /// readable: the context-bound scheme was introduced without breaking
-    /// the images that were written before it.
+    /// An image written with the legacy v1 scheme (no associated data) must stay
+    /// readable and exportable, while remaining read-only at mount time so new
+    /// writes cannot bypass v2/v3 AAD context binding.
     #[test]
     fn legacy_encryption_scheme_stays_readable() {
         let path =
             std::env::temp_dir().join(format!("oifs_legacy_scheme_{}.img", std::process::id()));
+        let dst_path = std::env::temp_dir()
+            .join(format!("oifs_legacy_upgrade_{}.img", std::process::id()));
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&dst_path);
 
-        let dm = DiskManager::create_encrypted(&path, 10 * 1024 * 1024, "pw123456")
-            .expect("create encrypted image");
+        let dm = DiskManager::create_encrypted_with_cipher(
+            &path,
+            10 * 1024 * 1024,
+            "pw123456",
+            false,
+            StorageMode::Mmap,
+            crate::encryption::EncryptionCipher::XChaCha20Poly1305,
+        )
+        .expect("create encrypted v2 image");
 
-        // Downgrade the image to the legacy scheme before any data is written.
+        let root = dm.superblock().root_inode;
+        let id = dm.create_file(root, "legacy.txt").expect("create file");
+        let payload = b"written with the legacy scheme";
+        dm.write_data(id, 0, b"placeholder payload", CompressionMode::Never)
+            .expect("allocate block");
+
+        // Re-encrypt payload with empty AAD (v1) and convert superblock to legacy v1 without MAC.
         {
             let mut guard = dm.inner.write().unwrap();
+            let mut inode = DiskManager::read_inode_internal(&guard, id).expect("read inode");
+            let data_blk = inode.blocks[0];
+            assert_ne!(data_blk, 0);
+            let enc_key = guard.encryption_key.clone().expect("enc key");
+            let mut buf = payload.to_vec();
+            crate::encryption::encrypt_data_in_place_for_scheme(
+                &mut buf,
+                &enc_key,
+                &inode.encryption_nonce,
+                &[],
+                crate::encryption::ENCRYPTION_SCHEME_LEGACY,
+            )
+            .expect("encrypt with legacy empty AAD");
+            guard
+                .backing
+                .write_all_at(data_blk * BLOCK_SIZE as u64, &buf)
+                .expect("write legacy ciphertext");
+            inode.size = buf.len() as u64;
+            DiskManager::write_inode_internal(&mut guard, id, &inode).expect("write updated inode");
+
             let mut sb = guard.superblock;
             sb.encryption_version = crate::encryption::ENCRYPTION_SCHEME_LEGACY;
+            sb.header_mac = [0u8; 32];
             let serialized = bincode::serialize(&sb).expect("serialize superblock");
             guard
                 .backing
@@ -11008,40 +11274,93 @@ mod encryption_scheme_tests {
                 .expect("write superblock");
             guard.superblock = sb;
         }
-
-        let root = dm.superblock().root_inode;
-        let id = dm.create_file(root, "legacy.txt").expect("create file");
-        let payload = b"written with the legacy scheme";
-        dm.write_data(id, 0, payload, CompressionMode::Never)
-            .expect("write data");
-
-        // The read must succeed: the legacy scheme uses an empty AAD.
-        assert_eq!(dm.read_data(id).expect("read data"), payload.to_vec());
         drop(dm);
 
-        // And it must still be readable after a remount.
+        // Reopening a v1 image must mount in read-only write-freeze mode, keep reads working,
+        // reject all writes with ReadOnly, and allow upgrading out via transfer_file_to.
         let dm = DiskManager::open_with_password(&path, 0, Some("pw123456"))
-            .expect("reopen encrypted image");
+            .expect("reopen legacy v1 encrypted image");
+        assert!(dm.is_read_only(), "legacy v1 encryption must write-freeze mounts");
+        assert_eq!(dm.lookup(root, "legacy.txt").expect("lookup legacy"), id);
+        assert_eq!(dm.read_data(id).expect("read legacy payload"), payload.to_vec());
+        assert!(matches!(dm.create_file(root, "new.txt"), Err(DiskManagerError::ReadOnly)));
+        assert!(matches!(
+            dm.write_data(id, 0, b"nope", CompressionMode::Never),
+            Err(DiskManagerError::ReadOnly)
+        ));
+        assert!(matches!(dm.truncate(id, 1), Err(DiskManagerError::ReadOnly)));
+        assert!(matches!(dm.delete_file(root, "legacy.txt"), Err(DiskManagerError::ReadOnly)));
+
+        let dst_v3 = DiskManager::create_encrypted(&dst_path, 10 * 1024 * 1024, "dst_pw")
+            .expect("create v3 destination");
+        let dst_root = dst_v3.superblock().root_inode;
+        dm.transfer_file_to(
+            root,
+            "legacy.txt",
+            &dst_v3,
+            dst_root,
+            "upgraded.txt",
+            crate::disk::TransferOptions {
+                move_file: false,
+                overwrite: false,
+            },
+        )
+        .expect("migrate legacy file to v3");
         assert_eq!(
-            dm.read_data(id).expect("read data after remount"),
+            dst_v3
+                .read_data(dst_v3.resolve_path("upgraded.txt").expect("resolve upgraded"))
+                .expect("read upgraded payload"),
             payload.to_vec()
         );
+
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&dst_path);
     }
 
-    /// A fresh image uses the context-bound scheme.
+    /// A fresh encrypted image uses `XAES-256-GCM + AES-256-GCM-SIV` (`v3`) by default,
+    /// while explicit cipher selection still supports `XChaCha20-Poly1305` (`v2`).
     #[test]
     fn new_images_use_the_context_bound_scheme() {
-        let path =
-            std::env::temp_dir().join(format!("oifs_context_scheme_{}.img", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let dm = DiskManager::create_encrypted(&path, 10 * 1024 * 1024, "pw123456")
-            .expect("create encrypted image");
+        let path_v3 =
+            std::env::temp_dir().join(format!("oifs_v3_scheme_{}.img", std::process::id()));
+        let path_v2 =
+            std::env::temp_dir().join(format!("oifs_v2_scheme_{}.img", std::process::id()));
+        let _ = std::fs::remove_file(&path_v3);
+        let _ = std::fs::remove_file(&path_v2);
+
+        let dm_v3 = DiskManager::create_encrypted(&path_v3, 10 * 1024 * 1024, "pw123456")
+            .expect("create encrypted v3 image");
         assert_eq!(
-            dm.superblock().encryption_version,
+            dm_v3.superblock().encryption_version,
+            crate::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3
+        );
+        assert_eq!(
+            dm_v3.encryption_cipher(),
+            Some(crate::encryption::EncryptionCipher::Aes256Gcm)
+        );
+        drop(dm_v3);
+
+        let dm_v2 = DiskManager::create_encrypted_with_cipher(
+            &path_v2,
+            10 * 1024 * 1024,
+            "pw123456",
+            false,
+            StorageMode::Mmap,
+            crate::encryption::EncryptionCipher::XChaCha20Poly1305,
+        )
+        .expect("create encrypted v2 image");
+        assert_eq!(
+            dm_v2.superblock().encryption_version,
             ENCRYPTION_SCHEME_CONTEXT_BOUND
         );
-        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            dm_v2.encryption_cipher(),
+            Some(crate::encryption::EncryptionCipher::XChaCha20Poly1305)
+        );
+        drop(dm_v2);
+
+        let _ = std::fs::remove_file(&path_v3);
+        let _ = std::fs::remove_file(&path_v2);
     }
 
     #[test]

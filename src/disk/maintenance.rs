@@ -122,6 +122,15 @@ impl DiskManager {
 
     /// Write the in-memory superblock back into block 0.
     pub(super) fn persist_superblock(guard: &mut DiskManagerInner) -> Result<(), DiskManagerError> {
+        if guard.superblock.encrypted
+            && let Some(key) = guard.encryption_key.as_ref()
+            && (guard.superblock.has_header_mac()
+                || guard.superblock.encryption_version
+                    >= crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND)
+        {
+            guard.superblock.header_mac =
+                crate::encryption::compute_superblock_mac(key, &guard.superblock);
+        }
         let bytes = bincode::serialize(&guard.superblock)?;
         if bytes.len() > BLOCK_SIZE {
             return Err(DiskManagerError::Serialization(Box::new(

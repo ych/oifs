@@ -70,6 +70,14 @@ pub struct SuperBlock {
     /// each slot according to its position, so a migration is simply resumable and
     /// idempotent. `0` means "no migration in progress".
     pub migration_cursor: u64,
+
+    /// Keyed BLAKE2b-256 authentication MAC over the SuperBlock header fields `[0..94)`.
+    ///
+    /// **Must stay the last field.** Zero (`[0u8; 32]`) on unencrypted images and
+    /// legacy pre-MAC `v1`/`v2` encrypted images; always non-zero and mandatory on `v3`
+    /// (`XAES-256-GCM`) and newly created/updated `v2` encrypted images to prevent
+    /// silent version-downgrade and salt/format tampering attacks.
+    pub header_mac: [u8; 32],
 }
 
 impl SuperBlock {
@@ -217,6 +225,7 @@ impl SuperBlock {
             encryption_version: 0,
             format_version: Self::FORMAT_VERSION_V3_LAYOUT,
             migration_cursor: 0,
+            header_mac: [0u8; 32],
         }
     }
 
@@ -279,6 +288,7 @@ impl SuperBlock {
             // New images are always written in the current inode format.
             format_version: Self::FORMAT_VERSION_FIXED_INODE,
             migration_cursor: 0,
+            header_mac: [0u8; 32],
         }
     }
 
@@ -354,6 +364,7 @@ impl SuperBlock {
             encryption_version: 0,
             format_version: Self::FORMAT_VERSION_V3_LAYOUT,
             migration_cursor: 0,
+            header_mac: [0u8; 32],
         };
         let total_bytes = total_blocks
             .checked_mul(crate::BLOCK_SIZE as u64)
@@ -507,6 +518,34 @@ impl SuperBlock {
             .min(Self::MAX_TRACKED_INODES)
     }
 
+    /// Returns `true` when `header_mac` is populated (non-zero).
+    #[inline]
+    pub fn has_header_mac(&self) -> bool {
+        self.header_mac != [0u8; 32]
+    }
+
+    /// Serializes the 94-byte canonical representation of all `SuperBlock` fields
+    /// preceding `header_mac` using explicit little-endian encoding.
+    #[inline]
+    pub fn header_mac_canonical_bytes(&self) -> [u8; 94] {
+        let mut out = [0u8; 94];
+        out[0..4].copy_from_slice(&self.magic.to_le_bytes());
+        out[4..8].copy_from_slice(&self.block_size.to_le_bytes());
+        out[8..16].copy_from_slice(&self.block_count.to_le_bytes());
+        out[16..24].copy_from_slice(&self.inode_bitmap_block.to_le_bytes());
+        out[24..32].copy_from_slice(&self.data_bitmap_block.to_le_bytes());
+        out[32..40].copy_from_slice(&self.inode_table_block.to_le_bytes());
+        out[40..48].copy_from_slice(&self.inode_count.to_le_bytes());
+        out[48..56].copy_from_slice(&self.data_block_start.to_le_bytes());
+        out[56..64].copy_from_slice(&self.root_inode.to_le_bytes());
+        out[64] = u8::from(self.encrypted);
+        out[65..81].copy_from_slice(&self.encryption_salt);
+        out[81] = self.encryption_version;
+        out[82..86].copy_from_slice(&self.format_version.to_le_bytes());
+        out[86..94].copy_from_slice(&self.migration_cursor.to_le_bytes());
+        out
+    }
+
     /// Validates superblock bounds, layout geometry, and alignment invariants against mapped image size.
     pub fn validate(&self, mmap_len: usize) -> Result<(), &'static str> {
         if self.magic != Self::MAGIC {
@@ -569,11 +608,22 @@ impl SuperBlock {
         if self.encrypted {
             if self.encryption_version != crate::encryption::ENCRYPTION_SCHEME_LEGACY
                 && self.encryption_version != crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND
+                && self.encryption_version != crate::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3
             {
                 return Err("Unsupported encryption scheme version");
             }
-        } else if self.encryption_version != 0 {
-            return Err("Unencrypted filesystem has non-zero encryption version");
+            if self.encryption_version == crate::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3
+                && !self.has_header_mac()
+            {
+                return Err("v3 encrypted filesystem requires header authentication MAC");
+            }
+        } else {
+            if self.encryption_version != 0 {
+                return Err("Unencrypted filesystem has non-zero encryption version");
+            }
+            if self.has_header_mac() {
+                return Err("Unencrypted filesystem has non-zero header MAC");
+            }
         }
         // The v3 layout records the bitmap spans implicitly: the regions must
         // fit exactly into the recorded offsets.
@@ -845,6 +895,54 @@ mod kani_proofs {
             "valid journaled superblock accepted"
         );
     }
+
+    /// Prove that `header_mac` validation rejects unencrypted headers carrying a MAC,
+    /// rejects `v3` encrypted headers without a MAC, and that canonical MAC input bytes
+    /// bind every critical SuperBlock field injectively.
+    #[kani::proof]
+    fn proof_superblock_header_mac_validation_policy() {
+        let mut plain = SuperBlock::new(2560);
+        let non_zero_idx: usize = kani::any();
+        kani::assume(non_zero_idx < 32);
+        let non_zero_val: u8 = kani::any();
+        kani::assume(non_zero_val != 0);
+        plain.header_mac[non_zero_idx] = non_zero_val;
+        assert!(plain.has_header_mac());
+        assert!(plain.validate(2560 * crate::BLOCK_SIZE).is_err());
+
+        let mut v3_no_mac = SuperBlock::new(2560);
+        v3_no_mac.encrypted = true;
+        v3_no_mac.encryption_version = crate::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3;
+        assert!(!v3_no_mac.has_header_mac());
+        assert!(v3_no_mac.validate(2560 * crate::BLOCK_SIZE).is_err());
+
+        let base = SuperBlock::new(2560);
+        let base_bytes = base.header_mac_canonical_bytes();
+
+        let mut flip_ver = base;
+        flip_ver.encryption_version = kani::any();
+        kani::assume(flip_ver.encryption_version != base.encryption_version);
+        assert_ne!(flip_ver.header_mac_canonical_bytes(), base_bytes);
+
+        let mut flip_fmt = base;
+        flip_fmt.format_version = kani::any();
+        kani::assume(flip_fmt.format_version != base.format_version);
+        assert_ne!(flip_fmt.header_mac_canonical_bytes(), base_bytes);
+
+        let mut flip_enc = base;
+        flip_enc.encrypted = !base.encrypted;
+        assert_ne!(flip_enc.header_mac_canonical_bytes(), base_bytes);
+
+        let mut flip_cur = base;
+        flip_cur.migration_cursor = kani::any();
+        kani::assume(flip_cur.migration_cursor != base.migration_cursor);
+        assert_ne!(flip_cur.header_mac_canonical_bytes(), base_bytes);
+
+        let mut flip_blk = base;
+        flip_blk.block_count = kani::any();
+        kani::assume(flip_blk.block_count != base.block_count);
+        assert_ne!(flip_blk.header_mac_canonical_bytes(), base_bytes);
+    }
 }
 
 #[cfg(test)]
@@ -1026,8 +1124,8 @@ mod tests {
         );
         assert_eq!(
             v2.len(),
-            v1_len + 4 + 8,
-            "the only difference must be the appended format_version + migration_cursor"
+            v1_len + 4 + 8 + 32,
+            "the only difference must be the appended format_version + migration_cursor + header_mac"
         );
     }
 
@@ -1056,8 +1154,20 @@ mod tests {
         bad_plain_enc.encryption_version = crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
         assert!(bad_plain_enc.validate(mmap_len).is_err());
 
-        // Encrypted image with unknown encryption_version (0 or 200) must be rejected.
-        for bad_ver in [0u8, 3u8, 200u8] {
+        // Unencrypted image with non-zero header_mac must be rejected.
+        let mut bad_plain_mac = base;
+        bad_plain_mac.header_mac = [0x11u8; 32];
+        assert!(bad_plain_mac.validate(mmap_len).is_err());
+
+        // Encrypted v3 image without header_mac must be rejected.
+        let mut bad_v3_no_mac = base;
+        bad_v3_no_mac.encrypted = true;
+        bad_v3_no_mac.encryption_version = crate::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3;
+        bad_v3_no_mac.header_mac = [0u8; 32];
+        assert!(bad_v3_no_mac.validate(mmap_len).is_err());
+
+        // Encrypted image with unknown encryption_version (0, 4, or 200) must be rejected.
+        for bad_ver in [0u8, 4u8, 200u8] {
             let mut bad_enc = base;
             bad_enc.encrypted = true;
             bad_enc.encryption_version = bad_ver;
@@ -1067,14 +1177,17 @@ mod tests {
             );
         }
 
-        // Encrypted image with legacy (1) or context-bound (2) passes.
-        for good_ver in [
-            crate::encryption::ENCRYPTION_SCHEME_LEGACY,
-            crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND,
+        // Encrypted image with legacy (1), context-bound XChaCha20 (2), or authenticated XAES-256-GCM (3) passes.
+        for (good_ver, mac) in [
+            (crate::encryption::ENCRYPTION_SCHEME_LEGACY, [0u8; 32]),
+            (crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND, [0u8; 32]),
+            (crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND, [0xAAu8; 32]),
+            (crate::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3, [0xAAu8; 32]),
         ] {
             let mut good_enc = base;
             good_enc.encrypted = true;
             good_enc.encryption_version = good_ver;
+            good_enc.header_mac = mac;
             assert!(
                 good_enc.validate(mmap_len).is_ok(),
                 "encryption_version={good_ver} must be accepted"

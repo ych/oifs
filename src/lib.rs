@@ -19,6 +19,7 @@ pub mod superblock;
 pub mod zstd_pool;
 
 pub use auto_defrag::{AutoDefragConfig, AutoDefragStats};
+pub use encryption::EncryptionCipher;
 pub use disk::{
     AutoGrowConfig, BatchCommitResult, BatchOp, CloneMethod, DiskManager, DiskManagerError,
     DurabilityMode, FileReadHandle, LogicalRun, OifsAsyncTask, ReadRequest, ReadSession,

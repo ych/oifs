@@ -45,107 +45,122 @@ fn nfs_reply_status(reply: &[u8]) -> u32 {
 
 #[test]
 fn test_encrypted_filename_e_prefix_is_encrypted_and_tampered_entries_rejected() {
+    use oifs::EncryptionCipher;
+    use oifs::storage::StorageMode;
+
     let dir = tempdir().unwrap();
-    let img = dir.path().join("enc_filenames.img");
 
-    let (dir_a_id, dir_b_id) = {
-        let dm = DiskManager::create_encrypted(&img, 4 * 1024 * 1024, "pw123").unwrap();
-        let root = dm.superblock().root_inode;
+    for (tag, cipher, tok_len, tamper_off) in [
+        // v3 AES-256-GCM-SIV: 3 + base64_unpadded(32 + 16 = 48) = 67 bytes
+        ("v3", EncryptionCipher::Aes256Gcm, 67usize, 60usize),
+        // v2 XChaCha20-SIV: 3 + base64_unpadded(24 + 32 + 16 = 72) = 99 bytes
+        ("v2", EncryptionCipher::XChaCha20Poly1305, 99usize, 90usize),
+    ] {
+        let img = dir.path().join(format!("enc_filenames_{tag}.img"));
 
-        // 1. Filename starting literally with `_e_` must still be encrypted on disk.
-        let lit = "_e_very_confidential_literal_marker_xyz";
-        let f = dm.create_file(root, lit).unwrap();
-        dm.write_data(f, 0, b"payload", CompressionMode::Auto)
+        let (dir_a_id, dir_b_id) = {
+            let dm = DiskManager::create_encrypted_with_cipher(
+                &img,
+                4 * 1024 * 1024,
+                "pw123",
+                false,
+                StorageMode::Mmap,
+                cipher,
+            )
             .unwrap();
-        assert_eq!(dm.lookup(root, lit).unwrap(), f);
-        let root_list = dm.list_dir(root).unwrap();
-        assert!(root_list.iter().any(|e| e.name == lit));
+            let root = dm.superblock().root_inode;
 
-        let dir_a = dm.create_directory(root, "dir_a").unwrap();
-        let dir_b = dm.create_directory(root, "dir_b").unwrap();
+            // 1. Filename starting literally with `_e_` must still be encrypted on disk.
+            let lit = "_e_very_confidential_literal_marker_xyz";
+            let f = dm.create_file(root, lit).unwrap();
+            dm.write_data(f, 0, b"payload", CompressionMode::Auto)
+                .unwrap();
+            assert_eq!(dm.lookup(root, lit).unwrap(), f);
+            let root_list = dm.list_dir(root).unwrap();
+            assert!(root_list.iter().any(|e| e.name == lit));
 
-        dm.create_file(dir_a, "legit_inside_dir_a_file_0001.bin")
-            .unwrap();
-        dm.create_file(dir_a, "forged_target_entry_name_002.bin")
-            .unwrap();
-        dm.create_file(dir_a, "replay_target_entry_name_003.bin")
-            .unwrap();
+            let dir_a = dm.create_directory(root, "dir_a").unwrap();
+            let dir_b = dm.create_directory(root, "dir_b").unwrap();
 
-        dm.create_file(dir_b, "unique_b_entry_for_replay_04.bin")
-            .unwrap();
-        dm.flush().unwrap();
-        (dir_a, dir_b)
-    };
+            dm.create_file(dir_a, "legit_inside_dir_a_file_0001.bin")
+                .unwrap();
+            dm.create_file(dir_a, "forged_target_entry_name_002.bin")
+                .unwrap();
+            dm.create_file(dir_a, "replay_target_entry_name_003.bin")
+                .unwrap();
 
-    // Inspect raw disk image: plaintext `_e_very_confidential_literal_marker_xyz` must NOT appear.
-    let mut raw = std::fs::read(&img).unwrap();
-    assert!(
-        !raw.windows(b"very_confidential_literal_marker".len())
-            .any(|w| w == b"very_confidential_literal_marker"),
-        "_e_-prefixed filename leaked in plaintext on disk!"
-    );
+            dm.create_file(dir_b, "unique_b_entry_for_replay_04.bin")
+                .unwrap();
+            dm.flush().unwrap();
+            (dir_a, dir_b)
+        };
 
-    // Find all `_e_` tokens belonging to dir_a/dir_b entries (32-byte plaintext -> 99-char `_e_...`).
-    // Every 32-byte filename produces `3 + base64_unpadded(24 + 32 + 16 = 72) = 3 + 96 = 99` bytes.
-    let is_b64url = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
-    let mut tokens: Vec<(usize, Vec<u8>)> = Vec::new();
-    let mut i = 0;
-    while i + 99 <= raw.len() {
-        if &raw[i..i + 3] == b"_e_"
-            && raw[i + 3..i + 99].iter().all(|&b| is_b64url(b))
-            && (i + 99 == raw.len() || !is_b64url(raw[i + 99]))
-        {
-            tokens.push((i, raw[i..i + 99].to_vec()));
-            i += 99;
-        } else {
-            i += 1;
+        // Inspect raw disk image: plaintext `_e_very_confidential_literal_marker_xyz` must NOT appear.
+        let mut raw = std::fs::read(&img).unwrap();
+        assert!(
+            !raw.windows(b"very_confidential_literal_marker".len())
+                .any(|w| w == b"very_confidential_literal_marker"),
+            "_e_-prefixed filename leaked in plaintext on disk for {tag}!"
+        );
+
+        // Find all `_e_` tokens belonging to dir_a/dir_b entries (32-byte plaintext -> `tok_len`).
+        let is_b64url = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
+        let mut tokens: Vec<(usize, Vec<u8>)> = Vec::new();
+        let mut i = 0;
+        while i + tok_len <= raw.len() {
+            if &raw[i..i + 3] == b"_e_"
+                && raw[i + 3..i + tok_len].iter().all(|&b| is_b64url(b))
+                && (i + tok_len == raw.len() || !is_b64url(raw[i + tok_len]))
+            {
+                tokens.push((i, raw[i..i + tok_len].to_vec()));
+                i += tok_len;
+            } else {
+                i += 1;
+            }
         }
+        assert_eq!(
+            tokens.len(),
+            4,
+            "expected exactly 4 encrypted 32-byte filenames on disk for {tag}, found {}",
+            tokens.len()
+        );
+
+        let dir_a_tok0_off = tokens[0].0;
+        let dir_a_tok1_off = tokens[1].0;
+        let dir_b_tok_bytes = tokens.last().unwrap().1.clone();
+
+        // Tamper tag byte of dir_a token 0 (flip 'A'<->'B' within valid base64url alphabet).
+        let tampered_byte = if raw[dir_a_tok0_off + tamper_off] == b'A' {
+            b'B'
+        } else {
+            b'A'
+        };
+        raw[dir_a_tok0_off + tamper_off] = tampered_byte;
+        // Replay dir_b's valid ciphertext into dir_a's slot 1 (same length, wrong parent_inode AAD).
+        raw[dir_a_tok1_off..dir_a_tok1_off + tok_len].copy_from_slice(&dir_b_tok_bytes);
+        std::fs::write(&img, &raw).unwrap();
+
+        // Reopen image: list_dir(dir_a) must return ONLY the 1 valid remaining entry (neither tampered nor replayed!),
+        // and list_dir(dir_b) still sees its legitimate entry.
+        let dm = DiskManager::open_with_password(&img, 0, Some("pw123")).unwrap();
+        let entries_a = dm.list_dir(dir_a_id).unwrap();
+        assert_eq!(
+            entries_a.len(),
+            1,
+            "tampered and cross-directory replayed entries must be rejected for {tag}, got: {:?}",
+            entries_a.iter().map(|e| &e.name).collect::<Vec<_>>()
+        );
+        assert!(entries_a[0].name.ends_with(".bin"));
+        assert!(!entries_a[0].name.starts_with("_e_Tampered"));
+
+        // Verify dir_cache wasn't poisoned with raw ciphertext names either.
+        let replayed_str = String::from_utf8(dir_b_tok_bytes).unwrap();
+        assert!(dm.lookup(dir_a_id, &replayed_str).is_err());
+
+        let entries_b = dm.list_dir(dir_b_id).unwrap();
+        assert_eq!(entries_b.len(), 1);
+        assert_eq!(entries_b[0].name, "unique_b_entry_for_replay_04.bin");
     }
-    assert_eq!(
-        tokens.len(),
-        4,
-        "expected exactly 4 encrypted 32-byte filenames on disk, found {}",
-        tokens.len()
-    );
-
-    // Verify which tokens belong to dir_a vs dir_b by opening cleanly once? Even simpler:
-    // dir_a entries were created before dir_b entry, so tokens[0..3] (excluding lit if longer: lit is 39 chars = 109B)
-    //Wait: check exact order by comparing decoded dir_a / dir_b? Instead tamper token[0] AND overwrite token[1] with token[3] (dir_b's token)!
-    let dir_a_tok0_off = tokens[0].0;
-    let dir_a_tok1_off = tokens[1].0;
-    let dir_b_tok_bytes = tokens.last().unwrap().1.clone();
-
-    // Tamper tag byte of dir_a token 0 (flip 'A'<->'B' within valid base64url alphabet).
-    let tampered_byte = if raw[dir_a_tok0_off + 90] == b'A' {
-        b'B'
-    } else {
-        b'A'
-    };
-    raw[dir_a_tok0_off + 90] = tampered_byte;
-    // Replay dir_b's valid ciphertext into dir_a's slot 1 (same length, wrong parent_inode AAD).
-    raw[dir_a_tok1_off..dir_a_tok1_off + 99].copy_from_slice(&dir_b_tok_bytes);
-    std::fs::write(&img, &raw).unwrap();
-
-    // Reopen image: list_dir(dir_a) must return ONLY the 1 valid remaining entry (neither tampered nor replayed!),
-    // and list_dir(dir_b) still sees its legitimate entry.
-    let dm = DiskManager::open_with_password(&img, 0, Some("pw123")).unwrap();
-    let entries_a = dm.list_dir(dir_a_id).unwrap();
-    assert_eq!(
-        entries_a.len(),
-        1,
-        "tampered and cross-directory replayed entries must be rejected, got: {:?}",
-        entries_a.iter().map(|e| &e.name).collect::<Vec<_>>()
-    );
-    assert!(entries_a[0].name.ends_with(".bin"));
-    assert!(!entries_a[0].name.starts_with("_e_Tampered"));
-
-    // Verify dir_cache wasn't poisoned with raw ciphertext names either.
-    let replayed_str = String::from_utf8(dir_b_tok_bytes).unwrap();
-    assert!(dm.lookup(dir_a_id, &replayed_str).is_err());
-
-    let entries_b = dm.list_dir(dir_b_id).unwrap();
-    assert_eq!(entries_b.len(), 1);
-    assert_eq!(entries_b[0].name, "unique_b_entry_for_replay_04.bin");
 }
 
 #[test]

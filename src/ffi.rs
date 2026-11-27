@@ -1076,6 +1076,25 @@ fn policy_to_compression_mode(policy_flags: u32, zstd_level: i32) -> crate::disk
 pub const OIFS_STORAGE_MODE_MMAP: u8 = 0;
 pub const OIFS_STORAGE_MODE_FILE_IO: u8 = 1;
 
+pub const OIFS_CIPHER_DEFAULT: u8 = 0;
+pub const OIFS_CIPHER_XCHACHA20_POLY1305: u8 = crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND;
+pub const OIFS_CIPHER_AES256_GCM: u8 = crate::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3;
+
+#[inline]
+pub(crate) const fn ffi_cipher_to_rust(
+    cipher: u8,
+) -> Option<crate::encryption::EncryptionCipher> {
+    match cipher {
+        OIFS_CIPHER_DEFAULT | OIFS_CIPHER_AES256_GCM => {
+            Some(crate::encryption::EncryptionCipher::Aes256Gcm)
+        }
+        OIFS_CIPHER_XCHACHA20_POLY1305 => {
+            Some(crate::encryption::EncryptionCipher::XChaCha20Poly1305)
+        }
+        _ => None,
+    }
+}
+
 /// Opens or creates an OIFS image with explicit storage mode (`0 = Mmap`, `1 = FileIo`)
 /// and optional metadata WAL journaling (`journaled != 0`).
 #[unsafe(no_mangle)]
@@ -1085,6 +1104,27 @@ pub extern "C" fn oifs_open_with_options(
     password: *const c_char,
     storage_mode: u8,
     journaled: u8,
+) -> *mut OIFSHandle {
+    oifs_open_with_cipher(
+        path,
+        size,
+        password,
+        storage_mode,
+        journaled,
+        OIFS_CIPHER_DEFAULT,
+    )
+}
+
+/// Opens or creates an OIFS image with explicit storage mode, WAL journaling flag,
+/// and creation-time encryption cipher suite (`OIFS_CIPHER_*`).
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_open_with_cipher(
+    path: *const c_char,
+    size: u64,
+    password: *const c_char,
+    storage_mode: u8,
+    journaled: u8,
+    cipher: u8,
 ) -> *mut OIFSHandle {
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if path.is_null() {
@@ -1102,6 +1142,9 @@ pub extern "C" fn oifs_open_with_options(
                 Err(_) => return ptr::null_mut(),
             }
         };
+        let Some(cipher_suite) = ffi_cipher_to_rust(cipher) else {
+            return ptr::null_mut();
+        };
         let mode = if storage_mode == OIFS_STORAGE_MODE_FILE_IO {
             crate::storage::StorageMode::FileIo
         } else {
@@ -1109,12 +1152,38 @@ pub extern "C" fn oifs_open_with_options(
         };
         let use_journal = journaled != 0;
 
-        match DiskManager::open_with_options(path_str, size, pwd_str, use_journal, mode) {
+        match DiskManager::open_with_options_and_cipher(
+            path_str,
+            size,
+            pwd_str,
+            use_journal,
+            mode,
+            cipher_suite,
+        ) {
             Ok(dm) => Box::into_raw(Box::new(OIFSHandle::new(dm))),
             Err(_) => ptr::null_mut(),
         }
     }));
     res.unwrap_or(ptr::null_mut())
+}
+
+/// Returns the on-disk encryption scheme version (`0` unencrypted, `1`/`2` XChaCha20-Poly1305,
+/// `3` C2SP XAES-256-GCM + AES-256-GCM-SIV), or `-1` if `handle` is NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn oifs_encryption_cipher(handle: *const OIFSHandle) -> i32 {
+    if handle.is_null() {
+        return -1;
+    }
+    let handle_ref = unsafe { &(*handle) };
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sb = handle_ref.dm.superblock();
+        if sb.encrypted {
+            sb.encryption_version as i32
+        } else {
+            0
+        }
+    }));
+    res.unwrap_or(-1)
 }
 
 /// Opens an existing OIFS image in read-only mode (`0 = Mmap`, `1 = FileIo`).

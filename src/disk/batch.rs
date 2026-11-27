@@ -1251,18 +1251,20 @@ fn execute_batch_journaled(
                         new_inode.filter_bitshuffle = filter_config.bitshuffle;
 
                         let final_buf = if let Some(key) = guard.encryption_key.as_ref() {
+                            let enc_scheme = guard.superblock.encryption_version;
                             let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(
                                 new_inode_id,
-                                guard.superblock.encryption_version,
+                                enc_scheme,
                             );
                             let nonce = crate::encryption::generate_nonce();
                             let mut enc = bytes;
                             enc.reserve(16);
-                            crate::encryption::encrypt_data_in_place(
+                            crate::encryption::encrypt_data_in_place_for_scheme(
                                 &mut enc,
                                 key,
                                 &nonce,
                                 &aad_buf[..aad_len],
+                                enc_scheme,
                             )?;
                             new_inode.encrypted = true;
                             new_inode.encryption_nonce = nonce;
@@ -1581,11 +1583,12 @@ fn finalize_seekable_chunk_stage3(
                 ChunkEntry::FLAG_COMPRESSED,
                 scheme,
             );
-            let payload = crate::encryption::encrypt_with_nonce_prefix(
+            let payload = crate::encryption::encrypt_with_nonce_prefix_for_scheme(
                 &compressed,
                 key,
                 &nonce,
                 &aad_buf[..aad_len],
+                scheme,
             )?;
             let blks = payload.len().div_ceil(BLOCK_SIZE);
             let comp_len = payload.len() as u16;
@@ -1599,11 +1602,12 @@ fn finalize_seekable_chunk_stage3(
                 ChunkEntry::FLAG_RAW,
                 scheme,
             );
-            let payload = crate::encryption::encrypt_with_nonce_prefix(
+            let payload = crate::encryption::encrypt_with_nonce_prefix_for_scheme(
                 &orig_data[start..start + valid_len],
                 key,
                 &nonce,
                 &aad_buf[..aad_len],
+                scheme,
             )?;
             let blks = payload.len().div_ceil(BLOCK_SIZE);
             let comp_len = (payload.len().min(65535)) as u16;
@@ -1677,18 +1681,20 @@ fn execute_batch_in_place(
                         new_inode.filter_bitshuffle = filter_config.bitshuffle;
 
                         let final_buf = if let Some(key) = guard.encryption_key.as_ref() {
+                            let enc_scheme = guard.superblock.encryption_version;
                             let (aad_buf, aad_len) = crate::encryption::file_aad_for_scheme_stack(
                                 new_inode_id,
-                                guard.superblock.encryption_version,
+                                enc_scheme,
                             );
                             let nonce = crate::encryption::generate_nonce();
                             let mut enc = bytes;
                             enc.reserve(16);
-                            crate::encryption::encrypt_data_in_place(
+                            crate::encryption::encrypt_data_in_place_for_scheme(
                                 &mut enc,
                                 key,
                                 &nonce,
                                 &aad_buf[..aad_len],
+                                enc_scheme,
                             )?;
                             new_inode.encrypted = true;
                             new_inode.encryption_nonce = nonce;

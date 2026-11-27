@@ -374,6 +374,9 @@ fn test_mcp_v161_tools_batch_resize_vacuum_dict_and_read_only() {
 
     let r14 = parse_mcp_tool_text_json(&by_id(14).to_string());
     assert_eq!(r14["read_only"], false);
+    assert_eq!(r14["encrypted"], false);
+    assert_eq!(r14["encryption_version"], 0);
+    assert!(r14["cipher"].is_null());
     assert_eq!(r14["auto_grow_enabled"], true);
     assert_eq!(r14["default_zstd_dict_id"], dict_id);
 

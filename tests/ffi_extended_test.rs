@@ -1,19 +1,23 @@
 use oifs::ffi::{
+    OIFS_CIPHER_AES256_GCM, OIFS_CIPHER_DEFAULT, OIFS_CIPHER_XCHACHA20_POLY1305,
     OIFS_WRITE_POLICY_DEFAULT, OIFS_WRITE_POLICY_RAW, OIFS_WRITE_POLICY_SEEKABLE_64K,
     OIFSAutoGrowConfig, OIFSBatchCommitResult, OIFSByteSlice, OIFSFilterConfig, OIFSResizeStats,
     OIFSVacuumOptions, OIFSVacuumStats, OIFS_RESIZE_METHOD_IN_PLACE, oifs_batch_begin, oifs_batch_commit, oifs_batch_create_file_with_data, oifs_batch_delete,
     oifs_batch_free, oifs_batch_len, oifs_batch_mkdir, oifs_batch_rename, oifs_check_version,
-    oifs_clear_zstd_dicts, oifs_close, oifs_default_zstd_dict_id, oifs_get_auto_grow, oifs_grow,
-    oifs_image_size_bytes, oifs_last_error, oifs_loaded_path, oifs_mkdir, oifs_open,
-    oifs_open_read_only, oifs_open_with_password, oifs_read_file, oifs_register_zstd_dict,
-    oifs_registered_zstd_dict_ids, oifs_resize, oifs_set_auto_grow, oifs_set_default_zstd_dict,
-    oifs_train_zstd_dict, oifs_train_zstd_dict_from_dir, oifs_unregister_zstd_dict, oifs_vacuum,
-    oifs_version_code, oifs_version_major, oifs_version_minor, oifs_version_patch,
-    oifs_version_string, oifs_write_file,
+    oifs_clear_zstd_dicts, oifs_close, oifs_default_zstd_dict_id, oifs_encryption_cipher,
+    oifs_flush, oifs_get_auto_grow, oifs_grow, oifs_image_size_bytes, oifs_last_error,
+    oifs_loaded_path,
+    oifs_mkdir, oifs_open, oifs_open_read_only, oifs_open_with_cipher, oifs_open_with_password,
+    oifs_read_file, oifs_register_zstd_dict, oifs_registered_zstd_dict_ids, oifs_resize,
+    oifs_set_auto_grow, oifs_set_default_zstd_dict, oifs_train_zstd_dict,
+    oifs_train_zstd_dict_from_dir, oifs_unregister_zstd_dict, oifs_vacuum, oifs_version_code,
+    oifs_version_major, oifs_version_minor, oifs_version_patch, oifs_version_string,
+    oifs_write_file,
 };
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::Path;
+use tempfile::tempdir;
 
 #[test]
 fn test_ffi_extended_flow() {
@@ -72,47 +76,15 @@ fn test_ffi_extended_flow() {
         "Read content should match written content exactly"
     );
 
-    // 6. Open via C FFI using a wrong password
-    // Argon2 KDF allows opening (it derives *some* key), but file decryptions will fail.
+    // 6. Open via C FFI using a wrong password (must reject at mount via header_mac)
     let c_wrong_pass = CString::new("wrong_password").unwrap();
     let handle_wrong = oifs_open_with_password(c_path.as_ptr(), 0, c_wrong_pass.as_ptr());
     assert!(
-        !handle_wrong.is_null(),
-        "FFI open with wrong password should return a handle"
+        handle_wrong.is_null(),
+        "FFI open with wrong password must fail at mount"
     );
 
-    // 7. Try to read with the wrong handle (must fail with DecryptionFailed)
-    let mut read_buf_wrong = vec![0u8; 100];
-    let bytes_read_wrong = oifs_read_file(
-        handle_wrong,
-        c_file.as_ptr(),
-        read_buf_wrong.as_mut_ptr(),
-        read_buf_wrong.len() as u64,
-    );
-    assert_eq!(
-        bytes_read_wrong, -1,
-        "Reading file with wrong password must fail"
-    );
-
-    // 8. Verify error diagnostics on wrong handle
-    let mut err_msg_buf_wrong = vec![0 as std::os::raw::c_char; 200];
-    let err_res_wrong = oifs_last_error(
-        handle_wrong,
-        err_msg_buf_wrong.as_mut_ptr(),
-        err_msg_buf_wrong.len() as u32,
-    );
-    assert_eq!(err_res_wrong, 0);
-    let err_msg_wrong = unsafe { CStr::from_ptr(err_msg_buf_wrong.as_ptr()) }
-        .to_str()
-        .unwrap();
-    println!("Caught expected wrong-password error: {}", err_msg_wrong);
-    assert!(
-        err_msg_wrong.to_lowercase().contains("decryption")
-            || err_msg_wrong.to_lowercase().contains("not found"),
-        "Error message should describe failure with wrong password (either filename lookup or data decryption failure)"
-    );
-
-    // 9. Test oifs_last_error on a fake file read on the good handle
+    // 7. Test oifs_last_error on a fake file read on the good handle
     let c_fake_file = CString::new("fake.txt").unwrap();
     let mut err_buf = vec![0u8; 100];
     let read_fake_res = oifs_read_file(
@@ -141,9 +113,8 @@ fn test_ffi_extended_flow() {
         "Error message should describe failure"
     );
 
-    // 10. Close handles and clean up
+    // 8. Close handles and clean up
     oifs_close(handle);
-    oifs_close(handle_wrong);
     fs::remove_file(path).unwrap();
 }
 
@@ -496,4 +467,52 @@ fn test_ffi_autogrow_resize_vacuum_batch_and_zstd_dict() {
     );
     assert_eq!(&ro_back, payload);
     oifs_close(ro);
+}
+
+#[test]
+fn test_ffi_selectable_cipher_suites() {
+    let dir = tempdir().unwrap();
+    let pw = CString::new("FfiCipher#2026").unwrap();
+
+    for (fname, cipher_flag, expected_ver) in [
+        ("c_default.img", OIFS_CIPHER_DEFAULT, OIFS_CIPHER_AES256_GCM as i32),
+        ("c_v3.img", OIFS_CIPHER_AES256_GCM, OIFS_CIPHER_AES256_GCM as i32),
+        (
+            "c_v2.img",
+            OIFS_CIPHER_XCHACHA20_POLY1305,
+            OIFS_CIPHER_XCHACHA20_POLY1305 as i32,
+        ),
+    ] {
+        let p = dir.path().join(fname);
+        let c_p = CString::new(p.to_str().unwrap()).unwrap();
+        let h = oifs_open_with_cipher(c_p.as_ptr(), 4 * 1024 * 1024, pw.as_ptr(), 0, 1, cipher_flag);
+        assert!(!h.is_null());
+        assert_eq!(oifs_encryption_cipher(h), expected_ver);
+
+        let cname = CString::new("secret.txt").unwrap();
+        let payload = b"ffi selectable cipher payload";
+        assert_eq!(
+            oifs_write_file(h, cname.as_ptr(), payload.as_ptr(), payload.len() as u64),
+            0
+        );
+        assert_eq!(oifs_flush(h), 0);
+        oifs_close(h);
+
+        // Reopen with generic options auto-detects cipher
+        let h2 = oifs_open_read_only(c_p.as_ptr(), pw.as_ptr(), 0);
+        assert!(!h2.is_null());
+        assert_eq!(oifs_encryption_cipher(h2), expected_ver);
+        let mut back = vec![0u8; payload.len()];
+        assert_eq!(
+            oifs_read_file(h2, cname.as_ptr(), back.as_mut_ptr(), back.len() as u64),
+            payload.len() as i64
+        );
+        assert_eq!(&back, payload);
+        oifs_close(h2);
+    }
+
+    // Invalid cipher ID must fail cleanly
+    let bad_p = CString::new(dir.path().join("bad_cipher.img").to_str().unwrap()).unwrap();
+    assert!(oifs_open_with_cipher(bad_p.as_ptr(), 4 * 1024 * 1024, pw.as_ptr(), 0, 0, 99).is_null());
+    assert_eq!(oifs_encryption_cipher(std::ptr::null()), -1);
 }

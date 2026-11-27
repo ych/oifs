@@ -231,6 +231,9 @@ enum Commands {
         /// Enable encryption (will prompt for password)
         #[arg(long)]
         encrypt: bool,
+        /// Encryption cipher when --encrypt is set: aes256-gcm (default, XAES-256-GCM + AES-256-GCM-SIV) or xchacha20-poly1305
+        #[arg(long)]
+        cipher: Option<String>,
         /// Enable the metadata WAL (journaling) for crash-safe metadata updates.
         ///
         /// Reserves 33 blocks (1 header + 128 KB ring) between the data bitmap and
@@ -786,10 +789,14 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Create {
             size,
             encrypt,
+            cipher,
             journal,
         } => {
             if cli.read_only {
                 return Err(oifs::disk::DiskManagerError::ReadOnly.into());
+            }
+            if !*encrypt && cipher.is_some() {
+                return Err("--cipher requires --encrypt".into());
             }
             if image.exists() {
                 return Err(format!("Image {:?} already exists.", image).into());
@@ -800,6 +807,10 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("Image size in MB overflows u64")?;
 
             if *encrypt {
+                let chosen_cipher = match cipher.as_deref() {
+                    Some(c) => oifs::EncryptionCipher::parse(c)?,
+                    None => oifs::EncryptionCipher::default(),
+                };
                 let password = if let Some(pwd) = cli.password.clone() {
                     if pwd.is_empty() {
                         return Err("Password cannot be empty".into());
@@ -831,30 +842,24 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("⚠️  Warning: Password is shorter than 8 characters");
                 }
 
-                let _session = if *journal {
-                    OifsSession::open_journaled_with_mode(
-                        image,
-                        size_bytes,
-                        session_mode,
-                        Some(&password),
-                        true,
-                    )?
-                } else {
-                    OifsSession::open_with_mode(
-                        image,
-                        size_bytes,
-                        session_mode,
-                        Some(&password),
-                        true,
-                    )?
-                };
+                let _session = OifsSession::create_encrypted_with_cipher(
+                    image,
+                    size_bytes,
+                    session_mode,
+                    &password,
+                    *journal,
+                    chosen_cipher,
+                )?;
                 if cli.json {
                     println!(
                         "{}",
-                        json!({"ok": true, "message": "Encrypted filesystem created", "journal": journal})
+                        json!({"ok": true, "message": "Encrypted filesystem created", "journal": journal, "cipher": chosen_cipher.as_str(), "encryption_version": chosen_cipher.scheme_version()})
                     );
                 } else {
-                    println!("✅ Encrypted filesystem created: {:?}", image);
+                    println!(
+                        "✅ Encrypted filesystem created: {:?} (cipher={})",
+                        image, chosen_cipher
+                    );
                 }
             } else {
                 let _session = if *journal {
@@ -1159,6 +1164,28 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let sb = dm.superblock()?;
             let total_bytes = sb.block_count.saturating_mul(sb.block_size as u64);
             let journaled = sb.has_journal_layout();
+            let cipher_str = if !sb.encrypted {
+                None
+            } else {
+                oifs::EncryptionCipher::from_scheme_version(sb.encryption_version)
+                    .map(|c| c.as_str())
+            };
+            let cipher_desc = if !sb.encrypted {
+                "none".to_string()
+            } else {
+                match sb.encryption_version {
+                    oifs::encryption::ENCRYPTION_SCHEME_LEGACY => {
+                        "xchacha20-poly1305 (v1 legacy)".to_string()
+                    }
+                    oifs::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND => {
+                        "xchacha20-poly1305 (v2)".to_string()
+                    }
+                    oifs::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3 => {
+                        "aes256-gcm (XAES-256-GCM + AES-256-GCM-SIV, v3)".to_string()
+                    }
+                    other => format!("unknown (v{other})"),
+                }
+            };
             if cli.json {
                 println!(
                     "{}",
@@ -1172,6 +1199,8 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         "data_block_start": sb.data_block_start,
                         "format_version": sb.inode_record_version(),
                         "encrypted": sb.encrypted,
+                        "encryption_version": sb.encryption_version,
+                        "cipher": cipher_str,
                         "journaled": journaled,
                         "read_only": cli.read_only,
                     })
@@ -1184,6 +1213,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Inode Capacity: {}", sb.inode_count);
                 println!("Format Version: v{}", sb.inode_record_version());
                 println!("Encrypted:      {}", sb.encrypted);
+                println!("Cipher:         {}", cipher_desc);
                 println!("Journaled:      {}", journaled);
                 println!("Read-Only:      {}", cli.read_only);
             }

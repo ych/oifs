@@ -168,17 +168,14 @@ int main(void) {{
     assert(oifs_write_file(enc_fs, "secret.key", (const uint8_t*)secret_data, strlen(secret_data)) == 0);
     oifs_close(enc_fs);
 
-    // Reopen with bad password: file read must fail
+    // Reopen with bad password: header MAC verification rejects at mount
     OIFSHandle *bad_fs = oifs_open_with_password(enc_path, 0, "wrong_password");
-    assert(bad_fs != NULL);
-    uint8_t secret_buf[128] = {{0}};
-    int64_t bad_read = oifs_read_file(bad_fs, "secret.key", secret_buf, sizeof(secret_buf));
-    assert(bad_read == -1);
-    oifs_close(bad_fs);
+    assert(bad_fs == NULL);
 
     // Reopen with good password: read must succeed
     OIFSHandle *good_fs = oifs_open_with_password(enc_path, 0, secret_key);
     assert(good_fs != NULL);
+    uint8_t secret_buf[128] = {{0}};
     int64_t good_read = oifs_read_file(good_fs, "secret.key", secret_buf, sizeof(secret_buf));
     assert(good_read == (int64_t)strlen(secret_data));
     assert(memcmp(secret_buf, secret_data, (size_t)good_read) == 0);

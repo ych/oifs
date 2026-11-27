@@ -1186,13 +1186,13 @@ static void test_raii_moves_and_edge_cases(
     //    rejects path lookup, inode decryption, and directory listing with oifs::Error;
     //    supplying a password for an unencrypted image fails on open (anti-downgrade).
     {
-        uint64_t vault_ino = 0;
         {
             oifs::FileSystem enc_writer = oifs::FileSystem::open_with_options(
                 edge_enc_path, 8ULL * 1024 * 1024, "correct_horse_pwd", oifs::StorageMode::Mmap, true);
             std::string sec = "Top-secret bytes";
-            vault_ino = enc_writer.create_file_with_data(
+            uint64_t vault_ino = enc_writer.create_file_with_data(
                 "vault.bin", oifs::ByteView(sec), oifs::WritePolicy::Raw, 0);
+            OIFS_CHECK(vault_ino != 0);
             enc_writer.flush();
         }
 
@@ -1215,55 +1215,31 @@ static void test_raii_moves_and_edge_cases(
         }
         OIFS_CHECK(caught_not_enc);
 
-        auto verify_wrong_pwd_rejected = [&](const oifs::FileSystem& wrong_fs) {
-            bool caught_lookup = false;
-            try {
-                (void)wrong_fs.resolve_path("vault.bin");
-            } catch (const oifs::Error&) {
-                caught_lookup = true;
-            }
-            OIFS_CHECK(caught_lookup);
-
-            bool caught_read_path = false;
-            try {
-                std::vector<uint8_t> dec(32, 0);
-                (void)wrong_fs.read_at("vault.bin", 0, oifs::MutableByteSpan(dec));
-            } catch (const oifs::Error&) {
-                caught_read_path = true;
-            }
-            OIFS_CHECK(caught_read_path);
-
-            bool caught_read_inode = false;
-            try {
-                std::vector<uint8_t> dec(32, 0);
-                (void)wrong_fs.read_at_inode(vault_ino, 0, oifs::MutableByteSpan(dec));
-            } catch (const oifs::Error&) {
-                caught_read_inode = true;
-            }
-            OIFS_CHECK(caught_read_inode);
-
-            // Directory listing with wrong key must never expose plaintext filename
-            std::vector<oifs::DirEntry> wrong_entries = wrong_fs.ls();
-            for (const auto& e : wrong_entries) {
-                OIFS_CHECK(e.name != "vault.bin");
-            }
-        };
-
-        {
-            oifs::FileSystem wrong_rw =
-                oifs::FileSystem::open_with_password(edge_enc_path, 0, "wrong_pwd_1");
-            verify_wrong_pwd_rejected(wrong_rw);
+        bool caught_wrong_rw = false;
+        try {
+            (void)oifs::FileSystem::open_with_password(edge_enc_path, 0, "wrong_pwd_1");
+        } catch (const oifs::Error&) {
+            caught_wrong_rw = true;
         }
-        {
-            oifs::FileSystem wrong_fio = oifs::FileSystem::open_with_options(
+        OIFS_CHECK(caught_wrong_rw);
+
+        bool caught_wrong_fio = false;
+        try {
+            (void)oifs::FileSystem::open_with_options(
                 edge_enc_path, 0, "wrong_pwd_2", oifs::StorageMode::FileIo, true);
-            verify_wrong_pwd_rejected(wrong_fio);
+        } catch (const oifs::Error&) {
+            caught_wrong_fio = true;
         }
-        {
-            oifs::FileSystem wrong_ro = oifs::FileSystem::open_read_only(
+        OIFS_CHECK(caught_wrong_fio);
+
+        bool caught_wrong_ro = false;
+        try {
+            (void)oifs::FileSystem::open_read_only(
                 edge_enc_path, "wrong_pwd_3", oifs::StorageMode::Mmap);
-            verify_wrong_pwd_rejected(wrong_ro);
+        } catch (const oifs::Error&) {
+            caught_wrong_ro = true;
         }
+        OIFS_CHECK(caught_wrong_ro);
     }
 }
 
@@ -3190,6 +3166,47 @@ static void test_cpp20_coroutine_co_await(const std::string& coro_img) {
 #endif
 #endif
 
+static void test_selectable_encryption_ciphers(const std::string& v3_img, const std::string& v2_img) {
+    // 1. Default cipher must be v3 (XAES-256-GCM + AES-256-GCM-SIV)
+    {
+        oifs::OpenOptions opts;
+        opts.size = 4ULL * 1024 * 1024;
+        opts.password = "CppCipher#2026";
+        opts.journaled = true;
+        oifs::FileSystem fs = oifs::FileSystem::open_with_options(v3_img, opts);
+        OIFS_CHECK(fs.encryption_scheme_version() == OIFS_CIPHER_AES256_GCM);
+        std::string msg = "XAES-256-GCM payload from C++";
+        fs.create_file_with_data("aes_doc.txt", oifs::ByteView(msg), oifs::WritePolicy::Raw, 0);
+        fs.flush();
+    }
+    {
+        oifs::FileSystem ro = oifs::FileSystem::open_read_only(v3_img, "CppCipher#2026");
+        OIFS_CHECK(ro.encryption_scheme_version() == OIFS_CIPHER_AES256_GCM);
+        auto got = ro.read_file("aes_doc.txt");
+        OIFS_CHECK(std::string(got.begin(), got.end()) == "XAES-256-GCM payload from C++");
+    }
+
+    // 2. Explicit XChaCha20-Poly1305 (v2) selection must also work and auto-detect on reopen
+    {
+        oifs::OpenOptions opts;
+        opts.size = 4ULL * 1024 * 1024;
+        opts.password = "CppCipher#2026";
+        opts.journaled = true;
+        opts.cipher = oifs::EncryptionCipher::XChaCha20Poly1305;
+        oifs::FileSystem fs = oifs::FileSystem::open_with_options(v2_img, opts);
+        OIFS_CHECK(fs.encryption_scheme_version() == OIFS_CIPHER_XCHACHA20_POLY1305);
+        std::string msg = "XChaCha20 payload from C++";
+        fs.create_file_with_data("chacha_doc.txt", oifs::ByteView(msg), oifs::WritePolicy::Raw, 0);
+        fs.flush();
+    }
+    {
+        oifs::FileSystem ro = oifs::FileSystem::open_read_only(v2_img, "CppCipher#2026");
+        OIFS_CHECK(ro.encryption_scheme_version() == OIFS_CIPHER_XCHACHA20_POLY1305);
+        auto got = ro.read_file("chacha_doc.txt");
+        OIFS_CHECK(std::string(got.begin(), got.end()) == "XChaCha20 payload from C++");
+    }
+}
+
 int main(int argc, char** argv) {
     OIFS_CHECK(OIFS_CHECK_VERSION() == OIFS_VERSION_COMPAT_OK);
 
@@ -3228,6 +3245,8 @@ int main(int argc, char** argv) {
     const std::string fuse_img = join_path(data_dir, "cpp_fuse.img");
     const std::string features_img = join_path(data_dir, "cpp_features.img");
     const std::string v161_img = join_path(data_dir, "cpp_v161.img");
+    const std::string cipher_v3_img = join_path(data_dir, "cpp_cipher_v3.img");
+    const std::string cipher_v2_img = join_path(data_dir, "cpp_cipher_v2.img");
     const std::string coro_img = join_path(data_dir, "cpp_coro.img");
 
     test_pinnable_slice_zero_copy_and_fallbacks(mmap_img, file_io_img, enc_img);
@@ -3241,6 +3260,7 @@ int main(int argc, char** argv) {
     test_rename_stat_exists_subdir_and_filters(features_img);
     test_clone_transfer_splice_and_get_or_open(data_dir);
     test_autogrow_resize_vacuum_batch_and_zstd_dict(v161_img);
+    test_selectable_encryption_ciphers(cipher_v3_img, cipher_v2_img);
 #if defined(OIFS_HAS_CPP20_COROUTINE)
     test_cpp20_coroutine_co_await(coro_img);
 #else

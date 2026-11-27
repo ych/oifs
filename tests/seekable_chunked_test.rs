@@ -453,13 +453,12 @@ fn test_seekable_chunked_encrypted_roundtrip_and_security() {
     let re_read = dm_reopened.read_data(inode_id).unwrap();
     assert_eq!(re_read, payload);
 
-    // 9. Reopen with WRONG password must fail to decrypt
+    // 9. Reopen with WRONG password must fail immediately at mount via header_mac
     let dm_wrong =
-        DiskManager::open_with_password(&img_path, 30 * 1024 * 1024, Some("wrong_password"))
-            .unwrap();
+        DiskManager::open_with_password(&img_path, 30 * 1024 * 1024, Some("wrong_password"));
     assert!(
-        dm_wrong.read_data(inode_id).is_err(),
-        "Reading encrypted file with wrong password must fail"
+        matches!(dm_wrong, Err(oifs::disk::DiskManagerError::DecryptionFailed)),
+        "Opening encrypted image with wrong password must fail with DecryptionFailed"
     );
 }
 

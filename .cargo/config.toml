@@ -1,5 +1,5 @@
 [target.aarch64-apple-darwin]
-rustflags = ["--cfg", "chacha20_force_neon"]
+rustflags = ["--cfg", "chacha20_force_neon", "--cfg", "aes_armv8", "--cfg", "polyval_armv8"]
 
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["--cfg", "chacha20_force_neon"]
+rustflags = ["--cfg", "chacha20_force_neon", "--cfg", "aes_armv8", "--cfg", "polyval_armv8"]

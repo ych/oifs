@@ -19,8 +19,8 @@ fn test_create_encrypted_filesystem() {
     assert_ne!(sb.encryption_salt, [0u8; 16], "Salt should be non-zero");
     assert_eq!(
         sb.encryption_version,
-        oifs::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND,
-        "New images use the context-bound encryption scheme"
+        oifs::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3,
+        "New images default to the v3 XAES-256-GCM + AES-256-GCM-SIV encryption scheme"
     );
 }
 
@@ -76,30 +76,15 @@ fn test_wrong_password_fails() {
             .unwrap();
     }
 
-    // Try to open with wrong password - should succeed in opening disk manager
-    let dm = DiskManager::open_with_password(&image_path, 0, Some(wrong_password)).unwrap();
-
-    // With filename encryption , lookup with wrong password cannot match the encrypted filename
-    let lookup_result = dm.lookup(0, "file.txt");
-    assert!(
-        lookup_result.is_err(),
-        "Lookup with wrong password must fail to protect filename confidentiality"
-    );
-
-    // And reading data directly by inode with wrong password fails with DecryptionFailed
-    let read_result = dm.read_data(file_inode);
-    assert!(
-        read_result.is_err(),
-        "Reading with wrong password should fail"
-    );
-
-    // Verify it's a decryption error
-    match read_result {
-        Err(oifs::disk::DiskManagerError::DecryptionFailed) => {
-            // Expected error
-        }
-        _ => panic!("Expected DecryptionFailed error, got: {:?}", read_result),
-    }
+    // Try to open with wrong password: authenticated mount must reject immediately with DecryptionFailed
+    assert!(matches!(
+        DiskManager::open_with_password(&image_path, 0, Some(wrong_password)),
+        Err(oifs::disk::DiskManagerError::DecryptionFailed)
+    ));
+    assert!(matches!(
+        DiskManager::open_read_only_with_password(&image_path, Some(wrong_password)),
+        Err(oifs::disk::DiskManagerError::DecryptionFailed)
+    ));
 }
 
 #[test]
@@ -505,10 +490,22 @@ fn test_password_rejected_when_superblock_encrypted_flag_downgraded() {
         "inconsistent encrypted=false with non-zero encryption_version must fail validation"
     );
 
-    // 2. Even if an attacker also zeroes `encryption_version` (byte 81) to make the
+    // 2. If an attacker zeroes `encryption_version` (byte 81) while `header_mac` is still
+    //    non-zero, SuperBlock::validate rejects it as CorruptedSuperblock for both callers.
+    patch_image_bytes(&image_path, 81, &[0]);
+    assert!(matches!(
+        DiskManager::open_with_password(&image_path, 0, Some(password)),
+        Err(oifs::DiskManagerError::CorruptedSuperblock(_))
+    ));
+    assert!(matches!(
+        DiskManager::open(&image_path, 0),
+        Err(oifs::DiskManagerError::CorruptedSuperblock(_))
+    ));
+
+    // 3. Even if an attacker also zeroes `header_mac` (bytes 94..126) to make the
     //    superblock look like a clean unencrypted image, open_with_password must refuse
     //    with NotEncrypted instead of silently writing plaintext.
-    patch_image_bytes(&image_path, 81, &[0]);
+    patch_image_bytes(&image_path, 94, &[0u8; 32]);
     let res = DiskManager::open_with_password(&image_path, 0, Some(password));
     assert!(
         matches!(res, Err(oifs::DiskManagerError::NotEncrypted)),
@@ -587,4 +584,366 @@ fn test_new_image_has_owner_only_permissions_and_create_encrypted_refuses_symlin
         b"do not truncate me",
         "symlink target must remain untouched"
     );
+}
+
+#[test]
+fn test_selectable_cipher_suites_v2_and_v3_full_lifecycle() {
+    use oifs::EncryptionCipher;
+    use oifs::disk::{DefragMode, TransferOptions};
+    use oifs::storage::StorageMode;
+
+    let temp_dir = TempDir::new().unwrap();
+    let pw = "SelectableCipher#2026";
+    let p_v3 = temp_dir.path().join("suite_v3.img");
+    let p_v2 = temp_dir.path().join("suite_v2.img");
+
+    let seek_payload: Vec<u8> = (0..(150 * 1024)).map(|i| (i % 197) as u8).collect();
+    let small_payload = b"compact confidential config";
+
+    for (path, cipher, expected_ver, mode) in [
+        (
+            &p_v3,
+            EncryptionCipher::Aes256Gcm,
+            oifs::encryption::ENCRYPTION_SCHEME_AES256_GCM_V3,
+            StorageMode::Mmap,
+        ),
+        (
+            &p_v2,
+            EncryptionCipher::XChaCha20Poly1305,
+            oifs::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND,
+            StorageMode::FileIo,
+        ),
+    ] {
+        {
+            let dm = DiskManager::create_encrypted_with_cipher(
+                path,
+                8 * 1024 * 1024,
+                pw,
+                true,
+                mode,
+                cipher,
+            )
+            .unwrap();
+            assert_eq!(dm.superblock().encryption_version, expected_ver);
+            assert_eq!(dm.encryption_cipher(), Some(cipher));
+
+            let root = dm.superblock().root_inode;
+            let sub = dm.create_directory(root, "secrets").unwrap();
+            dm.create_file_with_data(sub, "small.txt", small_payload, CompressionMode::Auto)
+                .unwrap();
+            let seek_id = dm
+                .create_file_with_data(
+                    sub,
+                    "large_seek.bin",
+                    &seek_payload,
+                    CompressionMode::Seekable {
+                        chunk_size: 65536,
+                        level: 1,
+                    },
+                )
+                .unwrap();
+
+            // WriteBatch + rename
+            let mut wb = dm.begin_write_batch();
+            wb.create_file_with_data(sub, "batch_doc.txt", b"batch_cipher_ok", CompressionMode::Auto)
+                .rename(sub, "small.txt", root, "small_moved.txt");
+            wb.commit().unwrap();
+
+            // Partial read_at & append on Seekable 64K
+            let mut tail = vec![0u8; 4096];
+            let n = dm
+                .read_at(seek_id, (seek_payload.len() - 4096) as u64, &mut tail)
+                .unwrap();
+            assert_eq!(n, 4096);
+            assert_eq!(&tail, &seek_payload[seek_payload.len() - 4096..]);
+
+            let backing = dm.backing_path().to_str().unwrap().to_string();
+            dm.defragment(&backing, DefragMode::InPlace, None).unwrap();
+            dm.flush().unwrap();
+        }
+
+        // Reopen without specifying cipher: auto-detects from SuperBlock (`v2` vs `v3`)
+        let dm = DiskManager::open_with_options(path, 0, Some(pw), true, mode).unwrap();
+        assert_eq!(dm.superblock().encryption_version, expected_ver);
+        assert_eq!(dm.encryption_cipher(), Some(cipher));
+        assert!(dm.verify_integrity().unwrap().is_clean);
+
+        let small_id = dm.resolve_path("small_moved.txt").unwrap();
+        assert_eq!(dm.read_data(small_id).unwrap(), small_payload);
+        let seek_id = dm.resolve_path("secrets/large_seek.bin").unwrap();
+        assert_eq!(dm.read_data(seek_id).unwrap(), seek_payload);
+        let batch_id = dm.resolve_path("secrets/batch_doc.txt").unwrap();
+        assert_eq!(dm.read_data(batch_id).unwrap(), b"batch_cipher_ok");
+
+        // Read-only mount auto-detects cipher and verifies zero-write immutability
+        drop(dm);
+        let ro = DiskManager::open_read_only_with_storage_mode(path, Some(pw), mode).unwrap();
+        assert_eq!(ro.encryption_cipher(), Some(cipher));
+        assert_eq!(
+            ro.read_data(ro.resolve_path("small_moved.txt").unwrap()).unwrap(),
+            small_payload
+        );
+        assert!(matches!(
+            DiskManager::open_read_only_with_storage_mode(path, Some("wrong"), mode),
+            Err(oifs::disk::DiskManagerError::DecryptionFailed)
+        ));
+    }
+
+    // Cross-cipher `transfer_file_to` (v3 -> v2) must cleanly re-encrypt across cipher suites
+    let dm_v3 = DiskManager::open_with_password(&p_v3, 0, Some(pw)).unwrap();
+    let dm_v2 = DiskManager::open_with_password(&p_v2, 0, Some(pw)).unwrap();
+    let root3 = dm_v3.superblock().root_inode;
+    let root2 = dm_v2.superblock().root_inode;
+    dm_v3
+        .transfer_file_to(
+            root3,
+            "small_moved.txt",
+            &dm_v2,
+            root2,
+            "from_v3_aes.txt",
+            TransferOptions {
+                move_file: false,
+                overwrite: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        dm_v2
+            .read_data(dm_v2.resolve_path("from_v3_aes.txt").unwrap())
+            .unwrap(),
+        small_payload
+    );
+}
+
+#[test]
+fn test_cli_create_cipher_selection_and_info_output() {
+    let bin = env!("CARGO_BIN_EXE_oifs");
+    let temp_dir = TempDir::new().unwrap();
+    let img_v3 = temp_dir.path().join("cli_default_v3.img");
+    let img_v2 = temp_dir.path().join("cli_chacha_v2.img");
+    let img_plain = temp_dir.path().join("cli_plain.img");
+
+    // 1. --cipher without --encrypt must fail cleanly
+    let bad = std::process::Command::new(bin)
+        .args(["-i", img_plain.to_str().unwrap(), "create", "--cipher", "aes256-gcm"])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+
+    // 2. Default --encrypt chooses aes256-gcm (v3)
+    let out_v3 = std::process::Command::new(bin)
+        .args(["--json", "--password", "CliCipher#2026", "-i", img_v3.to_str().unwrap(), "create", "--size", "4", "--encrypt"])
+        .output()
+        .unwrap();
+    assert!(out_v3.status.success(), "{}", String::from_utf8_lossy(&out_v3.stderr));
+    let j3: serde_json::Value = serde_json::from_slice(&out_v3.stdout).unwrap();
+    assert_eq!(j3["cipher"], "aes256-gcm");
+    assert_eq!(j3["encryption_version"], 3);
+
+    // 3. Explicit --cipher xchacha20-poly1305 creates v2 image and `info --json` reports it
+    let out_v2 = std::process::Command::new(bin)
+        .args(["--json", "--password", "CliCipher#2026", "-i", img_v2.to_str().unwrap(), "create", "--size", "4", "--encrypt", "--cipher", "xchacha20-poly1305"])
+        .output()
+        .unwrap();
+    assert!(out_v2.status.success(), "{}", String::from_utf8_lossy(&out_v2.stderr));
+    let j2: serde_json::Value = serde_json::from_slice(&out_v2.stdout).unwrap();
+    assert_eq!(j2["cipher"], "xchacha20-poly1305");
+    assert_eq!(j2["encryption_version"], 2);
+
+    let info_v3 = std::process::Command::new(bin)
+        .args(["--json", "--read-only", "--password", "CliCipher#2026", "-i", img_v3.to_str().unwrap(), "info"])
+        .output()
+        .unwrap();
+    assert!(info_v3.status.success());
+    let iv3: serde_json::Value = serde_json::from_slice(&info_v3.stdout).unwrap();
+    assert_eq!(iv3["cipher"], "aes256-gcm");
+    assert_eq!(iv3["encryption_version"], 3);
+}
+
+#[test]
+fn test_superblock_header_mac_blocks_version_downgrade_and_tampering() {
+    use oifs::EncryptionCipher;
+    use oifs::disk::DiskManagerError;
+    use oifs::encryption::{
+        ENCRYPTION_SCHEME_AES256_GCM_V3, ENCRYPTION_SCHEME_CONTEXT_BOUND,
+        ENCRYPTION_SCHEME_LEGACY,
+    };
+    use oifs::storage::StorageMode;
+
+    let temp_dir = TempDir::new().unwrap();
+    let pw = "HeaderMacGuard#2026";
+
+    for (tag, cipher) in [
+        ("v3", EncryptionCipher::Aes256Gcm),
+        ("v2", EncryptionCipher::XChaCha20Poly1305),
+    ] {
+        for mode in [StorageMode::Mmap, StorageMode::FileIo] {
+            let mode_lbl = if mode == StorageMode::Mmap {
+                "mmap"
+            } else {
+                "fileio"
+            };
+            let base_path = temp_dir
+                .path()
+                .join(format!("mac_{tag}_{mode_lbl}.img"));
+            let file_ino;
+            {
+                let dm = DiskManager::create_encrypted_with_cipher(
+                    &base_path,
+                    6 * 1024 * 1024,
+                    pw,
+                    true,
+                    mode,
+                    cipher,
+                )
+                .unwrap();
+                assert!(dm.superblock().has_header_mac());
+                let root = dm.superblock().root_inode;
+                file_ino = dm.create_file(root, "secret_doc.bin").unwrap();
+                dm.write_data(
+                    file_ino,
+                    0,
+                    b"superblock header mac test payload",
+                    CompressionMode::Never,
+                )
+                .unwrap();
+                dm.flush().unwrap();
+            }
+
+            // 1. Version flips with intact header_mac -> immediate DecryptionFailed on RW & RO mount
+            let ver_targets: &[u8] = match cipher {
+                EncryptionCipher::Aes256Gcm => {
+                    &[ENCRYPTION_SCHEME_CONTEXT_BOUND, ENCRYPTION_SCHEME_LEGACY]
+                }
+                EncryptionCipher::XChaCha20Poly1305 => {
+                    &[ENCRYPTION_SCHEME_AES256_GCM_V3, ENCRYPTION_SCHEME_LEGACY]
+                }
+            };
+            for &bad_ver in ver_targets {
+                let p = temp_dir
+                    .path()
+                    .join(format!("flip_{tag}_{mode_lbl}_to_{bad_ver}.img"));
+                std::fs::copy(&base_path, &p).unwrap();
+                patch_image_bytes(&p, 81, &[bad_ver]);
+                assert!(matches!(
+                    DiskManager::open_with_options(&p, 0, Some(pw), true, mode),
+                    Err(DiskManagerError::DecryptionFailed)
+                ));
+                assert!(matches!(
+                    DiskManager::open_read_only_with_storage_mode(&p, Some(pw), mode),
+                    Err(DiskManagerError::DecryptionFailed)
+                ));
+            }
+
+            // 2. Downgrading v3 -> v2/v1 AND zeroing header_mac -> caught by pre-MAC root dir check
+            if cipher == EncryptionCipher::Aes256Gcm {
+                for &bad_ver in &[ENCRYPTION_SCHEME_CONTEXT_BOUND, ENCRYPTION_SCHEME_LEGACY] {
+                    let p = temp_dir
+                        .path()
+                        .join(format!("strip_v3_{mode_lbl}_to_{bad_ver}.img"));
+                    std::fs::copy(&base_path, &p).unwrap();
+                    patch_image_bytes(&p, 81, &[bad_ver]);
+                    patch_image_bytes(&p, 94, &[0u8; 32]);
+                    assert!(matches!(
+                        DiskManager::open_with_options(&p, 0, Some(pw), true, mode),
+                        Err(DiskManagerError::DecryptionFailed)
+                    ));
+                    assert!(matches!(
+                        DiskManager::open_read_only_with_storage_mode(&p, Some(pw), mode),
+                        Err(DiskManagerError::DecryptionFailed)
+                    ));
+                }
+
+                // Zeroing header_mac on v3 while keeping version=3 -> CorruptedSuperblock
+                let p_zero_v3 = temp_dir
+                    .path()
+                    .join(format!("zero_mac_v3_{mode_lbl}.img"));
+                std::fs::copy(&base_path, &p_zero_v3).unwrap();
+                patch_image_bytes(&p_zero_v3, 94, &[0u8; 32]);
+                assert!(matches!(
+                    DiskManager::open_with_options(&p_zero_v3, 0, Some(pw), true, mode),
+                    Err(DiskManagerError::CorruptedSuperblock(_))
+                ));
+            }
+
+            // 3. Stripping header_mac on v2 and downgrading to v1 -> write-frozen + existing v2 file rejects empty-AAD read
+            if cipher == EncryptionCipher::XChaCha20Poly1305 {
+                let p_v2_to_v1 = temp_dir
+                    .path()
+                    .join(format!("strip_v2_to_v1_{mode_lbl}.img"));
+                std::fs::copy(&base_path, &p_v2_to_v1).unwrap();
+                patch_image_bytes(&p_v2_to_v1, 81, &[ENCRYPTION_SCHEME_LEGACY]);
+                patch_image_bytes(&p_v2_to_v1, 94, &[0u8; 32]);
+                let frozen = DiskManager::open_with_options(&p_v2_to_v1, 0, Some(pw), true, mode)
+                    .expect("pre-MAC v1 mount stays readable for migration");
+                assert!(frozen.is_read_only());
+                assert!(matches!(
+                    frozen.create_file(frozen.superblock().root_inode, "blocked.txt"),
+                    Err(DiskManagerError::ReadOnly)
+                ));
+                assert!(matches!(
+                    frozen.read_data(file_ino),
+                    Err(DiskManagerError::DecryptionFailed)
+                ));
+            }
+
+            // 4. Single-bit tamper in header_mac (byte 94), format_version (byte 82), and salt (byte 65)
+            for off in [94usize, 82usize, 65usize] {
+                let p_tamper = temp_dir
+                    .path()
+                    .join(format!("tamper_{tag}_{mode_lbl}_{off}.img"));
+                std::fs::copy(&base_path, &p_tamper).unwrap();
+                let mut raw = std::fs::read(&p_tamper).unwrap();
+                raw[off] ^= 0x01;
+                std::fs::write(&p_tamper, &raw).unwrap();
+                let res = DiskManager::open_with_options(&p_tamper, 0, Some(pw), true, mode);
+                assert!(
+                    matches!(
+                        res,
+                        Err(DiskManagerError::DecryptionFailed)
+                            | Err(DiskManagerError::CorruptedSuperblock(_))
+                    ),
+                    "expected DecryptionFailed or CorruptedSuperblock for offset {off}"
+                );
+            }
+
+            // 5. Legitimate grow, cross-boundary relayout resize, and vacuum preserve valid header_mac
+            let p_resize = temp_dir
+                .path()
+                .join(format!("resize_{tag}_{mode_lbl}.img"));
+            std::fs::copy(&base_path, &p_resize).unwrap();
+            {
+                let dm = DiskManager::open_with_options(&p_resize, 0, Some(pw), true, mode)
+                    .unwrap();
+                dm.grow(10 * 1024 * 1024).unwrap();
+                assert!(dm.superblock().has_header_mac());
+
+                // Trigger cross-boundary atomic relayout by shrinking below M=1 in-place threshold then resizing across bitmap boundary
+                let min_b = dm.superblock().in_place_block_count_range().0;
+                let cross_down = (min_b.saturating_sub(16)).max(600) * 4096;
+                dm.resize(cross_down).unwrap();
+                assert!(dm.superblock().has_header_mac());
+
+                let vac_opts = oifs::disk::VacuumOptions {
+                    min_headroom_bytes: 512 * 1024,
+                    min_image_bytes: 2 * 1024 * 1024,
+                    headroom_percent: 10,
+                    allow_relayout: true,
+                };
+                dm.vacuum(vac_opts).unwrap();
+                assert!(dm.superblock().has_header_mac());
+                dm.flush().unwrap();
+            }
+            let reopened = DiskManager::open_read_only_with_storage_mode(&p_resize, Some(pw), mode)
+                .unwrap();
+            assert!(reopened.superblock().has_header_mac());
+            assert!(reopened.verify_integrity().unwrap().is_clean);
+            assert_eq!(
+                reopened
+                    .read_data(reopened.resolve_path("secret_doc.bin").unwrap())
+                    .unwrap(),
+                b"superblock header mac test payload"
+            );
+        }
+    }
 }

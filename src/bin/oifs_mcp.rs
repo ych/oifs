@@ -14,6 +14,7 @@ use rmcp::{ServerHandler, ServiceExt, tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use oifs::EncryptionCipher;
 use oifs::disk::{
     AutoGrowConfig, CompressionMode, DiskManager, DiskManagerError, ResizeMethod, VacuumOptions,
 };
@@ -34,6 +35,7 @@ struct OifsMcpConfig {
     read_only: bool,
     auto_grow: AutoGrowConfig,
     dict_path: Option<PathBuf>,
+    cipher: EncryptionCipher,
 }
 
 #[derive(Clone)]
@@ -57,12 +59,13 @@ impl OifsMcpServer {
                 cfg.storage_mode,
             )?
         } else {
-            DiskManager::open_with_options(
+            DiskManager::open_with_options_and_cipher(
                 &cfg.image_path,
                 cfg.size_bytes,
                 password,
                 cfg.journal,
                 cfg.storage_mode,
+                cfg.cipher,
             )?
         };
         if cfg.auto_grow.enabled {
@@ -540,10 +543,18 @@ impl OifsMcpServer {
                 .into_iter()
                 .map(serde_json::Value::from)
                 .collect();
+            let sb = dm.superblock();
+            let cipher_val = match dm.encryption_cipher() {
+                Some(c) => serde_json::Value::String(c.as_str().to_string()),
+                None => serde_json::Value::Null,
+            };
             Ok(json_object(vec![
                 ("image", serde_json::Value::String(image_display)),
                 ("image_size_bytes", serde_json::Value::from(dm.image_size_bytes())),
                 ("read_only", serde_json::Value::Bool(dm.is_read_only())),
+                ("encrypted", serde_json::Value::Bool(sb.encrypted)),
+                ("encryption_version", serde_json::Value::from(sb.encryption_version)),
+                ("cipher", cipher_val),
                 ("auto_grow_enabled", serde_json::Value::Bool(ag.enabled)),
                 ("default_zstd_dict_id", default_dict),
                 ("registered_zstd_dicts", serde_json::Value::Array(reg_dicts)),
@@ -990,6 +1001,7 @@ fn print_usage() {
         "  --auto-grow[=MAX_MB] Enable transparent auto-grow on capacity exhaustion (optional cap in MB)"
     );
     eprintln!("  --dict <PATH>        Load a trained Zstd dictionary file from host at startup");
+    eprintln!("  --cipher <NAME>      Encryption cipher for new encrypted images: aes256-gcm (default) or xchacha20-poly1305");
     eprintln!("  -h, --help           Show this help");
     eprintln!();
     eprintln!("Environment:");
@@ -1006,6 +1018,7 @@ async fn main() -> Result<()> {
     let mut read_only = false;
     let mut auto_grow = AutoGrowConfig::disabled();
     let mut dict_path: Option<PathBuf> = None;
+    let mut cipher = EncryptionCipher::default();
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -1034,6 +1047,10 @@ async fn main() -> Result<()> {
                 let v = args.next().ok_or("--dict requires a dictionary file path")?;
                 dict_path = Some(PathBuf::from(v));
             }
+            "--cipher" => {
+                let v = args.next().ok_or("--cipher requires a cipher name")?;
+                cipher = EncryptionCipher::parse(&v).map_err(|e| e.to_string())?;
+            }
             "-h" | "--help" => {
                 print_usage();
                 return Ok(());
@@ -1060,10 +1077,11 @@ async fn main() -> Result<()> {
     let password = std::env::var("OIFS_PASSWORD").ok();
 
     eprintln!(
-        "[oifs-mcp] image={} size={}MB encrypted={} journal={} read_only={} auto_grow={}",
+        "[oifs-mcp] image={} size={}MB encrypted={} cipher={} journal={} read_only={} auto_grow={}",
         image_path.display(),
         size_mb,
         password.is_some(),
+        cipher,
         journal,
         read_only,
         auto_grow.enabled
@@ -1078,6 +1096,7 @@ async fn main() -> Result<()> {
         read_only,
         auto_grow,
         dict_path,
+        cipher,
     })?;
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;

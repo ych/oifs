@@ -420,6 +420,27 @@ impl OifsSession {
         )
     }
 
+    /// Creates a new encrypted filesystem using an explicit [`crate::encryption::EncryptionCipher`].
+    pub fn create_encrypted_with_cipher<P: AsRef<Path>>(
+        path: P,
+        total_size: u64,
+        mode: SessionMode,
+        password: &str,
+        journal: bool,
+        cipher: crate::encryption::EncryptionCipher,
+    ) -> Result<Self, SessionError> {
+        Self::open_with_mode_retry(
+            path.as_ref(),
+            total_size,
+            mode,
+            Some(password),
+            true,
+            journal,
+            cipher,
+            0,
+        )
+    }
+
     /// Opens an existing filesystem or creates a new one in Local IPC mode (UDS in /tmp).
     pub fn open_local<P: AsRef<Path>>(path: P, total_size: u64) -> Result<Self, SessionError> {
         Self::open_with_mode(path, total_size, SessionMode::Local, None, false)
@@ -576,10 +597,12 @@ impl OifsSession {
             password,
             create_encrypted,
             journal,
+            crate::encryption::EncryptionCipher::default(),
             0,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open_with_mode_retry(
         path_ref: &Path,
         total_size: u64,
@@ -587,16 +610,20 @@ impl OifsSession {
         password: Option<&str>,
         create_encrypted: bool,
         journal: bool,
+        cipher: crate::encryption::EncryptionCipher,
         retry_count: usize,
     ) -> Result<Self, SessionError> {
         if mode == SessionMode::Standalone {
             let dm = if create_encrypted {
                 let pwd = password.unwrap_or_default();
-                if journal {
-                    DiskManager::create_encrypted_journaled(path_ref, total_size, pwd)?
-                } else {
-                    DiskManager::create_encrypted(path_ref, total_size, pwd)?
-                }
+                DiskManager::create_encrypted_with_cipher(
+                    path_ref,
+                    total_size,
+                    pwd,
+                    journal,
+                    crate::storage::StorageMode::Mmap,
+                    cipher,
+                )?
             } else if let Some(pwd) = password {
                 DiskManager::open_with_password(path_ref, total_size, Some(pwd))?
             } else if journal {
@@ -626,6 +653,7 @@ impl OifsSession {
                     password,
                     create_encrypted,
                     journal,
+                    cipher,
                     retry_count + 1,
                 );
             }
@@ -636,11 +664,14 @@ impl OifsSession {
             MasterOrClient::Master(listener) => {
                 let dm_res = if create_encrypted {
                     let pwd = password.unwrap_or_default();
-                    if journal {
-                        DiskManager::create_encrypted_journaled(path_ref, total_size, pwd)
-                    } else {
-                        DiskManager::create_encrypted(path_ref, total_size, pwd)
-                    }
+                    DiskManager::create_encrypted_with_cipher(
+                        path_ref,
+                        total_size,
+                        pwd,
+                        journal,
+                        crate::storage::StorageMode::Mmap,
+                        cipher,
+                    )
                 } else if let Some(pwd) = password {
                     DiskManager::open_with_password(path_ref, total_size, Some(pwd))
                 } else if journal {
@@ -664,6 +695,7 @@ impl OifsSession {
                                 password,
                                 create_encrypted,
                                 journal,
+                                cipher,
                                 retry_count + 1,
                             );
                         } else {
@@ -730,6 +762,7 @@ impl OifsSession {
                             password,
                             create_encrypted,
                             journal,
+                            cipher,
                             retry_count + 1,
                         );
                     } else {

@@ -972,6 +972,13 @@ impl DiskManager {
             sb.encryption_salt = old_sb.encryption_salt;
             sb.encryption_version = old_sb.encryption_version;
             sb.root_inode = old_sb.root_inode;
+            if sb.encrypted
+                && let Some(key) = guard.encryption_key.as_ref()
+                && (old_sb.has_header_mac()
+                    || sb.encryption_version >= crate::encryption::ENCRYPTION_SCHEME_CONTEXT_BOUND)
+            {
+                sb.header_mac = crate::encryption::compute_superblock_mac(key, &sb);
+            }
             sb
         };
 

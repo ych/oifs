@@ -314,11 +314,12 @@ impl DiskManager {
                     crate::inode::ChunkEntry::FLAG_COMPRESSED,
                     aad_ctx.scheme,
                 );
-                let payload = crate::encryption::encrypt_with_nonce_prefix(
+                let payload = crate::encryption::encrypt_with_nonce_prefix_for_scheme(
                     &compressed,
                     key,
                     &nonce,
                     &aad_buf[..aad_len],
+                    aad_ctx.scheme,
                 )?;
                 let blks = payload.len().div_ceil(BLOCK_SIZE);
                 let comp_len = payload.len() as u16;
@@ -337,11 +338,12 @@ impl DiskManager {
                 crate::inode::ChunkEntry::FLAG_RAW,
                 aad_ctx.scheme,
             );
-            let payload = crate::encryption::encrypt_with_nonce_prefix(
+            let payload = crate::encryption::encrypt_with_nonce_prefix_for_scheme(
                 &chunk_buf[..chunk_valid_len],
                 key,
                 &nonce,
                 &aad_buf[..aad_len],
+                aad_ctx.scheme,
             )?;
             let blks = payload.len().div_ceil(BLOCK_SIZE);
             let comp_len = (payload.len().min(65535)) as u16;
@@ -448,21 +450,23 @@ impl DiskManager {
                     .ok_or(DiskManagerError::PasswordRequired)?;
                 let mut nonce = [0u8; 24];
                 nonce.copy_from_slice(&raw_slice[0..24]);
+                let enc_scheme = guard.superblock.encryption_version;
                 let (aad_buf, aad_len) = crate::encryption::chunk_aad_for_scheme_stack(
                     inode_id,
                     chunk_idx as u64,
                     crate::inode::ChunkEntry::FLAG_RAW,
-                    guard.superblock.encryption_version,
+                    enc_scheme,
                 );
                 let ct_with_tag = &raw_slice[24..];
                 let ct_len = ct_with_tag.len() - 16;
                 if ct_len == dst.len() {
-                    crate::encryption::decrypt_into_slice(
+                    crate::encryption::decrypt_into_slice_for_scheme(
                         ct_with_tag,
                         dst,
                         key,
                         &nonce,
                         &aad_buf[..aad_len],
+                        enc_scheme,
                     )
                     .map_err(|_| DiskManagerError::DecryptionFailed)?;
                 } else {
@@ -471,12 +475,13 @@ impl DiskManager {
                         if scratch.len() < ct_len {
                             scratch.resize(ct_len.max(crate::inode::CHUNK_SIZE_64K), 0);
                         }
-                        crate::encryption::decrypt_into_slice(
+                        crate::encryption::decrypt_into_slice_for_scheme(
                             ct_with_tag,
                             &mut scratch[..ct_len],
                             key,
                             &nonce,
                             &aad_buf[..aad_len],
+                            enc_scheme,
                         )
                         .map_err(|_| DiskManagerError::DecryptionFailed)?;
                         let n = ct_len.min(dst.len());
@@ -593,11 +598,12 @@ impl DiskManager {
                             .ok_or(DiskManagerError::PasswordRequired)?;
                         let mut nonce = [0u8; 24];
                         nonce.copy_from_slice(&comp_slice[0..24]);
+                        let enc_scheme = guard.superblock.encryption_version;
                         let (aad_buf, aad_len) = crate::encryption::chunk_aad_for_scheme_stack(
                             inode_id,
                             chunk_idx as u64,
                             crate::inode::ChunkEntry::FLAG_COMPRESSED,
-                            guard.superblock.encryption_version,
+                            enc_scheme,
                         );
                         let ct_with_tag = &comp_slice[24..];
                         let ct_len = ct_with_tag.len() - 16;
@@ -606,12 +612,13 @@ impl DiskManager {
                             if cipher_scratch.len() < ct_len {
                                 cipher_scratch.resize(ct_len.max(crate::inode::CHUNK_SIZE_64K), 0);
                             }
-                            crate::encryption::decrypt_into_slice(
+                            crate::encryption::decrypt_into_slice_for_scheme(
                                 ct_with_tag,
                                 &mut cipher_scratch[..ct_len],
                                 key,
                                 &nonce,
                                 &aad_buf[..aad_len],
+                                enc_scheme,
                             )
                             .map_err(|_| DiskManagerError::DecryptionFailed)?;
                             decompress_into_dst(&cipher_scratch[..ct_len], dst)

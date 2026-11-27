@@ -24,6 +24,9 @@ zstd = "0.14"
 # Encryption dependencies
 chacha20poly1305 = "0.10"  # XChaCha20-Poly1305 AEAD cipher
 poly1305 = "0.8"          # Direct Poly1305 MAC for short-message 1-block scalar XChaCha20 fast path
+aes = { version = "0.8", features = ["zeroize"] } # AES-256 block cipher for C2SP XAES-256-GCM KDF
+aes-gcm = { version = "0.10", features = ["aes", "zeroize"] } # AES-256-GCM AEAD (hardware AES + PMULL/PCLMULQDQ)
+aes-gcm-siv = { version = "0.11", features = ["aes"] } # RFC 8452 AES-256-GCM-SIV deterministic filename AEAD
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] } # Key derivation function
 zeroize = { version = "1.7", default-features = false, features = ["alloc"] } # Secure memory wiping
 blake2 = "0.10"            # Fast cryptographic hashing for Synthetic IV

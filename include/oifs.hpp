@@ -107,6 +107,15 @@ enum class DurabilityMode : uint8_t {
 };
 
 /**
+ * Encryption cipher suite selected at image creation (`Aes256Gcm` = XAES-256-GCM + AES-256-GCM-SIV by default).
+ */
+enum class EncryptionCipher : uint8_t {
+    Default = OIFS_CIPHER_DEFAULT,
+    XChaCha20Poly1305 = OIFS_CIPHER_XCHACHA20_POLY1305,
+    Aes256Gcm = OIFS_CIPHER_AES256_GCM,
+};
+
+/**
  * Write compression policy flags.
  */
 enum class WritePolicy : uint32_t {
@@ -430,6 +439,7 @@ struct OpenOptions {
     std::string password{};
     StorageMode storage_mode = StorageMode::Mmap;
     bool journaled = false;
+    EncryptionCipher cipher = EncryptionCipher::Default;
 };
 
 /**
@@ -1358,13 +1368,14 @@ public:
         std::string c_path = detail::to_c_string(path);
         std::string c_pwd = detail::to_c_string(opts.password);
         const char* pwd_ptr = c_pwd.empty() ? nullptr : c_pwd.c_str();
-        OIFSHandle* h = oifs_open_with_options(c_path.c_str(),
-                                               opts.size,
-                                               pwd_ptr,
-                                               static_cast<uint8_t>(opts.storage_mode),
-                                               opts.journaled ? 1 : 0);
+        OIFSHandle* h = oifs_open_with_cipher(c_path.c_str(),
+                                              opts.size,
+                                              pwd_ptr,
+                                              static_cast<uint8_t>(opts.storage_mode),
+                                              opts.journaled ? 1 : 0,
+                                              static_cast<uint8_t>(opts.cipher));
         if (h == nullptr) {
-            throw Error("oifs_open_with_options failed for path: " + c_path);
+            throw Error("oifs_open_with_cipher failed for path: " + c_path);
         }
         return FileSystem(h);
     }
@@ -1454,6 +1465,19 @@ public:
      */
     bool is_read_only() const noexcept {
         return handle_ != nullptr && oifs_is_read_only(handle_) == 1;
+    }
+
+    /**
+     * Returns the on-disk encryption scheme version (0 = unencrypted, 1/2 = XChaCha20-Poly1305,
+     * 3 = C2SP XAES-256-GCM + AES-256-GCM-SIV).
+     */
+    uint8_t encryption_scheme_version() const {
+        ensure_open();
+        int32_t v = oifs_encryption_cipher(handle_);
+        if (v < 0) {
+            throw Error("oifs_encryption_cipher failed");
+        }
+        return static_cast<uint8_t>(v);
     }
 
     std::string last_error() const {

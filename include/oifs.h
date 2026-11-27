@@ -80,6 +80,13 @@ typedef void (*OifsAsyncStatusCallback)(int64_t status_or_inode, void *user_data
 #define OIFS_DURABILITY_STRICT      2  /* Synchronous msync / sync_data barriers */
 
 /*
+ * Encryption Cipher Suite Constants (creation-time selection; reopen auto-detects)
+ */
+#define OIFS_CIPHER_DEFAULT             0  /* Uses default (OIFS_CIPHER_AES256_GCM) */
+#define OIFS_CIPHER_XCHACHA20_POLY1305  2  /* XChaCha20-Poly1305 (v2) */
+#define OIFS_CIPHER_AES256_GCM          3  /* C2SP XAES-256-GCM + AES-256-GCM-SIV (v3, default) */
+
+/*
  * Lifecycle Management
  */
 OIFSHandle* oifs_open(const char *path, uint64_t size);
@@ -91,6 +98,28 @@ OIFSHandle* oifs_open_with_options(
     uint8_t storage_mode,
     uint8_t journaled
 );
+
+/**
+ * Opens or creates an OIFS image with explicit storage mode, WAL journaling flag,
+ * and creation-time encryption cipher suite (`OIFS_CIPHER_*`).
+ *
+ * When opening an existing encrypted image, the cipher stored in its SuperBlock is used.
+ */
+OIFSHandle* oifs_open_with_cipher(
+    const char *path,
+    uint64_t size,
+    const char *password,
+    uint8_t storage_mode,
+    uint8_t journaled,
+    uint8_t cipher
+);
+
+/**
+ * Returns the on-disk encryption scheme version for an open handle
+ * (`0` if unencrypted, `1`/`2` for XChaCha20-Poly1305, `3` for XAES-256-GCM + AES-256-GCM-SIV),
+ * or `-1` if `handle` is NULL.
+ */
+int32_t oifs_encryption_cipher(const OIFSHandle *handle);
 
 /**
  * Opens an existing OIFS image in read-only mode (shared F_RDLCK lock, zero writes).

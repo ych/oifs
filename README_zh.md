@@ -5,6 +5,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-Edition%202024%20%7C%201.85%2B-orange.svg)](Cargo.toml)
 [![Kani Verified](https://img.shields.io/badge/Kani%20Verified-131%20Proofs-blueviolet.svg)](docs/formal_verification/README.md)
+[![BaaaTON Certified](https://baaaton.com/api/v1/certify/badge/pg_dyn_mcp_mwrq0scq_v6be.svg)](https://baaaton.com/agora/pg_dyn_mcp_mwrq0scq_v6be)
 
 [English](README.md) | [繁體中文](README_zh.md) | [📖 線上官方文件](https://ych.github.io/oifs/)
 

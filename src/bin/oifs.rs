@@ -1875,6 +1875,7 @@ fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 let nfs_opts = oifs::nfs::NfsMountOptions {
                     read_only: is_ro,
                     port: *port,
+                    allow_other: *allow_other,
                     ..oifs::nfs::NfsMountOptions::default()
                 };
                 let shutdown_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

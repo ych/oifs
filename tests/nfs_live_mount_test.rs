@@ -6,12 +6,17 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use oifs::disk::{CompressionMode, DiskManager};
 use oifs::fuse::unmount;
-use oifs::nfs::{NfsMountOptions, OifsNfsServer, is_mounted, mount_os_nfs};
+use oifs::nfs::{
+    MNT3ERR_ACCES, MNTPROC3_MNT, MOUNT_PROGRAM, MOUNT_VERSION_3, NfsMountOptions, OifsNfsServer,
+    RPC_AUTH_NONE, RPC_MSG_CALL, RPC_VERSION_2, XdrReader, XdrWriter, is_mounted, mount_os_nfs,
+    read_rpc_record, write_rpc_record,
+};
 use tempfile::tempdir;
 
 struct LiveNfsMountGuard {
@@ -25,11 +30,13 @@ impl LiveNfsMountGuard {
             dm,
             NfsMountOptions {
                 read_only,
+                require_auth_sys: true,
                 ..NfsMountOptions::default()
             },
         )
         .expect("bind local NFSv3 server");
         mount_os_nfs(server.port(), mountpoint, read_only).expect("mount_os_nfs failed");
+        server.fs().seal_mount();
         assert!(
             is_mounted(mountpoint),
             "mountpoint {:?} should report mounted",
@@ -59,6 +66,33 @@ fn test_live_nfs_mount_full_posix_lifecycle_and_fsck() {
 
     let dm = Arc::new(DiskManager::open_journaled(&img, 32 * 1024 * 1024).unwrap());
     let guard = LiveNfsMountGuard::mount(Arc::clone(&dm), &mp, false);
+
+    // Post-mount MNT probe on loopback port must fail with MNT3ERR_ACCES once sealed.
+    {
+        let mut tcp = TcpStream::connect(("127.0.0.1", guard.server.port())).unwrap();
+        let mut w = XdrWriter::with_capacity(64);
+        w.write_u32(99);
+        w.write_u32(RPC_MSG_CALL);
+        w.write_u32(RPC_VERSION_2);
+        w.write_u32(MOUNT_PROGRAM);
+        w.write_u32(MOUNT_VERSION_3);
+        w.write_u32(MNTPROC3_MNT);
+        w.write_u32(RPC_AUTH_NONE);
+        w.write_u32(0);
+        w.write_u32(RPC_AUTH_NONE);
+        w.write_u32(0);
+        w.write_string("/");
+        write_rpc_record(&mut tcp, &w.into_bytes()).unwrap();
+        let reply = read_rpc_record(&mut tcp).unwrap().unwrap();
+        let mut r = XdrReader::new(&reply);
+        let _ = r.read_u32();
+        let _ = r.read_u32();
+        let _ = r.read_u32();
+        let _ = r.read_u32();
+        let _ = r.read_opaque(400);
+        assert_eq!(r.read_u32(), Some(0)); // RPC_ACCEPT_SUCCESS
+        assert_eq!(r.read_u32(), Some(MNT3ERR_ACCES));
+    }
 
     // 1. Create, write, read, append, seek-write, truncate
     let f1 = mp.join("hello.txt");

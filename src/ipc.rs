@@ -208,16 +208,225 @@ pub fn get_token_path<P: AsRef<Path>>(image_path: P) -> PathBuf {
 /// reach the socket or read the session secret. `$XDG_RUNTIME_DIR` is used
 /// when it is set, otherwise a `oifs-<uid>` directory below the temp dir.
 pub fn get_private_runtime_dir() -> PathBuf {
-    let base = match std::env::var_os("XDG_RUNTIME_DIR") {
+    match try_get_private_runtime_dir() {
+        Ok(dir) => dir,
+        Err(_) => raw_private_runtime_dir(
+            std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+            &std::env::temp_dir(),
+            current_euid(),
+        ),
+    }
+}
+
+#[inline]
+fn current_euid() -> u32 {
+    // SAFETY: `geteuid` has no preconditions and is thread-safe on Unix.
+    unsafe { libc::geteuid() }
+}
+
+fn raw_private_runtime_dir(
+    xdg_runtime_dir: Option<&std::ffi::OsStr>,
+    temp_base: &Path,
+    euid: u32,
+) -> PathBuf {
+    let base = match xdg_runtime_dir {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => std::env::temp_dir().join(format!("oifs-{}", unsafe { libc::getuid() })),
+        _ => temp_base.join(format!("oifs-{euid}")),
+    };
+    base.join("oifs")
+}
+
+/// Ensures `path` exists as a real (non-symlink) directory owned by `expected_uid`
+/// with permissions restricted to owner-only (`mode & 0o077 == 0`, tightening to `0o700`).
+pub fn ensure_private_dir(path: &Path, expected_uid: u32) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    match fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            if let Err(create_err) = fs::DirBuilder::new().mode(0o700).create(path)
+                && create_err.kind() != io::ErrorKind::AlreadyExists
+            {
+                return Err(create_err);
+            }
+        }
+        Err(e) => return Err(e),
+    }
+
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() || !meta.file_type().is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "Refusing untrusted non-directory or symlink IPC runtime path {:?}",
+                path
+            ),
+        ));
+    }
+    if meta.uid() != expected_uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "IPC runtime directory {:?} is owned by uid {} instead of {}",
+                path,
+                meta.uid(),
+                expected_uid
+            ),
+        ));
+    }
+    if (meta.mode() & 0o077) != 0 {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        let recheck = fs::symlink_metadata(path)?;
+        if recheck.file_type().is_symlink()
+            || !recheck.file_type().is_dir()
+            || recheck.uid() != expected_uid
+            || (recheck.mode() & 0o077) != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("Failed to restrict IPC runtime directory {:?}", path),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validates and initializes an isolated per-user runtime directory from explicit inputs.
+pub fn resolve_private_runtime_dir_with(
+    xdg_runtime_dir: Option<&std::ffi::OsStr>,
+    temp_base: &Path,
+    expected_uid: u32,
+) -> io::Result<PathBuf> {
+    let base = match xdg_runtime_dir {
+        Some(dir) if !dir.is_empty() => {
+            let p = PathBuf::from(dir);
+            ensure_private_dir(&p, expected_uid)?;
+            p
+        }
+        _ => {
+            let p = temp_base.join(format!("oifs-{expected_uid}"));
+            ensure_private_dir(&p, expected_uid)?;
+            p
+        }
     };
     let dir = base.join("oifs");
-    if !dir.exists() {
-        let _ = std::fs::create_dir_all(&dir);
-        restrict_permissions(&dir, 0o700);
+    ensure_private_dir(&dir, expected_uid)?;
+    Ok(dir)
+}
+
+fn try_get_private_runtime_dir() -> io::Result<PathBuf> {
+    resolve_private_runtime_dir_with(
+        std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        &std::env::temp_dir(),
+        current_euid(),
+    )
+}
+
+fn validate_parent_private_dir(path: &Path) -> io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "IPC path has no parent directory",
+        ));
+    };
+    // Validate the runtime root when the target lives under it, plus the immediate parent.
+    let euid = current_euid();
+    if let Ok(runtime_dir) = try_get_private_runtime_dir()
+        && parent == runtime_dir
+    {
+        return Ok(());
     }
-    dir
+    ensure_private_dir(parent, euid)
+}
+
+fn safe_remove_owned_file(path: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    if let Ok(meta) = fs::symlink_metadata(path)
+        && !meta.file_type().is_symlink()
+        && meta.uid() == current_euid()
+    {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Verifies via kernel peer credentials that a connected Unix Domain Socket belongs
+/// strictly to the current effective UID.
+fn verify_unix_peer_uid(stream: &UnixStream) -> io::Result<()> {
+    let expected_uid = current_euid();
+    let fd = stream.as_raw_fd();
+
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    {
+        let mut peer_uid: libc::uid_t = 0;
+        let mut peer_gid: libc::gid_t = 0;
+        let rc = unsafe { libc::getpeereid(fd, &mut peer_uid, &mut peer_gid) };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if peer_uid != expected_uid {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "Unix IPC peer UID {} does not match owner UID {}",
+                    peer_uid, expected_uid
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut cred as *mut libc::ucred).cast(),
+                &mut len,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if cred.uid != expected_uid {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "Unix IPC peer UID {} does not match owner UID {}",
+                    cred.uid, expected_uid
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "linux"
+    )))]
+    {
+        let _ = (fd, expected_uid);
+        Ok(())
+    }
 }
 
 /// Restricts a path to the given POSIX mode (best effort).
@@ -345,15 +554,9 @@ fn auth_transcript(
 }
 
 /// Constant-time equality check for authentication tags.
+#[inline]
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    crate::encryption::ct_eq_slice(a, b)
 }
 
 /// The credential a client presents during the authentication handshake.
@@ -550,13 +753,12 @@ fn frame_codec(limit: u64) -> impl bincode::Options {
         .with_limit(limit)
 }
 
-/// Capacity above which a pooled frame buffer is released again.
+/// Capacity above which a pooled frame buffer is shrunk back down.
 ///
-/// A frame may be up to `MAX_FRAME_BYTES` (128 MiB) large. Without a cap, one
-/// such frame pins its buffer for the lifetime of the worker thread, and with
-/// `MAX_CONCURRENT_PEERS` workers the resident memory can stay in the
-/// multi-gigabyte range.
-const FRAME_BUF_SHRINK_THRESHOLD: usize = 1024 * 1024;
+/// Sized at 4 MiB so common 1 MiB–2 MiB read/write frames plus bincode headers
+/// reuse their capacity across steady-state RPCs without per-call shrinking or
+/// `realloc` thrashing, while still releasing multi-megabyte outlier buffers.
+const FRAME_BUF_SHRINK_THRESHOLD: usize = 4 * 1024 * 1024;
 
 thread_local! {
     /// Reusable scratch buffer for the *write* path. Kept separate from the
@@ -699,6 +901,7 @@ fn is_addr_in_use(err: &io::Error) -> bool {
 /// itself is restricted to `0600`, so only processes of the same user can
 /// reach it.
 fn bind_unix_listener(socket_path: &Path) -> io::Result<UnixListener> {
+    validate_parent_private_dir(socket_path)?;
     let listener = UnixListener::bind(socket_path)?;
     restrict_permissions(socket_path, 0o600);
     Ok(listener)
@@ -754,40 +957,139 @@ fn read_token_file(token_path: &Path) -> Option<[u8; AUTH_SECRET_LEN]> {
     }
 }
 
-/// Reads the session secret once, without waiting.
+/// Reads the session secret once, without waiting, refusing symlinks or
+/// files owned by another user / overly permissive modes.
 fn read_token_file_once(token_path: &Path) -> Option<[u8; AUTH_SECRET_LEN]> {
-    let bytes = fs::read(token_path).ok()?;
-    if bytes.len() != AUTH_SECRET_LEN {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    validate_parent_private_dir(token_path).ok()?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(token_path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.file_type().is_file()
+        || meta.uid() != current_euid()
+        || (meta.mode() & 0o077) != 0
+        || meta.len() != AUTH_SECRET_LEN as u64
+    {
         return None;
     }
     let mut secret = [0u8; AUTH_SECRET_LEN];
-    secret.copy_from_slice(&bytes);
+    file.read_exact(&mut secret).ok()?;
     Some(secret)
+}
+
+/// Reads a Network-mode `.master` rendezvous file without following symlinks and
+/// checks that it is a regular file owned by the current effective UID.
+fn read_master_file_nofollow(master_path: &Path) -> io::Result<String> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(master_path)?;
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Refusing non-regular master rendezvous file",
+        ));
+    }
+    let euid = current_euid();
+    if meta.uid() != euid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "Master rendezvous file {:?} is owned by uid {} instead of {}",
+                master_path,
+                meta.uid(),
+                euid
+            ),
+        ));
+    }
+    if meta.len() > 64 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Master rendezvous file exceeds maximum size",
+        ));
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    Ok(content)
 }
 
 /// Writes the session secret of a local (UDS) master with owner-only access.
 ///
-/// Written to a temporary file and atomically renamed into place so a
-/// concurrent client can never observe a truncated or partially written token.
+/// Written to an unguessable `O_NOFOLLOW | O_EXCL` temporary file and
+/// atomically renamed into place so a concurrent client can never observe a
+/// truncated, symlink-redirected, or partially written token.
 fn write_token_file(token_path: &Path, secret: &[u8; AUTH_SECRET_LEN]) -> io::Result<()> {
     use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt;
-    let tmp_path = token_path.with_extension(format!("tok.tmp.{}", std::process::id()));
-    let _ = fs::remove_file(&tmp_path);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp_path)?;
-    file.write_all(secret)?;
-    file.flush()?;
-    restrict_permissions(&tmp_path, 0o600);
-    if let Err(e) = fs::rename(&tmp_path, token_path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(e);
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    validate_parent_private_dir(token_path)?;
+    let parent = token_path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Token path has no parent"))?;
+    let base_name = token_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "oifs.tok".to_string());
+
+    let mut rng_bytes = [0u8; 8];
+    let mut file_opt = None;
+    let mut tmp_path = PathBuf::new();
+    for _ in 0..8 {
+        chacha20poly1305::aead::rand_core::RngCore::fill_bytes(
+            &mut chacha20poly1305::aead::OsRng,
+            &mut rng_bytes,
+        );
+        let rand_hex = u64::from_le_bytes(rng_bytes);
+        tmp_path = parent.join(format!("{base_name}.tmp.{rand_hex:016x}"));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&tmp_path)
+        {
+            Ok(f) => {
+                file_opt = Some(f);
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
     }
-    restrict_permissions(token_path, 0o600);
-    Ok(())
+    let mut file = file_opt.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Failed to allocate unique temporary token file",
+        )
+    })?;
+
+    let write_res = (|| -> io::Result<()> {
+        let meta = file.metadata()?;
+        if meta.uid() != current_euid() || (meta.mode() & 0o077) != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Unexpected ownership or permissions on temporary token file",
+            ));
+        }
+        file.write_all(secret)?;
+        file.flush()?;
+        drop(file);
+        fs::rename(&tmp_path, token_path)?;
+        restrict_permissions(token_path, 0o600);
+        Ok(())
+    })();
+
+    if write_res.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    write_res
 }
 
 /// Attempts to bind as Master or connect as Client according to SessionMode
@@ -801,28 +1103,27 @@ pub fn bind_or_connect<P: AsRef<Path>>(
             "IPC is disabled in Standalone mode",
         )),
         SessionMode::Local => {
+            let _ = try_get_private_runtime_dir()?;
             let socket_path = get_socket_path(&image_path);
             let token_path = get_token_path(&image_path);
+            validate_parent_private_dir(&socket_path)?;
 
-            if socket_path.exists() {
+            if fs::symlink_metadata(&socket_path).is_ok() {
                 for attempt in 0..10 {
-                    match crate::retry_eintr(|| UnixStream::connect(&socket_path)) {
-                        Ok(stream) => {
-                            return Ok(MasterOrClient::Client {
-                                stream: IpcStream::Unix(stream),
-                                target_path: socket_path,
-                                auth_secret: read_token_file(&token_path),
-                            });
-                        }
-                        Err(_) => {
-                            if attempt < 9 {
-                                thread::sleep(Duration::from_millis(15));
-                            }
-                        }
+                    if let Ok(stream) = crate::retry_eintr(|| UnixStream::connect(&socket_path)) {
+                        verify_unix_peer_uid(&stream)?;
+                        return Ok(MasterOrClient::Client {
+                            stream: IpcStream::Unix(stream),
+                            target_path: socket_path,
+                            auth_secret: read_token_file(&token_path),
+                        });
+                    }
+                    if attempt < 9 {
+                        thread::sleep(Duration::from_millis(15));
                     }
                 }
-                let _ = fs::remove_file(&socket_path);
-                let _ = fs::remove_file(&token_path);
+                safe_remove_owned_file(&socket_path);
+                safe_remove_owned_file(&token_path);
             }
 
             match bind_unix_listener(&socket_path) {
@@ -838,24 +1139,22 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                 }
                 Err(e) if is_addr_in_use(&e) => {
                     for attempt in 0..15 {
-                        match crate::retry_eintr(|| UnixStream::connect(&socket_path)) {
-                            Ok(stream) => {
-                                return Ok(MasterOrClient::Client {
-                                    stream: IpcStream::Unix(stream),
-                                    target_path: socket_path,
-                                    auth_secret: read_token_file(&token_path),
-                                });
-                            }
-                            Err(_) => {
-                                if attempt < 14 {
-                                    thread::sleep(Duration::from_millis(15));
-                                }
-                            }
+                        if let Ok(stream) = crate::retry_eintr(|| UnixStream::connect(&socket_path))
+                        {
+                            verify_unix_peer_uid(&stream)?;
+                            return Ok(MasterOrClient::Client {
+                                stream: IpcStream::Unix(stream),
+                                target_path: socket_path,
+                                auth_secret: read_token_file(&token_path),
+                            });
+                        }
+                        if attempt < 14 {
+                            thread::sleep(Duration::from_millis(15));
                         }
                     }
                     // If connecting still fails because socket became stale/dead, remove and retry bind
-                    let _ = fs::remove_file(&socket_path);
-                    let _ = fs::remove_file(&token_path);
+                    safe_remove_owned_file(&socket_path);
+                    safe_remove_owned_file(&token_path);
                     match bind_unix_listener(&socket_path) {
                         Ok(listener) => {
                             let auth_secret = generate_auth_secret();
@@ -869,6 +1168,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                         }
                         Err(_) => {
                             let stream = crate::retry_eintr(|| UnixStream::connect(&socket_path))?;
+                            verify_unix_peer_uid(&stream)?;
                             Ok(MasterOrClient::Client {
                                 stream: IpcStream::Unix(stream),
                                 target_path: socket_path,
@@ -884,8 +1184,8 @@ pub fn bind_or_connect<P: AsRef<Path>>(
             let master_path = get_master_info_path(image_path);
 
             // 1. Check if rendezvous master file exists
-            if master_path.exists() {
-                if let Ok(content) = fs::read_to_string(&master_path)
+            if fs::symlink_metadata(&master_path).is_ok() {
+                if let Ok(content) = read_master_file_nofollow(&master_path)
                     && let Ok(info) = serde_json::from_str::<MasterInfo>(&content)
                     && is_tcp_master_alive(&info.addr)
                     && let Ok(stream) = crate::retry_eintr(|| TcpStream::connect(&info.addr))
@@ -898,7 +1198,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                     });
                 }
                 // Dead master! Clean up stale rendezvous file
-                let _ = fs::remove_file(&master_path);
+                safe_remove_owned_file(&master_path);
             }
 
             // 2. Try atomic create_new to become Master with owner-only `0o600` permissions.
@@ -907,6 +1207,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
                 .open(&master_path)
             {
                 Ok(mut file) => {
@@ -956,7 +1257,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                 Err(e) if is_addr_in_use(&e) => {
                     // Another process won the race. Retry reading info and connecting
                     for attempt in 0..10 {
-                        if let Ok(content) = fs::read_to_string(&master_path)
+                        if let Ok(content) = read_master_file_nofollow(&master_path)
                             && let Ok(info) = serde_json::from_str::<MasterInfo>(&content)
                             && let Ok(stream) =
                                 crate::retry_eintr(|| TcpStream::connect(&info.addr))
@@ -972,7 +1273,7 @@ pub fn bind_or_connect<P: AsRef<Path>>(
                             thread::sleep(Duration::from_millis(20));
                         }
                     }
-                    let content = fs::read_to_string(&master_path)?;
+                    let content = read_master_file_nofollow(&master_path)?;
                     let info: MasterInfo = serde_json::from_str(&content)
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
                     let stream = crate::retry_eintr(|| TcpStream::connect(&info.addr))?;
@@ -1059,6 +1360,10 @@ impl IpcServer {
                         if wait_for_fd_readable(raw_fd, 50) {
                             match listener.accept() {
                                 Ok((stream, _)) => {
+                                    if verify_unix_peer_uid(&stream).is_err() {
+                                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                                        continue;
+                                    }
                                     Self::spawn_client_worker(
                                         IpcStream::Unix(stream),
                                         &dm,
@@ -1172,6 +1477,7 @@ impl IpcServer {
             };
 
             let mut authenticated = false;
+            let mut timeouts_cleared = false;
             let mut challenge: Option<([u8; AUTH_NONCE_LEN], [u8; AUTH_NONCE_LEN])> = None;
             let handshake_start = std::time::Instant::now();
             let raw_fd = stream.as_raw_fd();
@@ -1298,10 +1604,12 @@ impl IpcServer {
                     break;
                 }
 
-                if authenticated {
-                    // The handshake is done: the session may idle indefinitely.
+                if authenticated && !timeouts_cleared {
+                    // The handshake is done: clear the timeouts once so
+                    // steady-state RPCs avoid per-request `setsockopt` syscalls.
                     let _ = stream.set_read_timeout(None);
                     let _ = stream.set_write_timeout(None);
+                    timeouts_cleared = true;
                 }
 
                 if let Some(tx) = &tx_worker {
@@ -1621,13 +1929,16 @@ impl IpcClient {
     fn open_secondary_stream(&self) -> Result<IpcStream, io::Error> {
         let connect_res = match self.transport {
             ClientTransport::Unix => {
-                crate::retry_eintr(|| UnixStream::connect(&self.target_path)).map(IpcStream::Unix)
+                validate_parent_private_dir(&self.target_path)?;
+                let s = crate::retry_eintr(|| UnixStream::connect(&self.target_path))?;
+                verify_unix_peer_uid(&s)?;
+                Ok(IpcStream::Unix(s))
             }
             ClientTransport::Tcp { peer_addr } => {
                 let tcp_res = if let Some(addr) = peer_addr {
                     crate::retry_eintr(|| TcpStream::connect(addr))
                 } else {
-                    let content = fs::read_to_string(&self.target_path)?;
+                    let content = read_master_file_nofollow(&self.target_path)?;
                     let info: MasterInfo = serde_json::from_str(&content)
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
                     crate::retry_eintr(|| TcpStream::connect(&info.addr))
@@ -1915,5 +2226,17 @@ mod kani_proofs {
     #[kani::proof]
     fn proof_zero_length_frame_is_valid() {
         assert!(frame_len_is_valid(0));
+    }
+
+    /// Prove that `FRAME_BUF_SHRINK_THRESHOLD` accommodates 1–2 MiB RPC frames
+    /// without per-call shrink/reallocation thrashing while staying within `MAX_FRAME_BYTES`.
+    #[kani::proof]
+    fn proof_frame_shrink_threshold_avoids_megabyte_thrash() {
+        assert!(FRAME_BUF_SHRINK_THRESHOLD >= 2 * 1024 * 1024 + 4096);
+        assert!(FRAME_BUF_SHRINK_THRESHOLD <= MAX_FRAME_BYTES);
+        let payload_len: usize = kani::any();
+        kani::assume(payload_len <= 2 * 1024 * 1024);
+        let framed_len = payload_len + 4096;
+        assert!(framed_len <= FRAME_BUF_SHRINK_THRESHOLD);
     }
 }

@@ -27,7 +27,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::BLOCK_SIZE;
 use crate::directory::DirectoryEntry;
@@ -63,8 +63,12 @@ pub const RPC_ACCEPT_PROG_MISMATCH: u32 = 2;
 pub const RPC_ACCEPT_PROC_UNAVAIL: u32 = 3;
 pub const RPC_ACCEPT_GARBAGE_ARGS: u32 = 4;
 pub const RPC_REJECT_RPC_MISMATCH: u32 = 0;
+pub const RPC_REJECT_AUTH_ERROR: u32 = 1;
 pub const RPC_AUTH_NONE: u32 = 0;
 pub const RPC_AUTH_SYS: u32 = 1;
+pub const RPC_AUTH_BADCRED: u32 = 1;
+pub const RPC_AUTH_REJECTEDCRED: u32 = 2;
+pub const RPC_AUTH_TOOWEAK: u32 = 5;
 
 // Program & version numbers
 pub const NFS_PROGRAM: u32 = 100_003;
@@ -83,6 +87,7 @@ pub const MNTPROC3_EXPORT: u32 = 5;
 // MOUNT v3 status codes
 pub const MNT3_OK: u32 = 0;
 pub const MNT3ERR_NOENT: u32 = 2;
+pub const MNT3ERR_ACCES: u32 = 13;
 
 // NFS v3 procedures
 pub const NFSPROC3_NULL: u32 = 0;
@@ -436,6 +441,33 @@ pub struct RpcCallHeader {
     pub vers: u32,
     pub proc_num: u32,
     pub cred_flavor: u32,
+    pub cred_uid: Option<u32>,
+    pub cred_gid: Option<u32>,
+}
+
+/// Parses RFC 5531 `AUTH_SYS` opaque credentials and extracts `(uid, gid)`.
+///
+/// Layout: `stamp: u32`, `machinename: string<=255`, `uid: u32`, `gid: u32`, `gids: u32[<=16]`.
+pub fn parse_auth_sys_uid_gid(cred_body: &[u8]) -> Option<(u32, u32)> {
+    let mut r = XdrReader::new(cred_body);
+    let _stamp = r.read_u32()?;
+    let _machinename = r.read_opaque(255)?;
+    let uid = r.read_u32()?;
+    let gid = r.read_u32()?;
+    let gids_len = r.read_u32()?;
+    if gids_len > 16 {
+        return None;
+    }
+    let gids_bytes = (gids_len as usize).checked_mul(4)?;
+    let _ = r.read_fixed_opaque(gids_bytes)?;
+    Some((uid, gid))
+}
+
+/// Returns `true` when an NFSv3 caller `caller_uid` is authorized to access a mount owned
+/// by `owner_uid` (explicit `--allow-other`, exact owner UID, or host root UID 0).
+#[inline]
+pub const fn is_nfs_uid_authorized(caller_uid: u32, owner_uid: u32, allow_other: bool) -> bool {
+    allow_other || caller_uid == owner_uid || caller_uid == 0
 }
 
 impl RpcCallHeader {
@@ -454,7 +486,15 @@ impl RpcCallHeader {
         let vers = reader.read_u32()?;
         let proc_num = reader.read_u32()?;
         let cred_flavor = reader.read_u32()?;
-        let _cred_body = reader.read_opaque(400)?;
+        let cred_body = reader.read_opaque(400)?;
+        let (cred_uid, cred_gid) = if cred_flavor == RPC_AUTH_SYS {
+            match parse_auth_sys_uid_gid(cred_body) {
+                Some((uid, gid)) => (Some(uid), Some(gid)),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
         let _verf_flavor = reader.read_u32()?;
         let _verf_body = reader.read_opaque(400)?;
         Some(Self {
@@ -464,7 +504,59 @@ impl RpcCallHeader {
             vers,
             proc_num,
             cred_flavor,
+            cred_uid,
+            cred_gid,
         })
+    }
+}
+
+fn encode_auth_error_reply(xid: u32, auth_stat: u32) -> Vec<u8> {
+    let mut w = XdrWriter::with_capacity(20);
+    w.write_u32(xid);
+    w.write_u32(RPC_MSG_REPLY);
+    w.write_u32(RPC_REPLY_MSG_DENIED);
+    w.write_u32(RPC_REJECT_AUTH_ERROR);
+    w.write_u32(auth_stat);
+    w.into_bytes()
+}
+
+fn encode_nfs3_error_reply(xid: u32, proc_num: u32, status: u32) -> Vec<u8> {
+    let mut w = begin_accepted_reply(xid, RPC_ACCEPT_SUCCESS);
+    match proc_num {
+        NFSPROC3_GETATTR => {
+            w.write_u32(status);
+            w.into_bytes()
+        }
+        NFSPROC3_LOOKUP | NFSPROC3_ACCESS | NFSPROC3_READ | NFSPROC3_READDIR
+        | NFSPROC3_READDIRPLUS | NFSPROC3_FSSTAT | NFSPROC3_FSINFO | NFSPROC3_PATHCONF
+        | NFSPROC3_READLINK => {
+            w.write_u32(status);
+            w.write_bool(false);
+            w.into_bytes()
+        }
+        NFSPROC3_SETATTR | NFSPROC3_WRITE | NFSPROC3_CREATE | NFSPROC3_MKDIR | NFSPROC3_REMOVE
+        | NFSPROC3_RMDIR | NFSPROC3_COMMIT | NFSPROC3_SYMLINK | NFSPROC3_MKNOD => {
+            w.write_u32(status);
+            w.write_bool(false);
+            w.write_bool(false);
+            w.into_bytes()
+        }
+        NFSPROC3_RENAME => {
+            w.write_u32(status);
+            w.write_bool(false);
+            w.write_bool(false);
+            w.write_bool(false);
+            w.write_bool(false);
+            w.into_bytes()
+        }
+        NFSPROC3_LINK => {
+            w.write_u32(status);
+            w.write_bool(false);
+            w.write_bool(false);
+            w.write_bool(false);
+            w.into_bytes()
+        }
+        _ => begin_accepted_reply(xid, RPC_ACCEPT_PROC_UNAVAIL).into_bytes(),
     }
 }
 
@@ -556,10 +648,14 @@ pub struct NfsMountOptions {
     /// Reject macOS Finder metadata probes (`._*`, `.DS_Store`, `.Spotlight-V100`, etc.)
     /// with `NFS3ERR_NOENT` to prevent metadata storms.
     pub filter_macos_metadata: bool,
-    /// Effective UID reported in `fattr3`.
+    /// Effective UID reported in `fattr3` and matched against `AUTH_SYS` caller UIDs.
     pub uid: u32,
     /// Effective GID reported in `fattr3`.
     pub gid: u32,
+    /// Permit non-owner local UIDs to access the loopback NFSv3 server (`--allow-other`).
+    pub allow_other: bool,
+    /// Require `RPC_AUTH_SYS` credentials matching `uid` (or root UID 0) when `!allow_other`.
+    pub require_auth_sys: bool,
 }
 
 impl Default for NfsMountOptions {
@@ -573,6 +669,8 @@ impl Default for NfsMountOptions {
             filter_macos_metadata: true,
             uid,
             gid,
+            allow_other: false,
+            require_auth_sys: false,
         }
     }
 }
@@ -676,13 +774,20 @@ fn parse_sattr3(r: &mut XdrReader<'_>) -> Option<ParsedSattr3> {
 }
 
 fn generate_session_generation() -> u64 {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(1);
-    let pid = std::process::id() as u64;
-    let mixed = nanos ^ (pid.rotate_left(32)) ^ 0x4F49_4653_4E46_5333;
-    if mixed == 0 { 1 } else { mixed }
+    #[cfg(not(kani))]
+    {
+        let mut bytes = [0u8; 8];
+        chacha20poly1305::aead::rand_core::RngCore::fill_bytes(
+            &mut chacha20poly1305::aead::OsRng,
+            &mut bytes,
+        );
+        let v = u64::from_le_bytes(bytes);
+        if v == 0 { 1 } else { v }
+    }
+    #[cfg(kani)]
+    {
+        0x4F49_4653_4E46_5333
+    }
 }
 
 const NFS_FAST_PARENT_SLOTS: usize = 256;
@@ -713,6 +818,7 @@ pub struct OifsNfsFs {
     options: NfsMountOptions,
     fs_generation: u64,
     write_verf: [u8; 8],
+    mount_sealed: AtomicBool,
     parent_map: RwLock<FxHashMap<u64, u64>>,
     fast_parents: Box<[AtomicU64; NFS_FAST_PARENT_SLOTS]>,
     dir_snapshots: RwLock<VecDeque<(NfsDirSnapshotKey, NfsSortedDirEntries)>>,
@@ -739,10 +845,25 @@ impl OifsNfsFs {
             options,
             fs_generation,
             write_verf,
+            mount_sealed: AtomicBool::new(false),
             parent_map: RwLock::new(parents),
             fast_parents,
             dir_snapshots: RwLock::new(VecDeque::with_capacity(NFS_DIR_SNAPSHOT_CAP)),
         }
+    }
+
+    /// Closes the initial `MOUNT v3` handle-issuing phase after the OS kernel client
+    /// completes `mount_nfs` / `mount -t nfs`, preventing unrelated local processes from
+    /// minting root file handles over `127.0.0.1:<port>`.
+    #[inline]
+    pub fn seal_mount(&self) {
+        self.mount_sealed.store(true, Ordering::Release);
+    }
+
+    /// Returns `true` after [`seal_mount`] has closed `MNTPROC3_MNT`.
+    #[inline]
+    pub fn is_mount_sealed(&self) -> bool {
+        self.mount_sealed.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -945,16 +1066,34 @@ impl OifsNfsFs {
             return encode_rpc_mismatch_reply(hdr.xid);
         }
 
+        if hdr.cred_flavor == RPC_AUTH_SYS && hdr.cred_uid.is_none() {
+            return encode_auth_error_reply(hdr.xid, RPC_AUTH_BADCRED);
+        }
+
         match hdr.prog {
             MOUNT_PROGRAM => {
                 if hdr.vers != MOUNT_VERSION_3 {
                     return encode_prog_mismatch_reply(hdr.xid, MOUNT_VERSION_3, MOUNT_VERSION_3);
                 }
-                self.dispatch_mount_v3(hdr.xid, hdr.proc_num, &mut r)
+                self.dispatch_mount_v3(&hdr, &mut r)
             }
             NFS_PROGRAM => {
                 if hdr.vers != NFS_VERSION_3 {
                     return encode_prog_mismatch_reply(hdr.xid, NFS_VERSION_3, NFS_VERSION_3);
+                }
+                if hdr.proc_num != NFSPROC3_NULL {
+                    if hdr.cred_flavor == RPC_AUTH_SYS {
+                        let caller_uid = hdr.cred_uid.unwrap_or(u32::MAX);
+                        if !is_nfs_uid_authorized(
+                            caller_uid,
+                            self.options.uid,
+                            self.options.allow_other,
+                        ) {
+                            return encode_nfs3_error_reply(hdr.xid, hdr.proc_num, NFS3ERR_ACCES);
+                        }
+                    } else if self.options.require_auth_sys && !self.options.allow_other {
+                        return encode_auth_error_reply(hdr.xid, RPC_AUTH_TOOWEAK);
+                    }
                 }
                 self.dispatch_nfs_v3(hdr.xid, hdr.proc_num, &mut r)
             }
@@ -966,7 +1105,9 @@ impl OifsNfsFs {
     // MOUNT v3 (Program 100005, Version 3)
     // -----------------------------------------------------------------------
 
-    fn dispatch_mount_v3(&self, xid: u32, proc_num: u32, r: &mut XdrReader<'_>) -> Vec<u8> {
+    fn dispatch_mount_v3(&self, hdr: &RpcCallHeader, r: &mut XdrReader<'_>) -> Vec<u8> {
+        let xid = hdr.xid;
+        let proc_num = hdr.proc_num;
         match proc_num {
             MNTPROC3_NULL | MNTPROC3_UMNTALL => {
                 begin_accepted_reply(xid, RPC_ACCEPT_SUCCESS).into_bytes()
@@ -983,27 +1124,52 @@ impl OifsNfsFs {
             }
             MNTPROC3_EXPORT => {
                 let mut w = begin_accepted_reply(xid, RPC_ACCEPT_SUCCESS);
-                // Single export entry "/" open to loopback client
-                w.write_bool(true);
-                w.write_string("/");
-                w.write_bool(false); // no group restrictions
-                w.write_bool(false); // end of export list
+                if self.is_mount_sealed() {
+                    w.write_bool(false);
+                } else {
+                    // Single export entry "/" open prior to mount sealing
+                    w.write_bool(true);
+                    w.write_string("/");
+                    w.write_bool(false); // no group restrictions
+                    w.write_bool(false); // end of export list
+                }
                 w.into_bytes()
             }
             MNTPROC3_MNT => {
                 let Some(dirpath) = r.read_string(1024) else {
                     return begin_accepted_reply(xid, RPC_ACCEPT_GARBAGE_ARGS).into_bytes();
                 };
+                if self.is_mount_sealed() {
+                    let mut w = begin_accepted_reply(xid, RPC_ACCEPT_SUCCESS);
+                    w.write_u32(MNT3ERR_ACCES);
+                    return w.into_bytes();
+                }
+                if hdr.cred_flavor == RPC_AUTH_SYS
+                    && !is_nfs_uid_authorized(
+                        hdr.cred_uid.unwrap_or(u32::MAX),
+                        self.options.uid,
+                        self.options.allow_other,
+                    )
+                {
+                    let mut w = begin_accepted_reply(xid, RPC_ACCEPT_SUCCESS);
+                    w.write_u32(MNT3ERR_ACCES);
+                    return w.into_bytes();
+                }
                 let mut w = begin_accepted_reply(xid, RPC_ACCEPT_SUCCESS);
                 let normalized = dirpath.trim_end_matches('/');
                 if normalized.is_empty() || normalized == "/oifs" {
                     w.write_u32(MNT3_OK);
                     let root_bytes = self.root_handle().to_bytes();
                     w.write_opaque(&root_bytes);
-                    // Supported auth flavors: [AUTH_NONE, AUTH_SYS]
-                    w.write_u32(2);
-                    w.write_u32(RPC_AUTH_NONE);
-                    w.write_u32(RPC_AUTH_SYS);
+                    if self.options.require_auth_sys && !self.options.allow_other {
+                        w.write_u32(1);
+                        w.write_u32(RPC_AUTH_SYS);
+                    } else {
+                        // Supported auth flavors: [AUTH_NONE, AUTH_SYS]
+                        w.write_u32(2);
+                        w.write_u32(RPC_AUTH_NONE);
+                        w.write_u32(RPC_AUTH_SYS);
+                    }
                 } else {
                     w.write_u32(MNT3ERR_NOENT);
                 }
@@ -2109,6 +2275,42 @@ fn poll_fd_readable(fd: RawFd, timeout_ms: i32) -> io::Result<bool> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn verify_linux_loopback_peer_uid(stream: &TcpStream, owner_uid: u32) -> bool {
+    let (Ok(peer), Ok(local)) = (stream.peer_addr(), stream.local_addr()) else {
+        return true;
+    };
+    let (std::net::SocketAddr::V4(peer_v4), std::net::SocketAddr::V4(local_v4)) = (peer, local)
+    else {
+        return true;
+    };
+    // Loopback 127.0.0.1 in /proc/net/tcp is little-endian 0100007F.
+    let target_local = format!("0100007F:{:04X}", local_v4.port());
+    let target_rem = format!("0100007F:{:04X}", peer_v4.port());
+    let Ok(proc_tcp) = std::fs::read_to_string("/proc/net/tcp") else {
+        return true;
+    };
+    for line in proc_tcp.lines().skip(1) {
+        let mut cols = line.split_whitespace();
+        let _sl = cols.next();
+        let Some(local_hex) = cols.next() else {
+            continue;
+        };
+        let Some(rem_hex) = cols.next() else { continue };
+        let Some(st) = cols.next() else { continue };
+        // Established ("01") client side has local_address == client ephemeral (rem_hex) and rem_address == server (target_local).
+        if st == "01" && local_hex == target_rem && rem_hex == target_local {
+            // columns after rem_address: st(3), tx_rx_q(4), tr_tm(5), retrnsmt(6), uid(7)
+            if let Some(uid_str) = cols.nth(3)
+                && let Ok(sock_uid) = uid_str.parse::<u32>()
+            {
+                return sock_uid == owner_uid || sock_uid == 0;
+            }
+        }
+    }
+    true
+}
+
 fn serve_tcp_connection(mut stream: TcpStream, fs: Arc<OifsNfsFs>, shutdown: Arc<AtomicBool>) {
     let _ = stream.set_nodelay(true);
     let raw_fd = stream.as_raw_fd();
@@ -2205,6 +2407,16 @@ impl OifsNfsServer {
                                     let _ = stream.set_read_timeout(Some(NFS_CONN_IO_TIMEOUT));
                                     let _ = stream.set_write_timeout(Some(NFS_CONN_IO_TIMEOUT));
                                     let fs_w = Arc::clone(&fs_bg);
+                                    #[cfg(target_os = "linux")]
+                                    if !fs_w.options.allow_other
+                                        && !verify_linux_loopback_peer_uid(
+                                            &stream,
+                                            fs_w.options.uid,
+                                        )
+                                    {
+                                        drop(stream);
+                                        continue;
+                                    }
                                     let sh_w = Arc::clone(&shutdown_bg);
                                     let conn_guard = ConnCountGuard(Arc::clone(&active_conns));
                                     if let Ok(h) = thread::Builder::new()
@@ -2371,16 +2583,18 @@ pub fn is_mounted<P: AsRef<Path>>(mountpoint: P) -> bool {
 pub fn mount_and_serve_nfs<P: AsRef<Path>>(
     dm: Arc<DiskManager>,
     mountpoint: P,
-    options: NfsMountOptions,
+    mut options: NfsMountOptions,
     external_shutdown: Option<Arc<AtomicBool>>,
 ) -> io::Result<()> {
     let mp = mountpoint.as_ref();
     let read_only = options.read_only || dm.is_read_only();
+    options.require_auth_sys = true;
     let mut server = OifsNfsServer::bind(Arc::clone(&dm), options)?;
     if let Err(e) = mount_os_nfs(server.port(), mp, read_only) {
         server.stop();
         return Err(e);
     }
+    server.fs().seal_mount();
 
     // Block until external unmount or shutdown signal.
     loop {
@@ -2472,5 +2686,24 @@ mod kani_proofs {
 
         let short: [u8; 15] = kani::any();
         assert!(NfsFileHandle::from_bytes(&short).is_none());
+    }
+
+    /// Proves that `parse_auth_sys_uid_gid` is panic-free for arbitrary truncated/malformed
+    /// inputs and `is_nfs_uid_authorized` enforces owner-only UID gating unless `allow_other`.
+    #[kani::proof]
+    fn kani_auth_sys_parsing_and_uid_gate() {
+        let raw: [u8; 48] = kani::any();
+        let slice_len: usize = kani::any();
+        kani::assume(slice_len <= raw.len());
+        let _ = parse_auth_sys_uid_gid(&raw[..slice_len]);
+
+        let caller_uid: u32 = kani::any();
+        let owner_uid: u32 = kani::any();
+        let allow_other: bool = kani::any();
+        let ok = is_nfs_uid_authorized(caller_uid, owner_uid, allow_other);
+        assert_eq!(
+            ok,
+            allow_other || caller_uid == owner_uid || caller_uid == 0
+        );
     }
 }

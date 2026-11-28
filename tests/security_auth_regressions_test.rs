@@ -5,10 +5,12 @@ use oifs::OifsSession;
 use oifs::disk::{CompressionMode, DiskManager, DiskManagerError};
 use oifs::fuse::{FuseMountOptions, OifsFuseState, inode_to_nodeid};
 use oifs::nfs::{
-    MNT3_OK, MNTPROC3_MNT, MOUNT_PROGRAM, MOUNT_VERSION_3, NFS_FILE_HANDLE_LEN, NFS_PROGRAM,
-    NFS_VERSION_3, NFS3ERR_STALE, NFSPROC3_GETATTR, NFSPROC3_READ, NFSPROC3_SETATTR,
-    NFSPROC3_WRITE, NfsFileHandle, NfsMountOptions, OifsNfsFs, RPC_AUTH_NONE, RPC_MSG_CALL,
-    RPC_VERSION_2, UNSTABLE, XdrReader, XdrWriter,
+    MNT3_OK, MNT3ERR_ACCES, MNTPROC3_EXPORT, MNTPROC3_MNT, MOUNT_PROGRAM, MOUNT_VERSION_3,
+    NFS_FILE_HANDLE_LEN, NFS_PROGRAM, NFS_VERSION_3, NFS3_OK, NFS3ERR_ACCES, NFS3ERR_STALE,
+    NFSPROC3_GETATTR, NFSPROC3_READ, NFSPROC3_SETATTR, NFSPROC3_WRITE, NfsFileHandle,
+    NfsMountOptions, OifsNfsFs, RPC_ACCEPT_SUCCESS, RPC_AUTH_NONE, RPC_AUTH_SYS, RPC_AUTH_TOOWEAK,
+    RPC_MSG_CALL, RPC_MSG_REPLY, RPC_REJECT_AUTH_ERROR, RPC_REPLY_MSG_ACCEPTED,
+    RPC_REPLY_MSG_DENIED, RPC_VERSION_2, UNSTABLE, XdrReader, XdrWriter,
 };
 use std::io::Read as _;
 use std::sync::Arc;
@@ -427,4 +429,258 @@ fn test_nfs_forged_and_deleted_handles_return_nfs3err_stale() {
     let f2 = dm.create_file(root, "fresh.txt").unwrap();
     assert_eq!(dm.read_data(f2).unwrap().len(), 0);
     let _ = std::io::empty().read(&mut [0u8; 1]);
+}
+
+fn build_auth_sys_cred(uid: u32, gid: u32) -> Vec<u8> {
+    let mut w = XdrWriter::with_capacity(64);
+    w.write_u32(1); // stamp
+    w.write_string("localhost");
+    w.write_u32(uid);
+    w.write_u32(gid);
+    w.write_u32(1); // gids.len()
+    w.write_u32(gid);
+    w.into_bytes()
+}
+
+fn build_rpc_call_auth_sys(
+    xid: u32,
+    prog: u32,
+    vers: u32,
+    proc_num: u32,
+    uid: u32,
+    gid: u32,
+    args: &[u8],
+) -> Vec<u8> {
+    let cred = build_auth_sys_cred(uid, gid);
+    let mut w = XdrWriter::with_capacity(64 + cred.len() + args.len());
+    w.write_u32(xid);
+    w.write_u32(RPC_MSG_CALL);
+    w.write_u32(RPC_VERSION_2);
+    w.write_u32(prog);
+    w.write_u32(vers);
+    w.write_u32(proc_num);
+    w.write_u32(RPC_AUTH_SYS);
+    w.write_opaque(&cred);
+    w.write_u32(RPC_AUTH_NONE);
+    w.write_u32(0);
+    let mut bytes = w.into_bytes();
+    bytes.extend_from_slice(args);
+    bytes
+}
+
+#[test]
+fn test_ipc_rejects_symlinked_runtime_dir_and_verifies_uds_peer_uid() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let euid = unsafe { libc::geteuid() };
+
+    // 1. Overly broad 0755 own runtime dir must be tightened to 0700.
+    let broad = tmp.path().join("broad_runtime");
+    std::fs::create_dir(&broad).unwrap();
+    std::fs::set_permissions(&broad, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let resolved =
+        oifs::ipc::resolve_private_runtime_dir_with(Some(broad.as_os_str()), tmp.path(), euid)
+            .expect("owned 0755 dir should tighten cleanly to 0700");
+    assert_eq!(
+        std::fs::symlink_metadata(&broad).unwrap().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        std::fs::symlink_metadata(&resolved).unwrap().mode() & 0o777,
+        0o700
+    );
+
+    // 2. Symlinked runtime directory (e.g. XDG_RUNTIME_DIR or /tmp/oifs-<uid> hijack) must fail.
+    let decoy = tmp.path().join("decoy_target");
+    std::fs::create_dir(&decoy).unwrap();
+    let link_dir = tmp.path().join("symlink_runtime");
+    symlink(&decoy, &link_dir).unwrap();
+    let err =
+        oifs::ipc::resolve_private_runtime_dir_with(Some(link_dir.as_os_str()), tmp.path(), euid)
+            .expect_err("symlinked runtime dir must be rejected");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+
+    let tmp_sub = tmp.path().join("temp_base");
+    std::fs::create_dir(&tmp_sub).unwrap();
+    let uid_dir_link = tmp_sub.join(format!("oifs-{euid}"));
+    symlink(&decoy, &uid_dir_link).unwrap();
+    let fallback_err = oifs::ipc::resolve_private_runtime_dir_with(None, &tmp_sub, euid)
+        .expect_err("symlinked /tmp/oifs-<uid> fallback dir must be rejected");
+    assert_eq!(fallback_err.kind(), std::io::ErrorKind::PermissionDenied);
+
+    // 3. Real Local UDS session succeeds, verifies peer UID, and sets 0600 on token file.
+    let img = tmp.path().join("uds_hardened.img");
+    let master = OifsSession::open_ipc(&img, 2 * 1024 * 1024).unwrap();
+    assert!(master.is_direct());
+    let proxy = OifsSession::open_ipc(&img, 0).unwrap();
+    assert!(!proxy.is_direct());
+    let fid = proxy.create_file(0, "verified_peer.txt").unwrap();
+    proxy
+        .write_data(fid, 0, b"peer-uid-ok", CompressionMode::Never)
+        .unwrap();
+    assert_eq!(master.read_data(fid).unwrap(), b"peer-uid-ok");
+
+    let tok_path = oifs::ipc::get_token_path(&img);
+    let tok_meta = std::fs::symlink_metadata(&tok_path).unwrap();
+    assert!(!tok_meta.file_type().is_symlink());
+    assert_eq!(tok_meta.uid(), euid);
+    assert_eq!(tok_meta.mode() & 0o077, 0);
+}
+
+#[test]
+fn test_nfs_enforces_auth_sys_uid_seal_mount_and_csprng_handles() {
+    let dir = tempdir().unwrap();
+    let img = dir.path().join("nfs_uid_gate.img");
+    let dm = Arc::new(DiskManager::open(&img, 2 * 1024 * 1024).unwrap());
+
+    let nfs_a = OifsNfsFs::from_arc(
+        Arc::clone(&dm),
+        NfsMountOptions {
+            uid: 1000,
+            gid: 1000,
+            allow_other: false,
+            require_auth_sys: true,
+            ..NfsMountOptions::default()
+        },
+    );
+    let nfs_b = OifsNfsFs::from_arc(Arc::clone(&dm), NfsMountOptions::default());
+    assert_ne!(
+        nfs_a.fs_generation(),
+        nfs_b.fs_generation(),
+        "NFS session generation must use CSPRNG entropy"
+    );
+
+    let mut mnt_args = XdrWriter::new();
+    mnt_args.write_string("/");
+    let mnt_bytes = mnt_args.into_bytes();
+
+    // Non-owner AUTH_SYS (uid=2000) is denied MNT even before seal_mount().
+    let denied_mnt = nfs_a.dispatch_rpc(&build_rpc_call_auth_sys(
+        1,
+        MOUNT_PROGRAM,
+        MOUNT_VERSION_3,
+        MNTPROC3_MNT,
+        2000,
+        2000,
+        &mnt_bytes,
+    ));
+    assert_eq!(nfs_reply_status(&denied_mnt), MNT3ERR_ACCES);
+
+    // Owner AUTH_SYS (uid=1000) succeeds before seal_mount().
+    let ok_mnt = nfs_a.dispatch_rpc(&build_rpc_call_auth_sys(
+        2,
+        MOUNT_PROGRAM,
+        MOUNT_VERSION_3,
+        MNTPROC3_MNT,
+        1000,
+        1000,
+        &mnt_bytes,
+    ));
+    let mut mr = XdrReader::new(&ok_mnt);
+    let _ = mr.read_u32(); // xid
+    let _ = mr.read_u32(); // REPLY
+    assert_eq!(mr.read_u32(), Some(RPC_REPLY_MSG_ACCEPTED));
+    let _ = mr.read_u32(); // verf_flavor
+    let _ = mr.read_opaque(400);
+    assert_eq!(mr.read_u32(), Some(RPC_ACCEPT_SUCCESS));
+    assert_eq!(mr.read_u32(), Some(MNT3_OK));
+    let root_fh = mr.read_opaque(64).unwrap().to_vec();
+
+    // Seal mount after OS mount handshake: MNT must reject and EXPORT must be empty.
+    nfs_a.seal_mount();
+    let sealed_mnt = nfs_a.dispatch_rpc(&build_rpc_call_auth_sys(
+        3,
+        MOUNT_PROGRAM,
+        MOUNT_VERSION_3,
+        MNTPROC3_MNT,
+        1000,
+        1000,
+        &mnt_bytes,
+    ));
+    assert_eq!(nfs_reply_status(&sealed_mnt), MNT3ERR_ACCES);
+
+    let sealed_export = nfs_a.dispatch_rpc(&build_rpc_call_auth_sys(
+        4,
+        MOUNT_PROGRAM,
+        MOUNT_VERSION_3,
+        MNTPROC3_EXPORT,
+        1000,
+        1000,
+        &[],
+    ));
+    let mut er = XdrReader::new(&sealed_export);
+    let _ = er.read_u32();
+    let _ = er.read_u32();
+    assert_eq!(er.read_u32(), Some(RPC_REPLY_MSG_ACCEPTED));
+    let _ = er.read_u32();
+    let _ = er.read_opaque(400);
+    assert_eq!(er.read_u32(), Some(RPC_ACCEPT_SUCCESS));
+    assert_eq!(er.read_bool(), Some(false));
+
+    // NFS GETATTR checks AUTH_NONE -> AUTH_TOOWEAK, other UID -> NFS3ERR_ACCES, owner UID -> NFS3_OK.
+    let mut ga_args = XdrWriter::with_capacity(NFS_FILE_HANDLE_LEN + 8);
+    ga_args.write_opaque(&root_fh);
+    let ga_bytes = ga_args.into_bytes();
+
+    let auth_none_ga = nfs_a.dispatch_rpc(&build_rpc_call(
+        5,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_GETATTR,
+        &ga_bytes,
+    ));
+    let mut dr = XdrReader::new(&auth_none_ga);
+    assert_eq!(dr.read_u32(), Some(5));
+    assert_eq!(dr.read_u32(), Some(RPC_MSG_REPLY));
+    assert_eq!(dr.read_u32(), Some(RPC_REPLY_MSG_DENIED));
+    assert_eq!(dr.read_u32(), Some(RPC_REJECT_AUTH_ERROR));
+    assert_eq!(dr.read_u32(), Some(RPC_AUTH_TOOWEAK));
+
+    let other_uid_ga = nfs_a.dispatch_rpc(&build_rpc_call_auth_sys(
+        6,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_GETATTR,
+        2000,
+        2000,
+        &ga_bytes,
+    ));
+    assert_eq!(nfs_reply_status(&other_uid_ga), NFS3ERR_ACCES);
+
+    let owner_uid_ga = nfs_a.dispatch_rpc(&build_rpc_call_auth_sys(
+        7,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_GETATTR,
+        1000,
+        1000,
+        &ga_bytes,
+    ));
+    assert_eq!(nfs_reply_status(&owner_uid_ga), NFS3_OK);
+
+    // Explicit allow_other: true permits non-owner UID 2000.
+    let nfs_shared = OifsNfsFs::from_arc(
+        Arc::clone(&dm),
+        NfsMountOptions {
+            uid: 1000,
+            gid: 1000,
+            allow_other: true,
+            require_auth_sys: true,
+            ..NfsMountOptions::default()
+        },
+    );
+    let shared_fh = nfs_shared.root_handle().to_bytes();
+    let mut shared_ga_args = XdrWriter::with_capacity(NFS_FILE_HANDLE_LEN + 8);
+    shared_ga_args.write_opaque(&shared_fh);
+    let shared_ga = nfs_shared.dispatch_rpc(&build_rpc_call_auth_sys(
+        8,
+        NFS_PROGRAM,
+        NFS_VERSION_3,
+        NFSPROC3_GETATTR,
+        2000,
+        2000,
+        &shared_ga_args.into_bytes(),
+    ));
+    assert_eq!(nfs_reply_status(&shared_ga), NFS3_OK);
 }
